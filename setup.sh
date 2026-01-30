@@ -1,8 +1,22 @@
 #!/bin/bash
 #
 # AI Guardrails Setup Script
-# Handles both new installs and merging with existing copilot-instructions.md
-# Supports optional framework-specific patterns via --framework flag
+# https://github.com/catpilotai/catpilot-ai-guardrails
+#
+# WHAT IT DOES:
+#   - Installs guardrails to .github/copilot-instructions.md
+#   - Merges with existing file if present (backs up first)
+#   - Auto-detects framework (Next.js, Django, Rails, etc.) and adds patterns
+#   - Auto-detects Windsurf and creates symlink to .windsurf/rules/
+#
+# SUPPORTED IDEs:
+#   VS Code + Copilot, Cursor, Windsurf, JetBrains
+#
+# USAGE:
+#   ./setup.sh                    # Auto-detect everything
+#   ./setup.sh --framework django # Force specific framework
+#   ./setup.sh --no-framework     # Skip framework patterns
+#   ./setup.sh --force            # Reinstall/update existing
 #
 
 set -e
@@ -248,6 +262,15 @@ if [ -n "$FRAMEWORK" ]; then
     fi
 fi
 
+# Windsurf support: create symlink if .windsurf directory exists
+WINDSURF_INSTALLED=false
+if [ -d ".windsurf" ]; then
+    mkdir -p .windsurf/rules
+    ln -sf "../../.github/copilot-instructions.md" ".windsurf/rules/security.md"
+    WINDSURF_INSTALLED=true
+    echo -e "${GREEN}✓ Windsurf detected — created symlink at .windsurf/rules/security.md${NC}"
+fi
+
 # Show summary
 echo "╔════════════════════════════════════════════════════════════╗"
 echo "║                      Summary                               ║"
@@ -257,6 +280,10 @@ echo -e "  Installed to: ${GREEN}$TARGET_FILE${NC}"
 
 if [ -f "$BACKUP_FILE" ]; then
     echo -e "  Backup at:    ${YELLOW}$BACKUP_FILE${NC}"
+fi
+
+if [ "$WINDSURF_INSTALLED" = true ]; then
+    echo -e "  Windsurf:     ${GREEN}.windsurf/rules/security.md${NC} (symlinked)"
 fi
 
 echo ""
