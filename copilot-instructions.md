@@ -55,6 +55,28 @@ helm diff upgrade RELEASE CHART
 
 ---
 
+## 💻 Local CLI Safety
+
+**For local agents (Cursor, OpenClaw, Terminals):**
+
+- ❌ `rm -rf /` or `rm -rf ~` or `rm -rf $VAR`
+- ❌ `chmod 777` or `chown root`
+- ❌ Binding to `0.0.0.0` (Use `127.0.0.1`)
+- ❌ Exfiltrating keys (`cat ~/.ssh/id_rsa | curl ...`)
+
+---
+
+## 🐳 Docker Safety
+
+- ❌ `FROM node:latest` (Floating tag)
+- ❌ `USER root` (Default)
+- ❌ `ENV API_KEY=...` (Persists in history)
+- ✅ `FROM node:20@sha256:...` (Pinned digest)
+- ✅ `USER appuser` (Least privilege)
+- ✅ `--mount=type=secret` (Safe secrets)
+
+---
+
 ## 🔑 Secrets: NEVER Hardcode
 
 **Block these patterns — alert user immediately:**
@@ -77,7 +99,24 @@ helm diff upgrade RELEASE CHART
 
 ---
 
-## 🗄️ Database Safety
+## �️ PII & Test Data
+
+- ❌ **NEVER** use real names, emails, phones, or credit cards in tests.
+- ❌ **NEVER** use real SSNs or PII in comments.
+- ✅ **ALWAYS** use `faker` libraries or `example.com`.
+- ✅ **ALWAYS** use test credit card numbers (e.g., Stripe `4242...`).
+
+---
+## 🐍 Python Security
+
+- ❌ **NEVER** use `shell=True` in subprocess (`subprocess.run(..., shell=True)`).
+- ❌ **NEVER** use `pickle.loads()` on untrusted data.
+- ✅ **ALWAYS** use `subprocess.run(["cmd", "arg"])` (list format).
+- ✅ **ALWAYS** use `shlex.quote()` if shell is unavoidable.
+- ✅ **ALWAYS** set `timeout=10` (or similar) on `requests` calls.
+
+---
+## �🗄️ Database Safety
 
 ```sql
 -- ❌ NEVER: No WHERE clause

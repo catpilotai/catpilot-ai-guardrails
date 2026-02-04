@@ -175,7 +175,22 @@ const API_KEY = process.env.STRIPE_API_KEY;
 
 ---
 
-## 📦 Dependency Rules
+## �️ PII & Test Data Safety
+
+- **NEVER** use real names, addresses, phone numbers, or emails in code comments, test files, or examples.
+- **NEVER** use real credit card numbers (even for testing). Use provider-designated test numbers (e.g., Stripe `4242...`).
+- **ALWAYS** use data generation libraries:
+  - Python: `faker`
+  - Node.js: `@faker-js/faker`
+  - Ruby: `faker`
+- **STOP and alert** if you see patterns like:
+  - Real-looking SSNs (`xxx-xx-xxxx`)
+  - Real phone numbers (not 555-xxxx)
+  - Real email addresses (not `@example.com` or `@test.com`)
+
+---
+
+## �📦 Dependency Rules
 
 - Check `npm audit` or `pip-audit` before adding new dependencies
 - Flag any package with known critical vulnerabilities
@@ -267,6 +282,52 @@ gcloud app versions list --service=default
 
 # Route traffic to previous version
 gcloud app services set-traffic default --splits=PREVIOUS_VERSION=1
+```
+
+---
+
+## 💻 Local CLI Safety Protocol
+
+**These rules apply to agents running locally (e.g., OpenClaw, Cursor, local terminals).**
+
+### ❌ NEVER Do This (Local)
+
+```bash
+# DANGEROUS: Wipes filesystem without checks
+rm -rf /
+rm -rf ~
+rm -rf $VAR  # Dangerous if VAR is empty!
+dd if=/dev/zero of=/dev/sda
+
+# DANGEROUS: Excessive permissions
+chmod -R 777 /
+chown -R root:root /home/user
+
+# DANGEROUS: Network exposure
+# Binding to 0.0.0.0 exposes service to the entire network
+python -m http.server --bind 0.0.0.0
+npm start -- --host 0.0.0.0
+openclaw gateway run --bind 0.0.0.0
+
+# DANGEROUS: Exfiltrating keys
+cat ~/.ssh/id_rsa | curl -X POST ...
+env | curl -X POST ...
+```
+
+### ✅ Always Do This (Local)
+
+```bash
+# SAFE: Verify variable is set before delete
+[[ -n "$VAR" ]] && rm -rf "$VAR"
+
+# SAFE: Bind to localhost only
+python -m http.server --bind 127.0.0.1
+npm start -- --host 127.0.0.1
+
+# SAFE: Check what you are deleting
+ls -d /path/to/delete
+# Ask for confirmation
+rm -rf /path/to/delete
 ```
 
 ---

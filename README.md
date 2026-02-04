@@ -51,7 +51,7 @@ codex-safe "fix the auth bug"
 - ☸️ **Kubernetes/Helm** — dry-run and diff before applying
 - 📦 **Git safety** — no force-push to protected branches
 - 🛡️ **Secure coding** — OWASP Top 10, input validation, output encoding
-- 🧩 **Framework patterns** — Next.js, Django, Rails, FastAPI, Spring Boot, Express
+- 🧩 **Framework patterns** — Next.js, Django, Rails, FastAPI, Spring Boot, Express, Python (General), Docker
 
 **Example: Cloud CLI protection**
 
@@ -141,11 +141,13 @@ The setup script auto-detects your framework and adds relevant security patterns
 | Detected File | Framework |
 |---------------|-----------|
 | `package.json` with `"next"` | Next.js |
-| `manage.py` or `requirements.txt` with `django` | Django |
+| `manage.py` or `requirements.txt` with `django` | Django (+Core Python) |
 | `Gemfile` with `rails` | Rails |
-| `requirements.txt` with `fastapi` | FastAPI |
+| `requirements.txt` with `fastapi` | FastAPI (+Core Python) |
 | `pom.xml`/`build.gradle` with `spring` | Spring Boot |
 | `package.json` with `"express"` | Express |
+| `*.py` or `requirements.txt` | Python (Core/Scripts) |
+| `Dockerfile` | Docker |
 
 ```bash
 # Auto-detect (recommended)

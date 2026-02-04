@@ -43,7 +43,7 @@ BACKUP_FILE="$TARGET_DIR/copilot-instructions.md.backup"
 SIZE_CAP=5120
 
 # Available frameworks
-AVAILABLE_FRAMEWORKS="nextjs, django, rails, express, fastapi, springboot"
+AVAILABLE_FRAMEWORKS="nextjs, django, rails, express, fastapi, springboot, python, docker"
 
 # Auto-detect framework based on common files
 detect_framework() {
@@ -53,8 +53,10 @@ detect_framework() {
         return
     fi
     
-    # Django - check for manage.py or django in requirements
-    if [ -f "manage.py" ] || ([ -f "requirements.txt" ] && grep -qi "django" requirements.txt 2>/dev/null); then
+    # Django - check for manage.py or django in requirements/pyproject.toml
+    if [ -f "manage.py" ] || \
+       ([ -f "requirements.txt" ] && grep -qi "django" requirements.txt 2>/dev/null) || \
+       ([ -f "pyproject.toml" ] && grep -qi "django" pyproject.toml 2>/dev/null); then
         echo "django"
         return
     fi
@@ -66,7 +68,8 @@ detect_framework() {
     fi
     
     # FastAPI - check requirements.txt for fastapi
-    if [ -f "requirements.txt" ] && grep -qi "fastapi" requirements.txt 2>/dev/null; then
+    if ([ -f "requirements.txt" ] && grep -qi "fastapi" requirements.txt 2>/dev/null) || \
+       ([ -f "pyproject.toml" ] && grep -qi "fastapi" pyproject.toml 2>/dev/null); then
         echo "fastapi"
         return
     fi
@@ -81,6 +84,12 @@ detect_framework() {
     # Express - check package.json for express (but not next)
     if [ -f "package.json" ] && grep -q '"express"' package.json 2>/dev/null && ! grep -q '"next"' package.json 2>/dev/null; then
         echo "express"
+        return
+    fi
+
+    # Python (General) - check for python files if no specific framework found
+    if ls *.py >/dev/null 2>&1 || [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; then
+        echo "python"
         return
     fi
     

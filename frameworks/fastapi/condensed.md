@@ -7,7 +7,8 @@
 | Secrets | `SECRET_KEY = "hardcoded"` | `settings.secret_key` from env via Pydantic |
 | No Auth | Endpoints without `Depends()` | `Depends(get_current_user)` on protected routes |
 | Pickle | `pickle.loads(request_body)` | Pydantic models for validation |
+| Shell Injection | `subprocess.run(..., shell=True)` | `subprocess.run(["cmd", "arg"])` (shell=False) |
 
 **Auth:** Use `OAuth2PasswordBearer` + JWT. Always validate with `Depends(get_current_active_user)`.
 
-*Full reference: [FULL_FASTAPI.md](./FULL_FASTAPI.md)*
+*Full reference: [FULL_FASTAPI.md](./FULL_FASTAPI.md) and [core python](../python/FULL_PYTHON.md)*

@@ -8,5 +8,7 @@
 | Mass Assignment | `User.objects.create(**request.POST)` | Use Django Forms/Serializers with explicit fields |
 | Auth Bypass | Missing `@login_required` or `permission_classes` | `@login_required`, `@permission_required`, DRF permissions |
 | Secrets | `SECRET_KEY = "hardcoded"` in settings.py | `SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]` |
+| Shell Injection | `subprocess.run(..., shell=True)` | `subprocess.run(["cmd", "arg"])` (shell=False) |
+| Pickle | `pickle.loads(user_data)` | Use JSON or Django Serializers |
 
-**Reference:** `FULL_DJANGO.md` for ORM safety, DRF patterns, file upload validation
+**Reference:** `FULL_DJANGO.md` for ORM safety, DRF patterns, file upload validation. See `frameworks/python/FULL_PYTHON.md` for core audit.
