@@ -1,6 +1,6 @@
 # AI Guardrails
 
-> **Version:** 2.0.0 | **Full Reference:** [FULL_GUARDRAILS.md](./FULL_GUARDRAILS.md)
+> **Version:** 2.0.1 | **Full Reference:** [FULL_GUARDRAILS.md](./FULL_GUARDRAILS.md)
 
 ---
 

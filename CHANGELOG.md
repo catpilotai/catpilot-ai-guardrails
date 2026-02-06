@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.1] — 2026-02-06
+
+### Fixed
+
+- **OpenClaw framework**: Allow `.env` files (with `.gitignore` requirement) instead of blanket-banning all plaintext secret storage
+- **OpenClaw framework**: Replace shell profile (`~/.zshrc`) secret export pattern with `.env` + `.gitignore` pattern
+- **OpenClaw framework**: Replace non-existent `SOUL.md`/`TOOLS.md` references with actual repo files (`CLAUDE.md`, `openclaw.json`, `~/.openclaw/`)
+
 ## [2.0.0] — 2026-02-06
 
 ### Added

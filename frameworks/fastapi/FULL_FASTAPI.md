@@ -1,6 +1,6 @@
 # FastAPI Security Guardrails — Full Reference
 
-> **Version:** 2.0.0 | **Condensed:** [condensed.md](./condensed.md)
+> **Version:** 2.0.1 | **Condensed:** [condensed.md](./condensed.md)
 
 This document provides detailed security patterns for FastAPI applications.
 

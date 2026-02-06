@@ -5,7 +5,7 @@
   <em>Paws before you push.</em>
 </p>
 
-![Version](https://img.shields.io/badge/version-2.0.0-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-2.0.1-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
 Most coding agents read a local file for project-specific guidance—but most teams leave it empty. Drop in these guardrails to catch dangerous patterns that cause **outages, security vulnerabilities, and secret leaks.**
 

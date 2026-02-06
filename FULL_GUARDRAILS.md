@@ -1,6 +1,6 @@
 # AI Safety Guidelines — Full Reference
 
-> **Version:** 2.0.0  
+> **Version:** 2.0.1  
 > **Last Updated:** February 6, 2026  
 > **Condensed Version:** [copilot-instructions.md](./copilot-instructions.md)
 

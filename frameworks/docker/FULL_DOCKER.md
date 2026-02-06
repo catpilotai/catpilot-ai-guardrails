@@ -1,6 +1,6 @@
 # Docker Security Guardrails — Full Reference
 
-> **Version:** 2.0.0
+> **Version:** 2.0.1
 
 This document provides detailed security patterns for Dockerfiles and container interactions.
 

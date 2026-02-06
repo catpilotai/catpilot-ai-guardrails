@@ -1,6 +1,6 @@
 # Agentic AI Security — Full Reference
 
-> **Version:** 2.0.0 | **Condensed:** [condensed.md](./condensed.md)
+> **Version:** 2.0.1 | **Condensed:** [condensed.md](./condensed.md)
 
 This document provides security patterns for any self-hosted AI agent system — LangChain, CrewAI, AutoGPT, custom MCP servers, or bespoke agent frameworks.
 
