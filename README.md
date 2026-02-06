@@ -98,6 +98,7 @@ Then in each repo:
 ```bash
 git submodule update --remote .github/catpilot-ai-guardrails
 ./.github/catpilot-ai-guardrails/setup.sh --force
+git add .github/
 git commit -m "Update AI guardrails"
 ```
 
