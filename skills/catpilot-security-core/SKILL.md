@@ -1,12 +1,12 @@
 ---
 name: catpilot-security-core
-description: Catpilot's universal AI-coding-agent security baseline. Always-on guardrails covering hardcoded secrets, cloud CLI mutations, and database state changes, with more components arriving in subsequent releases. Apply on every code generation, file write, and shell command. Born from real production incidents.
+description: 'Catpilot''s universal AI-coding-agent security baseline. Always-on guardrails across nine components: cloud CLI mutations, database state changes, local CLI destruction, Docker container builds, hardcoded secrets, secrets management, supply-chain integrity, PII / test-data hygiene, and language-agnostic secure-coding patterns (SQL injection, command injection, XSS, path traversal, insecure deserialization, eval-class APIs, SSRF). Apply on every code generation, file write, and shell command. Born from real production incidents.'
 license: MIT
 metadata:
   catpilot:
     bundle:
       name: catpilot-security-core
-      version: 2026.05.11
+      version: 2026.05.17
       tier: core
       components:
       - id: cloud-cli-safety
@@ -139,10 +139,10 @@ metadata:
 
 # Catpilot Security Core
 
-Catpilot's universal security baseline for AI coding agents. The components
-in this bundle are always-on. They apply on every file write, diff review,
-and shell command the agent is about to run, regardless of language or
-framework.
+Catpilot's universal security baseline for AI coding agents. The nine
+components in this bundle are always-on. They apply on every file write,
+diff review, and shell command the agent is about to run, regardless of
+language or framework.
 
 Each component below is a self-contained skill with its own rules, detection
 patterns, and remediation guidance. Component IDs match the entries in

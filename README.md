@@ -5,7 +5,7 @@
   <em>Paws before you push.</em>
 </p>
 
-![Release](https://img.shields.io/badge/release-2026.05.11-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Format](https://img.shields.io/badge/format-Anthropic%20Agent%20Skills-7B3FE4)
+![Release](https://img.shields.io/badge/release-2026.05.17-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Format](https://img.shields.io/badge/format-Anthropic%20Agent%20Skills-7B3FE4)
 
 Security skills for AI coding agents — installable into Claude Code, Cursor, Codex, OpenClaw, Cline, Aider, GitHub Copilot, OpenCode, and 40+ other agents with one command. Also natively consumable by [Hermes Agent](https://hermes-agent.nousresearch.com) via its built-in skills system.
 
@@ -40,16 +40,21 @@ Do not put private incidents, customer data, secrets, employee identifiers, or i
 
 ## What's in the box
 
-`catpilot-security-core` (~26 KB) — the always-on baseline. Apply it on every code generation, file write, and shell command:
+`catpilot-security-core` — the always-on baseline, **9 components** as of `2026.05.17`. Apply on every code generation, file write, and shell command:
 
-| Component | Catches |
-|---|---|
-| **secret-blocking** | Hardcoded API keys, tokens, passwords, private keys, OAuth secrets, JWT signing keys, database URLs with embedded credentials. |
-| **cloud-cli-safety** | Partial-YAML resets (Azure, AWS, GCP), `terraform apply -auto-approve` against prod state, `kubectl delete namespace`, `helm upgrade` without diff, recursive S3 deletes — every cloud command goes through the universal six-step protocol. |
+| Component | Severity | Catches |
+|---|---|---|
+| **secret-blocking** | critical | Hardcoded API keys, tokens, passwords, private keys, OAuth secrets, JWT signing keys, database URLs with embedded credentials. |
+| **cloud-cli-safety** | critical | Partial-YAML resets (Azure, AWS, GCP), `terraform apply -auto-approve` against prod state, `kubectl delete namespace`, `helm upgrade` without diff, recursive S3 deletes — every cloud command goes through the universal six-step protocol. |
+| **database-safety** | critical | `DROP`/`TRUNCATE` without `WHERE`, prod migrations without dry-run, raw SQL string interpolation, schema changes without transactional safety, locking DDL on hot tables. |
+| **local-cli-safety** | critical | `rm -rf` near `/` or `$HOME`, `find -delete` on broad scopes, `dd` to block devices, `chmod -R 777`, force-push to shared branches, mass-rewrite over agent/SSH/cloud-credential paths. |
+| **docker-safety** | critical | `--privileged`, host network, `-v /:/host`, root user in container, secrets baked into image layers, `:latest` tags, untrusted base images, build-args used for sensitive values. |
+| **secrets-management** | critical | `.env` committed, secrets in CI logs / URL query strings / error messages, long-lived static keys where short-lived/OIDC works, secret reuse across environments, missing rotation cadence. |
+| **supply-chain** | high | `curl \| bash` installers, unpinned dependencies, GitHub Actions on `@main` or floating tags instead of SHAs, typosquats, post-install scripts, unvetted agent skills / MCP servers / IDE extensions. |
+| **pii-and-test-data** | high | Real customer data in tests/fixtures/comments/docs, prod DB dumps to dev, full request-body logging, real-PII in LLM prompts and fine-tuning sets, demos against real customer accounts. |
+| **language-baseline** | high | SQL injection (concatenation, f-strings), command injection (`shell=True`), XSS (`innerHTML`, `document.write`), path traversal, insecure deserialization (`pickle`, `yaml.load`, `Marshal`, `ObjectInputStream`), `eval`/`Function`/`setTimeout(string)`, TypeScript `as any` escape hatches, SSRF (unvalidated outbound URLs, cloud metadata at `169.254.169.254`). |
 
 Each component carries control mappings for **SOC 2, PCI-DSS, ISO 27001, NIST CSF, and OWASP Top 10**, with severity, evidence patterns, and worked negative examples (real incidents, masked).
-
-More components and framework extensions land in subsequent releases.
 
 ## Format
 
@@ -84,8 +89,8 @@ cp -r catpilot-ai-guardrails/skills/catpilot-security-core ~/.claude/skills/
 
 ## Versioning
 
-- **Releases** are CalVer (`YYYY.MM.DD`). Current release: **`2026.05.11`**.
-- **Source skill components** inside a release are semver — `secret-blocking@1.0.0`, `cloud-cli-safety@1.0.0`. The release frontmatter records which versions of which components shipped.
+- **Releases** are CalVer (`YYYY.MM.DD`). Current release: **`2026.05.17`**.
+- **Source skill components** inside a release are semver — each component currently at `1.0.0`. The release frontmatter records which versions of which components shipped.
 
 CalVer matches the cadence of a content repo: each release is a dated snapshot, and the date is the meaningful signal for users and auditors. Semver on individual components carries the breaking-change semantics that matter for downstream consumers.
 
@@ -120,25 +125,15 @@ PRs welcome — propose a new rule, fix a false positive, add a control mapping,
 
 ## Roadmap
 
-**Next release `2026.05.13`** — expand `catpilot-security-core` from 2 to 9 components by porting the remaining v2.x rule surface into source skills:
-
-- `database-safety` — `DROP`/`TRUNCATE` without `WHERE`, prod migrations without dry-run, raw SQL string interpolation
-- `docker-safety` — `--privileged`, host network, volume mounts of `/`, root user, secrets baked into images
-- `language-baseline` — Python `eval`/`pickle`, JS `eval`/`innerHTML`, TS `as any`, shell injection
-- `local-cli-safety` — `rm -rf` near root, `find -delete`, `dd` to block devices, `chmod -R 777`, force-push to shared branches
-- `pii-and-test-data` — real customer data in tests, prod DB dumps to dev, logging full request bodies
-- `secrets-management` — `.env` committed, secrets in CI logs / URL query strings / error messages
-- `supply-chain` — `curl | bash`, unpinned deps, GH Actions on `@main` not SHAs, post-install scripts
-
-After that:
+With `2026.05.17`, the core bundle is **feature-complete** (9 components covering the v2.x rule surface). Next workstreams:
 
 | Tier | Bundle | Status |
 |---|---|---|
-| Core (always-on) | `catpilot-security-core` | shipped (2 components, 7 more queued for `2026.05.13`) |
+| Core (always-on) | `catpilot-security-core` | **shipped — 9 components (`2026.05.17`)** |
 | Framework extensions | `catpilot-django-security`, `catpilot-fastapi-security`, `catpilot-rails-security`, `catpilot-express-security`, `catpilot-nextjs-security`, `catpilot-springboot-security`, `catpilot-docker-security` | planned (content exists in `frameworks/`, migrating into source skills) |
 | Advanced (multi-agent / opt-in) | `catpilot-security-advanced` | planned |
 
-Validator (`tools/validate-skill.py`) and framework-detection helper (`tools/recommend.py`) follow.
+Validator (`tools/validate-skill.py`) and framework-detection helper (`tools/recommend.py`) follow. HIPAA and GDPR control mappings land in a later release.
 
 ## License
 

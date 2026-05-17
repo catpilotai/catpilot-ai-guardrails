@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [2026.05.17] — 2026-05-17
+
+### Added
+
+- **Seven new source skills**, bringing `catpilot-security-core` from 2 to 9 components. All seven port the v2.x `FULL_GUARDRAILS.md` and `frameworks/*` rule surface into standalone, Anthropic-spec-conformant skills:
+  - `database-safety@1.0.0` — destructive DML/DDL without `WHERE`, prod migrations without dry-run, raw SQL string interpolation, locking DDL on hot tables, transactional safety, query-then-modify protocol.
+  - `local-cli-safety@1.0.0` — `rm -rf` near `/` or `$HOME`, `find -delete` broad scope, `dd` to block devices, `chmod -R 777`, force-push to shared branches, agent/SSH/cloud-credential path protection.
+  - `docker-safety@1.0.0` — `--privileged`, host network, `-v /:/host`, root user in container, secrets baked into image layers, `:latest` tags, untrusted base images, build-arg misuse.
+  - `secrets-management@1.0.0` — `.env` lifecycle, secrets in CI logs / URL query strings / error messages, long-lived vs OIDC short-lived keys, secret reuse across environments, documented rotation cadence.
+  - `supply-chain@1.0.0` — `curl | bash` installers, unpinned dependencies, GitHub Actions on floating tags vs SHAs, typosquats, post-install scripts, agent skill / MCP server / IDE extension vetting, npm provenance + Sigstore verification.
+  - `pii-and-test-data@1.0.0` — RFC 2606/3849/5737 reserved test ranges, faker-based synthetic data, prohibition on prod→non-prod copy, PII out of logs/errors/telemetry, synthetic demo accounts, LLM input scrubbing via Presidio/Comprehend/DLP.
+  - `language-baseline@1.0.0` — language-agnostic injection and arbitrary-code-execution patterns (CWE-89/78/79/22/502/918): parameterized SQL, argv-array subprocess, escaping HTML sinks, validated path handling, type-constrained deserialization, eval-class prohibition, outbound HTTP allowlist + internal-IP rejection.
+- **Aggregated control coverage** across the bundle now spans SOC 2 (CC6.x, CC7.x, CC8.x, C1.1, P3.1), PCI-DSS (3.4, 6.x, 8.x, 10.x, 12.x), ISO 27001 (A.8.x, A.10.x, A.12.x, A.14.x, A.18.x), NIST CSF (PR.AC, PR.DS, PR.IP, DE.CM, DE.DP, ID.SC), and OWASP Top 10 (A01, A02, A03, A04, A05, A06, A08, A10).
+
+### Changed
+
+- `catpilot-security-core` bundle bumped to `2026.05.17`.
+- Bundle description updated to enumerate the full nine-component scope.
+- README "What's in the box" rewritten as a per-component severity table; roadmap updated to mark the core bundle feature-complete.
+
 ## [2026.05.11] — 2026-05-11
 
 ### Changed
