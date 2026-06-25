@@ -5,7 +5,7 @@
   <em>Paws before you push.</em>
 </p>
 
-![Release](https://img.shields.io/badge/release-2026.05.17-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Format](https://img.shields.io/badge/format-Anthropic%20Agent%20Skills-7B3FE4)
+![Release](https://img.shields.io/badge/release-2026.06.25-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Format](https://img.shields.io/badge/format-Anthropic%20Agent%20Skills-7B3FE4)
 
 Security skills for AI coding agents — installable into Claude Code, Cursor, Codex, OpenClaw, Cline, Aider, GitHub Copilot, OpenCode, and 40+ other agents with one command. Also natively consumable by [Hermes Agent](https://hermes-agent.nousresearch.com) via its built-in skills system.
 
@@ -89,8 +89,9 @@ cp -r catpilot-ai-guardrails/skills/catpilot-security-core ~/.claude/skills/
 
 ## Versioning
 
-- **Releases** are CalVer (`YYYY.MM.DD`). Current release: **`2026.05.17`**.
+- **Releases** are CalVer (`YYYY.MM.DD`). Current release: **`2026.06.25`**.
 - **Source skill components** inside a release are semver — each component currently at `1.0.0`. The release frontmatter records which versions of which components shipped.
+- The `2026.06.25` release adds **framework-level** agentic/OpenClaw guardrails (tool-loop discipline, cron idempotency, workflow retry budgets, skill supply-chain kill chain, skill provenance). The nine always-on `catpilot-security-core` components are unchanged from `2026.05.17`.
 
 CalVer matches the cadence of a content repo: each release is a dated snapshot, and the date is the meaningful signal for users and auditors. Semver on individual components carries the breaking-change semantics that matter for downstream consumers.
 
