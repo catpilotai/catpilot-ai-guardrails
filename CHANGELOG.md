@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [2026.06.25] — 2026-06-25
+
+### Added
+
+- **Agentic framework: Tool-Loop Discipline** — hard retry caps backed by an external-state verifier (a retry must prove the last attempt changed the world, not the model's "I'm making progress" narration), context invalidation after every state-changing tool call, probe-don't-blacklist for failed tools (exponential backoff, never a permanent skip), and `pass@1 + verification traces` as the honest evaluation number instead of `pass@k`. Adds delegation-depth caps with machine-checkable constraint ledgers and a low-information prior for confident-but-unhedged model output.
+- **Agentic framework: Cron Idempotency** — "the real boundary is idempotency, not the clock." Crons, daemons, and one-shot turns are distinct execution contracts; each scheduled run needs a durable work-claim/completion marker and an idempotency key on every external side effect so reruns prove they advance state rather than replay actions. Overlap-safe atomic claims.
+- **Agentic framework: Workflow-Level Retry Budgets** — retry storms are coordination bugs, not persistence: independent crons + nested sub-agents + per-step retries multiply into runaway budget burn. Budget retries across the whole workflow with a shared draw-down and jittered backoff.
+- **Agentic framework: Heartbeat Routing, Silent-Decision Transparency, Behavioral-Memory Hygiene** — cheap qualification before scoped downstream invocation; surface the classes of decisions an agent makes on the human's behalf (filtering, timing, omission, framing, scope expansion); retain explicit preferences but never exploitable predictions about when a human is least likely to review risky actions.
+- **OpenClaw framework: Skill Audit as Code + Instructions + Side Effects** — treat `SKILL.md` as executable intent, not documentation; audit the three attack layers (executable code, instruction metadata that reframes exfiltration as "telemetry," and post-install side effects to sibling skills/memory/cron/identity).
+- **OpenClaw framework: Skill Supply-Chain Kill Chain** — model the threat as a cascade (install → secret access → persistence → lateral spread), not an install-time checkbox. Deny the persistence pivot by default, flag read-secrets + write-outside-own-dir as high-severity, and re-check provenance for anything a skill recommends.
+- **OpenClaw framework: Skill Provenance & Cron/Heartbeat + Sub-Agent Delegation Security** — popularity/karma is attention metadata not a trust signal; prefer signed artifacts, permission manifests, and audit trails; scoped, timed, read-only-by-default contracts for unsupervised scheduled sessions and delegated sub-agents.
+- **Governance-drift guardrails** — distinguishing self-improvement from constraint drift across behavioral files.
+
+### Changed
+
+- Condensed rule sets for the `agentic` and `openclaw` frameworks updated with cron-idempotency, workflow-retry-budget, heartbeat-routing, silent-decision, behavioral-memory-hygiene, skill-provenance, and skill-kill-chain summaries.
+- Cuts the long gap since `2026.05.17`: this release lands the accumulated June agent-security research (Moltbook weeklies, June 18 + June 23) onto `main`.
+
+### Context
+
+These additions are derived from community agent-security research (Moltbook discussions, June 2026), with emphasis on the post-install / runtime phase of the threat model: tool-loop reliability, cron idempotency and retry coordination, and the skill supply chain as a lateral-movement kill chain rather than a one-time install decision. Consistent with the project's zero-telemetry OSS boundary — all guidance runs locally with no network surface to Catpilot.
+
 ## [2026.05.17] — 2026-05-17
 
 ### Added
