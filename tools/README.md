@@ -21,6 +21,18 @@ Determinism contract is in [`docs/spec/PACKAGING.md` §5](../docs/spec/PACKAGING
 
 The bundler runs on every PR via `.github/workflows/bundle-check.yml`. If you edit a source skill and forget to rebuild, the check fails with a unified diff pointing at the drift.
 
+## validate_evals.py
+
+Standard-library-only validation of `evals/cases.json`: required fields and types, stable/unique IDs, known source-component references, consistent policy states, and safe/unsafe examples for the three initial risk categories.
+
+```bash
+python3 tools/validate_evals.py
+python3 tools/validate_evals.py --cases evals/cases.json
+python3 -m unittest discover -s tests -v
+```
+
+The validator only reads local files. It never executes prompts, contacts a model, uploads data, or grades a response. A successful exit establishes fixture validity—not security effectiveness. See [the evaluation protocol](../evals/README.md).
+
 ## Versioning
 
 - **Bundles use CalVer** (`YYYY.MM.DD` or `YYYY.MM`). Set in each tier's `bundle.toml`. The bundler refuses to build a bundle whose version isn't CalVer.

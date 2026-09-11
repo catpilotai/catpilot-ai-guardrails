@@ -26,9 +26,10 @@ You found the community scratching post.
 - [ ] Read [`docs/spec/SKILL_FORMAT.md`](./docs/spec/SKILL_FORMAT.md) — frontmatter shape, severity scale, body conventions.
 - [ ] Edit `src/skills/<tier>/<id>/SKILL.md`, **not** the shipped bundle in `skills/`. The bundler regenerates `skills/`.
 - [ ] Run `python tools/bundle.py` locally to rebuild bundles.
-- [ ] Run `python tools/bundle.py --check` to confirm determinism. CI runs the same check on every PR and fails on drift.
+- [ ] Run `python tools/bundle.py --check` to confirm determinism. CI runs the same check on PRs affecting bundle inputs, outputs, or its workflow and fails on drift.
+- [ ] Run `python3 tools/validate_evals.py` and `python3 -m unittest discover -s tests -v` when changing the evaluation foundation. These validate fixtures/tooling, not model behavior.
 - [ ] Bump `metadata.catpilot.version` on any source skill you change. Source skills use semver; rename or severity changes are major bumps.
-- [ ] Bump the bundle version in `src/skills/<tier>/bundle.toml` to the current date in CalVer (`YYYY.MM.DD`). The bundler refuses non-CalVer values.
+- [ ] When changing a bundle's contents, bump its version in `src/skills/<tier>/bundle.toml` to the current date in CalVer (`YYYY.MM.DD`). The bundler refuses non-CalVer values. Documentation/evaluation-only repository releases leave unchanged bundle versions intact.
 - [ ] Keep PRs focused (one rule, one fix, one mapping per PR — easier review).
 
 ## Anatomy of a source skill
@@ -53,7 +54,8 @@ Built with Copilot, Claude, Cursor, or other AI tools? Perfect — this is liter
 
 Just note in your PR:
 - [ ] Mark as AI-assisted
-- [ ] Confirm you tested the rule against an actual coding agent (does it block the bad pattern?)
+- [ ] Report which actual agent/version and safe/unsafe cases you tested, with observed results. If no live agent test was run, say **not run**; fixture validation is not a substitute.
+- [ ] Distinguish model advice from a tool action being blocked by a verified enforcement mechanism. See the [protection contract](docs/PROTECTION_CONTRACT.md).
 - [ ] Confirm you understand the rule end-to-end
 
 No judgment. We just want reviewers to know what to look for.
@@ -86,9 +88,11 @@ If you were a v2.x contributor: rules in `frameworks/<fw>/FULL_*.md` and `FULL_G
 
 ## Current focus
 
-- Migrating remaining 7 core source skills out of v2.x: `local-cli-safety`, `database-safety`, `docker-safety`, `secrets-management`, `pii-and-test-data`, `supply-chain`, `language-baseline`.
-- Framework extension bundles (Django, FastAPI, Rails, Express, Next.js, Spring Boot, Docker).
-- Validator (`tools/validate-skill.py`) and framework-detection helper (`tools/recommend.py`).
+- A reproducible behavioral baseline in Codex and Claude Code, using [synthetic scenarios](evals/README.md).
+- Safe-building guidance and private organization-overlay boundaries informed by those results.
+- A tested host integration with a clearly scoped check and explicit failure behavior.
+
+All nine core components have shipped. Framework extension bundles, the standalone skill validator, and the framework-detection helper remain future work, not prerequisites for the first evaluation.
 
 Check [Issues](https://github.com/catpilotai/catpilot-ai-guardrails/issues) for "good first issue" labels.
 

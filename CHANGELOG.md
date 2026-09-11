@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [2026.09.11] — 2026-09-11
+
+### Added
+
+- Protection contract distinguishing advisory skills, contextual coaching, and externally enforced checks; no host behavioral results claimed yet.
+- Synthetic evaluation cases for Codex and Claude Code, an offline fixture validator, unit tests, and a separate CI check. Fixture validation is not a model benchmark.
+
+### Changed
+
+- README and contribution guidance no longer equate installation or bundle consistency with runtime protection.
+- Clarified private company-policy boundaries and removed an unverified hosted-connector inventory from the OSS introduction.
+
+### Scope
+
+- No source-skill or generated-bundle changes, model calls, telemetry, hosted services, or runtime enforcement added. Published bundle versions are unchanged.
+
 ## [2026.06.25] — 2026-06-25
 
 ### Added
