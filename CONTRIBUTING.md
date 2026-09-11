@@ -25,8 +25,10 @@ You found the community scratching post.
 
 - [ ] Read [`docs/spec/SKILL_FORMAT.md`](./docs/spec/SKILL_FORMAT.md) — frontmatter shape, severity scale, body conventions.
 - [ ] Edit `src/skills/<tier>/<id>/SKILL.md`, **not** the shipped bundle in `skills/`. The bundler regenerates `skills/`.
-- [ ] Run `python tools/bundle.py` locally to rebuild bundles.
+- [ ] Install hash-locked `requirements-dev.txt` in an isolated environment with `--only-binary=:all: --require-hashes`.
+- [ ] Run `python tools/bundle.py` and `python tools/package_plugin.py` locally to rebuild both copies.
 - [ ] Run `python tools/bundle.py --check` to confirm determinism. CI runs the same check on PRs affecting bundle inputs, outputs, or its workflow and fails on drift.
+- [ ] Run `python tools/package_plugin.py --check` and `python tools/validate_skill.py skills/catpilot-security-core`. These verify packaging, not activation or enforcement.
 - [ ] Run `python3 tools/validate_evals.py` and `python3 -m unittest discover -s tests -v` when changing the evaluation foundation. These validate fixtures/tooling, not model behavior.
 - [ ] Bump `metadata.catpilot.version` on any source skill you change. Source skills use semver; rename or severity changes are major bumps.
 - [ ] When changing a bundle's contents, bump its version in `src/skills/<tier>/bundle.toml` to the current date in CalVer (`YYYY.MM.DD`). The bundler refuses non-CalVer values. Documentation/evaluation-only repository releases leave unchanged bundle versions intact.

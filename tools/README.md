@@ -28,7 +28,7 @@ Standard-library-only validation of `evals/cases.json`: required fields and type
 ```bash
 python3 tools/validate_evals.py
 python3 tools/validate_evals.py --cases evals/cases.json
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v  # after installing requirements-dev.txt
 ```
 
 The validator only reads local files. It never executes prompts, contacts a model, uploads data, or grades a response. A successful exit establishes fixture validity—not security effectiveness. See [the evaluation protocol](../evals/README.md).
@@ -43,4 +43,22 @@ CalVer is right for the shipped artifact because this is a content repo on a rol
 ## Dependencies
 
 - Python 3.11+ (uses `tomllib` from the stdlib).
-- `pyyaml` for frontmatter parsing.
+- Install `requirements-dev.txt` with `--only-binary=:all: --require-hashes` in
+  an isolated environment. It pins PyYAML, the official MCP SDK, and transitives.
+
+## New hardening tools
+
+- `validate_skill.py <skill-directory>`: portable frontmatter, local Markdown
+  links, and entrypoint size checks; not agent activation.
+- `package_plugin.py [--check]`: generate/verify the companion's core from the
+  same sources. Run alongside `bundle.py` after every source change.
+- `recommend.py <project-directory>`: local framework hints without installing
+  anything. Legacy framework references are not migrated skill bundles.
+- `run_live_evals.py`: no-cost plan by default; `--execute` runs bounded,
+  synthetic CLI calls. Requires explicit host binary and model. See
+  [the live evaluation guide](../evals/LIVE_EVALUATION.md).
+
+The deprecated `setup.sh` now preserves existing links and Aider YAML, retains
+unique backups, rejects unsafe output paths, and returns nonzero when missing
+or stale. New installs should use the portable package. It still edits legacy
+project files and is not a transaction across all tool configurations.

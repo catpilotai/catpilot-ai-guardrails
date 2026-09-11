@@ -36,7 +36,7 @@
 #   ./setup.sh --force            # Reinstall/update existing
 #
 
-set -e
+set -euo pipefail
 
 # Colors for output
 RED='\033[0;31m'
@@ -65,7 +65,17 @@ FRAMEWORKS_DIR="$SCRIPT_DIR/frameworks"
 # Target location
 TARGET_DIR=".github"
 TARGET_FILE="$TARGET_DIR/copilot-instructions.md"
-BACKUP_FILE="$TARGET_DIR/copilot-instructions.md.backup"
+BACKUP_FILE=""
+
+# A legacy installer must not follow repository-controlled output symlinks.
+if [ -L "$TARGET_DIR" ] || [ -L "$TARGET_FILE" ]; then
+    echo "Refusing a symlinked .github directory or instruction file" >&2
+    exit 1
+fi
+if [ -e "$TARGET_FILE" ] && [ ! -f "$TARGET_FILE" ]; then
+    echo "Refusing a non-regular instruction output" >&2
+    exit 1
+fi
 
 # Size budget (32KB = 32768 bytes) - Modern LLMs handle this easily
 SIZE_CAP=32768
@@ -160,10 +170,16 @@ while [[ $# -gt 0 ]]; do
         --verify)
             # Check if guardrails are up to date
             if [ -f "$TARGET_FILE" ] && grep -q "AI Guardrails" "$TARGET_FILE" 2>/dev/null; then
-                INSTALLED_VERSION=$(grep -o 'Version: [0-9.]*' "$TARGET_FILE" | head -1 | cut -d' ' -f2)
-                SOURCE_VERSION=$(grep -o 'Version: [0-9.]*' "$SAFETY_GUIDELINES" | head -1 | cut -d' ' -f2)
-                if [ "$INSTALLED_VERSION" = "$SOURCE_VERSION" ]; then
+                INSTALLED_VERSION=$(sed -nE 's/.*Version:[* ]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$TARGET_FILE" | head -1)
+                SOURCE_VERSION=$(sed -nE 's/.*Version:[* ]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$SAFETY_GUIDELINES" | head -1)
+                if [ -n "$SOURCE_VERSION" ] && [ "$INSTALLED_VERSION" = "$SOURCE_VERSION" ]; then
+                    BASE_LINES=$(sed '/^## 🎯 Project-Specific Rules/,$d' "$SAFETY_GUIDELINES" | wc -l | tr -d ' ')
+                    if ! diff -q <(sed '/^## 🎯 Project-Specific Rules/,$d' "$SAFETY_GUIDELINES" | sed 's|\[FULL_GUARDRAILS.md\](\./FULL_GUARDRAILS.md)|[FULL_GUARDRAILS.md](.github/catpilot-ai-guardrails/FULL_GUARDRAILS.md)|g') <(head -n "$BASE_LINES" "$TARGET_FILE") >/dev/null; then
+                        echo "Installed baseline differs from source; review or update it." >&2
+                        exit 1
+                    fi
                     echo -e "${GREEN}✓ Guardrails up to date (v$INSTALLED_VERSION)${NC}"
+                    exit 0
                 else
                     echo -e "${YELLOW}⚠ Update available: v$INSTALLED_VERSION → v$SOURCE_VERSION${NC}"
                     echo "  Run: $(basename $0) --force"
@@ -172,9 +188,13 @@ while [[ $# -gt 0 ]]; do
                 echo -e "${RED}✗ Guardrails not installed${NC}"
                 echo "  Run: $(basename $0)"
             fi
-            exit 0
+            exit 1
             ;;
         --framework)
+            if [ "$#" -lt 2 ]; then
+                echo "--framework requires a name" >&2
+                exit 1
+            fi
             FRAMEWORK="$2"
             AUTO_DETECT=false
             shift 2
@@ -196,6 +216,17 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -n "$FRAMEWORK" ]; then
+    case "$FRAMEWORK" in
+        nextjs|django|rails|express|fastapi|springboot|python|typescript|openclaw|agentic|docker) ;;
+        *) echo "Unsupported framework: $FRAMEWORK" >&2; exit 1 ;;
+    esac
+    if [ ! -f "$FRAMEWORKS_DIR/$FRAMEWORK/condensed.md" ]; then
+        echo "Framework content is unavailable" >&2
+        exit 1
+    fi
+fi
 
 # Auto-detect framework if not specified
 if [ "$AUTO_DETECT" = true ] && [ -z "$FRAMEWORK" ]; then
@@ -244,6 +275,7 @@ if [ -f "$TARGET_FILE" ]; then
     fi
     
     # Create backup
+    BACKUP_FILE=$(mktemp "$TARGET_DIR/copilot-instructions.md.backup.XXXXXX")
     cp "$TARGET_FILE" "$BACKUP_FILE"
     echo -e "Created backup: ${GREEN}$BACKUP_FILE${NC}"
     
@@ -339,12 +371,13 @@ if [ -n "$FRAMEWORK" ]; then
             FRAMEWORK_CONTENT=$(echo "$FRAMEWORK_CONTENT" | sed "s|](\.\./|](.github/catpilot-ai-guardrails/frameworks/|g")
             
             # Create temp file with framework content inserted
-            sed -i.tmp '/^## 🎯 Project-Specific Rules/i\
+            FRAMEWORK_TEMP=$(mktemp "$TARGET_DIR/.catpilot-framework.XXXXXX")
+            sed '/^## 🎯 Project-Specific Rules/i\
 '"$(echo "$FRAMEWORK_CONTENT" | sed 's/$/\\/' | sed '$ s/\\$//')"'\
 \
 ---\
-' "$TARGET_FILE"
-            rm -f "$TARGET_FILE.tmp"
+' "$TARGET_FILE" > "$FRAMEWORK_TEMP"
+            mv "$FRAMEWORK_TEMP" "$TARGET_FILE"
             
             echo -e "${GREEN}  ✓ Added $FRAMEWORK patterns${NC}"
         fi
@@ -368,49 +401,60 @@ fi
 
 TOOLS_CONFIGURED=""
 
+link_if_absent() {
+    local destination="$1" source="$2"
+    if [ -L "$destination" ]; then
+        if [ "$(readlink "$destination")" = "$source" ]; then
+            echo "Already linked: $destination"
+        else
+            echo "Preserving existing symlink: $destination"
+        fi
+    elif [ -e "$destination" ]; then
+        echo "Preserving existing configuration: $destination"
+    else
+        ln -s "$source" "$destination"
+    fi
+}
+
 # Windsurf: create symlink if .windsurf directory exists
-if [ -d ".windsurf" ]; then
+if [ -d ".windsurf" ] && [ ! -L ".windsurf" ] && [ ! -L ".windsurf/rules" ]; then
     mkdir -p .windsurf/rules
-    ln -sf "../../.github/copilot-instructions.md" ".windsurf/rules/security.md"
+    link_if_absent ".windsurf/rules/security.md" "../../.github/copilot-instructions.md"
     TOOLS_CONFIGURED="$TOOLS_CONFIGURED windsurf"
-    echo -e "${GREEN}✓ Windsurf — .windsurf/rules/security.md${NC}"
+    echo "Windsurf path checked: .windsurf/rules/security.md (see link result above)"
 fi
 
 # Cursor: always create .cursorrules symlink (Cursor ignores if not used)
 if [ ! -f ".cursorrules" ] || [ -L ".cursorrules" ]; then
-    ln -sf ".github/copilot-instructions.md" ".cursorrules"
+    link_if_absent ".cursorrules" ".github/copilot-instructions.md"
     TOOLS_CONFIGURED="$TOOLS_CONFIGURED cursor"
-    echo -e "${GREEN}✓ Cursor — .cursorrules${NC}"
+    echo "Cursor path checked: .cursorrules (see link result above)"
 elif [ -f ".cursorrules" ]; then
     echo -e "${YELLOW}⏭ Cursor — .cursorrules exists (not a symlink), skipping${NC}"
 fi
 
 # Claude Code: always create CLAUDE.md symlink
 if [ ! -f "CLAUDE.md" ] || [ -L "CLAUDE.md" ]; then
-    ln -sf ".github/copilot-instructions.md" "CLAUDE.md"
+    link_if_absent "CLAUDE.md" ".github/copilot-instructions.md"
     TOOLS_CONFIGURED="$TOOLS_CONFIGURED claude-code"
-    echo -e "${GREEN}✓ Claude Code — CLAUDE.md${NC}"
+    echo "Claude Code path checked: CLAUDE.md (see link result above)"
 elif [ -f "CLAUDE.md" ]; then
     echo -e "${YELLOW}⏭ Claude Code — CLAUDE.md exists (not a symlink), skipping${NC}"
 fi
 
 # Cline: always create .clinerules symlink
 if [ ! -f ".clinerules" ] || [ -L ".clinerules" ]; then
-    ln -sf ".github/copilot-instructions.md" ".clinerules"
+    link_if_absent ".clinerules" ".github/copilot-instructions.md"
     TOOLS_CONFIGURED="$TOOLS_CONFIGURED cline"
-    echo -e "${GREEN}✓ Cline — .clinerules${NC}"
+    echo "Cline path checked: .clinerules (see link result above)"
 elif [ -f ".clinerules" ]; then
     echo -e "${YELLOW}⏭ Cline — .clinerules exists (not a symlink), skipping${NC}"
 fi
 
-# Aider: add read directive to .aider.conf.yml if it exists
+# Preserve Aider YAML; blind appends can duplicate or replace an existing read key.
 if [ -f ".aider.conf.yml" ]; then
     if ! grep -q "copilot-instructions.md" ".aider.conf.yml" 2>/dev/null; then
-        echo "" >> ".aider.conf.yml"
-        echo "# AI Guardrails" >> ".aider.conf.yml"
-        echo "read: .github/copilot-instructions.md" >> ".aider.conf.yml"
-        TOOLS_CONFIGURED="$TOOLS_CONFIGURED aider"
-        echo -e "${GREEN}✓ Aider — added read directive to .aider.conf.yml${NC}"
+        echo "Aider: manually add .github/copilot-instructions.md to your existing read list."
     else
         echo -e "${YELLOW}⏭ Aider — already configured in .aider.conf.yml${NC}"
     fi
@@ -430,7 +474,7 @@ fi
 
 if [ -n "$TOOLS_CONFIGURED" ]; then
     echo ""
-    echo -e "  Tools configured:${TOOLS_CONFIGURED}"
+    echo -e "  Tool paths checked:${TOOLS_CONFIGURED}"
 fi
 
 echo ""

@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [2026.09.11-hardening.1] — 2026-09-11 (pre-release)
+
+Opt-in hardening and local companion preview. The stable `2026.09.11` release
+and default branch are unchanged. Host-enforced blocking is not yet verified.
+
+- Harden build names, paths, YAML types/duplicates, companion links, symlinks,
+  staged replacement, duplicate output names, and generated-package validation.
+- Correct Azure additive env updates and secret references, pip build-script
+  assumptions, SSRF/DNS/redirect handling, symlink-safe file examples, Stripe
+  publishable-key classification, MERGE scope, Django cascade counts, and
+  reserved fictional phone numbers. Add executable regression tests.
+- Keep the install name but replace the monolithic entrypoint with progressive
+  references and portable metadata plus `catpilot.json`. This is a layout and
+  metadata migration for consumers; see the migration guide.
+- Add shared Codex/Claude companion packaging, strict local private-policy
+  validation, read-only MCP tools, and a narrow private-key write hook. No
+  hosted authorization, blanket enforcement, or customer connection claimed.
+- Pin CI actions and hash-lock dependencies; preserve legacy installer
+  symlinks/Aider configuration/backups and make verification fail on drift.
+- Add bounded, opt-in live smoke comparisons and read-only framework hints.
+  Prompt-only responses are not installation, activation, or enforcement tests.
+
 ## [2026.09.11] — 2026-09-11
 
 ### Added

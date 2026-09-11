@@ -5,7 +5,7 @@ license: MIT
 metadata:
   catpilot:
     id: database-safety
-    version: 1.0.0
+    version: 1.0.1
     severity: critical
     category: database
     applies_to:
@@ -111,12 +111,18 @@ migrations, parameterize always.
 
 ## Rules
 
-### Rule 1 — Never modify without a `WHERE` clause
+### Rule 1 — Verify the affected scope using the database's actual syntax
 
-`DELETE`, `UPDATE`, and `MERGE` statements must have a `WHERE` clause
+Standalone `DELETE` and `UPDATE` statements must have a restrictive predicate
 unless the agent has explicitly confirmed with the user that the intent is
 "all rows in this table." A missing `WHERE` is the single most common
 cause of total-table loss in AI-assisted database work.
+
+A `WHERE` token is not proof of a bounded change (`WHERE TRUE` still
+affects all rows). For PostgreSQL `MERGE`, review the `ON` join and each
+`WHEN ... AND` action condition, including `NOT MATCHED BY SOURCE`;
+there is no top-level `WHERE` requirement. `TRUNCATE`/`DROP` require an
+explicitly approved object scope, not a nonexistent `WHERE` clause.
 
 The same rule applies through ORMs:
 
@@ -253,7 +259,7 @@ DATABASE_URL=$PROD_DATABASE_URL alembic upgrade head
 ```
 
 ```ruby
-# ❌ ActiveRecord delete_all — equivalent to DELETE FROM with no WHERE
+# ❌ Scoped ActiveRecord delete without a preview or approved affected set
 User.where("created_at < ?", 1.year.ago).delete_all
 # (still dangerous if the scope is wrong — Rule 2 applies: COUNT first)
 ```
@@ -285,15 +291,21 @@ SELECT status, COUNT(*) FROM orders
 WHERE created_at < '2024-01-01'
 GROUP BY status;
 
--- ✅ Step 5 — COMMIT only after the user approves the count and effect
+-- ✅ Step 5 — COMMIT only within the previously approved scope/count limit
 COMMIT;
 -- (or ROLLBACK; to abandon the change)
 ```
 
-### PostgreSQL — soft delete + backup table for irreversible cleanup
+Preview counts can change before a write. Obtain approval before opening
+the transaction; use a reviewed isolation/locking strategy and check actual
+affected rows against the approved scope before commit. Roll back on a
+mismatch; do not hold production locks while waiting for a chat reply.
+
+### PostgreSQL — protected backup for irreversible cleanup
 
 ```sql
--- ✅ Snapshot before destructive cleanup
+-- Illustrative only: not a consistent backup+delete workflow on a live table.
+-- Take a protected, restorable backup with the approved retention policy.
 CREATE TABLE users_backup_20260516 AS
 SELECT * FROM users WHERE last_login < '2024-01-01';
 
@@ -303,8 +315,12 @@ SELECT COUNT(*) FROM users_backup_20260516;
 BEGIN;
 DELETE FROM users WHERE last_login < '2024-01-01';
 -- show "DELETE 412" — matches backup count
-COMMIT;
+ROLLBACK; -- do not commit this illustrative sequence as-is
 ```
+
+A copied table inherits neither all access controls nor a retention plan.
+For a real cleanup, select/lock an approved batch inside a suitable transaction,
+back up that exact batch to protected storage, and delete only those IDs.
 
 ### Alembic — dry-run a migration against the production schema
 
@@ -323,16 +339,23 @@ DATABASE_URL=$PROD_URL alembic upgrade head
 ### Django — destructive ORM call, the right shape
 
 ```python
-# ✅ Filter first, count first, show, then act
+# ✅ Preview root objects AND cascading deletions; approve both scopes first
 queryset = User.objects.filter(last_login__lt=cutoff)
 count = queryset.count()
 # → show "Will delete 412 users" to the user, get approval
 
 with transaction.atomic():
-    deleted, _ = queryset.delete()
-    # → assert deleted == count before the with-block exits
-    assert deleted == count, f"unexpected delete count {deleted} != {count}"
+    # Application supplies an approved model-label -> count plan and appropriate
+    # isolation/locking for related writers; a stale preview is not authorization.
+    deleted, by_model = queryset.delete()
+    if by_model != approved_deletion_counts:
+        raise RuntimeError("Deletion scope changed; transaction rolled back")
 ```
+
+Django's total includes cascading related objects. Comparing that total to
+the root queryset count is incorrect. This is a pattern, not a runnable
+production script: define the approved cascade plan and concurrency controls
+for the application's relationships before executing it.
 
 ### Parameterized query — Python `psycopg`
 

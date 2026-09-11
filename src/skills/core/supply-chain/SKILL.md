@@ -5,7 +5,7 @@ license: MIT
 metadata:
   catpilot:
     id: supply-chain
-    version: 1.0.0
+    version: 1.0.1
     severity: high
     category: supply-chain
     applies_to:
@@ -233,16 +233,23 @@ The agent:
 
 - Surfaces the package's install scripts when adding a new
   dependency. `npm view <pkg> scripts` shows the script block;
-  pip surfaces install hooks via `pip install --dry-run -v`.
+  inspect Python package metadata/source in an isolated environment.
+  `pip install --dry-run` may invoke a build backend to prepare metadata;
+  it is not a no-code-execution inspection sandbox.
 - Refuses to add a package with an install script that downloads
   external artifacts, modifies files outside the package's own
   directory, or executes against `~/.ssh`, `~/.aws`,
   `~/.openclaw`, or any path matched by
   `local-cli-safety` Rule 5.
-- Where install scripts are non-malicious but inconvenient,
-  prefers running installs with the script disabled
-  (`npm install --ignore-scripts`, `pip install --no-build-isolation`)
-  unless the project documentation requires the hook.
+- For npm, `npm install --ignore-scripts` can disable lifecycle scripts
+  when the package remains usable without them. Python's
+  `--no-build-isolation` does **not** disable build hooks; it removes
+  build-environment isolation. Do not use it as a security control.
+- For reviewed Python dependencies, prefer pinned, hash-verified wheels
+  (`--only-binary=:all:` and `--require-hashes` with a complete lockfile).
+  Fail when a required wheel is unavailable. Review/build source packages
+  in a separate isolated builder with no credentials and restricted network
+  access. Wheels remain untrusted code when imported or executed.
 
 ### Rule 6 — Agent skills, MCP servers, and IDE extensions are vetted as code
 

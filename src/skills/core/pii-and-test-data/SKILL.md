@@ -5,7 +5,7 @@ license: MIT
 metadata:
   catpilot:
     id: pii-and-test-data
-    version: 1.0.0
+    version: 1.0.1
     severity: high
     category: data-protection
     applies_to:
@@ -329,8 +329,8 @@ USERS = [
     {
         "id": i,
         "name": fake.name(),
-        "email": fake.email(),                # ends in @example.com etc.
-        "phone": f"+1-415-555-{i:04d}",       # reserved 555-01xx block
+        "email": fake.safe_email(),           # reserved example domains, explicit
+        "phone": f"+1-415-555-{100+i:04d}",   # 0100–0199 for range(100)
         "address": fake.address(),
         "dob": fake.date_of_birth().isoformat(),
     }
@@ -423,7 +423,7 @@ prompt_llm(scrubbed)
 # real row, then attach the reproducer (not the row) to the ticket
 def reproduce_bug_12345():
     user = User(
-        email=fake.email(),
+        email=fake.safe_email(),
         name=fake.name(),
         signup_at=datetime(2026, 5, 17, 14, 32),
     )

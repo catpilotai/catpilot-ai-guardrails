@@ -5,7 +5,7 @@ license: MIT
 metadata:
   catpilot:
     id: language-baseline
-    version: 1.0.0
+    version: 1.0.1
     severity: high
     category: secure-coding
     applies_to:
@@ -231,40 +231,20 @@ and reused — not redefined per-call.
 
 When a path comes from input:
 
-1. Extract the basename (strip directory components).
-2. Join against a known-safe directory.
-3. Resolve symlinks and re-check that the resolved path is still
-   inside the safe directory.
-4. Reject any path that fails any check; never "clean up" and
-   continue.
+1. For a single-file API, require a basename; reject directory components
+   instead of silently stripping them.
+2. Use a trusted, administrator-owned root and bound the bytes read.
+3. Reject symlinks and non-regular files at open time. `path.resolve()`
+   only normalizes text; it does not resolve filesystem symlinks.
+4. Do not validate a path and later reopen it through a different API.
 
-```python
-# ✅ Python
-import os
-from pathlib import Path
-ALLOWED = Path("/var/app/uploads").resolve()
-
-def safe_open(user_supplied: str):
-    candidate = (ALLOWED / Path(user_supplied).name).resolve()
-    if not str(candidate).startswith(str(ALLOWED) + os.sep):
-        raise ValueError("path escape")
-    return open(candidate, "rb")
-```
-
-```javascript
-// ✅ Node
-const path = require("node:path");
-const fs = require("node:fs/promises");
-const ALLOWED = path.resolve("/var/app/uploads");
-
-async function safeRead(userSupplied) {
-  const candidate = path.resolve(ALLOWED, path.basename(userSupplied));
-  if (!candidate.startsWith(ALLOWED + path.sep)) {
-    throw new Error("path escape");
-  }
-  return fs.readFile(candidate);
-}
-```
+Use the tested POSIX examples in [safe_io.py](scripts/safe_io.py)
+(`read_file_in_directory`) and [safe_files.cjs](scripts/safe_files.cjs)
+(`safeRead`). The Python helper pins the directory descriptor; the Node
+helper requires the root and its ancestors to remain administrator-owned
+and unchanged. Neither is a general filesystem sandbox. They reject
+unsupported platforms rather than silently dropping no-follow checks.
+Use OS isolation for attacker-writable directory trees or arbitrary paths.
 
 `open()`, `fs.readFile()`, `os.remove()`, `shutil.rmtree()`,
 `fs.unlink()`, and analogous APIs invoked on an unvalidated
@@ -317,45 +297,21 @@ input:
 
 1. Parse the URL.
 2. Check the host against an allowlist of expected hosts.
-3. Resolve the host to IP addresses and reject any that fall
-   inside RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`,
-   `192.168.0.0/16`), loopback (`127.0.0.0/8`), link-local
-   (`169.254.0.0/16` — includes cloud metadata), unique-local
-   IPv6 (`fc00::/7`), or `::1`.
-4. Re-resolve at request time to catch DNS rebinding (or use a
-   library that pins the resolved IP).
-5. Reject `file://`, `gopher://`, `dict://`, and any scheme that
-   is not `http`/`https`.
+3. Resolve once and reject *any* non-public result, including IPv4-mapped
+   IPv6, loopback, link-local, multicast, and shared-address space.
+4. Connect to that validated numeric address, retaining TLS verification
+   against the original hostname. Returning a "validated URL" to an HTTP
+   library that resolves again does not prevent DNS rebinding.
+5. Require HTTPS and an approved port. Disable redirects, or validate and
+   pin every hop with the same policy. Bound response sizes and I/O timeouts.
 
-```python
-# ✅ Python — allowlist + internal-IP rejection
-from ipaddress import ip_address, ip_network
-import socket
-from urllib.parse import urlparse
-
-ALLOWED_HOSTS = {"api.stripe.com", "api.github.com"}
-PRIVATE_RANGES = [
-    ip_network("10.0.0.0/8"),
-    ip_network("172.16.0.0/12"),
-    ip_network("192.168.0.0/16"),
-    ip_network("127.0.0.0/8"),
-    ip_network("169.254.0.0/16"),
-    ip_network("::1/128"),
-    ip_network("fc00::/7"),
-]
-
-def safe_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError("scheme")
-    if parsed.hostname not in ALLOWED_HOSTS:
-        raise ValueError("host")
-    for family, _, _, _, sockaddr in socket.getaddrinfo(parsed.hostname, None):
-        ip = ip_address(sockaddr[0])
-        if any(ip in net for net in PRIVATE_RANGES):
-            raise ValueError("private ip")
-    return url
-```
+See [safe_io.py](scripts/safe_io.py), `request_public_json`, for a tested
+standard-library HTTPS GET example. It allows no caller credentials,
+custom headers, redirects, or proxy environment settings. It is deliberately
+not a general HTTP client: authenticated services should use an approved
+SDK with controlled endpoints and network egress restrictions. Its socket
+timeouts are not a total deadline (including DNS); enforce total deadlines
+and rate limits at the service boundary.
 
 `fetch(req.query.url)`, `requests.get(user_input)`,
 `HttpClient.GetAsync(input)` invoked with no allowlist or
@@ -432,15 +388,10 @@ obj = cls()
 
 ### Centralized URL allowlist
 
-```python
-# ✅ Single safe_url() used by every outbound caller
-ALLOWED_HOSTS = {"api.stripe.com", "api.github.com"}
-# (see Rule 7 implementation above)
-
-def call_stripe(path: str, payload: dict):
-    url = safe_url(f"https://api.stripe.com{path}")
-    return httpx.post(url, json=payload, timeout=10)
-```
+Centralize destination policy in the client that makes the connection,
+not a validator that merely returns a URL. Use the bundled HTTPS GET
+helper only within its documented limits; keep secret-bearing requests
+in an approved service-specific client.
 
 ### Schema-validated deserialization
 
@@ -482,12 +433,11 @@ element.innerHTML = DOMPurify.sanitize(userMarkdownHtml, ALLOWED);
 
 ### Path validation reused across handlers
 
-```python
-# ✅ Reuse the same safe_open() from Rule 4 everywhere
-@app.get("/uploads/{name}")
-def get_upload(name: str):
-    return FileResponse(safe_open(name).name)
-```
+Return the bounded bytes from `read_file_in_directory` through the
+framework's byte-response API after checking the caller's authorization.
+Do not use `FileResponse(handle.name)`: that reopens a path and discards
+the protections on the original file descriptor. File-type, download
+headers, and per-user access checks are separate requirements.
 
 ### TypeScript runtime validation instead of `as any`
 

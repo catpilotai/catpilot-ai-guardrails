@@ -1,0 +1,19 @@
+{
+  "name": "catpilot-companion",
+  "version": "0.2.0-dev.1",
+  "description": "Private local company guidance and a narrow private-key write check. Evaluation preview, not managed enforcement.",
+  "author": {
+    "name": "CATpilot"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Catpilot Companion",
+    "shortDescription": "Company security guidance while you build.",
+    "longDescription": "Read approved local policies and starting points. Includes advisory security guidance and a narrowly scoped private-key write check; not a hosted compliance service.",
+    "developerName": "CATpilot",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Help me use Catpilot Companion."
+  }
+}

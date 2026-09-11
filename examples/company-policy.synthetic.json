@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "organization_id": "fictional-company",
+  "policy_id": "civilian-app-building",
+  "version": "demo-1",
+  "approval": {"status": "approved", "owner": "Fictional Security Owner", "approved_at": "2026-09-01T00:00:00Z"},
+  "valid_from": "2026-09-01T00:00:00Z",
+  "expires_at": "2026-12-01T00:00:00Z",
+  "scope": {"projects": ["fictional-pilot"], "environments": ["demo"]},
+  "rules": [
+    {"topic": "test-data", "requirement": "Use made-up records with reserved example.com addresses, never a customer export.", "why": "Removing names does not remove identifying emails or customer histories.", "next_step": "Create five fictional records for the demo.", "paved_road_id": "employee-demo"},
+    {"topic": "sharing", "requirement": "Keep company sign-in and pilot-group access enabled for staff demos.", "why": "An obscure link is not an access restriction.", "next_step": "Verify that a signed-out visitor cannot access the demo.", "paved_road_id": "employee-demo"},
+    {"topic": "secrets", "requirement": "Private service credentials stay in approved server-side storage; client-safe publishable keys are a different class.", "why": "Browser code can be inspected by anyone who loads it.", "next_step": "Read the existing named secret setting from the server without printing its value.", "paved_road_id": null}
+  ],
+  "paved_roads": [
+    {"id": "employee-demo", "label": "Fictional employee-only demo template", "url": "https://example.com/fictional-employee-demo", "instructions": "Illustrative link only, not a deployable or security-reviewed template. A real owner must supply and review their private starting point."}
+  ]
+}

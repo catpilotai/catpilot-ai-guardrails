@@ -33,11 +33,17 @@ from __future__ import annotations
 import argparse
 import difflib
 import hashlib
+import json
+import os
+import posixpath
 import re
 import shutil
+import stat
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import yaml
@@ -52,7 +58,7 @@ SEVERITY_ORDER = ["info", "low", "medium", "high", "critical"]
 # no leading/trailing/consecutive hyphens.
 NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]$|^[a-z0-9]$")
 # Source skills use semver; bundles use CalVer (YYYY.MM.DD or YYYY.MM).
-SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
 CALVER_RE = re.compile(r"^20\d{2}\.(0[1-9]|1[0-2])(?:\.(0[1-9]|[12]\d|3[01]))?(?:[-+][0-9A-Za-z.-]+)?$")
 
 # Stable frontmatter key order. Anything not listed appears after, sorted.
@@ -97,18 +103,61 @@ class SourceSkill:
 # Parsing
 
 
+class StrictLoader(yaml.SafeLoader):
+    """Reject ambiguous duplicate keys, including YAML merge overrides."""
+
+
+def _strict_mapping(loader, node, deep=False):
+    loader.flatten_mapping(node)
+    result = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, str) or key in result:
+            raise ValueError("YAML keys must be unique strings")
+        result[key] = loader.construct_object(value_node, deep=deep)
+    return result
+
+
+StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _strict_mapping)
+
+
+def valid_name(value: object) -> bool:
+    return isinstance(value, str) and 1 <= len(value) <= 64 and NAME_RE.fullmatch(value) is not None
+
+
+def require_text(value: object, label: str, maximum: int = 1024) -> None:
+    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+        raise ValueError(f"{label}: expected nonempty text of at most {maximum} characters")
+
+
+def reject_unsafe_tree(root: Path) -> None:
+    """Never follow source/output symlinks or copy special files."""
+    if root.is_symlink():
+        raise ValueError(f"symlinks are not allowed: {root}")
+    if not root.exists():
+        return
+    for item in [root, *sorted(root.rglob('*'))]:
+        mode = item.lstat().st_mode
+        if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            raise ValueError(f"only regular files/directories are allowed: {item}")
+
+
 def split_frontmatter(text: str) -> tuple[dict, str]:
     m = re.match(r"^---\n(.*?)\n---\n(.*)$", text, re.DOTALL)
     if not m:
         raise ValueError("missing YAML frontmatter")
-    return yaml.safe_load(m.group(1)) or {}, m.group(2)
+    fm = yaml.load(m.group(1), Loader=StrictLoader)
+    if not isinstance(fm, dict):
+        raise ValueError("frontmatter must be an object")
+    return fm, m.group(2)
 
 
 def load_source_skill(skill_dir: Path) -> SourceSkill:
+    reject_unsafe_tree(skill_dir)
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.is_file():
         raise FileNotFoundError(f"no SKILL.md at {skill_md}")
-    fm, body = split_frontmatter(skill_md.read_text())
+    fm, body = split_frontmatter(skill_md.read_text(encoding="utf-8"))
     skill = SourceSkill(path=skill_dir, frontmatter=fm, body=body)
     validate_source_skill(skill)
     return skill
@@ -117,19 +166,19 @@ def load_source_skill(skill_dir: Path) -> SourceSkill:
 def validate_source_skill(skill: SourceSkill) -> None:
     fm = skill.frontmatter
     name = fm.get("name")
-    if not name:
-        raise ValueError(f"{skill.path}: frontmatter missing 'name'")
-    if not NAME_RE.match(name):
+    if not valid_name(name):
         raise ValueError(f"{skill.path}: 'name' {name!r} fails Anthropic spec regex")
     if name != skill.path.name:
         raise ValueError(
             f"{skill.path}: directory name {skill.path.name!r} != frontmatter name {name!r}"
         )
     desc = fm.get("description")
-    if not desc or len(desc) > 1024:
-        raise ValueError(f"{skill.path}: 'description' missing or >1024 chars")
-    if not fm.get("license"):
-        raise ValueError(f"{skill.path}: Catpilot requires 'license'")
+    require_text(desc, f"{skill.path}: description")
+    require_text(fm.get("license"), f"{skill.path}: license")
+    if "compatibility" in fm:
+        require_text(fm["compatibility"], f"{skill.path}: compatibility", 500)
+    if not isinstance(fm.get("metadata"), dict) or not isinstance(fm["metadata"].get("catpilot"), dict):
+        raise ValueError(f"{skill.path}: metadata.catpilot must be an object")
     cp = skill.cp
     if not cp:
         raise ValueError(f"{skill.path}: missing metadata.catpilot block")
@@ -137,12 +186,23 @@ def validate_source_skill(skill: SourceSkill) -> None:
         raise ValueError(
             f"{skill.path}: metadata.catpilot.id {cp.get('id')!r} != name {name!r}"
         )
-    if not SEMVER_RE.match(skill.version):
+    if 'version' not in cp or 'severity' not in cp:
+        raise ValueError(f'{skill.path}: explicit component version and severity required')
+    if not isinstance(skill.version, str) or not SEMVER_RE.fullmatch(skill.version):
         raise ValueError(f"{skill.path}: invalid semver {skill.version!r}")
     if skill.severity not in SEVERITY_ORDER:
         raise ValueError(f"{skill.path}: bad severity {skill.severity!r}")
-    if not cp.get("category"):
-        raise ValueError(f"{skill.path}: metadata.catpilot.category required")
+    require_text(cp.get("category"), f"{skill.path}: category")
+    require_text(skill.body, f"{skill.path}: body", 250_000)
+    for field in ("applies_to", "control_mappings"):
+        mapping = cp.get(field, {})
+        if not isinstance(mapping, dict):
+            raise ValueError(f"{skill.path}: {field} must be an object")
+        for key, values in mapping.items():
+            if not isinstance(values, list) or not all(isinstance(v, str) and v.strip() for v in values):
+                raise ValueError(f"{skill.path}: {field}.{key} must be a string list")
+    if not isinstance(cp.get("provenance", {}), dict):
+        raise ValueError(f"{skill.path}: provenance must be an object")
 
 
 # --------------------------------------------------------------------------
@@ -223,7 +283,7 @@ def dump_yaml(d: dict) -> str:
     return yaml.dump(d, sort_keys=False, allow_unicode=True, width=10_000, default_flow_style=False)
 
 
-def build_bundle_frontmatter(
+def build_bundle_manifest(
     bundle_name: str,
     bundle_cfg: dict,
     skills: list[SourceSkill],
@@ -255,11 +315,20 @@ def build_bundle_frontmatter(
     }
     cp = order_dict(cp, CATPILOT_KEY_ORDER)
 
+    return cp
+
+
+def build_bundle_frontmatter(bundle_name: str, bundle_cfg: dict, skills: list[SourceSkill]) -> dict:
+    # Rich metadata is a sidecar, not nonportable nested values in SKILL.md.
     fm = {
         "name": bundle_name,
         "description": bundle_cfg["description"].strip().replace("\n", " "),
         "license": "MIT",
-        "metadata": {"catpilot": cp},
+        "metadata": {
+            "author": "catpilot",
+            "version": bundle_cfg["version"],
+            "catpilot-manifest": "catpilot.json",
+        },
     }
     return order_dict(fm, TOP_KEY_ORDER)
 
@@ -267,23 +336,13 @@ def build_bundle_frontmatter(
 def build_bundle_body(bundle_cfg: dict, skills: list[SourceSkill]) -> str:
     parts = [bundle_cfg["preamble"].strip(), ""]
     for s in sorted(skills, key=lambda s: s.id):
-        parts.append("---")
-        parts.append("")
-        parts.append(f"## {s.id}")
-        parts.append("")
-        # Strip a leading H1 if present in component body (none expected today).
-        body = s.body.lstrip("\n")
-        # Demote any H1/H2 inside component bodies by one level so the
-        # bundle's H2 component heading stays the highest within the section.
-        # Component bodies today start at H2 ("## Why", "## Rules"), so we
-        # demote them to H3 within the bundle.
-        body = _demote_headings(body)
-        parts.append(body.rstrip())
-        parts.append("")
+        summary = s.cp.get("summary", s.frontmatter["description"].split(". ")[0])
+        require_text(summary, f"{s.id}: summary", 1024)
+        parts.append(f"- [{s.id}](references/{s.id}/REFERENCE.md): {summary}")
     return "\n".join(parts).rstrip() + "\n"
 
 
-_FENCE_RE = re.compile(r"^(```|~~~)")
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _HEADING_RE = re.compile(r"^(#{1,5}) \S")
 
 
@@ -293,14 +352,18 @@ def _demote_headings(md: str) -> str:
     Skips lines inside fenced code blocks so '# bash comments' aren't mangled.
     """
     out = []
-    in_fence = False
+    fence = None
     for line in md.split("\n"):
         m = _FENCE_RE.match(line)
-        if m:
-            in_fence = not in_fence
+        if m and fence is None:
+            fence = m.group(1)
             out.append(line)
             continue
-        if not in_fence and _HEADING_RE.match(line):
+        if m and fence and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not m.group(2).strip():
+            fence = None
+            out.append(line)
+            continue
+        if fence is None and _HEADING_RE.match(line):
             out.append("#" + line)
         else:
             out.append(line)
@@ -318,21 +381,56 @@ def render_skill_md(frontmatter: dict, body: str) -> str:
 COMPANION_DIRS = ("references", "scripts", "assets")
 
 
+def is_companion_file(path: Path) -> bool:
+    return path.is_file() and '__pycache__' not in path.parts and path.name != '.DS_Store' and path.suffix not in ('.pyc', '.pyo')
+
+
 def copy_companions(src_skill: Path, dst_bundle: Path, namespace: str) -> None:
+    if not valid_name(namespace):
+        raise ValueError("invalid companion namespace")
+    reject_unsafe_tree(src_skill)
     for d in COMPANION_DIRS:
         src = src_skill / d
         if not src.is_dir():
             continue
         dst = dst_bundle / d / namespace
-        if dst.exists():
-            shutil.rmtree(dst)
-        dst.mkdir(parents=True)
+        dst.mkdir(parents=True, exist_ok=True)
         for item in sorted(src.rglob("*")):
-            if item.is_file():
+            if is_companion_file(item):
                 rel = item.relative_to(src)
                 target = dst / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(item.read_bytes())
+                if target.exists():
+                    raise ValueError(f"companion output collision: {target}")
+                if item.suffix.lower() == '.md':
+                    skill = SourceSkill(src_skill, {'metadata': {'catpilot': {'id': namespace}}}, '')
+                    target.write_text(rewrite_companion_paths(item.read_text(encoding='utf-8'), skill, item.relative_to(src_skill)), encoding='utf-8', newline='\n')
+                else:
+                    target.write_bytes(item.read_bytes())
+                target.chmod(0o644 | (item.stat().st_mode & 0o111))
+
+
+def rewrite_companion_paths(body: str, skill: SourceSkill, source_file: Path = Path('SKILL.md')) -> str:
+    """Relocate documented source-root paths into the component reference."""
+    mappings = {'SKILL.md': f'references/{skill.id}/REFERENCE.md'}
+    for directory in COMPANION_DIRS:
+        for item in sorted((skill.path / directory).rglob('*')):
+            if is_companion_file(item):
+                source = item.relative_to(skill.path).as_posix()
+                destination = Path(directory) / skill.id / item.relative_to(skill.path / directory)
+                mappings[source] = destination.as_posix()
+    output_parent = Path(mappings[source_file.as_posix()]).parent
+    pattern = re.compile(r"(?<![\w./-])(?:\.\.?/)*(?:references|scripts|assets)/[^\s`\)\]\"'<>]+")
+    def replace(match):
+        value, separator, anchor = match.group(0).partition('#')
+        source = posixpath.normpath((source_file.parent / value).as_posix())
+        destination = mappings.get(source) or mappings.get(value.removeprefix('./'))
+        if destination is None:
+            return match.group(0)
+        return os.path.relpath(destination, output_parent).replace(os.sep, '/') + (separator + anchor)
+    rewritten = pattern.sub(replace, body)
+    # Also handle sibling/parent Markdown links (including back to SKILL.md).
+    return re.sub(r'(?<=\]\()[^\s)]+(?=\))', replace, rewritten)
 
 
 # --------------------------------------------------------------------------
@@ -341,6 +439,7 @@ def copy_companions(src_skill: Path, dst_bundle: Path, namespace: str) -> None:
 
 def discover_tiers() -> list[Path]:
     """Return tier directories under src/skills/ that contain a bundle.toml."""
+    reject_unsafe_tree(SRC_ROOT)
     out = []
     for child in sorted(SRC_ROOT.iterdir()):
         if not child.is_dir():
@@ -352,17 +451,34 @@ def discover_tiers() -> list[Path]:
             for fw in sorted(child.iterdir()):
                 if fw.is_dir() and (fw / "bundle.toml").is_file():
                     out.append(fw)
+    names = [load_bundle_cfg(tier)['name'] for tier in out]
+    if len(names) != len(set(names)):
+        raise ValueError('duplicate bundle output names across tiers')
     return out
 
 
 def load_bundle_cfg(tier_dir: Path) -> dict:
-    cfg = tomllib.loads((tier_dir / "bundle.toml").read_text())["bundle"]
+    reject_unsafe_tree(tier_dir)
+    document = tomllib.loads((tier_dir / "bundle.toml").read_text(encoding="utf-8"))
+    cfg = document.get("bundle")
+    if not isinstance(cfg, dict):
+        raise ValueError(f"{tier_dir}: missing bundle object")
+    if cfg.keys() - {'name', 'tier', 'version', 'description', 'preamble', 'category'}:
+        raise ValueError(f'{tier_dir}: unknown bundle configuration field')
+    if 'category' in cfg:
+        require_text(cfg['category'], f'{tier_dir}: category')
+    if not valid_name(cfg.get("name")) or not valid_name(cfg.get("tier")):
+        raise ValueError(f"{tier_dir}: invalid bundle name or tier")
+    for field in ('description', 'preamble'):
+        require_text(cfg.get(field), f"{tier_dir}: {field}", 1024 if field == 'description' else 20_000)
     version = cfg.get("version", "")
-    if not CALVER_RE.match(version):
+    if not isinstance(version, str) or not CALVER_RE.fullmatch(version):
         raise ValueError(
             f"{tier_dir}/bundle.toml: bundle version {version!r} is not CalVer "
             f"(expected YYYY.MM.DD or YYYY.MM, e.g. 2026.05.06)"
         )
+    core = re.split(r'[-+]', version)[0].split('.')
+    date(int(core[0]), int(core[1]), int(core[2]) if len(core) > 2 else 1)
     return cfg
 
 
@@ -378,15 +494,49 @@ def build_tier(tier_dir: Path, dist_root: Path) -> Path:
     body = build_bundle_body(cfg, skills)
     rendered = render_skill_md(fm, body)
 
-    bundle_dir = dist_root / bundle_name
-    if bundle_dir.exists():
-        shutil.rmtree(bundle_dir)
-    bundle_dir.mkdir(parents=True)
-    (bundle_dir / "SKILL.md").write_text(rendered)
-
-    for s in skills:
-        copy_companions(s.path, bundle_dir, namespace=s.id)
-
+    # Validate all input before touching a previously built package. Never
+    # derive a deletion target from a configuration value.
+    reject_unsafe_tree(dist_root)
+    dist_root.mkdir(parents=True, exist_ok=True)
+    root = dist_root.resolve()
+    bundle_dir = root / bundle_name
+    if bundle_dir.resolve().parent != root:
+        raise ValueError("bundle output escapes its root")
+    with tempfile.TemporaryDirectory(prefix='.bundle-', dir=root) as temporary:
+        stage = Path(temporary) / bundle_name
+        stage.mkdir()
+        (stage / 'SKILL.md').write_text(rendered, encoding='utf-8', newline='\n')
+        (stage / 'catpilot.json').write_text(json.dumps(build_bundle_manifest(bundle_name, cfg, skills), indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+        for skill in skills:
+            reference = stage / 'references' / skill.id / 'REFERENCE.md'
+            reference.parent.mkdir(parents=True)
+            reference.write_text(rewrite_companion_paths(skill.body, skill), encoding='utf-8', newline='\n')
+            copy_companions(skill.path, stage, namespace=skill.id)
+        backup = None
+        previous = None
+        if bundle_dir.exists():
+            backup = Path(tempfile.mkdtemp(prefix='.previous-', dir=root))
+            previous = backup / 'package'
+            try:
+                bundle_dir.rename(previous)
+            except OSError:
+                backup.rmdir()  # empty directory created by this invocation
+                raise
+        try:
+            stage.rename(bundle_dir)
+        except OSError:
+            if previous is not None:
+                try:
+                    previous.rename(bundle_dir)
+                except OSError as exc:
+                    # Outside the stage context: never delete the only old copy
+                    # if the filesystem prevents restoring it.
+                    raise OSError(f'restore failed; previous package retained at {previous}') from exc
+                backup.rmdir()
+            raise
+        if backup is not None:
+            # Exact private temporary path, never the configured bundle target.
+            shutil.rmtree(backup)
     return bundle_dir
 
 
@@ -408,13 +558,14 @@ def cmd_build(tier_filter: str | None) -> int:
 
 
 def _hash_tree(root: Path) -> dict[str, str]:
+    reject_unsafe_tree(root)
     out: dict[str, str] = {}
     if not root.exists():
         return out
     for p in sorted(root.rglob("*")):
         if p.is_file():
             rel = str(p.relative_to(root))
-            out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+            out[rel] = hashlib.sha256((p.stat().st_mode & 0o111).to_bytes(2, 'big') + p.read_bytes()).hexdigest()
     return out
 
 
@@ -473,9 +624,13 @@ def main(argv: list[str]) -> int:
     p.add_argument("--tier", help="build only this tier (matches src/skills/<tier> dir name)")
     p.add_argument("--check", action="store_true", help="verify skills/ is up to date with src/")
     args = p.parse_args(argv)
-    if args.check:
-        return cmd_check()
-    return cmd_build(args.tier)
+    try:
+        if args.check:
+            return cmd_check()
+        return cmd_build(args.tier)
+    except (ValueError, OSError, yaml.YAMLError) as exc:
+        print(f"INVALID: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

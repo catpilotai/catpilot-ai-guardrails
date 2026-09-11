@@ -11,9 +11,32 @@ Portable security instructions for AI coding agents, distributed as an Agent Ski
 
 Born from a real incident where an agent wiped production environment variables with a partial YAML update. The rules draw on incidents like that one and are used at [Catpilot.ai](https://catpilot.ai). They are MIT-licensed guidance, not a guarantee that an agent will follow them.
 
-This repository is the portable baseline, not the Catpilot hosted platform. It contains no Catpilot MCP service, runtime interception layer, or managed enforcement agent. Read the [protection contract](docs/PROTECTION_CONTRACT.md) before treating the skill as a security control.
+This repository is the portable baseline, not the Catpilot hosted platform. The development branch also contains an **opt-in local companion preview**: company-policy lookups over MCP and one narrowly scoped private-key write hook. It is not a hosted tenant service or a managed enforcement agent. Read the [protection contract](docs/PROTECTION_CONTRACT.md) before treating any part as a security control.
 
-## Install
+## Opt-in preview: `2026.09.11-hardening.1`
+
+This preview fixes unsafe examples and build paths, replaces
+the long installed entrypoint with a short router and focused references, adds
+regression tests and hash-locked dependencies, and packages the local companion
+for Codex/Claude Code. It does not alter the stable `2026.09.11` tag or `main`.
+
+Get the exact preview checkout; do not use a moving branch for an evaluation:
+
+```bash
+git clone --branch 2026.09.11-hardening.1 --single-branch --depth 1 https://github.com/catpilotai/catpilot-ai-guardrails.git catpilot-guardrails-preview
+```
+
+The preview core is at `skills/catpilot-security-core/`; the optional companion
+is at `plugins/catpilot-companion/`. Follow the preview guide before enabling
+anything. Clone/download does not install a plugin or configure company policy.
+
+See [implementation status](docs/HARDENING_IMPLEMENTATION.md),
+[package migration](docs/spec/PORTABLE_PACKAGE_MIGRATION.md), and the
+[companion evaluation guide](docs/COMPANION_PREVIEW.md). The smoke comparisons
+exercise explicitly injected guidance, not installed-skill activation or a
+verified mandatory gate. This preview is not yet ready for a production promise.
+
+## Install the stable baseline
 
 ```bash
 npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-security-core
@@ -40,7 +63,7 @@ Do not put private incidents, customer data, secrets, employee identifiers, or i
 
 ## What's in the box
 
-`catpilot-security-core` contains **9 components** as of `2026.05.17`, intended to guide code generation, file edits, and shell commands. “Always-on” in older content describes intended use, not a runtime guarantee.
+`catpilot-security-core` contains **9 components**, intended to guide code generation, file edits, and shell commands. The published baseline is `2026.05.17`; this branch generates `2026.09.11-hardening.1`. “Always-on” in older content describes intended use, not a runtime guarantee.
 
 | Component | Severity | Guidance covers |
 |---|---|---|
@@ -58,7 +81,7 @@ Components carry control references for **SOC 2, PCI-DSS, ISO 27001, NIST CSF, a
 
 ## Format
 
-Skills use the [Anthropic Agent Skills](https://agentskills.io/specification) format exactly. A skill is a directory containing a `SKILL.md` file with YAML frontmatter and a markdown body. Catpilot extensions (severity, control mappings, applies-to, evidence patterns) live under `metadata.catpilot.*`, which other runtimes ignore.
+Generated skills follow the [Agent Skills](https://agentskills.io/specification) portable format: `SKILL.md` plus references/scripts, with string-valued metadata. Rich CATpilot metadata now lives in `catpilot.json`. Source skills retain the internal `metadata.catpilot` authoring format. Consumers of the old nested installed metadata must follow the [migration guide](docs/spec/PORTABLE_PACKAGE_MIGRATION.md).
 
 A recognized file layout helps distribution; it does not guarantee that a host loads every instruction or reference. Follow the host's current installation guidance and record the activation and behavioral checks you actually perform.
 
@@ -90,7 +113,7 @@ cp -r catpilot-ai-guardrails/skills/catpilot-security-core ~/.claude/skills/
 ## Versioning
 
 - **Repository releases** are CalVer (`YYYY.MM.DD`). Current release: **`2026.09.11`**.
-- **Source skill components** inside a release are semver — each component currently at `1.0.0`. The release frontmatter records which versions of which components shipped.
+- **Source skill components** are semver. Updated components in this development branch are `1.0.1`; `catpilot.json` records the complete version list.
 - The `2026.09.11` release adds the **evaluation foundation and protection contract**, not new runtime protections. The installed `catpilot-security-core` bundle remains at `2026.05.17`; no live-host behavioral benchmark is included.
 - The `2026.06.25` release adds **framework-level** agentic/OpenClaw guardrails (tool-loop discipline, cron idempotency, workflow retry budgets, skill supply-chain kill chain, skill provenance). The nine `catpilot-security-core` components are unchanged from `2026.05.17`.
 
@@ -154,7 +177,11 @@ Near-term order:
 3. Improve the safe-building workflow and company-overlay format against observed failures.
 4. Add one tested host integration and a narrowly scoped, verifiable check.
 
-The standalone skill validator (`tools/validate-skill.py`), framework-detection helper (`tools/recommend.py`), new framework bundles, and further control mappings remain future work. The offline evaluation validator added here is not a skill validator or a security scanner.
+This branch adds `tools/validate_skill.py` for portable package checks and
+`tools/recommend.py` for read-only framework hints. Framework bundle migration
+and independently verified current-edition control mappings remain future work.
+Neither helper is a security scanner. Customer-connected authenticated delivery,
+host enforcement verification, and held-out effectiveness tests remain gates.
 
 ## License
 

@@ -1,0 +1,8 @@
+{
+  "name": "catpilot-companion",
+  "version": "0.2.0-dev.1",
+  "description": "Private local company guidance and a narrow private-key write check. Evaluation preview, not managed enforcement.",
+  "author": {"name": "CATpilot", "url": "https://catpilot.ai"},
+  "license": "MIT",
+  "repository": "https://github.com/catpilotai/catpilot-ai-guardrails"
+}

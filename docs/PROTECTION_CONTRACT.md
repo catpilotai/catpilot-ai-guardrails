@@ -1,10 +1,11 @@
 # Protection contract
 
-Status: first evaluation foundation; live-host results not yet recorded.
+Status: hardening development preview. Prompt-only smoke results recorded;
+installed-host activation and mandatory enforcement are not established.
 
 ## What the repository provides
 
-The public package provides local security instructions, reference material, and a deterministic bundler. The evaluation tooling added alongside it reads synthetic fixtures offline. Neither the package nor that tooling observes an employee's work, authenticates an organization, runs security scans automatically, or installs a mandatory execution gate.
+The core provides local security instructions, reference material, and a deterministic bundler. The companion preview adds read-only local-policy MCP tools and a narrow private-key write hook. The offline tests and optional live runner are separate. None authenticates a hosted organization, observes all employee work, or establishes a mandatory gate on every execution path. See [the preview's exact boundaries](COMPANION_PREVIEW.md).
 
 The baseline does not call Catpilot or send telemetry. Installing it does not change the AI host's own data-handling terms or permissions. Do not put confidential company material in this public repository or a public fork.
 
@@ -36,8 +37,8 @@ Do not replace these states with one green “protected” badge. Report unknown
 
 | Target | Initial goal | Live installation/activation evidence | Behavioral results | Enforcement coverage |
 | --- | --- | --- | --- | --- |
-| Codex | Company-aware guidance for nontechnical app builders | Not recorded in this foundation increment | Not run | None supplied by this repository |
-| Claude Code | The same scenarios and scoring contract | Not recorded in this foundation increment | Not run | None supplied by this repository |
+| Codex | Company-aware guidance for nontechnical app builders | Real MCP tool call observed; installed skills/plugin activation not verified | Small prompt-only comparison and synthetic MCP lookup; see implementation status | Narrow hook protocol tested; actual host enforcement not verified |
+| Claude Code | The same scenarios and scoring contract | Manifest accepted; real MCP tool call observed; skills/plugin activation not verified | Small prompt-only comparison and synthetic MCP lookup; see implementation status | Narrow hook protocol tested; actual host enforcement not verified |
 
 This table identifies the first evaluation cohort, not a complete support matrix. An installer's list of compatible hosts is not a Catpilot safety benchmark. Update claims only from exact host/model/configuration/release evidence; do not infer one host's results from another.
 

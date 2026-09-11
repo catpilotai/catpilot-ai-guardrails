@@ -1,8 +1,11 @@
 # Packaging
 
-**Status:** Active.
+**Status:** Original architecture reference. For current generated layout and
+metadata, [the progressive-package migration](PORTABLE_PACKAGE_MIGRATION.md)
+supersedes the concatenation/frontmatter examples below. Framework and advanced
+tiers are plans, not installed or automatically activated bundles.
 **Companion to:** [`SKILL_FORMAT.md`](./SKILL_FORMAT.md).
-**Distribution channel:** [`npx skills add ToomeSauce/catpilot-ai-guardrails`](https://github.com/vercel-labs/skills) → indexed at [skills.sh](https://skills.sh).
+**Distribution channel:** [`npx skills add catpilotai/catpilot-ai-guardrails`](https://github.com/vercel-labs/skills) → indexed at [skills.sh](https://skills.sh).
 
 ---
 

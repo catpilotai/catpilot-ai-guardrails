@@ -5,7 +5,7 @@ license: MIT
 metadata:
   catpilot:
     id: secret-blocking
-    version: 1.0.0
+    version: 1.0.1
     severity: critical
     category: secrets
     applies_to:
@@ -58,7 +58,7 @@ Apply on **every** code generation, file write, file edit, and diff review.
 Apply also on shell commands the agent is about to execute that include
 inline credentials, environment variable assignments, or `curl -H` headers.
 
-This skill is one of the always-on critical skills. It is cheap to evaluate
+This critical advisory skill applies when credentials may be involved. It is cheap to evaluate
 (regex over the diff or the proposed write), and the cost of a false negative
 is a leaked credential that ends up in git history forever.
 
@@ -96,12 +96,16 @@ agent layer, before the file write, is the cheapest place to catch this.
 
 ## Detection patterns
 
+Classify by capability, not appearance alone. Stripe publishable keys
+(`pk_live_`, `pk_test_`) are designed for client-side use and are not
+secrets. Do not block them under this rule. Stripe secret/restricted keys
+and webhook signing secrets remain server-side, including in test mode.
+Report a provider/type and redacted location, never echo the matched value.
+
 | Pattern (regex, case-sensitive) | Provider / Type | Example |
 |---|---|---|
 | `\bsk_live_[A-Za-z0-9]{20,}\b` | Stripe live secret key | `sk_live_51H...` |
 | `\bsk_test_[A-Za-z0-9]{20,}\b` | Stripe test secret key | `sk_test_4eC39...` |
-| `\bpk_live_[A-Za-z0-9]{20,}\b` | Stripe live publishable | `pk_live_51H...` |
-| `\bpk_test_[A-Za-z0-9]{20,}\b` | Stripe test publishable | `pk_test_TYoo...` |
 | `\brk_live_[A-Za-z0-9]{20,}\b` | Stripe restricted key | `rk_live_...` |
 | `\bAKIA[0-9A-Z]{16}\b` | AWS Access Key ID | `AKIAIOSFODNN7EXAMPLE` |
 | `\bASIA[0-9A-Z]{16}\b` | AWS temp Access Key ID | `ASIAIOSFODNN7EXAMPLE` |
