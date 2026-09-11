@@ -26,7 +26,7 @@ protection or production-deployment claim.
 ## Status
 
 - Local implementation: complete for the six development workstreams above.
-- Regression suite: **80 tests pass on Python 3.11.15 and 3.13.5**, including
+- Regression suite: **81 tests pass on Python 3.11.15 and 3.13.5**, including
   actual stdio SDK handshake, tool discovery, policy reads, and revocation.
 - Both generated copies match their sources. Portable skill validators,
   Codex plugin validation, Claude CLI plugin validation, and `git diff --check`
