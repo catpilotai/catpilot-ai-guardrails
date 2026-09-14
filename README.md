@@ -13,8 +13,8 @@ Security skills for AI coding agents, for people building apps with AI assistant
 
 | Skill | Who it is for | What it covers |
 | --- | --- | --- |
-| **`catpilot-security-core`** | Coding agents working in real codebases | Nine engineering components: cloud CLI, databases, local shell, Docker, hardcoded secrets, secrets lifecycle, supply chain, PII and test data, secure-coding patterns. |
 | **`catpilot-safe-building`** | A person, often not a developer, building an app, automation, dashboard, or data tool with an AI assistant, and the assistant helping them | Eight plain-language checkpoints that mirror Catpilot's Safe AI-assisted building course: data in prompts, access and identity, hosting, sharing, keys and credentials, third-party services, untrusted input, when to ask a human. |
+| **`catpilot-security-core`** | Coding agents working in real codebases | Nine engineering components: cloud CLI, databases, local shell, Docker, hardcoded secrets, secrets lifecycle, supply chain, PII and test data, secure-coding patterns. |
 | **Either skill, plus `hooks/` and `frameworks/agentic/`** | A harness: the loop a team builds around a model for one job | Standing guidance for every iteration of the loop, a credential gate the loop enforces on its shell tool, and reference rules for retries, scheduled runs, delegation, and self-modification. See [For agent harnesses](#for-agent-harnesses). |
 
 Born from a real incident where an agent wiped production environment variables with a partial YAML update. The rules draw on incidents like that one and are used at [Catpilot.ai](https://catpilot.ai). They are MIT-licensed guidance, not a guarantee that an agent will follow them.
@@ -24,8 +24,8 @@ This repository is the portable baseline, not the Catpilot hosted platform. Read
 ## Install for coding agents
 
 ```bash
-npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-security-core
 npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-safe-building
+npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-security-core
 ```
 
 Installation makes the instructions available to a compatible host. It does **not** prove they were loaded, followed, or enforced. Confirm the installed version, then test representative safe and unsafe tasks in an isolated environment. The [skills.sh CLI](https://skills.sh) (`vercel-labs/skills`) handles placement for the hosts it supports; installer compatibility is separate from anything Catpilot has verified. See [Tested runtimes](#tested-runtimes). Global installs, a specific agent, manual copies, and Hermes Agent: [`docs/INSTALL.md`](docs/INSTALL.md).
