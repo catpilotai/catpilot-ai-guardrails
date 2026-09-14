@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
-## [2026.09.13] — 2026-09-13
+## [2026.09.14] — 2026-09-14
+
+Repository release covering the 2026-09-13 and 2026-09-14 work. The safe-building bundle is stamped `2026.09.13`; the core bundle is `2026.09.14`.
 
 Direction: the civilian-builder wedge (`CATPILOT_OSS_GUARDRAILS_DIRECTION.md`, September 13, 2026). One repository, two skills, one bundler, no telemetry.
 
@@ -26,6 +28,7 @@ Direction: the civilian-builder wedge (`CATPILOT_OSS_GUARDRAILS_DIRECTION.md`, S
 - **Evaluation runner.** `--print-prompts` and `--import` for hosts driven by hand (ChatGPT); `--overlay` enables per-scenario `overlay_must` checks that a company's approved values were cited; Codex gets the `installed` injection through a project `.agents/skills/` directory. `evals/HOST_VERIFICATION.md` records the per-host steps and results.
 - **A second hook**: `hooks/claude-code/pretooluse-write-private-key.py`, a Claude Code `PreToolUse` hook on the `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` tools that denies file content containing a PEM private-key header, with a plain-language reason that never echoes the content. Never returns allow; fails closed on malformed or oversized input (over 1 MiB). `hooks/claude-code/settings.example.json` now configures both hooks. Protocol tests in `tests/test_write_hook.py`. Verified live in Claude Code 2.1.241 on 2026-09-14: a `Write` adding a synthetic private-key block was denied, and the control run without the hook wrote the file; recorded in [`evals/reports/2026.09.14-write-hook-verification.md`](evals/reports/2026.09.14-write-hook-verification.md). Ported from PR #16 (`plugins/catpilot-companion/scripts/check_patch.py` there), adapted to Claude Code tool names with `NotebookEdit` added.
 - **Dependabot**: `.github/dependabot.yml` opens weekly update proposals for GitHub Actions and pip (the hash-locked `requirements-dev.txt`).
+- **Community files**: `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), issue forms under `.github/ISSUE_TEMPLATE/` (false positive, dangerous pattern, host verification, and a security contact link), and `.github/PULL_REQUEST_TEMPLATE.md`.
 
 ### Changed
 
@@ -35,6 +38,9 @@ Direction: the civilian-builder wedge (`CATPILOT_OSS_GUARDRAILS_DIRECTION.md`, S
 - Spec documents updated for slots, surfaces, modes, targets, overlays, and status; `docs/PROTECTION_CONTRACT.md` records where each claim lives; `CONTRIBUTING.md`, `tools/README.md`, and `evals/README.md` rewritten for the new tooling.
 - CI: third-party actions pinned to commit SHAs with a read-only token; the bundle check validates every skill directory and the overlay example; the evaluation workflow validates both fixture sets.
 - The legacy `copilot-instructions.md` gains a short safe-building section so repository-based agents see both skills.
+- **Dependabot**: `.github/dependabot.yml` groups all GitHub Actions updates into one pull request and all pip updates into another, instead of one PR per dependency.
+- **`SECURITY.md`**: the in-scope description now covers the Claude Code hooks, the harness gate, the reference MCP server, the hosted endpoint, and the deployment scripts, with a table row for each.
+- **README**: slimmed. The roadmap, the repository layout tree, and alternative install methods moved to `docs/ROADMAP.md`, `docs/REPOSITORY_LAYOUT.md`, and `docs/INSTALL.md`.
 
 ### Fixed
 

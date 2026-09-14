@@ -1,0 +1,41 @@
+name: Dangerous pattern
+description: A pattern a skill should cover but doesn't yet.
+title: "[dangerous pattern]: "
+labels: ["dangerous-pattern"]
+body:
+  - type: markdown
+    attributes:
+      value: Describe the pattern in general terms. Do not include real credentials, company names, or internal URLs.
+  - type: textarea
+    id: pattern
+    attributes:
+      label: The pattern
+      description: What does the dangerous code or command look like?
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it is dangerous
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Which tier
+      options:
+        - catpilot-security-core
+        - catpilot-safe-building
+        - Framework extension (frameworks/)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Negative example
+      description: A short example with any secret or identifier replaced by a placeholder.
+      render: text
+    validations:
+      required: true

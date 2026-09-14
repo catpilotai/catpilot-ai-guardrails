@@ -1,0 +1,37 @@
+name: False positive
+description: A rule or hook denied or discouraged something legitimate.
+title: "[false positive]: "
+labels: ["false-positive"]
+body:
+  - type: markdown
+    attributes:
+      value: Replace any real secret, key, or credential below with a placeholder before submitting.
+  - type: input
+    id: component
+    attributes:
+      label: Component or hook
+      description: Which skill component, rule, or hook denied or discouraged the action?
+      placeholder: e.g. hooks/claude-code/pretooluse-secrets.py
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host and version
+      placeholder: e.g. Claude Code 2.1.241
+    validations:
+      required: true
+  - type: textarea
+    id: shape
+    attributes:
+      label: Command or content shape
+      description: The command or file content that triggered the denial, with any secret replaced by a placeholder.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true

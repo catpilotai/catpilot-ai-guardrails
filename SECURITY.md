@@ -15,7 +15,7 @@ If you believe you've found a security issue, please report it privately. 🙏
 
 ## What's In Scope
 
-This project is a content repo: skill markdown files in [Anthropic Agent Skills](https://agentskills.io/specification) format under `skills/` and `src/skills/`, a Python bundler at `tools/bundle.py`, and the legacy v2.x bash installer (`setup.sh`). Security concerns include:
+This project ships skill markdown files in [Anthropic Agent Skills](https://agentskills.io/specification) format under `skills/` and `src/skills/`, the bundler and validators in `tools/`, the Claude Code hooks and the harness gate in `hooks/`, a reference MCP server in `mcp-server/`, the deployment scripts for the hosted reference server in `deploy/`, and the legacy v2.x bash installer (`setup.sh`). Security concerns include:
 
 | Risk | Example |
 |------|---------|
@@ -25,6 +25,10 @@ This project is a content repo: skill markdown files in [Anthropic Agent Skills]
 | **Skill packaging vulnerabilities** | A maliciously-crafted `bundle.toml` or `SKILL.md` that breaks the deterministic bundler in unsafe ways |
 | **Legacy `setup.sh` vulnerabilities** | Command injection, path traversal in the v2.x installer (still kept on `main` for backward compatibility) |
 | **Supply chain on the install path** | Anything that could compromise users running `npx skills add catpilotai/catpilot-ai-guardrails` |
+| **Hooks** | A way to get a literal credential or a private-key block past a configured hook, or a denial of a legitimate action that the documented escape hatch cannot resolve |
+| **Reference MCP server** | Input handling in `mcp-server/`, an overlay validation bypass, or anything that would make it store or log request content contrary to its data statement |
+| **Hosted endpoint `mcp.catpilot.ai`** | A bypass of the edge rules, a way to reach the origin directly, or a way to make it serve anything other than the generic defaults; please do not load-test it |
+| **Deployment scripts** | Anything in `deploy/` that would expose the origin or a token |
 
 ## What's NOT in Scope
 

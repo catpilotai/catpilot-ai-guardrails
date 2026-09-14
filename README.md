@@ -7,7 +7,7 @@
 
 **For the tool and for the person using it.**
 
-![Release](https://img.shields.io/badge/release-2026.09.13-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Format](https://img.shields.io/badge/format-Agent%20Skills-7B3FE4)
+![Release](https://img.shields.io/github/v/release/catpilotai/catpilot-ai-guardrails?label=release&color=blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Format](https://img.shields.io/badge/format-Agent%20Skills-7B3FE4)
 
 Security skills for AI coding agents, for people building apps with AI assistants, and for the domain-specific agent harnesses teams build around both, in the [Agent Skills](https://agentskills.io/specification) format. Two skills, one repository, no telemetry.
 
@@ -28,7 +28,7 @@ npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-security-core
 npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-safe-building
 ```
 
-Installation makes the instructions available to a compatible host. It does **not** prove they were loaded, followed, or enforced. Confirm the installed version, then test representative safe and unsafe tasks in an isolated environment. The [skills.sh CLI](https://skills.sh) (`vercel-labs/skills`) handles placement for the hosts it supports; installer compatibility is separate from anything Catpilot has verified. See [Tested runtimes](#tested-runtimes).
+Installation makes the instructions available to a compatible host. It does **not** prove they were loaded, followed, or enforced. Confirm the installed version, then test representative safe and unsafe tasks in an isolated environment. The [skills.sh CLI](https://skills.sh) (`vercel-labs/skills`) handles placement for the hosts it supports; installer compatibility is separate from anything Catpilot has verified. See [Tested runtimes](#tested-runtimes). Global installs, a specific agent, manual copies, and Hermes Agent: [`docs/INSTALL.md`](docs/INSTALL.md).
 
 ## For non-engineers
 
@@ -57,9 +57,9 @@ Three different things get called "protection". This repository uses the narrow 
 
 - **Advice.** A skill is guidance the model reads. It shapes what the model says and suggests. It is loaded only when the host chooses to load it. Both skills here are advice.
 - **Contextual coaching.** A supported event in a work surface produces one explanation and one next step, at the moment it matters. That is a Catpilot platform capability, not something a skill file does. The safe-building skill tells an assistant how to coach; it cannot create the event.
-- **Enforcement.** A specific action cannot proceed without a tested check in a trusted host. This repository ships exactly one: a Claude Code hook on the Bash tool that denies a shell command containing a literal credential. It covers that path, on the host version in the table below, and nothing else.
+- **Enforcement.** A specific action cannot proceed without a tested check in a trusted host. This repository ships exactly two, both Claude Code `PreToolUse` hooks: one denies a shell command that contains a literal credential, the other denies a file write or edit that adds a private-key block. Each covers that one path, on the host version in the table below, and nothing else.
 
-It does not monitor anyone's work, send telemetry, block anything except through the documented hook, scan repositories, certify compliance, or record training completion. An installed skill that is not loaded is not a control. A hook that is not configured is not a control.
+It does not monitor anyone's work, send telemetry, block anything except through the documented hooks, scan repositories, certify compliance, or record training completion. An installed skill that is not loaded is not a control. A hook that is not configured is not a control.
 
 The full statement is the [protection contract](docs/PROTECTION_CONTRACT.md).
 
@@ -69,21 +69,26 @@ Installable via skills.sh into 50+ runtimes; verified only on the runtimes and d
 
 | Runtime | Skill loads | Coaching (MCP) | Enforcement (hook) | Last verified | Release |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code 2.1.241 | yes: a project `.claude/skills/` install is listed in the session init | yes: a `list_approved` lookup over stdio, with the server connected in the session init, recorded 2026-09-14; the hosted endpoint (`mcp.catpilot.ai`) verified the same day over the `http` transport, server connected, all four tools listed, `list_approved` returned through the edge | yes, two `PreToolUse` hooks: `Bash` (a command with AWS's example key was denied, the control run without the hook executed it) and `Write`/`Edit`/`MultiEdit`/`NotebookEdit` (a `Write` adding a synthetic private-key block was denied on 2026-09-14, the control run without the hook wrote the file) | 2026-09-14 | 2026.09.13 |
+| Claude Code 2.1.241 | yes: a project `.claude/skills/` install is listed in the session init | yes: `list_approved` returned over stdio and through the hosted `http` endpoint | yes: the `Bash` credential hook and the `Write`/`Edit` private-key hook each denied the action; each control run without the hook performed it | 2026-09-14 | 2026.09.13 |
 | Cursor | not verified | not verified | not tested | | |
-| Codex CLI 0.154.0 | yes, with a caveat: a project `.agents/skills/` install; on a data scenario the model named the skill and input usage rose from about 17k to over 90k tokens; the host emits no explicit load event and reads the skill on demand, not on every task | yes: a completed `mcp_tool_call` to `list_approved` over stdio, recorded 2026-09-14; the hosted endpoint (`mcp.catpilot.ai`) verified the same day via the `url` MCP server config, `mcp_tool_call` completed | none | 2026-09-14 | 2026.09.13 |
-| Claude.ai (individual upload or organization provisioning) | not verified | hosted endpoint at `mcp.catpilot.ai` exists; custom connector not yet verified | none, advisory only | | |
-| ChatGPT (project or GPT instructions) | n/a, pasted text; manual protocol in [`evals/HOST_VERIFICATION.md`](evals/HOST_VERIFICATION.md), not yet run | hosted endpoint at `mcp.catpilot.ai` exists; custom connector not yet verified | none | | |
+| Codex CLI 0.154.0 | yes, with a caveat: a project `.agents/skills/` install; the host reads the skill on demand and emits no load event, so the signal is the model naming the skill and input usage rising from about 17k to over 90k tokens | yes: `mcp_tool_call` completed over stdio and through the hosted endpoint | none | 2026-09-14 | 2026.09.13 |
+| Claude.ai (individual upload or organization provisioning) | not verified | custom connector to the hosted endpoint not yet verified | none, advisory only | | |
+| ChatGPT (project or GPT instructions) | n/a, pasted text; manual protocol in [`evals/HOST_VERIFICATION.md`](evals/HOST_VERIFICATION.md), not yet run | custom connector to the hosted endpoint not yet verified | none | | |
 | Microsoft Copilot Studio | n/a, pasted text | not verified | none | | |
 | Lovable, Bolt, Replit, v0 | n/a, pasted text | not applicable | none | | |
 | Everything else reachable through skills.sh | not verified | not verified | none | | |
 | Your own harness | depends on how the loop loads it; not verified by Catpilot | call the server from the loop; not verified by Catpilot | the credential gate on the shell path you route through it; you test it in your loop | | |
 
-"Skill loads" means a host signal showed the skill available in a recorded session, not the model saying it read it. "Enforcement" means a recorded tool-result trace showed the host applying the hook's deny decision, with a control run that executed the same command without the hook. The exact commands and observations are in [`evals/reports/`](evals/reports/). A row without a date is a row without evidence. "Coaching (MCP)" means a recorded tool call from that host to the reference server, not that the host uses it in daily work.
+"Skill loads" means a host signal showed the skill available in a recorded session, not the model saying it read it. "Enforcement" means a recorded tool-result trace showed the host applying the hook's deny decision, with a control run that executed the same command without the hook. Every dated cell has a note in [`evals/reports/`](evals/reports/) with the exact commands and observations. A row without a date is a row without evidence. "Coaching (MCP)" means a recorded tool call from that host to the reference server, not that the host uses it in daily work.
 
-## The one hook
+## The hooks
 
-[`hooks/claude-code/pretooluse-secrets.py`](hooks/claude-code/pretooluse-secrets.py) is a Claude Code `PreToolUse` hook on the `Bash` tool. It scans the proposed command for the credential patterns documented in the secret-blocking component and returns a deny decision with a plain-language reason, without echoing the value. It never returns allow, and malformed input fails closed. It does not cover file writes, prompts, other tools, other hosts, or commands a person types themselves. The escape hatch for a false positive is to reference the value from an environment variable instead, or to run the command yourself; there is no bypass flag. A second hook, [`hooks/claude-code/pretooluse-write-private-key.py`](hooks/claude-code/pretooluse-write-private-key.py), covers the `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` tools instead: it denies file content containing a PEM private-key header with the same never-allow, fail-closed behavior, and it does not cover shell commands, file reads, or other hosts. Install steps and exact coverage for both: [`hooks/README.md`](hooks/README.md).
+Two Claude Code `PreToolUse` hooks, each on one tool path. Neither ever returns allow, so every other host rule still applies; malformed input fails closed. Install steps, exact coverage, and how to test each without a real secret: [`hooks/README.md`](hooks/README.md).
+
+- [`hooks/claude-code/pretooluse-secrets.py`](hooks/claude-code/pretooluse-secrets.py), on the `Bash` tool: denies a shell command that contains a literal credential (the secret-blocking patterns), with a plain-language reason that never echoes the value. The escape hatch for a false positive is to reference the value from an environment variable, or to run the command yourself; there is no bypass flag.
+- [`hooks/claude-code/pretooluse-write-private-key.py`](hooks/claude-code/pretooluse-write-private-key.py), on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit`: denies content that adds a PEM private-key block. It does not scan shell commands, reads, prompts, or other tools.
+
+For your own agent loop, [`hooks/harness/secret_gate.py`](hooks/harness/secret_gate.py) is the credential check as a plain function; see [For agent harnesses](#for-agent-harnesses).
 
 ## The reference MCP server
 
@@ -104,7 +109,7 @@ It serves generic defaults only. No company overlay is loaded, and none ever wil
 
 Data handling: it receives only the topic, plan text, template kind, or category a client sends, stores nothing, and logs no request content. Responses carry `Cache-Control: no-store`.
 
-Protections in front of it (Cloudflare, scoped to this one hostname): a rate limit of 60 requests per 10 seconds per client IP per Cloudflare location, then HTTP 429 for 10 seconds; only `/mcp`, `/health`, and `/` are allowed, everything else gets HTTP 403 at the edge; TLS is enforced end to end. The origin only accepts connections from Cloudflare's published IP ranges; a direct request to it returns HTTP 403.
+In front of it: a per-client rate limit (60 requests per 10 seconds, then HTTP 429), a path allowlist, TLS end to end, and an origin that accepts connections only from the edge. What each protection does and how it was verified: [`deploy/README.md`](deploy/README.md).
 
 Claude Code:
 
@@ -182,76 +187,21 @@ Skills use the [Agent Skills](https://agentskills.io/specification) format exact
 
 A recognized file layout helps distribution; it does not guarantee that a host loads every instruction or reference. Follow the host's current installation guidance and record the activation and behavioral checks you actually perform.
 
-## Other ways to install
-
-```bash
-# Install globally so every project picks it up
-npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-security-core --global
-
-# Pick a specific agent (skills.sh defaults to detecting installed agents)
-npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-safe-building --agent cursor
-
-# List what's available without installing
-npx skills add catpilotai/catpilot-ai-guardrails --list
-
-# Or skip the CLI entirely: copy the skill in by hand
-git clone https://github.com/catpilotai/catpilot-ai-guardrails.git
-cp -r catpilot-ai-guardrails/skills/catpilot-security-core ~/.claude/skills/
-cp -r catpilot-ai-guardrails/skills/catpilot-safe-building ~/.claude/skills/
-```
-
-### Hermes Agent
-
-[Hermes Agent](https://hermes-agent.nousresearch.com) (Nous Research) has its own native skills system that reads from skills.sh. From inside Hermes:
-
-```
-/skills install catpilotai/catpilot-ai-guardrails/catpilot-security-core
-```
-
 ## Versioning
 
-- **Repository releases** are CalVer (`YYYY.MM.DD`). Current release: **`2026.09.13`**.
+- **Repository releases** are CalVer (`YYYY.MM.DD`), listed on the Releases page and in the badge above, with the details in [`CHANGELOG.md`](CHANGELOG.md).
 - **Source skill components** inside a release are semver. `cloud-cli-safety` is at `1.0.1` after the Azure environment-variable correction; every other component is at `1.0.0`. The bundle frontmatter records which versions of which components shipped.
-- The core bundle is `2026.09.14`; the safe-building bundle is `2026.09.13`. The core bundle's earlier `2026.09.13` step changed only its description, preamble, and a new `mode: advisory` field.
-- The `2026.09.11` release added the evaluation foundation and protection contract. The `2026.06.25` release added framework-level agentic/OpenClaw guardrails under `frameworks/`.
+- The core bundle is `2026.09.14`; the safe-building bundle is `2026.09.13`. A bundle's version changes only when its content does.
 
 CalVer matches the cadence of a content repo: each release is a dated snapshot, and the date is the meaningful signal for users and auditors. Semver on individual components carries the breaking-change semantics that matter for downstream consumers.
 
 ## How it's built
 
-```
-src/skills/                 # source components (semver, edited by hand)
-  core/
-    bundle.toml             # tier config: name, version, description, mode
-    secret-blocking/SKILL.md
-    ...                     # nine components
-  safe-building/
-    bundle.toml             # plus [bundle.slots] defaults and [bundle.targets]
-    data-in-prompts/SKILL.md
-    ...                     # eight components, plain language, {{slot}} markers
-skills/                     # shipped bundles (CalVer, generated)
-  catpilot-security-core/SKILL.md
-  catpilot-safe-building/SKILL.md
-dist/2026.09.13/            # per-host artifacts (generated): zip, paste blocks, web page
-hooks/claude-code/          # the one hook, its example settings, and its README
-hooks/harness/              # the same check as a function for your own agent loop
-mcp-server/                 # reference MCP server: four read-only tools over the checkpoints and an overlay
-tools/
-  bundle.py                 # deterministic bundler: --target all, --overlay, --check
-  targets.py                # per-host renderers
-  validate_skill.py         # skill directory validator
-  validate_overlay.py       # organization overlay validator
-  validate_evals.py         # cases.json validator
-  eval.py                   # safe-building with/without runner
-docs/spec/                  # format, packaging, overlay specs; V2 postmortem
-evals/                      # cases.json, scenarios/, reports/
-```
-
-`tools/bundle.py` reads source components, aggregates frontmatter (severity = max, control mappings = sorted union, `applies_to` = union with `any` collapse), fills `{{slot}}` markers from the tier's defaults, concatenates bodies in lexicographic order, and writes the shipped bundle. `--target all` renders the per-host artifacts into `dist/<release>/`. CI runs `python tools/bundle.py --check` on PRs affecting bundle inputs or outputs; if `skills/` or `dist/` drifts from `src/skills/`, the build fails with a unified diff.
+`tools/bundle.py` turns the source components under `src/skills/` into the shipped bundles under `skills/` and the per-host artifacts under `dist/<release>/`, deterministically; CI fails on drift. The directory tree and the aggregation rules: [`docs/REPOSITORY_LAYOUT.md`](docs/REPOSITORY_LAYOUT.md) and [`docs/spec/PACKAGING.md`](docs/spec/PACKAGING.md).
 
 ## Evaluation
 
-Two fixture sets, no published behavioral result yet. Commands validate the **test inputs**, not agent behavior.
+Two fixture sets and one small smoke report. The commands below validate the **test inputs**, not agent behavior.
 
 ```bash
 python3 tools/validate_evals.py                 # cases.json: core and companion development corpus
@@ -259,7 +209,7 @@ python3 tools/eval.py                           # evals/scenarios/: safe-buildin
 python3 -m unittest discover -s tests -v
 ```
 
-`tools/eval.py --execute` runs each safe-building scenario twice against a named host CLI, without and with the skill, scores responses with readable keyword heuristics, and writes a report a human reviews before it is committed under `evals/reports/`. Hosts with no CLI, such as ChatGPT, are driven by hand: `--print-prompts` gives the exact prompts, `--import` scores the collected responses. `--overlay` turns on the checks that a company's approved values were cited. The first report is scheduled with the MCP release. The [evaluation guide](evals/README.md) has the protocol and the honesty rules, and [`evals/HOST_VERIFICATION.md`](evals/HOST_VERIFICATION.md) has the per-host steps.
+`tools/eval.py --execute` runs each safe-building scenario twice against a named host CLI, without and with the skill, scores responses with readable keyword heuristics, and writes a report a human reviews before it is committed under `evals/reports/`. Hosts with no CLI, such as ChatGPT, are driven by hand: `--print-prompts` gives the exact prompts, `--import` scores the collected responses. `--overlay` turns on the checks that a company's approved values were cited. A two-scenario Codex smoke report is published under [`evals/reports/`](evals/reports/); a full with/without report is not yet. The [evaluation guide](evals/README.md) has the protocol and the honesty rules, and [`evals/HOST_VERIFICATION.md`](evals/HOST_VERIFICATION.md) has the per-host steps.
 
 ## Contributing
 
@@ -268,26 +218,11 @@ PRs welcome: propose a rule, fix a false positive, review a control mapping, add
 - Read [`docs/spec/SKILL_FORMAT.md`](./docs/spec/SKILL_FORMAT.md) for the frontmatter shape.
 - Read [`docs/spec/PACKAGING.md`](./docs/spec/PACKAGING.md) for tier conventions, targets, and bundler aggregation rules.
 - Run `python tools/bundle.py --target all` before pushing; the CI gate is strict.
-- See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the rest.
+- See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the rest; the issue forms and the pull request template carry the evidence checklist.
 
 ## Roadmap
 
-The core content baseline is shipped and maintained. This quarter's work is the safe-building wedge and honest verification, not more frameworks.
-
-| Item | Status |
-|---|---|
-| `catpilot-security-core` | shipped, nine components; maintained; no new components this quarter |
-| `catpilot-safe-building` | shipped in `2026.09.13` |
-| Per-host targets and the safe-building web page source | shipped in `2026.09.13`; the live `catpilot.ai/safe-ai-building` page ships with the site pass |
-| README contract, tested-runtimes table, one Claude Code hook | shipped in `2026.09.13` |
-| Organization-overlay schema, validator, private builds | shipped in `2026.09.13` |
-| Safe-building evaluation fixtures and with/without runner | shipped; first report with the MCP release |
-| Reference MCP server (`get_guidance`, `check_plan`, `get_template`, `list_approved`) | shipped as a self-hosted reference in `mcp-server/`; lookups verified from Claude Code and Codex on 2026-09-14; tenant-scoped, authenticated serving is the platform's work, sequenced with the design partnership |
-| Framework extensions (`catpilot-<framework>-security`) | content kept in `frameworks/`; no bundle promised this quarter |
-| Agentic loop guidance for harnesses | reference text in `frameworks/agentic/` and the harness gate in `hooks/harness/`; packaging as a bundle deferred |
-| `catpilot-security-advanced` | deferred |
-| `tools/recommend.py` | deferred |
-| HIPAA and GDPR mappings | deferred |
+What is shipped, what is deferred, and what this quarter is for: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## License
 
