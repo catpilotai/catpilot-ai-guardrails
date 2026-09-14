@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "catpilot-guardrails": {
+      "command": "python3",
+      "args": ["/absolute/path/to/catpilot-ai-guardrails/mcp-server/server.py"],
+      "env": {
+        "CATPILOT_OVERLAY_FILE": "/absolute/private/path/overlay.yaml"
+      }
+    }
+  }
+}

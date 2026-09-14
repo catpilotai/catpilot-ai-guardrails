@@ -4,7 +4,7 @@ Status: two advisory skills shipped; one narrowly scoped hook shipped and labele
 
 ## What the repository provides
 
-The public package provides local security instructions for two audiences, reference material, a deterministic bundler with per-host rendering, an organization-overlay schema and validator, one host hook, and offline evaluation tooling. None of it observes an employee's work, authenticates an organization, runs security scans automatically, or installs a mandatory execution gate on every path.
+The public package provides local security instructions for two audiences, reference material, a deterministic bundler with per-host rendering, an organization-overlay schema and validator, one host hook, a self-hosted reference MCP server, and offline evaluation tooling. None of it observes an employee's work, authenticates an organization, runs security scans automatically, or installs a mandatory execution gate on every path.
 
 The baseline does not call Catpilot or send telemetry. Installing it does not change the AI host's own data-handling terms or permissions. Do not put confidential company material in this public repository or a public fork; an overlay lives outside the tree, and the bundler refuses to build if one is inside it.
 
@@ -42,8 +42,9 @@ Do not replace these states with one green “protected” badge. Report unknown
 | The hook blocks a command | README, tested-runtimes table; `evals/reports/` verification notes | A tool-result trace showing the host applied the hook's deny decision, plus a control run without the hook |
 | The safe-building skill changes responses | `evals/reports/<release>.md` when one exists | The with/without runner in `tools/eval.py`, heuristic scores, human review |
 | Company values are current | The private bundle's frontmatter (`metadata.catpilot.overlay`) | The overlay's `reviewed_on` and `expires_on`, checked at build time |
+| A host called the reference MCP server | README, tested-runtimes "Coaching (MCP)" column; `evals/reports/` verification notes | A tool call and its result in the host's own transcript, with the server's `unknown_policy` and `policy_source` fields in the result |
 
-Anything not in that table is not claimed. In particular: no coaching events, no MCP server, no coverage of file writes by the hook, no Cursor hook, no verified activation on Cursor, Codex, Claude.ai, or any skills.sh host beyond those listed.
+Anything not in that table is not claimed. In particular: no coaching events (a lookup the model chose to make is not a triggered event), no authentication or tenant isolation in the reference MCP server, no coverage of file writes by the hook, no Cursor hook, and no verified activation on Cursor, Claude.ai, or any skills.sh host beyond those listed.
 
 ## Company policy boundaries
 

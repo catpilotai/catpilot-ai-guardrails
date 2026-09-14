@@ -69,21 +69,32 @@ Installable via skills.sh into 50+ runtimes; verified only on the runtimes and d
 
 | Runtime | Skill loads | Coaching (MCP) | Enforcement (hook) | Last verified | Release |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code 2.1.241 | yes: a project `.claude/skills/` install is listed in the session init | not shipped | yes, `Bash` `PreToolUse` hook only: a command with AWS's example key was denied; the control run without the hook executed it | 2026-09-13 | 2026.09.13 |
-| Cursor | not verified | not shipped | not tested | | |
-| Codex CLI 0.154.0 | yes, with a caveat: a project `.agents/skills/` install; on a data scenario the model named the skill and input usage rose from about 17k to over 90k tokens; the host emits no explicit load event and reads the skill on demand, not on every task | not shipped | none | 2026-09-14 | 2026.09.13 |
-| Claude.ai (individual upload or organization provisioning) | not verified | not shipped | none, advisory only | | |
-| ChatGPT (project or GPT instructions) | n/a, pasted text; manual protocol in [`evals/HOST_VERIFICATION.md`](evals/HOST_VERIFICATION.md), not yet run | not shipped | none | | |
-| Microsoft Copilot Studio | n/a, pasted text | not shipped | none | | |
-| Lovable, Bolt, Replit, v0 | n/a, pasted text | not shipped | none | | |
-| Everything else reachable through skills.sh | not verified | not shipped | none | | |
-| Your own harness | depends on how the loop loads it; not verified by Catpilot | not shipped | the credential gate on the shell path you route through it; you test it in your loop | | |
+| Claude Code 2.1.241 | yes: a project `.claude/skills/` install is listed in the session init | yes: a `list_approved` lookup over stdio, with the server connected in the session init, recorded 2026-09-14 | yes, `Bash` `PreToolUse` hook only: a command with AWS's example key was denied; the control run without the hook executed it | 2026-09-13 | 2026.09.13 |
+| Cursor | not verified | not verified | not tested | | |
+| Codex CLI 0.154.0 | yes, with a caveat: a project `.agents/skills/` install; on a data scenario the model named the skill and input usage rose from about 17k to over 90k tokens; the host emits no explicit load event and reads the skill on demand, not on every task | yes: a completed `mcp_tool_call` to `list_approved` over stdio, recorded 2026-09-14 | none | 2026-09-14 | 2026.09.13 |
+| Claude.ai (individual upload or organization provisioning) | not verified | remote transport exists; no deployment verified | none, advisory only | | |
+| ChatGPT (project or GPT instructions) | n/a, pasted text; manual protocol in [`evals/HOST_VERIFICATION.md`](evals/HOST_VERIFICATION.md), not yet run | needs a remote deployment behind your gateway; not verified | none | | |
+| Microsoft Copilot Studio | n/a, pasted text | not verified | none | | |
+| Lovable, Bolt, Replit, v0 | n/a, pasted text | not applicable | none | | |
+| Everything else reachable through skills.sh | not verified | not verified | none | | |
+| Your own harness | depends on how the loop loads it; not verified by Catpilot | call the server from the loop; not verified by Catpilot | the credential gate on the shell path you route through it; you test it in your loop | | |
 
-"Skill loads" means a host signal showed the skill available in a recorded session, not the model saying it read it. "Enforcement" means a recorded tool-result trace showed the host applying the hook's deny decision, with a control run that executed the same command without the hook. The exact commands and observations are in [`evals/reports/`](evals/reports/). A row without a date is a row without evidence; the coaching column stays "not shipped" until the reference MCP server exists.
+"Skill loads" means a host signal showed the skill available in a recorded session, not the model saying it read it. "Enforcement" means a recorded tool-result trace showed the host applying the hook's deny decision, with a control run that executed the same command without the hook. The exact commands and observations are in [`evals/reports/`](evals/reports/). A row without a date is a row without evidence. "Coaching (MCP)" means a recorded tool call from that host to the reference server, not that the host uses it in daily work.
 
 ## The one hook
 
 [`hooks/claude-code/pretooluse-secrets.py`](hooks/claude-code/pretooluse-secrets.py) is a Claude Code `PreToolUse` hook on the `Bash` tool. It scans the proposed command for the credential patterns documented in the secret-blocking component and returns a deny decision with a plain-language reason, without echoing the value. It never returns allow, and malformed input fails closed. It does not cover file writes, prompts, other tools, other hosts, or commands a person types themselves. The escape hatch for a false positive is to reference the value from an environment variable instead, or to run the command yourself; there is no bypass flag. Install steps and exact coverage: [`hooks/README.md`](hooks/README.md).
+
+## The reference MCP server
+
+A skill is text the model reads; the server in [`mcp-server/`](mcp-server/) is a tool the model calls at the moment it matters. Four read-only tools: guidance for one checkpoint, a deterministic check of a building plan, a safe starting point for a common kind of app, and what the company has approved. With no overlay configured it answers from generic defaults and says `unknown_policy: true` on every answer; with a validated, unexpired [overlay](docs/spec/OVERLAY.md) it answers with the company's values and cites their review and expiry dates. Stdio for Claude Code, Codex, and Cursor; streamable HTTP bound to localhost for anything that needs a remote server, behind your own gateway.
+
+```bash
+python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.txt
+CATPILOT_OVERLAY_FILE=/private/path/overlay.yaml python mcp-server/server.py
+```
+
+It is a reference implementation you run yourself: no authentication, no tenant isolation, no logging, no outbound calls. The tenant-scoped, authenticated version is the Catpilot platform. A lookup the model never made protects nothing; the tested-runtimes table records where a real lookup was observed. Details: [`mcp-server/README.md`](mcp-server/README.md).
 
 ## What's in the box
 
@@ -193,6 +204,7 @@ skills/                     # shipped bundles (CalVer, generated)
 dist/2026.09.13/            # per-host artifacts (generated): zip, paste blocks, web page
 hooks/claude-code/          # the one hook, its example settings, and its README
 hooks/harness/              # the same check as a function for your own agent loop
+mcp-server/                 # reference MCP server: four read-only tools over the checkpoints and an overlay
 tools/
   bundle.py                 # deterministic bundler: --target all, --overlay, --check
   targets.py                # per-host renderers
@@ -239,7 +251,7 @@ The core content baseline is shipped and maintained. This quarter's work is the 
 | README contract, tested-runtimes table, one Claude Code hook | shipped in `2026.09.13` |
 | Organization-overlay schema, validator, private builds | shipped in `2026.09.13` |
 | Safe-building evaluation fixtures and with/without runner | shipped; first report with the MCP release |
-| Reference MCP server (`get_guidance`, `check_plan`, `get_template`, `list_approved`; generic defaults in open source, tenant overlay in Plus) | next, after the design partner names the host; built for that host first, then generalized |
+| Reference MCP server (`get_guidance`, `check_plan`, `get_template`, `list_approved`) | shipped as a self-hosted reference in `mcp-server/`; lookups verified from Claude Code and Codex on 2026-09-14; tenant-scoped, authenticated serving is the platform's work, sequenced with the design partnership |
 | Framework extensions (`catpilot-<framework>-security`) | content kept in `frameworks/`; no bundle promised this quarter |
 | Agentic loop guidance for harnesses | reference text in `frameworks/agentic/` and the harness gate in `hooks/harness/`; packaging as a bundle deferred |
 | `catpilot-security-advanced` | deferred |

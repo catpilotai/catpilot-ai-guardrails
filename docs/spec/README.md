@@ -43,7 +43,7 @@
 | Three modes, advice / contextual coaching / enforcement, in every description of what the repository does. Enforcement claims only for a tested hook on a named host and path. | LOCKED | `docs/PROTECTION_CONTRACT.md`, `hooks/README.md`. |
 | Organization overlay: schema and validator public; values private; the bundler refuses to build a public bundle if an overlay is in the tree; private output goes outside the repository. | LOCKED | `OVERLAY.md`. |
 | Per-host targets rendered from the same sources into `dist/<release>/`; `--check` covers them. | LOCKED | `PACKAGING.md` §9. |
-| Reference MCP server. | DEFERRED | Not before the design partner names the host. Contract sketched in the direction document, not in code. |
+| Reference MCP server: self-hosted, four read-only tools, reads the overlay, no auth, no logging. | SHIPPED (reference) | `mcp-server/`. Reversed the earlier deferral on 2026-09-14: needed for ChatGPT admin distribution and for lookup visibility. Tenant-scoped serving is the platform's. |
 
 ## Reading order
 

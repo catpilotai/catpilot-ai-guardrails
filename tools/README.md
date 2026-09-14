@@ -28,6 +28,9 @@ Slots and overlays are in [`docs/spec/OVERLAY.md`](../docs/spec/OVERLAY.md).
 Targets are in `PACKAGING.md` §9. The bundler refuses to run the public build
 when an overlay-shaped file is inside `src/`, `skills/`, or `dist/`.
 
+The bundler also generates `mcp-server/defaults/guidance.json` for the reference
+MCP server from the same sources; `--check` reports drift in it.
+
 ## targets.py
 
 Renderers used by `bundle.py --target`: the Claude.ai zip, paste-ready
@@ -106,4 +109,4 @@ CalVer is right for the shipped artifact because this is a content repo on a rol
 ## Dependencies
 
 - Python 3.11+ (uses `tomllib` from the stdlib).
-- `pyyaml` for frontmatter and overlay parsing (`python -m pip install "pyyaml==6.0.3"`).
+- `requirements-dev.txt`, hash-locked: PyYAML for frontmatter and overlay parsing, the MCP SDK for the reference server and its contract tests. Install with `python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.txt`.

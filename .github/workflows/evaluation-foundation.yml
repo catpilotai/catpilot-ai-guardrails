@@ -6,6 +6,8 @@ on:
       - "evals/**"
       - "tools/**"
       - "hooks/**"
+      - "mcp-server/**"
+      - "requirements-dev.*"
       - "tests/**"
       - "src/skills/**"
       - ".github/workflows/evaluation-foundation.yml"
@@ -15,6 +17,8 @@ on:
       - "evals/**"
       - "tools/**"
       - "hooks/**"
+      - "mcp-server/**"
+      - "requirements-dev.*"
       - "tests/**"
       - "src/skills/**"
       - ".github/workflows/evaluation-foundation.yml"
@@ -34,7 +38,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install test dependencies
-        run: python -m pip install "pyyaml==6.0.3"
+        run: >-
+          python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.txt
       - name: Validate synthetic inputs (not agent behavior)
         run: |
           python tools/validate_evals.py

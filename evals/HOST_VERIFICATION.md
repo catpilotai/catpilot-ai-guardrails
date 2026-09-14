@@ -54,6 +54,19 @@ There is no CLI, so the protocol is manual and the scoring is imported.
 
 Results: not yet run.
 
+## The reference MCP server, per host
+
+A recorded lookup means the host's own transcript shows the tool call and the
+server's result, including `unknown_policy` and `policy_source`.
+
+- **Claude Code:** `claude -p ... --strict-mcp-config --mcp-config '{"mcpServers":{"catpilot-guardrails":{"command":"<python>","args":["<repo>/mcp-server/server.py"],"env":{"CATPILOT_OVERLAY_FILE":"<abs path>","CATPILOT_TEMPLATE_HOSTS":"intranet.example.org"}}}}' --allowedTools mcp__catpilot-guardrails__list_approved --output-format stream-json --verbose`.
+  Look for the server as `connected` in the `init` event, then a `tool_use` named `mcp__catpilot-guardrails__list_approved` and its `tool_result`.
+- **Codex:** `codex exec --json ... -c 'mcp_servers.catpilot-guardrails.command="<python>"' -c 'mcp_servers.catpilot-guardrails.args=["<repo>/mcp-server/server.py"]' -c 'mcp_servers.catpilot-guardrails.env.CATPILOT_OVERLAY_FILE="<abs path>"'`.
+  Look for an `item.completed` event whose item type is `mcp_tool_call` with `status: completed` and the result.
+- **ChatGPT, Claude.ai:** need the server reachable over HTTPS behind your gateway; not done here.
+
+Results: [`reports/2026.09.14-mcp-verification.md`](reports/2026.09.14-mcp-verification.md).
+
 ## Your own harness
 
 Not verified by Catpilot. The harness owner runs the credential gate in the
@@ -63,4 +76,5 @@ keeps that note next to the harness. See [`../hooks/harness/README.md`](../hooks
 ## Results log
 
 - 2026-09-13, Claude Code 2.1.241: skill listed in session init; hook deny and control run recorded.
+- 2026-09-14, reference MCP server over stdio: Claude Code 2.1.241 (haiku) and Codex CLI 0.154.0 (gpt-6-astra) each made a `list_approved` lookup with the synthetic example overlay and reported the overlay's hosting items with `unknown_policy: false`.
 - 2026-09-14, Codex CLI 0.154.0 with gpt-6-astra: project `.agents/skills/` install; the model named the skill and input usage rose from ~17k to 80k–94k tokens on the data scenario in two runs; no explicit host load event; ambient user-level skills were scanned in every call. Two scenarios, one run each per condition: [`reports/2026.09.14-codex-smoke.md`](reports/2026.09.14-codex-smoke.md).

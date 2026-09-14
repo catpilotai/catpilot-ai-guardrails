@@ -1,0 +1,7 @@
+# Append to ~/.codex/config.toml, or pass the same keys with `codex -c` overrides.
+[mcp_servers.catpilot-guardrails]
+command = "python3"
+args = ["/absolute/path/to/catpilot-ai-guardrails/mcp-server/server.py"]
+
+[mcp_servers.catpilot-guardrails.env]
+CATPILOT_OVERLAY_FILE = "/absolute/private/path/overlay.yaml"
