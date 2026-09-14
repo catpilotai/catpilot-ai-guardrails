@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Fixed
+
+- **`check_plan` review trigger.** A plan whose purpose involves a real sensitive-data class (employee or HR records, customer records, health, payment, government identifiers) or a credential now sets `ask_a_human: true` with a reason that names the class, matching the "stop and ask a human if" lists in the data-in-prompts and keys-and-credentials components. Before, only external audiences, health, and payment data did. Mentioning an API key drives the keys-and-credentials risk alone instead of also a duplicate data-in-prompts risk. Keyword matching still cannot tell a plan built around real records from one that mentions a data type in passing, so it flags both; this is an advisory server and a false positive costs a human a look, not a blocked action. Tests in `tests/test_mcp_tools.py`.
+
 ## [2026.09.14] — 2026-09-14
 
 Repository release covering the 2026-09-13 and 2026-09-14 work. The safe-building bundle is stamped `2026.09.13`; the core bundle is `2026.09.14`.
