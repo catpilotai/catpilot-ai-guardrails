@@ -45,6 +45,7 @@ import difflib
 import hashlib
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import tomllib
@@ -137,17 +138,52 @@ class SourceSkill:
 # Parsing
 
 
+class StrictLoader(yaml.SafeLoader):
+    """SafeLoader that rejects duplicate mapping keys instead of keeping the last one."""
+
+
+def _strict_mapping(loader, node, deep=False):
+    loader.flatten_mapping(node)
+    result = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, str):
+            raise ValueError(f"YAML mapping keys must be strings, got {key!r}")
+        if key in result:
+            raise ValueError(f"duplicate YAML key {key!r}")
+        result[key] = loader.construct_object(value_node, deep=deep)
+    return result
+
+
+StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _strict_mapping)
+
+
+def reject_unsafe_tree(root: Path) -> None:
+    """Refuse a tree that contains symlinks or special files. Never follows a link."""
+    if root.is_symlink():
+        raise ValueError(f"symlinks are not allowed: {root}")
+    if not root.exists():
+        return
+    for item in [root, *sorted(root.rglob("*"))]:
+        mode = item.lstat().st_mode
+        if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            raise ValueError(f"only regular files and directories are allowed: {item}")
+
+
 def split_frontmatter(text: str) -> tuple[dict, str]:
     m = re.match(r"^---\n(.*?)\n---\n(.*)$", text, re.DOTALL)
     if not m:
         raise ValueError("missing YAML frontmatter")
-    fm = yaml.safe_load(m.group(1)) or {}
+    fm = yaml.load(m.group(1), Loader=StrictLoader)
+    if fm is None:
+        fm = {}
     if not isinstance(fm, dict):
         raise ValueError("frontmatter must be a mapping")
     return fm, m.group(2)
 
 
 def load_source_skill(skill_dir: Path) -> SourceSkill:
+    reject_unsafe_tree(skill_dir)
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.is_file():
         raise FileNotFoundError(f"no SKILL.md at {skill_md}")
@@ -579,6 +615,7 @@ def copy_companions(src_skill: Path, dst_bundle: Path, namespace: str) -> None:
 def discover_tiers(src_root: Path | None = None) -> list[Path]:
     """Return tier directories under src/skills/ that contain a bundle.toml."""
     src_root = src_root or SRC_ROOT
+    reject_unsafe_tree(src_root)
     out = []
     for child in sorted(src_root.iterdir()):
         if not child.is_dir():
@@ -599,6 +636,7 @@ def calver_date(version: str) -> dt.date:
 
 
 def load_bundle_cfg(tier_dir: Path) -> dict:
+    reject_unsafe_tree(tier_dir)
     document = tomllib.loads((tier_dir / "bundle.toml").read_text(encoding="utf-8"))
     cfg = document.get("bundle")
     if not isinstance(cfg, dict):
@@ -611,6 +649,8 @@ def load_bundle_cfg(tier_dir: Path) -> dict:
             raise ValueError(f"{tier_dir}/bundle.toml: {key} is required")
     if len(cfg["name"]) > 64 or not NAME_RE.match(cfg["name"]):
         raise ValueError(f"{tier_dir}/bundle.toml: bundle name {cfg['name']!r} fails the skill name grammar")
+    if len(cfg["tier"]) > 64 or not NAME_RE.match(cfg["tier"]):
+        raise ValueError(f"{tier_dir}/bundle.toml: tier {cfg['tier']!r} fails the skill name grammar")
     if len(cfg["description"].strip()) > 1024:
         raise ValueError(f"{tier_dir}/bundle.toml: description exceeds 1024 characters")
     version = cfg["version"]
@@ -718,7 +758,13 @@ def build_tier(
         fm["description"] = (fm["description"] + f" Includes reviewed company values for {overlay['organization']}.")[:1024]
     rendered = render_skill_md(fm, body)
 
+    # Every input is validated above; only now touch the output tree, and never
+    # follow a link or delete anything outside the output root.
+    reject_unsafe_tree(dist_root)
+    dist_root.mkdir(parents=True, exist_ok=True)
     bundle_dir = dist_root / bundle_name
+    if bundle_dir.resolve().parent != dist_root.resolve():
+        raise ValueError(f"bundle output {bundle_dir} escapes {dist_root}")
     if bundle_dir.exists():
         shutil.rmtree(bundle_dir)
     bundle_dir.mkdir(parents=True)
@@ -783,6 +829,7 @@ def cmd_build(tier_filter: str | None, target: str | None) -> int:
 
 
 def _hash_tree(root: Path) -> dict[str, str]:
+    reject_unsafe_tree(root)
     out: dict[str, str] = {}
     if not root.exists():
         return out

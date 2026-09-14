@@ -1,0 +1,11 @@
+# Weekly update proposals for the pinned GitHub Actions SHAs and the hash-locked dev requirements.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
