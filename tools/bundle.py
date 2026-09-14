@@ -363,6 +363,23 @@ def overlay_slot_values(overlay: dict, defaults: dict) -> dict:
     return values
 
 
+def overlay_values_block(overlay: dict) -> str:
+    """Compact company-values paragraph for paste-size targets built from an overlay."""
+    def join(items: list[str]) -> str:
+        return "; ".join(i.rstrip(".") for i in items)
+    return (
+        f"Company values for {overlay['organization']}, reviewed {overlay['reviewed_on'].isoformat()}, "
+        f"expire {overlay['expires_on'].isoformat()}; after that date treat them as unknown. Who to ask: {overlay['owner']}. "
+        f"Never in prompts, uploads, or tests: {join(overlay['data_classes']['never_in_prompts'])}. "
+        f"Needs the data owner's approval: {join(overlay['data_classes']['ok_with_approval'])}. "
+        f"Fine to use: {join(overlay['data_classes']['ok'])}. "
+        f"Approved hosting: {join(overlay['hosting']['approved'])}. Not approved: {join(overlay['hosting']['not_approved'])}. "
+        f"Approved services: {join(overlay['services']['approved'])}. Needs review first: {join(overlay['services']['needs_review'])}. "
+        f"Sign-in default: {overlay['identity']['default'].rstrip('.')}. Never: {join(overlay['identity']['never'])}. "
+        f"Always ask before continuing when: {join(overlay['review_triggers'])}."
+    )
+
+
 def slugify(text: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     if not slug:
@@ -650,6 +667,7 @@ def build_tier(
     with_targets: bool = False,
     targets_root: Path | None = None,
     target_filter: str = "all",
+    install_source: str | None = None,
 ) -> Path:
     cfg = load_bundle_cfg(tier_dir)
     skills = load_tier_skills(tier_dir)
@@ -690,12 +708,21 @@ def build_tier(
         copy_companions(s.path, bundle_dir, namespace=s.id)
 
     enabled = list(cfg.get("targets", {}).get("enabled", []))
-    if with_targets and enabled and overlay is None:
+    if with_targets and enabled:
         if target_filter != "all":
             enabled = [t for t in enabled if t == target_filter]
         rendered_bodies = {s.id: render_slots(s.body, values, s.id) for s in skills}
-        release_dir = (targets_root or TARGETS_ROOT) / cfg["version"]
-        targets_module.render_all(cfg, skills, rendered_bodies, rendered, release_dir, enabled)
+        if overlay is None:
+            release_dir = (targets_root or TARGETS_ROOT) / cfg["version"]
+            targets_module.render_all(cfg, skills, rendered_bodies, rendered, release_dir, enabled)
+        else:
+            hosts_dir = dist_root / f"{bundle_name}-hosts"
+            if hosts_dir.exists():
+                shutil.rmtree(hosts_dir)
+            targets_module.render_all(
+                cfg, skills, rendered_bodies, rendered, hosts_dir, [t for t in enabled if t != "web"],
+                bundle_name=bundle_name, values_block=overlay_values_block(overlay), install_source=install_source or "<your private repository>",
+            )
     return bundle_dir
 
 
@@ -780,7 +807,7 @@ def cmd_check() -> int:
     return 0
 
 
-def cmd_private(overlay_path: Path, private_out: Path | None, allow_hosts: list[str], tier_filter: str | None) -> int:
+def cmd_private(overlay_path: Path, private_out: Path | None, allow_hosts: list[str], tier_filter: str | None, install_source: str | None = None) -> int:
     private_out = (private_out or DEFAULT_PRIVATE_OUT).expanduser().resolve()
     repo = REPO_ROOT.resolve()
     if private_out == repo or repo in private_out.parents:
@@ -804,8 +831,11 @@ def cmd_private(overlay_path: Path, private_out: Path | None, allow_hosts: list[
         return 2
     private_out.mkdir(parents=True, exist_ok=True)
     for tier in tiers:
-        out = build_tier(tier, private_out, overlay=overlay, overlay_bytes=raw)
+        out = build_tier(tier, private_out, overlay=overlay, overlay_bytes=raw, with_targets=True, install_source=install_source)
         print(f"built private bundle {out} (reviewed {overlay['reviewed_on']}, expires {overlay['expires_on']})")
+        hosts = out.parent / f"{out.name}-hosts"
+        if hosts.exists():
+            print(f"rendered private per-host blocks in {hosts}")
     print("Keep this output in private storage. Do not commit it to a public repository.")
     return 0
 
@@ -818,12 +848,13 @@ def main(argv: list[str]) -> int:
     p.add_argument("--overlay", type=Path, help="organization overlay YAML; renders a private bundle instead of the public one")
     p.add_argument("--private-out", type=Path, help="directory for private bundles; must be outside the repository (default ../private-skills)")
     p.add_argument("--allow-host", action="append", default=[], help="hostname allowed in overlay templates[].location (repeatable)")
+    p.add_argument("--install-source", help="with --overlay: the private repository a builder installs from, e.g. acme/ai-guidance (used in generated install commands)")
     args = p.parse_args(argv)
     try:
         if args.check:
             return cmd_check()
         if args.overlay:
-            return cmd_private(args.overlay, args.private_out, args.allow_host, args.tier)
+            return cmd_private(args.overlay, args.private_out, args.allow_host, args.tier, args.install_source)
         if args.private_out:
             print("INVALID: --private-out requires --overlay", file=sys.stderr)
             return 2

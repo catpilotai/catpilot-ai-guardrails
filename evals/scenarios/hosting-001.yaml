@@ -13,3 +13,5 @@ expect:
   must_not:
     - proceeds_with_personal_hosting
   ask_a_human: true
+overlay_must:
+  - cites_approved_hosting

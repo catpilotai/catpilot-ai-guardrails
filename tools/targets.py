@@ -125,12 +125,16 @@ def preamble_digest(preamble: str) -> tuple[str, list[str], str]:
 # Condensed text (paste targets)
 
 
-def condensed(cfg: dict, digests: list[dict], preamble_rendered: str, release: str, *, max_do: int = 3, max_stop: int = 3) -> str:
+def condensed(cfg: dict, digests: list[dict], preamble_rendered: str, release: str, *, max_do: int = 3, max_stop: int = 3, values_block: str | None = None, name: str | None = None) -> str:
     """The paste-size rendering: coaching preamble, then per component the first
     question, up to max_do safe alternatives, and up to max_stop stop triggers."""
     lede, bullets, notice = preamble_digest(preamble_rendered)
+    name = name or cfg["name"]
+    if values_block:
+        # Company values take room; keep two safe alternatives per checkpoint.
+        max_do = min(max_do, 2)
     out = [
-        f"Catpilot safe building guidance for an AI assistant ({cfg['name']} {release}, {REPO_URL}). "
+        f"Catpilot safe building guidance for an AI assistant ({name} {release}, {REPO_URL}). "
         "Advisory: it shapes what the assistant says. It does not monitor, block, review, or approve anything.",
         "",
         lede,
@@ -138,13 +142,15 @@ def condensed(cfg: dict, digests: list[dict], preamble_rendered: str, release: s
         "How to coach: " + " ".join(b.rstrip(".") + "." for b in bullets),
         "",
     ]
+    if values_block:
+        out += [values_block.strip(), ""]
     for n, d in enumerate(digests, 1):
         out.append(f"{n}. {d['title']}")
         out.append(f"Ask: {d['ask']}")
         out.append("Do: " + " ".join(item.rstrip(".") + "." for item in d["do"][:max_do]))
         out.append("Stop and ask a human if: " + "; ".join(item.rstrip(".") for item in d["stop"][:max_stop]) + ".")
         out.append("")
-    if notice:
+    if notice and not values_block:
         out.append(notice)
     text = "\n".join(out).rstrip() + "\n"
     if len(text) > PASTE_LIMIT - PASTE_HEADROOM:
@@ -152,12 +158,12 @@ def condensed(cfg: dict, digests: list[dict], preamble_rendered: str, release: s
     return text
 
 
-def _md_header(cfg: dict, release: str, where: str) -> str:
-    return f"<!-- Catpilot safe building · {cfg['name']} {release} · {where} · {REPO_URL} -->\n\n"
+def _md_header(name: str, release: str, where: str) -> str:
+    return f"<!-- Catpilot safe building · {name} {release} · {where} · {REPO_URL} -->\n\n"
 
 
-def _block(cfg: dict, release: str, body: str) -> str:
-    return f"## Safe building with AI (Catpilot {cfg['name']} {release})\n\n" + body
+def _block(name: str, release: str, body: str) -> str:
+    return f"## Safe building with AI (Catpilot {name} {release})\n\n" + body
 
 
 # --------------------------------------------------------------------------
@@ -169,15 +175,15 @@ def calver_tuple(release: str) -> tuple[int, int, int]:
     return int(core[0]), int(core[1]), int(core[2]) if len(core) > 2 else 1
 
 
-def claude_zip(cfg: dict, release: str, bundle_skill_md: str) -> bytes:
+def claude_zip(name: str, release: str, bundle_skill_md: str) -> bytes:
     y, m, d = calver_tuple(release)
     stamp = (y, m, d, 0, 0, 0)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        folder = zipfile.ZipInfo(f"{cfg['name']}/", date_time=stamp)
+        folder = zipfile.ZipInfo(f"{name}/", date_time=stamp)
         folder.external_attr = (0o755 << 16) | 0x10
         zf.writestr(folder, b"")
-        info = zipfile.ZipInfo(f"{cfg['name']}/SKILL.md", date_time=stamp)
+        info = zipfile.ZipInfo(f"{name}/SKILL.md", date_time=stamp)
         info.compress_type = zipfile.ZIP_DEFLATED
         info.external_attr = 0o644 << 16
         zf.writestr(info, bundle_skill_md.encode("utf-8"))
@@ -321,46 +327,49 @@ def web_page(cfg: dict, digests: list[dict], paste: str, release: str, npx_comma
 # Rendering
 
 
-def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_md: str, out_dir: Path, enabled: list[str]) -> list[Path]:
+def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_md: str, out_dir: Path, enabled: list[str], *, bundle_name: str | None = None, values_block: str | None = None, install_source: str = "catpilotai/catpilot-ai-guardrails") -> list[Path]:
+    """Render the enabled targets. For a private build pass bundle_name, values_block, and the private install source."""
     release = cfg["version"]
+    name = bundle_name or cfg["name"]
+    private = values_block is not None
     ordered = sorted(skills, key=lambda s: s.id)
     digests = [digest(s, rendered_bodies[s.id]) for s in ordered]
     # The preamble as rendered inside the bundle body (slots resolved).
     body_start = bundle_skill_md.split("\n---\n\n", 1)[1] if "\n---\n\n" in bundle_skill_md else bundle_skill_md
     preamble_rendered = body_start.split("\n---\n", 1)[0]
-    paste = condensed(cfg, digests, preamble_rendered, release)
-    npx_command = f"npx skills add catpilotai/catpilot-ai-guardrails --skill {cfg['name']}"
+    paste = condensed(cfg, digests, preamble_rendered, release, values_block=values_block, name=name)
+    npx_command = f"npx skills add {install_source} --skill {name}"
 
     files: dict[str, bytes] = {}
     if "claude-zip" in enabled:
-        files[f"{cfg['name']}.zip"] = claude_zip(cfg, release, bundle_skill_md)
+        files[f"{name}.zip"] = claude_zip(name, release, bundle_skill_md)
     if "chatgpt" in enabled:
-        files["chatgpt-project-instructions.md"] = (_md_header(cfg, release, "Paste into a ChatGPT Project's Instructions or a Custom GPT's Instructions") + paste).encode("utf-8")
+        files["chatgpt-project-instructions.md"] = (_md_header(name, release, "Paste into a ChatGPT Project's Instructions or a Custom GPT's Instructions") + paste).encode("utf-8")
     if "copilot" in enabled:
-        files["copilot-agent-instructions.md"] = (_md_header(cfg, release, "Paste into a Copilot Studio agent's Instructions") + paste).encode("utf-8")
+        files["copilot-agent-instructions.md"] = (_md_header(name, release, "Paste into a Copilot Studio agent's Instructions") + paste).encode("utf-8")
         stub = {
             "$schema": "https://developer.microsoft.com/json-schemas/copilot/declarative-agent/v1.5/schema.json",
             "version": "v1.5",
             "name": "Safe building coach",
-            "description": f"Plain-language security guidance for people building apps, automations, dashboards, and data tools with AI. Advisory only. Catpilot {cfg['name']} {release}.",
+            "description": f"Plain-language security guidance for people building apps, automations, dashboards, and data tools with AI. Advisory only. Catpilot {name} {release}.",
             "instructions": paste,
         }
         files["copilot-declarative-agent.stub.json"] = (json.dumps(stub, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     if "agents-md" in enabled:
-        files["AGENTS.md"] = (_md_header(cfg, release, "Append to the project's AGENTS.md") + _block(cfg, release, paste)).encode("utf-8")
+        files["AGENTS.md"] = (_md_header(name, release, "Append to the project's AGENTS.md") + _block(name, release, paste)).encode("utf-8")
     if "copilot-instructions" in enabled:
-        files["copilot-instructions.md"] = (_md_header(cfg, release, "Append to .github/copilot-instructions.md") + _block(cfg, release, paste)).encode("utf-8")
+        files["copilot-instructions.md"] = (_md_header(name, release, "Append to .github/copilot-instructions.md") + _block(name, release, paste)).encode("utf-8")
     if "lovable" in enabled:
-        files["lovable-knowledge.md"] = (_md_header(cfg, release, "Paste into Lovable: Project → Settings → Knowledge") + paste).encode("utf-8")
+        files["lovable-knowledge.md"] = (_md_header(name, release, "Paste into Lovable: Project → Settings → Knowledge") + paste).encode("utf-8")
     if "bolt" in enabled:
-        files["bolt-prompt.txt"] = (f"Catpilot safe building · {cfg['name']} {release} · save as .bolt/prompt · {REPO_URL}\n\n" + paste).encode("utf-8")
+        files["bolt-prompt.txt"] = (f"Catpilot safe building · {name} {release} · save as .bolt/prompt · {REPO_URL}\n\n" + paste).encode("utf-8")
     if "replit" in enabled:
-        files["replit-instructions.md"] = (_md_header(cfg, release, "Paste into the Replit Agent's instructions or replit.md") + paste).encode("utf-8")
+        files["replit-instructions.md"] = (_md_header(name, release, "Paste into the Replit Agent's instructions or replit.md") + paste).encode("utf-8")
     if "v0" in enabled:
-        files["v0-instructions.md"] = (_md_header(cfg, release, "Paste into v0: Project settings → Instructions") + paste).encode("utf-8")
-    if "web" in enabled:
+        files["v0-instructions.md"] = (_md_header(name, release, "Paste into v0: Project settings → Instructions") + paste).encode("utf-8")
+    if "web" in enabled and not private:
         files["web/safe-ai-building.html"] = web_page(cfg, digests, paste, release, npx_command).encode("utf-8")
-    files["README.md"] = dist_readme(cfg, release, sorted(files)).encode("utf-8")
+    files["README.md"] = dist_readme(cfg, release, sorted(files), name=name, private=private, npx_command=npx_command).encode("utf-8")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
@@ -372,9 +381,11 @@ def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_
     return written
 
 
-def dist_readme(cfg: dict, release: str, names: list[str]) -> str:
+def dist_readme(cfg: dict, release: str, names: list[str], *, name: str | None = None, private: bool = False, npx_command: str | None = None) -> str:
+    name = name or cfg["name"]
+    npx_command = npx_command or f"npx skills add catpilotai/catpilot-ai-guardrails --skill {name}"
     rows = {
-        f"{cfg['name']}.zip": ("Claude.ai (individual or organization)", "Customize → Skills, or Organization settings → Skills. The zip holds one folder with SKILL.md inside."),
+        f"{name}.zip": ("Claude.ai (individual or organization)", "Customize → Skills, or Organization settings → Skills. The zip holds one folder with SKILL.md inside."),
         "chatgpt-project-instructions.md": ("ChatGPT", "Project → Instructions, or a Custom GPT's Instructions. Under 8,000 characters."),
         "copilot-agent-instructions.md": ("Microsoft Copilot Studio", "Agent → Instructions. Under 8,000 characters."),
         "copilot-declarative-agent.stub.json": ("Microsoft 365 declarative agent", "Manifest stub with the same instructions. Validate against Microsoft's current schema, then publish through the tenant's agent catalog."),
@@ -387,11 +398,22 @@ def dist_readme(cfg: dict, release: str, names: list[str]) -> str:
         "web/safe-ai-building.html": ("catpilot.ai/safe-ai-building", "Standalone source page. Port into the site's framework; do not serve this file as the site."),
     }
     lines = [
-        f"# {cfg['name']} {release}: per-host artifacts",
+        f"# {name} {release}: per-host artifacts",
         "",
-        "Generated by `python tools/bundle.py --target all` from `src/skills/` in",
-        f"{REPO_URL}. Every file carries this release in its header. Do not edit these;",
-        "edit the source components and rebuild.",
+    ]
+    if private:
+        lines += [
+            "PRIVATE. Generated from a company overlay by `python tools/bundle.py --overlay ...`.",
+            "These files contain the company's reviewed values. Keep them in private storage,",
+            "never in a public repository, and regenerate them when the overlay is re-reviewed.",
+        ]
+    else:
+        lines += [
+            "Generated by `python tools/bundle.py --target all` from `src/skills/` in",
+            f"{REPO_URL}. Every file carries this release in its header. Do not edit these;",
+            "edit the source components and rebuild.",
+        ]
+    lines += [
         "",
         "These are guidance the tool reads. They do not monitor, block, or review",
         "anything, and pasting them is not evidence that a host loaded them.",
@@ -399,12 +421,12 @@ def dist_readme(cfg: dict, release: str, names: list[str]) -> str:
         "| File | Host | Where it goes |",
         "| --- | --- | --- |",
     ]
-    for name in names:
-        host, where = rows.get(name, ("", ""))
-        lines.append(f"| `{name}` | {host} | {where} |")
+    for filename in names:
+        host, where = rows.get(filename, ("", ""))
+        lines.append(f"| `{filename}` | {host} | {where} |")
     lines += [
         "",
-        f"Coding agents that read Agent Skills install the same content with `npx skills add catpilotai/catpilot-ai-guardrails --skill {cfg['name']}`.",
+        f"Coding agents that read Agent Skills install the same content with `{npx_command}`.",
         "",
     ]
     return "\n".join(lines)

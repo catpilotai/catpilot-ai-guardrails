@@ -124,3 +124,26 @@ class PrivateBuildTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrivateHostBlockTests(unittest.TestCase):
+    def test_private_build_renders_host_blocks_with_company_values(self):
+        overlay, raw = load_example()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = bundle.build_tier(TIER, Path(tmp), overlay=overlay, overlay_bytes=raw, with_targets=True, install_source="acme/ai-guidance")
+            hosts = Path(tmp) / f"{out.name}-hosts"
+            names = {p.name for p in hosts.iterdir()}
+            self.assertIn("chatgpt-project-instructions.md", names)
+            self.assertIn(f"{out.name}.zip", names)
+            self.assertNotIn("web", names)
+            block = (hosts / "chatgpt-project-instructions.md").read_text()
+            self.assertLessEqual(len(block), 8000)
+            for expected in ("Company values for Example Org", "Internal App Platform", "security-review@example.org", out.name):
+                self.assertIn(expected, block)
+            self.assertNotIn("{{", block)
+            readme = (hosts / "README.md").read_text()
+            self.assertIn("PRIVATE", readme)
+            self.assertIn("npx skills add acme/ai-guidance --skill " + out.name, readme)
+            import zipfile
+            with zipfile.ZipFile(hosts / f"{out.name}.zip") as zf:
+                self.assertEqual(zf.namelist(), [f"{out.name}/", f"{out.name}/SKILL.md"])

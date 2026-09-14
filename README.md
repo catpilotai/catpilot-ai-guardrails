@@ -9,12 +9,13 @@
 
 ![Release](https://img.shields.io/badge/release-2026.09.13-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Format](https://img.shields.io/badge/format-Agent%20Skills-7B3FE4)
 
-Security skills for AI coding agents and for people building apps with AI assistants, in the [Agent Skills](https://agentskills.io/specification) format. Two skills, one repository, no telemetry.
+Security skills for AI coding agents, for people building apps with AI assistants, and for the domain-specific agent harnesses teams build around both, in the [Agent Skills](https://agentskills.io/specification) format. Two skills, one repository, no telemetry.
 
 | Skill | Who it is for | What it covers |
 | --- | --- | --- |
 | **`catpilot-security-core`** | Coding agents working in real codebases | Nine engineering components: cloud CLI, databases, local shell, Docker, hardcoded secrets, secrets lifecycle, supply chain, PII and test data, secure-coding patterns. |
 | **`catpilot-safe-building`** | A person, often not a developer, building an app, automation, dashboard, or data tool with an AI assistant, and the assistant helping them | Eight plain-language checkpoints that mirror Catpilot's Safe AI-assisted building course: data in prompts, access and identity, hosting, sharing, keys and credentials, third-party services, untrusted input, when to ask a human. |
+| **Either skill, plus `hooks/` and `frameworks/agentic/`** | A harness: the loop a team builds around a model for one job | Standing guidance for every iteration of the loop, a credential gate the loop enforces on its shell tool, and reference rules for retries, scheduled runs, delegation, and self-modification. See [For agent harnesses](#for-agent-harnesses). |
 
 Born from a real incident where an agent wiped production environment variables with a partial YAML update. The rules draw on incidents like that one and are used at [Catpilot.ai](https://catpilot.ai). They are MIT-licensed guidance, not a guarantee that an agent will follow them.
 
@@ -40,6 +41,16 @@ Nobody has to open a terminal.
 
 What it does and does not do: guidance the tool can reference while you build. It is not monitoring, not enforcement, and not a substitute for your company's own controls.
 
+## For agent harnesses
+
+Domain-specific harnesses are being built everywhere: a loop that plans, calls a tool, checks the result, and repeats, wrapped around a model for one job, on the Claude Agent SDK, the OpenAI Agents SDK, LangGraph, CrewAI, or plain code. Hermes Agent and OpenClaw are harnesses with native skill support; most in-house loops have none. The loop owns the tool boundary, and that is the one place enforcement is possible.
+
+- **Standing guidance for the loop.** Load `catpilot-security-core` for engineering work, or `catpilot-safe-building` for a loop that serves non-engineers, as system-level instructions or through the SDK's skills support. This is advice: it shapes what the model proposes on every iteration.
+- **A gate on the shell tool.** [`hooks/harness/secret_gate.py`](hooks/harness/secret_gate.py) is the Claude Code hook's credential check as a plain function. Call it before a command runs; the model gets the reason as the tool result and nothing executes. This is enforcement on the path you route through it, and only that path. How to wire it and what you may claim afterwards: [`hooks/harness/README.md`](hooks/harness/README.md).
+- **Rules for the loop itself.** [`frameworks/agentic/FULL_AGENTIC.md`](frameworks/agentic/FULL_AGENTIC.md) covers what a one-line gate cannot: tool-execution sandboxing, human-in-the-loop for destructive operations, memory and context isolation, prompt-injection defense, multi-agent coordination and authentication, rate limiting and runaway prevention, scheduled-task idempotency, agent identity integrity, and tool-loop discipline with retry caps, state invalidation after every state-changing call, verifier-backed progress, and delegation-depth caps. Reference text today, not a packaged bundle.
+
+A harness that loads the text has advice. A harness that gates a tool has enforcement on that tool. Write down which tool calls pass through the gate; the rest are uncovered until they do.
+
 ## What this does and does not do
 
 Three different things get called "protection". This repository uses the narrow words.
@@ -60,12 +71,13 @@ Installable via skills.sh into 50+ runtimes; verified only on the runtimes and d
 | --- | --- | --- | --- | --- | --- |
 | Claude Code 2.1.241 | yes: a project `.claude/skills/` install is listed in the session init | not shipped | yes, `Bash` `PreToolUse` hook only: a command with AWS's example key was denied; the control run without the hook executed it | 2026-09-13 | 2026.09.13 |
 | Cursor | not verified | not shipped | not tested | | |
-| Codex CLI | not verified | not shipped | none | | |
+| Codex CLI 0.154.0 | yes, with a caveat: a project `.agents/skills/` install; on a data scenario the model named the skill and input usage rose from about 17k to over 90k tokens; the host emits no explicit load event and reads the skill on demand, not on every task | not shipped | none | 2026-09-14 | 2026.09.13 |
 | Claude.ai (individual upload or organization provisioning) | not verified | not shipped | none, advisory only | | |
-| ChatGPT (project or GPT instructions) | n/a, pasted text | not shipped | none | | |
+| ChatGPT (project or GPT instructions) | n/a, pasted text; manual protocol in [`evals/HOST_VERIFICATION.md`](evals/HOST_VERIFICATION.md), not yet run | not shipped | none | | |
 | Microsoft Copilot Studio | n/a, pasted text | not shipped | none | | |
 | Lovable, Bolt, Replit, v0 | n/a, pasted text | not shipped | none | | |
 | Everything else reachable through skills.sh | not verified | not shipped | none | | |
+| Your own harness | depends on how the loop loads it; not verified by Catpilot | not shipped | the credential gate on the shell path you route through it; you test it in your loop | | |
 
 "Skill loads" means a host signal showed the skill available in a recorded session, not the model saying it read it. "Enforcement" means a recorded tool-result trace showed the host applying the hook's deny decision, with a control run that executed the same command without the hook. The exact commands and observations are in [`evals/reports/`](evals/reports/). A row without a date is a row without evidence; the coaching column stays "not shipped" until the reference MCP server exists.
 
@@ -180,6 +192,7 @@ skills/                     # shipped bundles (CalVer, generated)
   catpilot-safe-building/SKILL.md
 dist/2026.09.13/            # per-host artifacts (generated): zip, paste blocks, web page
 hooks/claude-code/          # the one hook, its example settings, and its README
+hooks/harness/              # the same check as a function for your own agent loop
 tools/
   bundle.py                 # deterministic bundler: --target all, --overlay, --check
   targets.py                # per-host renderers
@@ -203,7 +216,7 @@ python3 tools/eval.py                           # evals/scenarios/: safe-buildin
 python3 -m unittest discover -s tests -v
 ```
 
-`tools/eval.py --execute` runs each safe-building scenario twice against a named host CLI, without and with the skill, scores responses with readable keyword heuristics, and writes a report a human reviews before it is committed under `evals/reports/`. The first report is scheduled with the MCP release. The [evaluation guide](evals/README.md) has the protocol and the honesty rules.
+`tools/eval.py --execute` runs each safe-building scenario twice against a named host CLI, without and with the skill, scores responses with readable keyword heuristics, and writes a report a human reviews before it is committed under `evals/reports/`. Hosts with no CLI, such as ChatGPT, are driven by hand: `--print-prompts` gives the exact prompts, `--import` scores the collected responses. `--overlay` turns on the checks that a company's approved values were cited. The first report is scheduled with the MCP release. The [evaluation guide](evals/README.md) has the protocol and the honesty rules, and [`evals/HOST_VERIFICATION.md`](evals/HOST_VERIFICATION.md) has the per-host steps.
 
 ## Contributing
 
@@ -228,6 +241,7 @@ The core content baseline is shipped and maintained. This quarter's work is the 
 | Safe-building evaluation fixtures and with/without runner | shipped; first report with the MCP release |
 | Reference MCP server (`get_guidance`, `check_plan`, `get_template`, `list_approved`; generic defaults in open source, tenant overlay in Plus) | next, after the design partner names the host; built for that host first, then generalized |
 | Framework extensions (`catpilot-<framework>-security`) | content kept in `frameworks/`; no bundle promised this quarter |
+| Agentic loop guidance for harnesses | reference text in `frameworks/agentic/` and the harness gate in `hooks/harness/`; packaging as a bundle deferred |
 | `catpilot-security-advanced` | deferred |
 | `tools/recommend.py` | deferred |
 | HIPAA and GDPR mappings | deferred |

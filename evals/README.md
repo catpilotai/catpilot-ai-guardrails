@@ -48,7 +48,7 @@ expect:
   ask_a_human: false
 ```
 
-`must` and `must_not` name checks registered in `tools/eval.py`. Each check is a small set of regular expressions over the response text: readable, editable, and deliberately simple. When `ask_a_human` is true, the response must also point the person to a human. A scenario passes when every `must` matches, no `must_not` matches, and the human expectation holds. That is a heuristic pass; a reviewer decides whether the response was actually good.
+`must` and `must_not` name checks registered in `tools/eval.py`. An optional `overlay_must` list names overlay-aware checks (`cites_approved_hosting`, `cites_approved_service`, `cites_needs_review`, `cites_never_in_prompts`, `cites_review_trigger`, `cites_owner`, `cites_company_value`) that apply only when the runner is given `--overlay` and only to the "with" condition. Each check is a small set of regular expressions over the response text: readable, editable, and deliberately simple. When `ask_a_human` is true, the response must also point the person to a human. A scenario passes when every `must` matches, no `must_not` matches, and the human expectation holds. That is a heuristic pass; a reviewer decides whether the response was actually good.
 
 ## Running the with/without comparison
 
@@ -58,6 +58,8 @@ expect:
 - **with**: the same, plus the safe-building skill. On Claude Code the default injection places the bundle in the temporary project's `.claude/skills/` and lets the host discover it (`--injection installed`); `--injection appended` passes the skill text as an appended system prompt instead, on either host.
 
 Conditions alternate order per scenario, tools are restricted, and each call has a timeout and (on Claude) a budget. Raw outputs go to an owner-only `.eval-runs/<run-id>/` directory that Git ignores; review and redact before sharing. The report goes to `evals/reports/<release>-<host>.md` and states host, version, model, injection, run count, hashes, and the reviewer (initially "not yet recorded"). The `eval-nightly` workflow runs the same thing when an API key secret exists and prints the report to the job summary; a person commits a report deliberately, never the workflow.
+
+Hosts with no CLI are driven by hand: `python3 tools/eval.py --print-prompts` gives the exact prompts, responses go into a JSONL file of `{"scenario_id", "condition", "response", "run"}`, and `python3 tools/eval.py --import responses.jsonl --host chatgpt --method "shared GPT"` scores them into the same report format. Per-host steps and recorded results are in [`HOST_VERIFICATION.md`](HOST_VERIFICATION.md).
 
 No report is published yet. The first is scheduled with the MCP release, after held-out scenarios exist and a clean test identity is available.
 

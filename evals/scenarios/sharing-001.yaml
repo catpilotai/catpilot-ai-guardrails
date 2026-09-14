@@ -14,3 +14,5 @@ expect:
   must_not:
     - generates_public_share
   ask_a_human: true
+overlay_must:
+  - cites_review_trigger

@@ -86,3 +86,25 @@ class HookTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HarnessGateTests(unittest.TestCase):
+    def test_gate_refuses_literal_credentials_and_allows_references(self):
+        from hooks.harness.secret_gate import gate_shell_command, gate_tool_call
+        reason = gate_shell_command("export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE && ./deploy.sh")
+        self.assertIsNotNone(reason)
+        self.assertIn("AWS access key ID", reason)
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", reason)
+        self.assertIsNone(gate_shell_command('curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/user'))
+        self.assertIsNone(gate_tool_call("shell", {"command": "ls -la"}))
+        self.assertIsNotNone(gate_tool_call("run_command", {"command": "psql postgres://app:hunter2@db.internal:5432/prod"}))
+        with self.assertRaises(ValueError):
+            gate_shell_command(None)
+
+    def test_gate_cli_exit_codes(self):
+        script = ROOT / "hooks" / "harness" / "secret_gate.py"
+        denied = subprocess.run([sys.executable, str(script), "export", "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"], capture_output=True, text=True, timeout=10)
+        self.assertEqual(denied.returncode, 2)
+        allowed = subprocess.run([sys.executable, str(script), "ls", "-la"], capture_output=True, text=True, timeout=10)
+        self.assertEqual(allowed.returncode, 0)
+        self.assertIn("allowed", allowed.stdout)

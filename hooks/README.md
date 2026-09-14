@@ -56,6 +56,13 @@ URLs with embedded passwords, bearer tokens, and literal `api_key`,
 `password`, `secret`, `token`, and `DATABASE_URL` assignments. Read the
 script; it is short.
 
+## Inside your own harness
+
+The same check is available as a function for any Python loop you control:
+`hooks/harness/secret_gate.py`, documented in [`harness/README.md`](harness/README.md).
+The harness owns its tool boundary, so a gate it enforces is enforcement on
+that path; a skill it loads is still advice.
+
 ## Other hosts
 
 Cursor has a hooks facility. The same check will be ported only after it is

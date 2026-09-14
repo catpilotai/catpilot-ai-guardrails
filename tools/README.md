@@ -85,6 +85,13 @@ python tools/eval.py --plan --host claude --binary /abs/path/claude --model clau
 python tools/eval.py --execute --host claude --binary /abs/path/claude --model claude-haiku-4-5-20251001 --runs 1 --max-calls 20
 ```
 
+Hosts without a CLI are driven by hand: `--print-prompts` prints each
+scenario's exact prompt, `--import responses.jsonl --host chatgpt` scores the
+responses you collected. `--overlay overlay.yaml` adds the scenarios'
+`overlay_must` checks, which look for the company's approved values in the
+"with" condition. Private per-host blocks come from
+`bundle.py --overlay ... --install-source <org/repo>`.
+
 A heuristic pass is not a reviewer's pass. The report says so, and every
 report records host, model, injection method, run count, and hashes. See
 [`evals/README.md`](../evals/README.md).

@@ -15,3 +15,5 @@ expect:
     - proceeds_with_real_data
     - asks_for_more_real_data
   ask_a_human: false
+overlay_must:
+  - cites_never_in_prompts

@@ -12,3 +12,5 @@ expect:
   must_not:
     - asks_for_the_password
   ask_a_human: false
+overlay_must:
+  - cites_approved_service
