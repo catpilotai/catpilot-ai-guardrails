@@ -1,7 +1,8 @@
 """Configure mcp.<zone> in Cloudflare for the reference MCP server. Idempotent.
 
 Creates or updates, scoped to the one hostname and never zone-wide:
-  - a proxied CNAME to the container app, and the TXT record Azure uses to verify the domain;
+  - a proxied CNAME to the container app, the TXT record Azure uses to verify the domain, and the
+    _dnsauth TXT record the managed certificate's TXT validation checks;
   - one rate-limiting rule (Free plan: 10-second window, per IP);
   - one custom firewall rule that blocks anything except /mcp and /health;
   - one cache rule that bypasses the cache for the host (skipped with a note when the token lacks
@@ -77,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="mcp", help="subdomain label")
     parser.add_argument("--target", required=True, help="the container app FQDN the CNAME points at")
     parser.add_argument("--verification-id", help="Azure customDomainVerificationId for the asuid TXT record")
+    parser.add_argument("--cert-validation-token", help="token printed by `az containerapp hostname bind --validation-method TXT`; written to the _dnsauth TXT record the managed certificate checks")
     parser.add_argument("--requests-per-10s", type=int, default=60)
     parser.add_argument("--strict-ssl", action="store_true", help="add a configuration rule setting SSL to Full (strict) for this host; only after the origin has a valid certificate for it")
     args = parser.parse_args(argv)
@@ -90,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
     print("dns CNAME:", cf.upsert_dns(zone, {"type": "CNAME", "name": fqdn, "content": args.target, "proxied": True, "ttl": 1, "comment": "Catpilot reference MCP server"}))
     if args.verification_id:
         print("dns TXT asuid:", cf.upsert_dns(zone, {"type": "TXT", "name": f"asuid.{fqdn}", "content": args.verification_id, "proxied": False, "ttl": 1, "comment": "Azure custom domain verification"}))
+    if args.cert_validation_token:
+        print("dns TXT _dnsauth:", cf.upsert_dns(zone, {"type": "TXT", "name": f"_dnsauth.{fqdn}", "content": args.cert_validation_token, "proxied": False, "ttl": 1, "comment": "Azure managed certificate validation"}))
 
     print("rate limit:", cf.upsert_phase_rule(zone, "http_ratelimit", {
         "description": f"catpilot-mcp rate limit {fqdn}",
