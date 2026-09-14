@@ -80,7 +80,9 @@ def strip_quotes(text: str) -> str:
 
 def digest(skill, rendered_body: str) -> dict:
     sections = parse_sections(rendered_body)
+    when = bullet_items(sections.get("when this applies", []))
     ask = bullet_items(sections.get("what to ask", []))
+    say = bullet_items(sections.get("what to say", []))
     do = bullet_items(sections.get("safe alternative", []))
     stop = bullet_items(sections.get("stop and ask a human if", []))
     if not ask or not do or not stop:
@@ -92,11 +94,36 @@ def digest(skill, rendered_body: str) -> dict:
         "id": skill.id,
         "title": skill.title or skill.id,
         "summary": first_sentence(skill.frontmatter["description"]),
+        "severity": skill.severity,
+        "when": when,
         "ask": strip_quotes(ask[0]),
+        "ask_all": [strip_quotes(a) for a in ask],
+        "say": say,
         "do": do,
         "stop": stop,
         "checkpoints": skill.training_checkpoints,
     }
+
+
+def mcp_defaults(cfg: dict, digests: list[dict], preamble_rendered: str, values: dict) -> str:
+    """The generated half of the reference MCP server's defaults: components, coaching rules, generic slot values."""
+    _, bullets, _ = preamble_digest(preamble_rendered)
+    components = {}
+    for d in digests:
+        components[d["id"]] = {
+            "id": d["id"], "title": d["title"], "summary": d["summary"], "severity": d["severity"],
+            "when": d["when"], "ask": d["ask_all"], "say": d["say"], "do": d["do"], "stop": d["stop"], "checkpoints": d["checkpoints"],
+        }
+    document = {
+        "bundle": cfg["name"],
+        "release": cfg["version"],
+        "generated_by": "tools/bundle.py; do not edit",
+        "coaching": bullets,
+        "components": components,
+        "slots": {k: v for k, v in sorted(values.items()) if k != "overlay_notice"},
+        "advisory": "Generic defaults. Not a company's policy. Nothing here blocks an action.",
+    }
+    return json.dumps(document, indent=2, ensure_ascii=False, sort_keys=False) + "\n"
 
 
 def preamble_digest(preamble: str) -> tuple[str, list[str], str]:

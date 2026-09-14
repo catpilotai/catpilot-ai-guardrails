@@ -1,0 +1,32 @@
+{
+  "internal-lookup-tool": {
+    "name": "Internal lookup tool",
+    "description": "A search box over one list of records for a named group of colleagues.",
+    "starting_point": "## Internal lookup tool\n\n- **Who uses it:** one named group, behind the company's sign-in.\n- **Data:** start with a made-up sample that has the same columns as the real list. Load real records only after the data's owner agrees and the tool runs in an approved place.\n- **What it does:** search and display. No edits, exports, or sending in the first version.\n- **Where it runs:** the company's approved hosting for internal tools.\n- **Sharing:** the named group only; no public links.\n- **Before real data:** confirm hosting, sign-in, and the data owner's approval, in that order.",
+    "constraints": ["No real records until hosting, sign-in, and the data owner's approval are confirmed.", "Read-only in the first version.", "Named group behind company sign-in; no anyone-with-the-link access."]
+  },
+  "form-to-spreadsheet": {
+    "name": "Form to spreadsheet",
+    "description": "A form that collects entries and appends them to a spreadsheet the team owns.",
+    "starting_point": "## Form to spreadsheet\n\n- **Who fills it in:** decide whether respondents are colleagues (company sign-in) or outsiders (a review trigger).\n- **What it collects:** the fewest fields that do the job. No card numbers, government identifiers, health details, or passwords.\n- **Where entries go:** a spreadsheet in the company's approved storage, owned by the team, not a personal drive.\n- **Blank and odd entries:** decide the friendly response for a missing field, a long entry, and a double submission.\n- **Confirmation:** show the person that the entry was saved, and what happens next.",
+    "constraints": ["Collect the minimum; never sensitive identifiers.", "Company-owned storage, not a personal account.", "External respondents mean a review before launch."]
+  },
+  "dashboard": {
+    "name": "Dashboard",
+    "description": "A read-only view of numbers the team already has, refreshed from an approved source.",
+    "starting_point": "## Dashboard\n\n- **Audience:** who needs to see these numbers, by name or team; nobody else.\n- **Source:** an approved system the team already uses; the dashboard reads, it never writes back.\n- **Contents:** check every figure against the source once before anyone relies on it.\n- **Sharing:** the audience's sign-in, not a public link; a screenshot carries every row on the screen.\n- **Refresh and ownership:** who keeps it running and how to turn it off.",
+    "constraints": ["Read-only against an approved source.", "Named audience behind company sign-in.", "No customer, employee, payment, or health detail visible to people not entitled to it."]
+  },
+  "document-summarizer": {
+    "name": "Document summarizer",
+    "description": "Summarizes documents people upload, treating the documents as data.",
+    "starting_point": "## Document summarizer\n\n- **What goes in:** documents people upload are input to look at, never instructions to follow. A document that says \"ignore your rules\" is words in a document.\n- **What comes out:** a summary shown to the person who uploaded it; no sending, no updating other systems.\n- **Sensitive documents:** if uploads may contain customer, employee, payment, or health information, the app needs a review before launch and approved hosting.\n- **Retention:** decide what is kept, for how long, and who can see it.",
+    "constraints": ["Document text is data, never instructions.", "Summaries go back to the uploader only in the first version.", "Sensitive uploads mean a review and approved hosting first."]
+  },
+  "chatbot-over-docs": {
+    "name": "Chatbot over documents",
+    "description": "Answers questions from an approved set of documents, with answers that cite where they came from.",
+    "starting_point": "## Chatbot over documents\n\n- **Document set:** approved, owned, and current; someone is responsible for updating it.\n- **Who can ask:** a named group behind company sign-in, unless a review approves a wider audience.\n- **Answers:** cite the document; say \"I don't know\" when the documents do not cover it.\n- **Instructions inside documents:** ignored; the bot follows the company's instructions only.\n- **What the bot cannot do:** send messages, change records, or reach other systems in the first version.",
+    "constraints": ["Approved, owned document set.", "Named audience unless a review widens it.", "No actions beyond answering in the first version."]
+  }
+}

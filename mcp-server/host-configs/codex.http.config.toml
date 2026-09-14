@@ -1,0 +1,3 @@
+# Points at the public, generic-defaults-only hosted instance (no company overlay).
+[mcp_servers.catpilot_guardrails]
+url = "https://mcp.catpilot.ai/mcp"

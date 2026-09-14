@@ -48,6 +48,9 @@ Each one says when it applies, what to ask, what to say, the safe
 alternative, and when to stop and ask a human.
 """
 
+[bundle.mcp]
+defaults = "mcp-server/defaults/guidance.json"
+
 [bundle.targets]
 enabled = [
   "claude-zip",

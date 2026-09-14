@@ -72,7 +72,7 @@ SURFACES = ("app-builder", "chat", "coding-agent")
 CONTROL_FRAMEWORKS = ["soc2", "pci_dss", "iso_27001", "nist_csf", "owasp_top_10"]
 BUNDLE_CFG_KEYS = {
     "name", "tier", "version", "category", "description", "preamble",
-    "mode", "training_module", "slots", "targets",
+    "mode", "training_module", "slots", "targets", "mcp",
 }
 
 # Anthropic spec name regex: 1-64 chars, lowercase a-z + digits + hyphens,
@@ -631,6 +631,10 @@ def load_bundle_cfg(tier_dir: Path) -> dict:
         if not SLOT_RE.fullmatch("{{" + key + "}}"):
             raise ValueError(f"{tier_dir}/bundle.toml: slot name {key!r} must be lowercase snake_case")
         format_slot_value(value, key)
+    mcp_cfg = cfg.get("mcp", {})
+    if mcp_cfg:
+        if not isinstance(mcp_cfg, dict) or not isinstance(mcp_cfg.get("defaults"), str) or ".." in mcp_cfg["defaults"] or mcp_cfg["defaults"].startswith("/"):
+            raise ValueError(f"{tier_dir}/bundle.toml: [bundle.mcp] needs a relative 'defaults' path")
     targets = cfg.get("targets", {})
     if targets:
         if not isinstance(targets, dict) or not isinstance(targets.get("enabled"), list):
@@ -656,6 +660,22 @@ def _check_slots(cfg: dict, skills: list[SourceSkill], values: dict, tier_dir: P
     missing = sorted(needed - set(values))
     if missing:
         raise ValueError(f"{tier_dir}: slots without defaults in [bundle.slots]: {missing}")
+
+
+def render_mcp_defaults_for(tier_dir: Path) -> tuple[Path, str] | None:
+    """Return (path, content) for the tier's generated MCP defaults, or None if the tier has none."""
+    cfg = load_bundle_cfg(tier_dir)
+    if not cfg.get("mcp"):
+        return None
+    skills = load_tier_skills(tier_dir)
+    values = dict(cfg["slots"]) if cfg.get("slots") else None
+    if values is not None:
+        _check_slots(cfg, skills, values, tier_dir)
+    rendered_bodies = {s.id: render_slots(s.body, values, s.id) for s in skills}
+    ordered = sorted(skills, key=lambda s: s.id)
+    digests = [targets_module.digest(s, rendered_bodies[s.id]) for s in ordered]
+    preamble = render_slots(cfg["preamble"].strip(), values, "preamble")
+    return REPO_ROOT / cfg["mcp"]["defaults"], targets_module.mcp_defaults(cfg, digests, preamble, values or {})
 
 
 def build_tier(
@@ -749,6 +769,12 @@ def cmd_build(tier_filter: str | None, target: str | None) -> int:
     for tier in tiers:
         out = build_tier(tier, DIST_ROOT, with_targets=bool(target), target_filter=target or "all")
         print(f"built {out.relative_to(REPO_ROOT)}")
+        rendered = render_mcp_defaults_for(tier)
+        if rendered:
+            path, text = rendered
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8", newline="\n")
+            print(f"rendered {path.relative_to(REPO_ROOT)}")
     if target and TARGETS_ROOT.exists():
         for p in sorted(TARGETS_ROOT.rglob("*")):
             if p.is_file():
@@ -800,6 +826,14 @@ def cmd_check() -> int:
             build_tier(tier, scratch_skills, with_targets=True, targets_root=scratch_dist)
         drift = _report_drift("skills/", DIST_ROOT, scratch_skills)
         drift += _report_drift("dist/", TARGETS_ROOT, scratch_dist)
+        for tier in discover_tiers():
+            rendered = render_mcp_defaults_for(tier)
+            if rendered:
+                path, text = rendered
+                committed = path.read_text(encoding="utf-8") if path.exists() else None
+                if committed != text:
+                    drift += 1
+                    print(f"DRIFT: {path.relative_to(REPO_ROOT)} does not match src/skills/ (rebuild with python tools/bundle.py)", file=sys.stderr)
     if drift:
         print("\nRebuild locally with:  python tools/bundle.py --target all", file=sys.stderr)
         return 1
