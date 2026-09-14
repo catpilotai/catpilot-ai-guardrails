@@ -79,6 +79,36 @@ class CheckPlanTests(unittest.TestCase):
     def test_invalid_description(self):
         self.assertEqual(mcp_tools.check_plan("   ", Fixtures.guidance, Fixtures.none)["error"], "invalid-input")
 
+    def test_hr_lookup_tool_purpose_sets_ask_a_human(self):
+        """A plan whose whole purpose is a real employee-records lookup, not a passing mention."""
+        out = mcp_tools.check_plan(
+            "An internal dashboard for the ops team that pulls the employee roster export, "
+            "including salaries and home addresses, into a web app so managers can look people up. "
+            "I will paste a sample of the real export into the chat so you can see the columns.",
+            Fixtures.guidance, Fixtures.none,
+            data_types=["employee names", "salaries", "home addresses"], audience="managers", hosting="unknown",
+        )
+        self.assertIn("employee or HR records", out["labels"]["sensitive_data"])
+        self.assertIn("data-in-prompts", [r["component"] for r in out["risks"]])
+        self.assertTrue(out["ask_a_human"])
+        human_risk = next(r for r in out["risks"] if r["component"] == "when-to-ask-a-human")
+        self.assertIn("employee or HR records", human_risk["why"])
+
+    def test_api_key_mention_is_credentials_only_not_duplicated(self):
+        """'API key' should drive keys-and-credentials, not also a duplicate data-in-prompts risk."""
+        out = mcp_tools.check_plan(
+            "A contact form on our marketing site that emails submissions to the support inbox, "
+            "using an API key for the email-sending service.",
+            Fixtures.guidance, Fixtures.none,
+        )
+        components = [r["component"] for r in out["risks"]]
+        self.assertIn("keys-and-credentials", components)
+        self.assertNotIn("data-in-prompts", components)
+        self.assertEqual(components.count("keys-and-credentials"), 1)
+        self.assertEqual(out["labels"]["sensitive_data"], [])
+        self.assertTrue(out["labels"]["credentials"])
+        self.assertTrue(out["ask_a_human"])
+
 
 class TemplateAndApprovedTests(unittest.TestCase):
     def test_templates_for_every_kind(self):

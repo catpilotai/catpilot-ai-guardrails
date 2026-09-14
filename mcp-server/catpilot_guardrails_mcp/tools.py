@@ -90,14 +90,17 @@ def _company_values_for(topic: str, guidance: dict, policy: PolicyState) -> dict
 SEVERITY_ORDER = {"high": 2, "medium": 1}
 
 # Keyword rules. Deterministic and readable on purpose; a model pass is not part of this server.
+# Credentials are matched separately from SENSITIVE_DATA (see CREDENTIALS_PATTERN below): a real
+# secret is the keys-and-credentials checkpoint's whole job, not a second, duplicate data-in-prompts
+# risk for the same words.
 SENSITIVE_DATA = {
     "payment card or bank data": r"\b(?:card|cardholder|credit card|pan\b|cvv|bank account|iban|routing number|payment details)",
     "government identifiers": r"\b(?:ssn|social security|passport|driver'?s licen[cs]e|national id|government id)",
     "health information": r"\b(?:health|medical|diagnos|patient|phi\b|insurance claim)",
-    "credentials": r"\b(?:password|passwd|api key|apikey|secret key|access token|bearer|smtp password|private key|credential)",
     "employee or HR records": r"\b(?:salary|salaries|payroll|compensation|hr record|performance review|employee record)",
     "customer records": r"\b(?:customer (?:export|list|records|data|file)|crm export|user list|contact list|email list)",
 }
+CREDENTIALS_PATTERN = r"\b(?:password|passwd|api key|apikey|secret key|access token|bearer|smtp password|private key|credential)"
 EXTERNAL_AUDIENCE = r"\b(?:public|anyone with the link|external|customers?|vendors?|partners?|agency|the internet|everyone)\b"
 RISKY_HOSTING = r"\b(?:personal (?:account|laptop|computer|replit|cloud|server)|free (?:tier|plan|account)|trial (?:account|workspace)|home server|my laptop|localhost)\b"
 NEW_SERVICE = r"\b(?:free api|new api|third[- ]party|plugin|extension|connector|integration|webhook|enrichment|saas|model endpoint|openai api|another service)\b"
@@ -118,7 +121,7 @@ def check_plan(description: str, guidance: dict, policy: PolicyState, data_types
     text = " ".join([description] + [str(d) for d in (data_types or [])] + [audience or "", hosting or ""])
     comps = guidance["components"]
     risks: list[dict] = []
-    labels = {"sensitive_data": [], "external_audience": False, "risky_hosting": False, "unapproved_hosting": False, "new_service": False, "untrusted_input": False, "review_trigger": False}
+    labels = {"sensitive_data": [], "credentials": False, "external_audience": False, "risky_hosting": False, "unapproved_hosting": False, "new_service": False, "untrusted_input": False, "review_trigger": False}
     o = policy.overlay if policy.approved else None
 
     def add(component_id: str, severity: str, why: str):
@@ -134,7 +137,8 @@ def check_plan(description: str, guidance: dict, policy: PolicyState, data_types
                 labels["sensitive_data"].append(f"company data class: {item}")
     if labels["sensitive_data"]:
         add("data-in-prompts", "high", "Real data of this kind should not go into a prompt, upload, or test: " + "; ".join(labels["sensitive_data"]) + ".")
-    if "credentials" in labels["sensitive_data"]:
+    if _match(CREDENTIALS_PATTERN, text):
+        labels["credentials"] = True
         add("keys-and-credentials", "high", "A password, key, or token appears to be part of the plan; it must not be typed into a tool or generated code.")
     if _match(EXTERNAL_AUDIENCE, audience or "") or _match(EXTERNAL_AUDIENCE, description):
         labels["external_audience"] = True
@@ -155,9 +159,19 @@ def check_plan(description: str, guidance: dict, policy: PolicyState, data_types
     if _match(UNTRUSTED_INPUT, text):
         labels["untrusted_input"] = True
         add("untrusted-input", "medium", "The app would read input from people or documents; that input is data, never instructions.")
-    if _match(REVIEW_TRIGGERS, text) or labels["external_audience"] or "health information" in labels["sensitive_data"] or "payment card or bank data" in labels["sensitive_data"]:
+    # Any real sensitive-data class (or a real credential) is a review trigger, not just a
+    # data-hygiene tip: see the data-in-prompts and keys-and-credentials "stop and ask a human
+    # if" lists. Keyword matching cannot tell a plan built around real records from one that
+    # only mentions a data type in passing, so it flags both; this is an advisory server and a
+    # false positive costs a human a look, not a blocked action.
+    sensitive_hit = bool(labels["sensitive_data"]) or labels["credentials"]
+    if _match(REVIEW_TRIGGERS, text) or labels["external_audience"] or sensitive_hit:
         labels["review_trigger"] = True
-        add("when-to-ask-a-human", "high", "This plan hits a review trigger: real sensitive data, external users, money, sign-in, or a system of record.")
+        if sensitive_hit:
+            classes = list(labels["sensitive_data"]) + (["credentials"] if labels["credentials"] else [])
+            add("when-to-ask-a-human", "high", "This plan's purpose appears to involve real sensitive data or credentials: " + "; ".join(classes) + ". That is a security review conversation, not a data-hygiene tip.")
+        else:
+            add("when-to-ask-a-human", "high", "This plan hits a review trigger: external users, money, sign-in, or a system of record.")
     if o:
         for trigger in o["review_triggers"]:
             if _phrase(trigger) in text.lower():
