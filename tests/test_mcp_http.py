@@ -34,7 +34,9 @@ class HttpAppTests(unittest.TestCase):
 
     def test_health_and_root(self):
         with TestClient(self.app) as client:
-            health = client.get("/health").json()
+            resp = client.get("/health")
+            self.assertEqual(resp.headers.get("cache-control"), "no-store")
+            health = resp.json()
             self.assertEqual(health["status"], "ok")
             self.assertEqual(health["policy_status"], "none")
             root = client.get("/").json()

@@ -130,7 +130,28 @@ def build_http_app(*, host: str = "127.0.0.1", stateless: bool = False, allowed_
 
     app.router.routes.insert(0, Route("/health", health, methods=["GET"]))
     app.router.routes.insert(0, Route("/", root, methods=["GET"]))
+    app.add_middleware(_NoStore)
     return app
+
+
+class _NoStore:
+    """Mark every response uncacheable at the origin, so a CDN in front cannot serve stale guidance."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        from starlette.datastructures import MutableHeaders
+
+        async def send_no_store(message):
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["Cache-Control"] = "no-store"
+            await send(message)
+
+        await self.app(scope, receive, send_no_store)
 
 
 def main(argv: list[str] | None = None) -> int:

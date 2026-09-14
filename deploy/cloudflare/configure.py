@@ -4,7 +4,8 @@ Creates or updates, scoped to the one hostname and never zone-wide:
   - a proxied CNAME to the container app, and the TXT record Azure uses to verify the domain;
   - one rate-limiting rule (Free plan: 10-second window, per IP);
   - one custom firewall rule that blocks anything except /mcp and /health;
-  - one cache rule that bypasses the cache for the host.
+  - one cache rule that bypasses the cache for the host (skipped with a note when the token lacks
+    the Cache Rules permission; the origin already sends Cache-Control: no-store).
 
 Usage:
   CLOUDFLARE_TOKEN=... python deploy/cloudflare/configure.py --zone catpilot.ai --host mcp \\
@@ -25,6 +26,10 @@ import urllib.request
 API = "https://api.cloudflare.com/client/v4"
 
 
+class TokenScopeError(SystemExit):
+    """The token lacks the permission an endpoint needs (HTTP 403)."""
+
+
 class CF:
     def __init__(self, token: str):
         self.token = token
@@ -38,6 +43,8 @@ class CF:
             payload = e.read().decode()
             if e.code == 404 and method == "GET":
                 return {"success": False, "result": None, "errors": json.loads(payload).get("errors", [])}
+            if e.code == 403:
+                raise TokenScopeError(f"Cloudflare {method} {path}: the token lacks permission for this endpoint (HTTP 403)")
             raise SystemExit(f"Cloudflare {method} {path} failed: HTTP {e.code} {payload[:400]}")
 
     def zone_id(self, name: str) -> str:
@@ -93,25 +100,32 @@ def main(argv: list[str] | None = None) -> int:
     }))
     print("firewall:", cf.upsert_phase_rule(zone, "http_request_firewall_custom", {
         "description": f"catpilot-mcp allow only /mcp and /health on {fqdn}",
-        "expression": f'(http.host eq "{fqdn}" and not http.request.uri.path in {{"/mcp" "/health" "/"}} and not starts_with(http.request.uri.path, "/.well-known/acme-challenge/"))',
+        "expression": f'(http.host eq "{fqdn}" and not (http.request.uri.path in {{"/mcp" "/health" "/"}}) and not starts_with(http.request.uri.path, "/.well-known/acme-challenge/"))',
         "action": "block",
         "enabled": True,
     }))
-    print("cache bypass:", cf.upsert_phase_rule(zone, "http_request_cache_settings", {
-        "description": f"catpilot-mcp bypass cache {fqdn}",
-        "expression": f'(http.host eq "{fqdn}")',
-        "action": "set_cache_settings",
-        "enabled": True,
-        "action_parameters": {"cache": False},
-    }))
-    if args.strict_ssl:
-        print("strict ssl:", cf.upsert_phase_rule(zone, "http_config_settings", {
-            "description": f"catpilot-mcp strict ssl {fqdn}",
+    try:
+        print("cache bypass:", cf.upsert_phase_rule(zone, "http_request_cache_settings", {
+            "description": f"catpilot-mcp bypass cache {fqdn}",
             "expression": f'(http.host eq "{fqdn}")',
-            "action": "set_config",
+            "action": "set_cache_settings",
             "enabled": True,
-            "action_parameters": {"ssl": "strict"},
+            "action_parameters": {"cache": False},
         }))
+    except TokenScopeError as e:
+        print(f"cache bypass: skipped ({e}); needs Zone > Cache Rules > Edit. Not required: the origin sends "
+              "Cache-Control: no-store, and Cloudflare does not cache extension-less paths or POST responses by default.")
+    if args.strict_ssl:
+        try:
+            print("strict ssl:", cf.upsert_phase_rule(zone, "http_config_settings", {
+                "description": f"catpilot-mcp strict ssl {fqdn}",
+                "expression": f'(http.host eq "{fqdn}")',
+                "action": "set_config",
+                "enabled": True,
+                "action_parameters": {"ssl": "strict"},
+            }))
+        except TokenScopeError as e:
+            print(f"strict ssl: skipped ({e}); needs Zone > Config Rules > Edit, or set it in the dashboard for this host.")
     print(f"done: https://{fqdn}/mcp (proxied), rules scoped to that host only")
     return 0
 

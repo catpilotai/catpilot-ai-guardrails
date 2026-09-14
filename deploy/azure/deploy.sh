@@ -50,9 +50,10 @@ VERIFICATION_ID="$(az containerapp show -n "$APP" -g "$RG" --query properties.cu
 echo "== restrict ingress to Cloudflare's published ranges (the origin is not reachable directly)"
 RULES_JSON="$(python3 - <<'PY'
 import json, urllib.request
-ranges = []
-for url in ("https://www.cloudflare.com/ips-v4", "https://www.cloudflare.com/ips-v6"):
-    ranges += urllib.request.urlopen(url, timeout=20).read().decode().split()
+# The API endpoint is unauthenticated; the www.cloudflare.com/ips-v4 text files refuse non-browser clients.
+# Container Apps ingress is IPv4-only and its IP restrictions reject IPv6 ranges, so only the IPv4 list applies.
+req = urllib.request.Request("https://api.cloudflare.com/client/v4/ips", headers={"User-Agent": "catpilot-deploy/1"})
+ranges = json.load(urllib.request.urlopen(req, timeout=20))["result"]["ipv4_cidrs"]
 rules = [{"name": f"cloudflare-{i + 1}", "ipAddressRange": cidr, "action": "Allow", "description": "Cloudflare edge"}
          for i, cidr in enumerate(ranges)]
 print(json.dumps(rules))
