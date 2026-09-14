@@ -69,11 +69,11 @@ Installable via skills.sh into 50+ runtimes; verified only on the runtimes and d
 
 | Runtime | Skill loads | Coaching (MCP) | Enforcement (hook) | Last verified | Release |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code 2.1.241 | yes: a project `.claude/skills/` install is listed in the session init | yes: a `list_approved` lookup over stdio, with the server connected in the session init, recorded 2026-09-14 | yes, `Bash` `PreToolUse` hook only: a command with AWS's example key was denied; the control run without the hook executed it | 2026-09-13 | 2026.09.13 |
+| Claude Code 2.1.241 | yes: a project `.claude/skills/` install is listed in the session init | yes: a `list_approved` lookup over stdio, with the server connected in the session init, recorded 2026-09-14; the hosted endpoint (`mcp.catpilot.ai`) verified the same day over the `http` transport, server connected, all four tools listed, `list_approved` returned through the edge | yes, `Bash` `PreToolUse` hook only: a command with AWS's example key was denied; the control run without the hook executed it | 2026-09-13 | 2026.09.13 |
 | Cursor | not verified | not verified | not tested | | |
-| Codex CLI 0.154.0 | yes, with a caveat: a project `.agents/skills/` install; on a data scenario the model named the skill and input usage rose from about 17k to over 90k tokens; the host emits no explicit load event and reads the skill on demand, not on every task | yes: a completed `mcp_tool_call` to `list_approved` over stdio, recorded 2026-09-14 | none | 2026-09-14 | 2026.09.13 |
-| Claude.ai (individual upload or organization provisioning) | not verified | remote transport exists; no deployment verified | none, advisory only | | |
-| ChatGPT (project or GPT instructions) | n/a, pasted text; manual protocol in [`evals/HOST_VERIFICATION.md`](evals/HOST_VERIFICATION.md), not yet run | needs a remote deployment behind your gateway; not verified | none | | |
+| Codex CLI 0.154.0 | yes, with a caveat: a project `.agents/skills/` install; on a data scenario the model named the skill and input usage rose from about 17k to over 90k tokens; the host emits no explicit load event and reads the skill on demand, not on every task | yes: a completed `mcp_tool_call` to `list_approved` over stdio, recorded 2026-09-14; the hosted endpoint (`mcp.catpilot.ai`) verified the same day via the `url` MCP server config, `mcp_tool_call` completed | none | 2026-09-14 | 2026.09.13 |
+| Claude.ai (individual upload or organization provisioning) | not verified | hosted endpoint at `mcp.catpilot.ai` exists; custom connector not yet verified | none, advisory only | | |
+| ChatGPT (project or GPT instructions) | n/a, pasted text; manual protocol in [`evals/HOST_VERIFICATION.md`](evals/HOST_VERIFICATION.md), not yet run | hosted endpoint at `mcp.catpilot.ai` exists; custom connector not yet verified | none | | |
 | Microsoft Copilot Studio | n/a, pasted text | not verified | none | | |
 | Lovable, Bolt, Replit, v0 | n/a, pasted text | not applicable | none | | |
 | Everything else reachable through skills.sh | not verified | not verified | none | | |
@@ -95,6 +95,37 @@ CATPILOT_OVERLAY_FILE=/private/path/overlay.yaml python mcp-server/server.py
 ```
 
 It is a reference implementation you run yourself: no authentication, no tenant isolation, no logging, no outbound calls. The tenant-scoped, authenticated version is the Catpilot platform. A lookup the model never made protects nothing; the tested-runtimes table records where a real lookup was observed. Details: [`mcp-server/README.md`](mcp-server/README.md).
+
+### Hosted endpoint
+
+A hosted instance of this same reference server is live at `https://mcp.catpilot.ai/mcp` (MCP streamable HTTP, stateless, JSON responses, no authentication). Health check: `https://mcp.catpilot.ai/health`. The root path `https://mcp.catpilot.ai/` returns a JSON data statement.
+
+It serves generic defaults only. No company overlay is loaded, and none ever will be on this public endpoint: every answer carries `policy_status: "none"` and `unknown_policy: true`. It is advisory. Nothing it returns blocks an action.
+
+Data handling: it receives only the topic, plan text, template kind, or category a client sends, stores nothing, and logs no request content. Responses carry `Cache-Control: no-store`.
+
+Protections in front of it (Cloudflare, scoped to this one hostname): a rate limit of 60 requests per 10 seconds per client IP per Cloudflare location, then HTTP 429 for 10 seconds; only `/mcp`, `/health`, and `/` are allowed, everything else gets HTTP 403 at the edge; TLS is enforced end to end. The origin only accepts connections from Cloudflare's published IP ranges; a direct request to it returns HTTP 403.
+
+Claude Code:
+
+```bash
+claude mcp add --transport http catpilot-guardrails https://mcp.catpilot.ai/mcp
+```
+
+or as a one-off:
+
+```bash
+claude --mcp-config '{"mcpServers":{"catpilot-guardrails":{"type":"http","url":"https://mcp.catpilot.ai/mcp"}}}' --strict-mcp-config
+```
+
+Codex CLI, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.catpilot_guardrails]
+url = "https://mcp.catpilot.ai/mcp"
+```
+
+Example configs for both: [`mcp-server/host-configs/`](mcp-server/host-configs/). Deployment steps and what the protections do: [`deploy/README.md`](deploy/README.md). ChatGPT and Claude.ai custom connectors: not yet verified.
 
 ## What's in the box
 

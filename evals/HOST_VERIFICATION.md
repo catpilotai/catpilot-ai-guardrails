@@ -67,6 +67,22 @@ server's result, including `unknown_policy` and `policy_source`.
 
 Results: [`reports/2026.09.14-mcp-verification.md`](reports/2026.09.14-mcp-verification.md).
 
+## The hosted endpoint (mcp.catpilot.ai)
+
+The per-host steps above are for a server you run yourself, over stdio. These
+two entries are for the public hosted instance, reached over HTTP through
+Cloudflare instead. A recorded call here shows the transport and the tool
+call reaching the edge; it does not prove anything about model behavior
+beyond that one call, and it does not test either host's own connector UI.
+
+- **Claude Code 2.1.241, 2026-09-14, http transport:** `claude --mcp-config '{"mcpServers":{"catpilot-guardrails":{"type":"http","url":"https://mcp.catpilot.ai/mcp"}}}' --strict-mcp-config --allowedTools mcp__catpilot-guardrails__list_approved` (model set to Haiku for cost). Observed: the server showed as `connected`, all four tools were listed, and `list_approved` with `category: "contacts"` returned the generic default through the edge.
+- **Codex CLI 0.154.0, 2026-09-14, url MCP server config:** `codex exec -c 'mcp_servers.catpilot_guardrails.url="https://mcp.catpilot.ai/mcp"' "<prompt>"`. Observed: an `mcp_tool_call` event with status `completed` for `list_approved` with `category: "contacts"`, and the answer reported `policy_status: "none"`.
+
+Both show the http transport and one tool call reaching `mcp.catpilot.ai`
+end to end for that host's MCP client. Neither is a claim about what the
+model does with the result, and neither covers ChatGPT or Claude.ai, which
+remain not yet verified against this endpoint.
+
 ## Your own harness
 
 Not verified by Catpilot. The harness owner runs the credential gate in the
@@ -78,3 +94,5 @@ keeps that note next to the harness. See [`../hooks/harness/README.md`](../hooks
 - 2026-09-13, Claude Code 2.1.241: skill listed in session init; hook deny and control run recorded.
 - 2026-09-14, reference MCP server over stdio: Claude Code 2.1.241 (haiku) and Codex CLI 0.154.0 (gpt-6-astra) each made a `list_approved` lookup with the synthetic example overlay and reported the overlay's hosting items with `unknown_policy: false`.
 - 2026-09-14, Codex CLI 0.154.0 with gpt-6-astra: project `.agents/skills/` install; the model named the skill and input usage rose from ~17k to 80k–94k tokens on the data scenario in two runs; no explicit host load event; ambient user-level skills were scanned in every call. Two scenarios, one run each per condition: [`reports/2026.09.14-codex-smoke.md`](reports/2026.09.14-codex-smoke.md).
+- 2026-09-14, hosted endpoint (`mcp.catpilot.ai`), Claude Code 2.1.241 over the `http` transport: server connected, all four tools listed, `list_approved` (`category: "contacts"`) returned the generic default through the edge.
+- 2026-09-14, hosted endpoint (`mcp.catpilot.ai`), Codex CLI 0.154.0 over the `url` MCP server config: `mcp_tool_call` completed for `list_approved` (`category: "contacts"`), `policy_status: "none"`.

@@ -70,9 +70,13 @@ App FQDN:               $FQDN
 Custom domain to add:   $HOSTNAME
 Domain verification id: $VERIFICATION_ID
 
-Next: create the DNS records with deploy/cloudflare/configure.py (a proxied CNAME $HOSTNAME -> $FQDN and
-a TXT asuid.$HOSTNAME -> $VERIFICATION_ID), then bind the hostname:
-
-  az containerapp hostname add  -n $APP -g $RG --hostname $HOSTNAME
-  az containerapp hostname bind -n $APP -g $RG --hostname $HOSTNAME --environment $ENV_NAME --validation-method TXT
+Next, if the hostname is not bound yet (see deploy/README.md):
+  1. CLOUDFLARE_TOKEN=... python3 deploy/cloudflare/configure.py --zone <zone> --host <label> --target $FQDN --verification-id $VERIFICATION_ID
+  2. az containerapp hostname add  -n $APP -g $RG --hostname $HOSTNAME
+  3. az containerapp hostname bind -n $APP -g $RG --hostname $HOSTNAME --environment $ENV_NAME --validation-method TXT
+     (creates a managed certificate and prints a validation token, then reports CertificateProvisioningError while it is pending)
+  4. python3 deploy/cloudflare/configure.py ... --cert-validation-token <token>
+  5. az containerapp env certificate list -g $RG -n $ENV_NAME --managed-certificates-only   # wait for provisioningState Succeeded
+  6. az containerapp hostname bind -n $APP -g $RG --hostname $HOSTNAME --environment $ENV_NAME --certificate <managed certificate name>
+  7. python3 deploy/cloudflare/configure.py ... --strict-ssl, then deploy/verify.sh $HOSTNAME $FQDN
 MSG

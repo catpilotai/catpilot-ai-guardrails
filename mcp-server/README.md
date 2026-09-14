@@ -55,6 +55,10 @@ choose the policy file.
 Host configuration snippets are in `host-configs/`: a `.mcp.json` for Claude
 Code and a `config.toml` fragment for Codex. Replace the absolute paths.
 
+## Hosted instance
+
+A hosted instance is live at `https://mcp.catpilot.ai/mcp` (streamable HTTP). It serves generic defaults only: no company overlay is loaded, and none ever will be on this public endpoint. Host config examples that point at it: `host-configs/claude-code.http.mcp.json` and `host-configs/codex.http.config.toml`. Deployment steps and the protections in front of it: [`deploy/README.md`](../deploy/README.md).
+
 ## What it is not
 
 - **Not authentication or tenant isolation.** Whoever can reach the process
