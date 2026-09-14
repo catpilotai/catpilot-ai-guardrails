@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [2026.09.13] — 2026-09-13
+
+Direction: the civilian-builder wedge (`CATPILOT_OSS_GUARDRAILS_DIRECTION.md`, September 13, 2026). One repository, two skills, one bundler, no telemetry.
+
+### Added
+
+- **`catpilot-safe-building`**, a second skill for people building apps, automations, dashboards, and data tools with AI assistants, and for the assistants helping them. Eight plain-language components under `src/skills/safe-building/` (data-in-prompts, access-and-identity, hosting-and-where-it-runs, sharing-and-publishing, keys-and-credentials, third-party-services, untrusted-input, when-to-ask-a-human), each mirroring checkpoints of Catpilot's Safe AI-assisted building course (Module 399). Frontmatter gains `title`, `mode`, `training_module`, `training_checkpoints`, `applies_to.surfaces`, and `provenance.mapping_review`.
+- **Per-host artifacts** rendered from the same sources into `dist/2026.09.13/` by `tools/bundle.py --target all`: a Claude.ai skill zip, paste blocks for ChatGPT, Copilot Studio, Lovable, Bolt, Replit, and v0, `AGENTS.md` and `copilot-instructions.md` blocks, a Microsoft 365 declarative-agent manifest stub, and the standalone `safe-ai-building.html` page that is the source for `catpilot.ai/safe-ai-building`. `--check` now covers `dist/`.
+- **Organization overlay**: `docs/spec/OVERLAY.md`, `overlay.schema.json`, a synthetic `overlay.example.yaml`, `tools/validate_overlay.py`, and `tools/bundle.py --overlay ... --private-out ...` for private builds written outside the repository. The public build refuses to run if an overlay-shaped file is inside `src/`, `skills/`, or `dist/`.
+- **One hook**: `hooks/claude-code/pretooluse-secrets.py`, a Claude Code `PreToolUse` hook on the `Bash` tool that denies commands containing a literal credential, with example settings, a README stating exact coverage, and tests. Labeled as enforcement for that path only.
+- **Evaluation fixtures and runner** for the safe-building skill: `evals/scenarios/*.yaml` (eight unsafe scenarios, two safe controls) and `tools/eval.py` (offline validation, with/without execution against a host CLI, heuristic scoring, Markdown report). An `eval-nightly` workflow runs it when an API key secret exists and prints the report to the job summary; reports are committed by a person, never automatically. No report is published yet.
+- `tools/validate_skill.py` (skill directory validator, run in CI) and `tools/targets.py`. Test suite grown from 28 to 60 offline tests.
+- **Private per-host blocks.** `tools/bundle.py --overlay` now also renders the paste blocks and the Claude.ai zip for the private bundle, with a compact company-values paragraph, into `<private-out>/<bundle>-hosts/`; the ChatGPT block stays under 8,000 characters. `--install-source` names the company's private repository in generated install commands.
+- **Harness gate.** `hooks/harness/secret_gate.py` exposes the Claude Code hook's credential check as a function for any Python agent loop, with a README on what a harness may claim afterwards.
+- **Codex verified** on 2026-09-14: a project `.agents/skills/` install is read on demand, with the model naming the skill and input usage rising from ~17k to over 90k tokens on a data scenario; two-scenario smoke observations recorded under `evals/reports/`. ChatGPT has a written manual protocol, not yet run.
+- **Evaluation runner.** `--print-prompts` and `--import` for hosts driven by hand (ChatGPT); `--overlay` enables per-scenario `overlay_must` checks that a company's approved values were cited; Codex gets the `installed` injection through a project `.agents/skills/` directory. `evals/HOST_VERIFICATION.md` records the per-host steps and results.
+
+### Changed
+
+- **README**: a "For agent harnesses" section covering standing guidance, the tool gate, and the agentic loop rules in `frameworks/agentic/`; a harness row in the tested-runtimes table.
+- **README contract**: three-mode language (advice, contextual coaching, enforcement), a tested-runtimes table with dates, a "what this does and does not do" section, a "for non-engineers" section, the tagline "For the tool and for the person using it", and a reprioritized roadmap. "51+ runtimes" is now "installable via skills.sh into 50+ runtimes; verified on the runtimes listed".
+- **`catpilot-security-core` bundle `2026.09.13`**: the description and preamble no longer say "always-on"; they say advisory guidance applied where the host has loaded it, and the bundle carries `mode: advisory`. The nine source components are unchanged at `1.0.0`. The stale `ToomeSauce` repository reference in the preamble and in `docs/spec/PACKAGING.md` is corrected.
+- Spec documents updated for slots, surfaces, modes, targets, overlays, and status; `docs/PROTECTION_CONTRACT.md` records where each claim lives; `CONTRIBUTING.md`, `tools/README.md`, and `evals/README.md` rewritten for the new tooling.
+- CI: third-party actions pinned to commit SHAs with a read-only token; the bundle check validates every skill directory and the overlay example; the evaluation workflow validates both fixture sets.
+- The legacy `copilot-instructions.md` gains a short safe-building section so repository-based agents see both skills.
+
+### Not included
+
+No MCP server (not before the design partner names the host), no telemetry, no framework or advanced bundles, no new compliance mappings, no enforcement claim beyond the documented hook path, and no verification claim for any host without a date in the tested-runtimes table.
+
 ## [2026.09.11] — 2026-09-11
 
 ### Added

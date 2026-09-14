@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/catpilotai/catpilot-ai-guardrails/docs/spec/overlay.schema.json",
+  "title": "Catpilot organization overlay",
+  "description": "Organization-specific values merged into catpilot-safe-building. Never commit an overlay to a public repository. Values are short lists of approved things, not policy prose, incident narratives, or secrets.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "organization", "owner", "reviewed_on", "expires_on", "data_classes", "hosting", "services", "identity", "review_triggers"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "organization": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Display name only. No internal identifiers, tenant IDs, or domains."},
+    "owner": {"type": "string", "minLength": 3, "maxLength": 160, "description": "Where 'ask a human' points: a team mailbox, channel name, or role. One value."},
+    "reviewed_on": {"type": "string", "format": "date", "description": "Date a named reviewer accepted these values."},
+    "expires_on": {"type": "string", "format": "date", "description": "After this date the values are treated as unknown; a private bundle cannot be built from an expired overlay."},
+    "data_classes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["never_in_prompts", "ok_with_approval", "ok"],
+      "properties": {
+        "never_in_prompts": {"$ref": "#/$defs/items"},
+        "ok_with_approval": {"$ref": "#/$defs/items"},
+        "ok": {"$ref": "#/$defs/items"}
+      }
+    },
+    "hosting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approved", "not_approved"],
+      "properties": {
+        "approved": {"$ref": "#/$defs/items"},
+        "not_approved": {"$ref": "#/$defs/items"}
+      }
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approved", "needs_review"],
+      "properties": {
+        "approved": {"$ref": "#/$defs/items"},
+        "needs_review": {"$ref": "#/$defs/items"}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default", "never"],
+      "properties": {
+        "default": {"$ref": "#/$defs/item"},
+        "never": {"$ref": "#/$defs/items"}
+      }
+    },
+    "review_triggers": {"$ref": "#/$defs/items", "description": "Appended to the when-to-ask-a-human checkpoint."},
+    "templates": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind"],
+        "properties": {
+          "kind": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 64},
+          "location": {"type": "string", "format": "uri", "maxLength": 500, "description": "HTTPS only, no credentials, no query string, host on the validator's allowlist. Omit if the tool cannot reach it."}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "item": {"type": "string", "minLength": 1, "maxLength": 200, "description": "One short phrase. No URLs except in templates, no email addresses except owner, no secrets, no narrative."},
+    "items": {"type": "array", "minItems": 1, "maxItems": 30, "uniqueItems": true, "items": {"$ref": "#/$defs/item"}}
+  }
+}

@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Catpilot PreToolUse hook for Claude Code: block shell commands that carry a literal credential.
+
+Scope, stated exactly:
+  - Runs only for the Bash tool (the matcher in settings selects it).
+  - Scans the proposed command text for the credential patterns documented in
+    the secret-blocking component of catpilot-security-core.
+  - On a match, returns a PreToolUse "deny" decision with a plain-language
+    reason. The matched text is never included in the reason.
+  - On anything else, returns an empty decision so the host's own permission
+    rules apply unchanged. It never returns "allow".
+  - Malformed or oversized input exits 2 (the host treats that as a blocking
+    error), so a broken hook fails closed rather than silently allowing.
+
+What it does not do: it does not inspect file writes, edits, prompts, other
+tools, commands the host runs outside the Bash tool, or commands typed by a
+person in their own terminal. It is not a secret scanner for a repository.
+Coverage claims for this hook are limited to the Bash tool path on the host
+versions listed in the repository README's tested-runtimes table.
+
+Escape hatch for false positives: reference the value from an environment
+variable or secret store instead of pasting it (the hook never matches
+$VAR or ${VAR} references), or run the command yourself in your own
+terminal. There is no bypass flag, on purpose.
+
+Standard library only. Python 3.8+.
+"""
+import json
+import re
+import sys
+
+MAX_INPUT_BYTES = 1_048_576
+
+# (label, compiled pattern). Patterns are conservative on length and charset
+# to keep false positives low; they mirror the secret-blocking table.
+PATTERNS = [
+    ("Stripe secret or restricted key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b")),
+    ("AWS access key ID", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("AWS secret access key", re.compile(r"aws_secret_access_key\s*=\s*[\"']?[A-Za-z0-9/+=]{40}[\"']?", re.IGNORECASE)),
+    ("GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36}\b")),
+    ("GitLab personal token", re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b")),
+    ("Anthropic API key", re.compile(r"\bsk-ant-(?:api|admin)\d+-[A-Za-z0-9_\-]{80,}\b")),
+    ("OpenAI API key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{40,}\b")),
+    ("Slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b")),
+    ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    ("Google OAuth access token", re.compile(r"\bya29\.[A-Za-z0-9_\-]+\b")),
+    ("Square token", re.compile(r"\bsq0[a-z]{3}-[A-Za-z0-9_\-]{20,}\b")),
+    ("SendGrid API key", re.compile(r"\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b")),
+    ("npm access token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
+    ("JSON Web Token", re.compile(r"\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\b")),
+    ("private key block", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----")),
+    ("database URL with an embedded password", re.compile(r"\b(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqps?)://[^:\s/]*:[^@\s]+@", re.IGNORECASE)),
+    ("bearer token", re.compile(r"\bbearer\s+[A-Za-z0-9_\-\.=]{16,}\b", re.IGNORECASE)),
+    ("literal API key assignment", re.compile(r"\b(?:api[_-]?key|apikey)\s*[:=]\s*[\"']?[A-Za-z0-9_\-]{16,}[\"']?", re.IGNORECASE)),
+    ("literal password assignment", re.compile(r"\b(?:password|passwd|pwd)\s*[:=]\s*[\"'][^\"'$]{6,}[\"']", re.IGNORECASE)),
+    ("literal client secret", re.compile(r"\b(?:secret|client_secret)\s*[:=]\s*[\"'][A-Za-z0-9_\-]{16,}[\"']", re.IGNORECASE)),
+    ("literal auth token assignment", re.compile(r"\b(?:token|auth_token|access_token)\s*[:=]\s*[\"'][A-Za-z0-9_\-\.]{16,}[\"']", re.IGNORECASE)),
+    ("literal DATABASE_URL", re.compile(r"\bDATABASE_URL\s*=\s*[\"']?(?:mongodb|postgres|mysql|redis|amqp)[^\s\"']*://[^\s\"']*:[^\s\"'@]+@", re.IGNORECASE)),
+]
+
+# A value that is only an environment reference is never a literal credential.
+ENV_REFERENCE = re.compile(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
+
+
+def find_credential(command: str):
+    """Return the label of the first credential-shaped literal in the command, or None."""
+    if not command:
+        return None
+    for label, pattern in PATTERNS:
+        for match in pattern.finditer(command):
+            if not ENV_REFERENCE.fullmatch(match.group(0)):
+                return label
+    return None
+
+
+def decide(event: dict) -> dict:
+    if not isinstance(event, dict):
+        raise ValueError("hook event must be an object")
+    if event.get("tool_name") != "Bash":
+        return {}
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        raise ValueError("tool_input must be an object")
+    command = tool_input.get("command", "")
+    if not isinstance(command, str):
+        raise ValueError("command must be a string")
+    label = find_credential(command)
+    if label is None:
+        return {}
+    reason = (
+        f"Catpilot secret check: this command appears to contain a literal credential ({label}). "
+        "Keep the value out of the command: reference it from an environment variable or a secret "
+        "store (for example $STRIPE_API_KEY), or run the command yourself in your own terminal if "
+        "the value is a known-fake fixture. The matched text is not included in this message."
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
+def main() -> int:
+    try:
+        payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+        if len(payload) > MAX_INPUT_BYTES:
+            raise ValueError("hook input too large")
+        result = decide(json.loads(payload))
+    except (ValueError, TypeError, RecursionError):
+        print(
+            "Catpilot secret check could not read the hook input, so the command was not allowed. "
+            "Review the command and retry.",
+            file=sys.stderr,
+        )
+        return 2
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,12 +1,12 @@
 ---
 name: catpilot-security-core
-description: 'Catpilot''s universal AI-coding-agent security baseline. Always-on guardrails across nine components: cloud CLI mutations, database state changes, local CLI destruction, Docker container builds, hardcoded secrets, secrets management, supply-chain integrity, PII / test-data hygiene, and language-agnostic secure-coding patterns (SQL injection, command injection, XSS, path traversal, insecure deserialization, eval-class APIs, SSRF). Apply on every code generation, file write, and shell command. Born from real production incidents.'
+description: 'Catpilot''s universal AI-coding-agent security baseline: advisory guardrails across nine components: cloud CLI mutations, database state changes, local CLI destruction, Docker container builds, hardcoded secrets, secrets management, supply-chain integrity, PII / test-data hygiene, and language-agnostic secure-coding patterns (SQL injection, command injection, XSS, path traversal, insecure deserialization, eval-class APIs, SSRF). Intended to apply on every code generation, file write, and shell command in a host that has loaded it. Born from real production incidents. Guidance the agent reads, not a runtime control.'
 license: MIT
 metadata:
   catpilot:
     bundle:
       name: catpilot-security-core
-      version: 2026.05.17
+      version: 2026.09.13
       tier: core
       components:
       - id: cloud-cli-safety
@@ -29,6 +29,7 @@ metadata:
         version: 1.0.0
     severity: critical
     category: security
+    mode: advisory
     applies_to:
       languages:
       - any
@@ -140,9 +141,13 @@ metadata:
 # Catpilot Security Core
 
 Catpilot's universal security baseline for AI coding agents. The nine
-components in this bundle are always-on. They apply on every file write,
-diff review, and shell command the agent is about to run, regardless of
-language or framework.
+components in this bundle are intended to apply on every file write, diff
+review, and shell command the agent is about to run, regardless of
+language or framework, whenever the host has loaded this skill. They are
+advice the agent reads: installing this bundle is not activation, and an
+instruction the agent has read is not an enforced control. The repository's
+protection contract explains the difference between advice, coaching, and
+enforcement.
 
 Each component below is a self-contained skill with its own rules, detection
 patterns, and remediation guidance. Component IDs match the entries in
@@ -152,7 +157,7 @@ control mappings).
 
 This bundle is generated deterministically from
 `src/skills/core/<id>/SKILL.md` by `tools/bundle.py` in the
-ToomeSauce/catpilot-ai-guardrails repository. Edits to this file are
+catpilotai/catpilot-ai-guardrails repository. Edits to this file are
 overwritten on the next bundle. To change behavior, edit the corresponding
 source skill and rebuild.
 

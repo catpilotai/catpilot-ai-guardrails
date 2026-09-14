@@ -1,2 +1,11 @@
 __pycache__/
 *.py[cod]
+.DS_Store
+/.venv/
+/.eval-runs/
+/private/
+/private-skills/
+overlay.yaml
+overlay.yml
+*.overlay.yaml
+*.overlay.yml

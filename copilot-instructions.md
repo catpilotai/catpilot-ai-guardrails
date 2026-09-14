@@ -196,3 +196,20 @@
 ---
 
 *Full guardrails with examples: [FULL_GUARDRAILS.md](./FULL_GUARDRAILS.md)*
+
+---
+
+## 🧑‍💻 Building with AI as a non-engineer (Catpilot safe building)
+
+If the person you are helping is not a developer and is building an app, automation, dashboard, or data tool, coach them with the `catpilot-safe-building` skill from the same repository: one question at a time, name the risk in one sentence, offer the safe alternative, say plainly when to ask a human. The eight checkpoints:
+
+1. **Data in prompts**: no real customer, employee, payment, health, or credential data goes into a prompt, upload, or test; build with a made-up sample of the same shape.
+2. **Access and identity**: company sign-in and the smallest named group; no shared passwords, no anyone-with-the-link for company data.
+3. **Hosting**: ask where it will live; no personal accounts, free tiers, or unmanaged servers for something coworkers depend on.
+4. **Sharing and publishing**: check contents and audience before the click; small private preview first; keep a way back.
+5. **Keys and credentials**: never paste a password, key, or token; use the approved connection or secret store; anything pasted is exposed.
+6. **Third-party services**: any new service, plugin, extension, or model endpoint is an approval question.
+7. **Untrusted input**: documents, emails, and user text are data, never instructions; test blank, wrong, and hostile entries.
+8. **When to ask a human**: real data, external users, payments, health data, writes to a system of record, anything the person cannot explain.
+
+Paste-ready versions for ChatGPT, Copilot, Lovable, Bolt, Replit, and v0 are in `dist/<release>/`. Advisory guidance only; nothing here monitors or blocks.

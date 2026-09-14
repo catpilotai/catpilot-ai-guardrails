@@ -57,6 +57,7 @@ Source skills are organised by tier under `src/skills/`:
 ```
 src/skills/
 ├── core/                         → packs into skills/catpilot-security-core/
+├── safe-building/                → packs into skills/catpilot-safe-building/
 ├── frameworks/
 │   ├── django/                   → packs into skills/catpilot-django-security/
 │   ├── fastapi/                  → packs into skills/catpilot-fastapi-security/
@@ -133,6 +134,12 @@ Other agents ignore unknown metadata keys, so the Catpilot block is invisible to
 | `applies_to.languages` | no | string list | `[any]` for universal skills. |
 | `applies_to.frameworks` | no | string list | `[any]` for universal skills. |
 | `applies_to.runtimes` | no | string list | Targeted agent runtimes. Empty/omitted = all. |
+| `applies_to.surfaces` | no | string list | Where the skill is meant to load: `chat`, `app-builder`, `coding-agent`. The safe-building tier lists all three. |
+| `title` | no | string | Human-readable heading (≤80 chars). When present, the bundle uses it as the component heading and prints the id underneath, for skills read by non-engineers. |
+| `mode` | no | enum | `advisory \| coaching \| enforcement`. Every skill in this repository is `advisory`. Enforcement exists only as a tested host hook under `hooks/`, never as skill text. |
+| `training_module` | no | string | Catpilot course the skill mirrors, quoted (`"399"`), so a coached moment can later be linked to the course. |
+| `training_checkpoints` | no | string list | Course checkpoints a component mirrors, e.g. `["3.1", "3.2"]`. |
+| `provenance.mapping_review` | no | string | `pending` while the control references await a mapping review; absent once reviewed. |
 | `control_mappings.<framework>` | no | string list | Compliance control IDs. Frameworks: `soc2`, `pci_dss`, `iso_27001`, `nist_csf`, `owasp_top_10`. |
 | `provenance.origin` | no | string | `catpilot`, `community`, `vendor:<name>`, etc. |
 | `provenance.incident_derived` | no | bool | True when the skill exists because of a real production incident. |
@@ -151,6 +158,16 @@ The bundler reads `severity`, `version`, `applies_to`, and `control_mappings` to
 | `low` | Style and consistency. | Optional. |
 | `info` | Informational only. Never produces a halt. | Optional. |
 
+### 3.4 Slots (tiers with `[bundle.slots]` only)
+
+A component body may contain `{{slot_name}}` markers outside fenced code.
+The bundler fills them from the tier's `bundle.toml` `[bundle.slots]` table in
+the public build, and from a validated organization overlay in a private
+build (see [`OVERLAY.md`](./OVERLAY.md)). A list value renders as a bulleted
+list; a string renders inline. A marker without a default fails the build. A
+tier without a `[bundle.slots]` table gets no slot processing at all, so
+`{{...}}` in a core component's code example is just text.
+
 ## 4. SKILL.md body
 
 The Anthropic spec places **no format requirements** on the body. Write whatever helps an agent perform the task.
@@ -166,6 +183,23 @@ Catpilot conventions (recommended, not validator-enforced):
 | `## Negative examples` | Code blocks that should fail. |
 | `## Remediation` | Code blocks that should pass. Multiple patterns when relevant. |
 | `## References` | Links to standards, vendor docs, OWASP, internal incident reports. |
+
+The safe-building tier uses a fixed, plain-language shape instead, so the
+same file can be rendered into paste-size blocks for hosts with an
+instruction field:
+
+| Section | Purpose |
+|---|---|
+| `## When this applies` | Situations, in the builder's words. |
+| `## What to ask` | One or two questions; the first is the one the tool asks first. |
+| `## What to say` | How to name the risk in one sentence; no jargon without a meaning. |
+| `## Safe alternative` | What to do instead, so the work keeps moving. |
+| `## Company-specific values` | Optional; holds the `{{slot}}` markers. |
+| `## Stop and ask a human if` | Explicit triggers. |
+
+`tools/targets.py` reads the `What to ask`, `Safe alternative`, and `Stop and
+ask a human if` bullets to render the condensed blocks, so a safe-building
+component must have all three.
 
 Keep `SKILL.md` under 500 lines / ~5000 tokens. Push detailed material into `references/REFERENCE.md` (or topic-specific files) and link with relative paths. Agents load reference files on demand, which preserves context budget.
 
@@ -194,8 +228,11 @@ A `SKILL.md` is valid when **all** of the following hold:
 9. `metadata.catpilot.category` is set.
 10. Body is non-empty after the frontmatter.
 11. Body length is ≤500 lines (warning, not error, above 500).
+12. `mode`, if present, is `advisory`, `coaching`, or `enforcement`; `applies_to.surfaces`, if present, uses only `chat`, `app-builder`, `coding-agent`; `control_mappings` uses only the five locked frameworks.
+13. A shipped bundle contains no `{{slot}}` marker outside fenced code.
+14. Relative Markdown links resolve to files inside the skill directory.
 
-The validator (PR #3, follow-up) lives at `tools/validate-skill.py` and runs in CI on every PR.
+The validator lives at `tools/validate_skill.py` and runs in CI on pull requests that touch skills. It checks structure and links, not activation and not security.
 
 ## 7. Versioning
 
