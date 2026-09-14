@@ -26,7 +26,6 @@ were available; generic defaults are never the company's policy.
 from __future__ import annotations
 
 import argparse
-import inspect
 import os
 import sys
 from pathlib import Path
@@ -102,21 +101,57 @@ def list_approved(category: str) -> dict[str, Any]:
     return tools.list_approved(category, GUIDANCE, _policy())
 
 
+DATA_STATEMENT = (
+    "This endpoint answers read-only guidance lookups. It receives the topic, plan description, template kind, or "
+    "category a client sends, answers from generic defaults, stores nothing, logs no request content, and calls "
+    "nothing else. Do not send confidential plans to a public endpoint; run the server yourself behind your own "
+    "gateway instead (github.com/catpilotai/catpilot-ai-guardrails, mcp-server/)."
+)
+
+
+def build_http_app(*, host: str = "127.0.0.1", stateless: bool = False, allowed_hosts: list[str] | None = None, dns_rebinding_protection: bool = True):
+    """The Starlette app: /mcp (streamable HTTP), /health, and / (a plain data statement)."""
+    from mcp.server.transport_security import TransportSecuritySettings
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    security = None
+    if allowed_hosts:
+        security = TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=list(allowed_hosts), allowed_origins=[f"https://{h.split(':')[0]}" for h in allowed_hosts])
+    elif not dns_rebinding_protection:
+        security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    app = server.streamable_http_app(streamable_http_path="/mcp", json_response=stateless, stateless_http=stateless, transport_security=security, host=host)
+
+    async def health(request):
+        return JSONResponse({"status": "ok", "server": "catpilot-guardrails", "release": GUIDANCE["release"], "policy_status": _policy().status, "stateless": stateless})
+
+    async def root(request):
+        return JSONResponse({"server": "catpilot-guardrails", "release": GUIDANCE["release"], "mcp_endpoint": "/mcp", "health": "/health", "tools": ["get_guidance", "check_plan", "get_template", "list_approved"], "data_statement": DATA_STATEMENT})
+
+    app.router.routes.insert(0, Route("/health", health, methods=["GET"]))
+    app.router.routes.insert(0, Route("/", root, methods=["GET"]))
+    return app
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
     parser.add_argument("--host", default="127.0.0.1", help="streamable-http bind address; keep it local unless a gateway fronts it")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--stateless", action="store_true", help="streamable-http without sessions, JSON responses; required behind a load balancer with several replicas")
+    parser.add_argument("--allowed-host", action="append", default=None, help="Host header values to accept (repeatable); also CATPILOT_MCP_ALLOWED_HOSTS, comma-separated. Required when binding beyond localhost.")
+    parser.add_argument("--no-dns-rebinding-protection", action="store_true", help="accept any Host header; only behind a gateway that already validates hosts")
     args = parser.parse_args(argv)
     if args.transport == "stdio":
         server.run(transport="stdio")
         return 0
-    accepted = inspect.signature(server.run_streamable_http_async).parameters
-    kwargs = {k: v for k, v in {"host": args.host, "port": args.port}.items() if k in accepted}
-    if not kwargs:
-        os.environ.setdefault("FASTMCP_HOST", args.host)
-        os.environ.setdefault("FASTMCP_PORT", str(args.port))
-    server.run(transport="streamable-http", **kwargs)
+    allowed = args.allowed_host or [h.strip() for h in os.environ.get("CATPILOT_MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not allowed and not args.no_dns_rebinding_protection:
+        parser.error("binding beyond localhost requires --allowed-host (or CATPILOT_MCP_ALLOWED_HOSTS), or --no-dns-rebinding-protection behind a gateway that validates hosts")
+    import uvicorn
+
+    app = build_http_app(host=args.host, stateless=args.stateless, allowed_hosts=allowed, dns_rebinding_protection=not args.no_dns_rebinding_protection)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
     return 0
 
 

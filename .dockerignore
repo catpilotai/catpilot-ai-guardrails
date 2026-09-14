@@ -1,0 +1,6 @@
+# Only what mcp-server/Dockerfile copies reaches the build context (az acr build honours this too).
+*
+!requirements-dev.txt
+!tools/validate_overlay.py
+!mcp-server/
+mcp-server/**/__pycache__
