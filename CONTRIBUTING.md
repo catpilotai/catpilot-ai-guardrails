@@ -8,28 +8,34 @@ You found the community scratching post.
 - **Website:** [catpilot.ai](https://catpilot.ai)
 - **Skill format spec:** [`docs/spec/SKILL_FORMAT.md`](./docs/spec/SKILL_FORMAT.md)
 - **Packaging spec:** [`docs/spec/PACKAGING.md`](./docs/spec/PACKAGING.md)
+- **Overlay spec:** [`docs/spec/OVERLAY.md`](./docs/spec/OVERLAY.md)
+- **Protection contract:** [`docs/PROTECTION_CONTRACT.md`](./docs/PROTECTION_CONTRACT.md)
 
 ## How to Contribute
 
 | What | How |
 |------|-----|
-| Found a dangerous pattern | Open an issue, or PR a new component under `src/skills/<tier>/<id>/SKILL.md` |
-| False positive in an existing rule | PR a fix to the relevant `src/skills/<tier>/<id>/SKILL.md` and bump its `metadata.catpilot.version` |
-| Add a control mapping (SOC 2, PCI-DSS, ISO 27001, NIST CSF, OWASP) | PR the existing component's frontmatter |
-| Port a v2.x rule from `frameworks/` or `FULL_GUARDRAILS.md` into a source skill | PR welcome — see the migration notes below |
-| Bundler / CI bug | PR `tools/bundle.py` or `.github/workflows/bundle-check.yml` |
+| Found a dangerous pattern for coding agents | Open an issue, or PR a new component under `src/skills/core/<id>/SKILL.md` |
+| A checkpoint the safe-building skill gets wrong for non-engineers | PR the component under `src/skills/safe-building/<id>/SKILL.md`; keep the plain-language shape in the format spec §4 |
+| False positive in an existing rule, or in the hook | PR a fix and bump `metadata.catpilot.version`; for the hook, add the case to `tests/test_hook.py` |
+| Add a control mapping (SOC 2, PCI-DSS, ISO 27001, NIST CSF, OWASP) | PR the component's frontmatter. Safe-building mappings are marked `mapping_review: pending`; a PR that reviews them should say what edition it checked against |
+| A host you verified (skill loads, hook blocks) | PR the README's tested-runtimes table with the host version, date, and what you observed; a verification note under `evals/reports/` is welcome |
+| A new evaluation scenario | PR `evals/scenarios/<id>.yaml`; every `must`/`must_not` id has to exist in `tools/eval.py` |
+| Bundler / target / validator / CI bug | PR `tools/` or `.github/workflows/` |
 | Typo / docs fix | Just PR it |
 | Questions | Open a discussion |
 
 ## Before You PR
 
-- [ ] Read [`docs/spec/SKILL_FORMAT.md`](./docs/spec/SKILL_FORMAT.md) — frontmatter shape, severity scale, body conventions.
-- [ ] Edit `src/skills/<tier>/<id>/SKILL.md`, **not** the shipped bundle in `skills/`. The bundler regenerates `skills/`.
-- [ ] Run `python tools/bundle.py` locally to rebuild bundles.
-- [ ] Run `python tools/bundle.py --check` to confirm determinism. CI runs the same check on PRs affecting bundle inputs, outputs, or its workflow and fails on drift.
-- [ ] Run `python3 tools/validate_evals.py` and `python3 -m unittest discover -s tests -v` when changing the evaluation foundation. These validate fixtures/tooling, not model behavior.
+- [ ] Read [`docs/spec/SKILL_FORMAT.md`](./docs/spec/SKILL_FORMAT.md): frontmatter shape, severity scale, body conventions, slots.
+- [ ] Edit `src/skills/<tier>/<id>/SKILL.md`, **not** the shipped bundle in `skills/` or the artifacts in `dist/`. The bundler regenerates both.
+- [ ] Install `pyyaml` (`python -m pip install "pyyaml==6.0.3"`) in an isolated environment.
+- [ ] Run `python tools/bundle.py --target all` to rebuild `skills/` and `dist/`.
+- [ ] Run `python tools/bundle.py --check` to confirm determinism. CI runs the same check and fails on drift in either tree.
+- [ ] Run `python tools/validate_skill.py` and `python -m unittest discover -s tests -v`. These validate structure and tooling, not model behavior.
 - [ ] Bump `metadata.catpilot.version` on any source skill you change. Source skills use semver; rename or severity changes are major bumps.
-- [ ] When changing a bundle's contents, bump its version in `src/skills/<tier>/bundle.toml` to the current date in CalVer (`YYYY.MM.DD`). The bundler refuses non-CalVer values. Documentation/evaluation-only repository releases leave unchanged bundle versions intact.
+- [ ] When changing a bundle's contents, bump its version in `src/skills/<tier>/bundle.toml` to the current date in CalVer (`YYYY.MM.DD`). The bundler refuses non-CalVer values. Documentation-only repository releases leave unchanged bundle versions intact.
+- [ ] Never add company names, internal URLs, policy excerpts, incident details, credentials, or a real overlay. The bundler refuses overlay-shaped files in the tree; the validator refuses secrets, internal identifiers, and narratives in overlays.
 - [ ] Keep PRs focused (one rule, one fix, one mapping per PR — easier review).
 
 ## Anatomy of a source skill
@@ -40,13 +46,13 @@ src/skills/core/secret-blocking/
 └── (optional) references/, scripts/, assets/ — bundler namespaces these into the bundle
 ```
 
-Bodies should:
+Core bodies should:
 - Lead with **why** the rule exists (concrete incident or class of incident)
 - State **when to apply** (file types, command shapes, language patterns)
 - List **rules** (concrete, actionable — "block X", "require Y", not "be careful")
 - Show **negative examples** (real bad code in fenced code blocks)
 
-The `metadata.catpilot.evidence` array carries regex patterns or matchers an automated reviewer can use; the body is the natural-language version your agent reads.
+Safe-building bodies follow a fixed shape (`When this applies`, `What to ask`, `What to say`, `Safe alternative`, optional `Company-specific values` with `{{slot}}` markers, `Stop and ask a human if`) because the same file is rendered into paste-size blocks for hosts with an instruction field. Second person, short sentences, no jargon without a one-line meaning, no shell commands, and nothing company-specific.
 
 ## AI-assisted PRs welcome
 
@@ -73,26 +79,25 @@ No judgment. We just want reviewers to know what to look for.
 ❌ Pedantic    → Style preferences
 ```
 
+For the safe-building skill the test is different: would a marketing analyst with a deadline understand it in one read, and does it tell them what to do next?
+
 ## File / size conventions
 
 | Where | Convention |
 |---|---|
-| `src/skills/<tier>/<id>/SKILL.md` | One concern per file. Aim for 100–300 lines of body. |
-| `src/skills/<tier>/bundle.toml` | Tier name, CalVer version, description. |
+| `src/skills/<tier>/<id>/SKILL.md` | One concern per file. Core: 100–300 lines of body. Safe-building: under 100 lines, plain language. |
+| `src/skills/<tier>/bundle.toml` | Tier name, CalVer version, description, preamble; slots and targets where the tier uses them. |
 | `skills/<bundle-name>/SKILL.md` | Auto-generated. Do not hand-edit. |
-| Components per bundle | No hard cap, but keep a bundle scannable. If `core` outgrows ~10 components, split into a fresh tier. |
-
-## Migration from v2.x
-
-If you were a v2.x contributor: rules in `frameworks/<fw>/FULL_*.md` and `FULL_GUARDRAILS.md` are being ported, one rule at a time, into source skills. PRs that port a v2.x rule into a new `src/skills/<tier>/<id>/SKILL.md` are very welcome — open an issue first if you want to claim a section so we don't duplicate work.
+| `dist/<release>/` | Auto-generated per-host artifacts. Do not hand-edit. |
+| Components per bundle | No hard cap, but keep a bundle scannable. Core is at nine; safe-building at eight, matching the course. |
 
 ## Current focus
 
-- A reproducible behavioral baseline in Codex and Claude Code, using [synthetic scenarios](evals/README.md).
-- Safe-building guidance and private organization-overlay boundaries informed by those results.
-- A tested host integration with a clearly scoped check and explicit failure behavior.
+- Getting the safe-building skill in front of real non-engineers and their tools, and recording what the tools actually do with it (`tools/eval.py`).
+- Populating the tested-runtimes table with real dates for Claude Code, Cursor, Claude.ai organization provisioning, and the design partner's host.
+- The organization-overlay path end to end: a reviewed overlay, a private build, an installed private bundle.
 
-All nine core components have shipped. Framework extension bundles, the standalone skill validator, and the framework-detection helper remain future work, not prerequisites for the first evaluation.
+Deferred this quarter: framework extension bundles, the advanced tier, `tools/recommend.py`, HIPAA and GDPR mappings, and the reference MCP server (not before the design partner names the host). The `frameworks/` content stays; PRs that port it into source skills are still welcome, they just will not ship as bundles yet.
 
 Check [Issues](https://github.com/catpilotai/catpilot-ai-guardrails/issues) for "good first issue" labels.
 

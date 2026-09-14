@@ -2,7 +2,7 @@
 
 **Status:** Active.
 **Companion to:** [`SKILL_FORMAT.md`](./SKILL_FORMAT.md).
-**Distribution channel:** [`npx skills add ToomeSauce/catpilot-ai-guardrails`](https://github.com/vercel-labs/skills) → indexed at [skills.sh](https://skills.sh).
+**Distribution channel:** [`npx skills add catpilotai/catpilot-ai-guardrails`](https://github.com/vercel-labs/skills) → indexed at [skills.sh](https://skills.sh).
 
 ---
 
@@ -21,10 +21,11 @@ This layout decouples them. Authors edit small files; users install small number
 | Bundle | Source path | Audience | Default install? |
 |---|---|---|---|
 | `catpilot-security-core` | `src/skills/core/` | Every project, every language, every framework. The non-negotiable security baseline. | Yes |
+| `catpilot-safe-building` | `src/skills/safe-building/` | Anyone building an app, automation, dashboard, or data tool with an AI assistant, whether or not they can read code. Also rendered into per-host artifacts under `dist/` (§9). | Yes, for non-engineers |
 | `catpilot-<framework>-security` | `src/skills/frameworks/<fw>/` | Projects using the named framework. Auto-detected from `package.json`, `pyproject.toml`, `Gemfile`, etc. | Yes when framework is detected |
 | `catpilot-security-advanced` | `src/skills/advanced/` | Multi-agent systems, agent identity boundaries, cron-driven autonomous workflows. | No (opt-in) |
 
-Total bundles a typical user installs: **1–3.**
+Total bundles a typical user installs: **1–3.** Framework and advanced tiers are plans; their content lives in `frameworks/` and is not promised for this quarter.
 
 ### 2.1 `catpilot-security-core`
 
@@ -81,6 +82,7 @@ metadata:
           version: 1.0.0
         # ... one row per source skill
     severity: critical                    # max(component severities)
+    mode: advisory                        # from bundle.toml; every bundle here is advisory
     control_mappings:                     # union of all components
       soc2: [CC6.1, CC6.6, CC7.2, CC8.1, A1.2]
       pci_dss: ["3.4", "3.5", "3.6", "6.4.5", "6.4.5.2", "8.2.1", "10.2"]
@@ -135,7 +137,7 @@ The bundler concatenates component bodies under stable subheadings, in lexicogra
 [...]
 ```
 
-Component headings use the source skill's `metadata.catpilot.id` so that an agent reading the bundle can map specific findings back to a source skill (and to its version, control mappings, and provenance).
+Component headings use the source skill's `metadata.catpilot.id` so that an agent reading the bundle can map specific findings back to a source skill (and to its version, control mappings, and provenance). A component with a `title` gets that title as its heading and a `Component: \`id\`` line underneath, so a skill written for non-engineers reads as prose while staying traceable.
 
 ### 3.4 Companion files
 
@@ -184,20 +186,22 @@ Catpilot does not ship a custom installer. Users install bundles via the [skills
 
 ```bash
 # install the core bundle
-npx skills add ToomeSauce/catpilot-ai-guardrails --skill catpilot-security-core
+npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-security-core
 
 # install core + the framework you're using
-npx skills add ToomeSauce/catpilot-ai-guardrails \
+npx skills add catpilotai/catpilot-ai-guardrails \
   --skill catpilot-security-core \
   --skill catpilot-django-security
 
 # install everything
-npx skills add ToomeSauce/catpilot-ai-guardrails --all
+npx skills add catpilotai/catpilot-ai-guardrails --all
 ```
 
 The CLI handles per-runtime installation (Claude Code, Cursor, OpenClaw, …) — 51 supported agents at time of writing.
 
-A small `tools/recommend.py` helper (PR #3, follow-up) reads a project's manifests (`package.json`, `pyproject.toml`, `Gemfile`, `Cargo.toml`, `go.mod`, …), recommends the right framework bundles, and prints the corresponding `npx skills add` invocation for the user to run.
+The framework-detection helper (`tools/recommend.py`) is deferred with the framework tiers.
+
+Non-engineers do not run `npx`. For them, §9 renders the safe-building bundle into a Claude.ai zip, paste-ready instruction blocks, and a web page.
 
 ## 7. Why not ship the source skills directly?
 
@@ -209,12 +213,47 @@ We could put each source skill at `skills/<name>/SKILL.md` and let users install
 
 The source-vs-bundle split is the right tradeoff: authors get fine-grained control, users get coarse-grained installs.
 
-## 8. What this PR does not include
+## 8. Status
 
-- The bundler itself (`tools/bundle.py`) — follow-up PR.
-- The validator (`tools/validate-skill.py`) — follow-up PR.
-- The framework-detection helper (`tools/recommend.py`) — follow-up PR.
-- The remaining 7 core source skills (`local-cli-safety`, `database-safety`, `docker-safety`, `secrets-management`, `pii-and-test-data`, `supply-chain`, `language-baseline`) — follow-up PRs.
-- Framework extension content — follow-up PRs, one per framework.
-- Advanced tier content — follow-up PR.
-- A new top-level `README.md` rewrite on `main` — follow-up PR.
+- Bundler, validator (`tools/validate_skill.py`), nine core components, and the safe-building tier: shipped.
+- Per-host targets (§9) and private overlay builds (§10): shipped.
+- Framework extension tiers, the advanced tier, and `tools/recommend.py`: deferred. Content stays in `frameworks/`.
+
+## 9. Per-host targets and `dist/`
+
+`python tools/bundle.py --target all` renders every target a tier enables in
+its `bundle.toml` (`[bundle.targets] enabled = [...]`) into
+`dist/<bundle version>/`. `--check` compares `dist/` as well as `skills/`, so
+rendered artifacts cannot drift from source. Only the safe-building tier
+enables targets today.
+
+| Target | File | Host |
+|---|---|---|
+| `claude-zip` | `catpilot-safe-building.zip` | Claude.ai: individual upload, or organization-wide provisioning by an owner. One folder with `SKILL.md` inside. |
+| `chatgpt` | `chatgpt-project-instructions.md` | ChatGPT Project or Custom GPT instructions (≤8,000 characters). |
+| `copilot` | `copilot-agent-instructions.md`, `copilot-declarative-agent.stub.json` | Copilot Studio instructions; Microsoft 365 declarative-agent manifest stub. |
+| `agents-md` | `AGENTS.md` | Block to append to a project's `AGENTS.md`. |
+| `copilot-instructions` | `copilot-instructions.md` | Block to append to `.github/copilot-instructions.md`. |
+| `lovable` | `lovable-knowledge.md` | Lovable project Knowledge. |
+| `bolt` | `bolt-prompt.txt` | `.bolt/prompt`. |
+| `replit` | `replit-instructions.md` | Replit Agent instructions or `replit.md`. |
+| `v0` | `v0-instructions.md` | v0 project instructions. |
+| `web` | `web/safe-ai-building.html` | Source for `catpilot.ai/safe-ai-building`; ported into the site, not served as-is. |
+
+The paste targets are a condensed rendering (`tools/targets.py`): the coaching
+preamble plus, per component, the first question, the safe alternatives, and
+the stop triggers. The bundler fails if the condensed text exceeds 8,000
+characters. Every artifact's first line carries the bundle version. The zip
+uses fixed timestamps derived from the CalVer date, so rebuilding produces
+identical bytes. A `README.md` in the release directory says where each file
+goes.
+
+## 10. Private bundles
+
+`python tools/bundle.py --overlay overlay.yaml --private-out ../private-skills`
+renders a tier's slots from an organization overlay instead of the generic
+defaults and writes `catpilot-safe-building-<organization slug>/SKILL.md`
+outside the repository. The public build refuses to run if an overlay-shaped
+file is present under `src/`, `skills/`, or `dist/`. Details and the seam
+between the open tooling and the Catpilot Plus product are in
+[`OVERLAY.md`](./OVERLAY.md).

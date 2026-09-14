@@ -12,6 +12,7 @@
 | [`SKILL_FORMAT.md`](./SKILL_FORMAT.md) | Catpilot skills are valid Anthropic Agent Skills. Catpilot extensions live under `metadata.catpilot.*`. Frontmatter shape, validation rules, severity scale, body conventions. |
 | [`PACKAGING.md`](./PACKAGING.md) | Three tiers, bundler mechanics, deterministic output, distribution via `npx skills add`. |
 | [`V2_DIAGNOSTIC.md`](./V2_DIAGNOSTIC.md) | One-page postmortem on why v2.x of this repo got zero external traction, and what the rewrite changes. |
+| [`OVERLAY.md`](./OVERLAY.md) | Organization overlay: the open schema for company-specific values, the validator, private builds, and the seam with Catpilot Plus. JSON Schema at [`overlay.schema.json`](./overlay.schema.json); synthetic example at [`overlay.example.yaml`](./overlay.example.yaml). |
 | [`README.md`](./README.md) | This file. |
 
 ## How the format and packaging fit together
@@ -28,7 +29,7 @@
 | Conformance: exact Anthropic Agent Skills, not "superset." Catpilot extensions live entirely under `metadata.catpilot.*`. Other runtimes ignore unknown metadata. | LOCKED | |
 | Severity scale: `info < low < medium < high < critical`. | LOCKED | |
 | Control mappings: SOC2, PCI-DSS, ISO 27001, NIST CSF, OWASP Top 10. | LOCKED | HIPAA / GDPR follow in a later release. |
-| Three packaging tiers: `catpilot-security-core` (always-on baseline), `catpilot-<framework>-security` (framework extensions), `catpilot-security-advanced` (multi-agent / opt-in). | LOCKED | |
+| Tiers: `catpilot-security-core` (engineering baseline), `catpilot-safe-building` (non-engineers), then `catpilot-<framework>-security` and `catpilot-security-advanced` as plans. | LOCKED | Framework and advanced tiers are deferred this quarter; content stays in `frameworks/`. |
 | Source layout: `src/skills/<tier>/<name>/SKILL.md`. Bundle layout: `skills/<bundle-name>/SKILL.md`. | LOCKED | Source is outside `skills/` so the skills.sh CLI surfaces only bundles. |
 | Bundle frontmatter records per-component versions for traceability. | LOCKED | Lives at `metadata.catpilot.bundle.components[]`. |
 | Bundler aggregates severity (max), control mappings (sorted union), `applies_to` (union with `any` collapse). | LOCKED | |
@@ -36,8 +37,13 @@
 | Bundle versioning: CalVer (`YYYY.MM.DD` or `YYYY.MM`). Source-skill versioning: semver. | LOCKED | Bundles are content on a rolling release cadence; source skills have a real "breaking change" notion. |
 | Tier 3 naming: `advanced` (not `agentic`). | LOCKED | |
 | Bundler implementation: Python (matches Catpilot stack). | LOCKED | |
-| Validator (`tools/validate-skill.py`), framework-detection helper (`tools/recommend.py`), launch motion. | OPEN | Tracked. |
-| Migration of remaining v2.x rule categories into source skills (7 more core skills, framework extensions, advanced tier). | OPEN | Content sprint. |
+| Validator: `tools/validate_skill.py` runs in CI. | DONE | Structure and links only. |
+| Framework-detection helper (`tools/recommend.py`). | DEFERRED | With the framework tiers. |
+| Core migration from v2.x: nine components. Framework extensions and advanced tier. | CORE DONE; REST DEFERRED | `frameworks/` content kept, promise removed. |
+| Three modes, advice / contextual coaching / enforcement, in every description of what the repository does. Enforcement claims only for a tested hook on a named host and path. | LOCKED | `docs/PROTECTION_CONTRACT.md`, `hooks/README.md`. |
+| Organization overlay: schema and validator public; values private; the bundler refuses to build a public bundle if an overlay is in the tree; private output goes outside the repository. | LOCKED | `OVERLAY.md`. |
+| Per-host targets rendered from the same sources into `dist/<release>/`; `--check` covers them. | LOCKED | `PACKAGING.md` §9. |
+| Reference MCP server. | DEFERRED | Not before the design partner names the host. Contract sketched in the direction document, not in code. |
 
 ## Reading order
 

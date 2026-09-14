@@ -1,0 +1,58 @@
+# overlay.example.yaml: a synthetic organization overlay for catpilot-safe-building.
+# Copy it OUTSIDE any public repository, fill in your company's values, and build
+# a private bundle with:
+#   python tools/bundle.py --overlay /private/path/overlay.yaml --private-out /private/path/private-skills
+# Every value below is fictional. Never commit a real overlay to a public repository.
+schema_version: 1
+organization: "Example Org"
+owner: "security-review@example.org"
+reviewed_on: 2026-09-13
+expires_on: 2027-03-13
+
+data_classes:
+  never_in_prompts:
+    - "Cardholder data and bank details"
+    - "Government identifiers"
+    - "Health records"
+    - "Employee HR records"
+    - "Passwords, keys, tokens, and sign-in codes"
+  ok_with_approval:
+    - "Customer names and business email addresses"
+  ok:
+    - "Made-up records with example.com addresses"
+    - "Published product information"
+
+hosting:
+  approved:
+    - "Internal App Platform (company sign-in)"
+    - "Power Apps in the company tenant"
+    - "The approved cloud subscription managed by IT"
+  not_approved:
+    - "Personal cloud accounts"
+    - "Free-tier hosting"
+    - "Unmanaged virtual machines"
+
+services:
+  approved:
+    - "The company LLM gateway"
+    - "The approved transactional email service"
+    - "Internal object storage"
+  needs_review:
+    - "Any new software service"
+    - "Any new model endpoint"
+    - "Browser extensions"
+
+identity:
+  default: "Company sign-in, smallest named group that needs access"
+  never:
+    - "Shared passwords"
+    - "Public links for internal tools"
+
+review_triggers:
+  - "External users"
+  - "Payments or refunds"
+  - "Writes to a system of record"
+
+templates:
+  - kind: internal-lookup-tool
+    location: "https://intranet.example.org/templates/lookup"
