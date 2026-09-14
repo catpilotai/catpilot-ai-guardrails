@@ -17,13 +17,14 @@ You found the community scratching post.
 |------|-----|
 | Found a dangerous pattern for coding agents | Open an issue, or PR a new component under `src/skills/core/<id>/SKILL.md` |
 | A checkpoint the safe-building skill gets wrong for non-engineers | PR the component under `src/skills/safe-building/<id>/SKILL.md`; keep the plain-language shape in the format spec §4 |
-| False positive in an existing rule, or in the hook | PR a fix and bump `metadata.catpilot.version`; for the hook, add the case to `tests/test_hook.py` |
+| False positive in an existing rule, or in a hook | PR a fix and bump `metadata.catpilot.version`; for a hook, add the case to `tests/test_hook.py` or `tests/test_write_hook.py`, whichever one it is |
 | Add a control mapping (SOC 2, PCI-DSS, ISO 27001, NIST CSF, OWASP) | PR the component's frontmatter. Safe-building mappings are marked `mapping_review: pending`; a PR that reviews them should say what edition it checked against |
 | A host you verified (skill loads, hook blocks) | PR the README's tested-runtimes table with the host version, date, and what you observed; a verification note under `evals/reports/` is welcome |
 | A new evaluation scenario | PR `evals/scenarios/<id>.yaml`; every `must`/`must_not` id has to exist in `tools/eval.py` |
 | Bundler / target / validator / CI bug | PR `tools/` or `.github/workflows/` |
+| Bug in the reference MCP server or the deployment scripts | PR `mcp-server/` or `deploy/`; anything security-related about the hosted endpoint goes to SECURITY.md, not an issue |
 | Typo / docs fix | Just PR it |
-| Questions | Open a discussion |
+| Questions | Open an issue |
 
 ## Before You PR
 
@@ -93,11 +94,12 @@ For the safe-building skill the test is different: would a marketing analyst wit
 
 ## Current focus
 
-- Getting the safe-building skill in front of real non-engineers and their tools, and recording what the tools actually do with it (`tools/eval.py`).
-- Populating the tested-runtimes table with real dates for Claude Code, Cursor, Claude.ai organization provisioning, and the design partner's host.
-- The organization-overlay path end to end: a reviewed overlay, a private build, an installed private bundle.
+- Recording ChatGPT and Claude.ai custom-connector verification against the hosted endpoint.
+- Publishing the first full with/without evaluation report.
+- The organization-overlay path end to end: a reviewed overlay, a private build, an installed private bundle, a tenant-scoped MCP lookup.
+- Populating the tested-runtimes table with real dates for Cursor, Claude.ai, and the design partner's host.
 
-Deferred this quarter: framework extension bundles, the advanced tier, `tools/recommend.py`, HIPAA and GDPR mappings, and the reference MCP server (not before the design partner names the host). The `frameworks/` content stays; PRs that port it into source skills are still welcome, they just will not ship as bundles yet.
+Deferred this quarter: framework extension bundles, the advanced tier, `tools/recommend.py`, HIPAA and GDPR mappings. The `frameworks/` content stays; PRs that port it into source skills are still welcome, they just will not ship as bundles yet.
 
 Check [Issues](https://github.com/catpilotai/catpilot-ai-guardrails/issues) for "good first issue" labels.
 

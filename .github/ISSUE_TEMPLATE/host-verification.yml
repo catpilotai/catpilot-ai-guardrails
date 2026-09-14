@@ -1,0 +1,42 @@
+name: Host verification
+description: Record a host you tested, for the tested-runtimes table.
+title: "[host verification]: "
+labels: ["host-verification"]
+body:
+  - type: markdown
+    attributes:
+      value: A row without a date is a row without evidence. Fill in what you actually observed, not what should happen.
+  - type: input
+    id: host
+    attributes:
+      label: Host and version
+      placeholder: e.g. Cursor 1.x
+    validations:
+      required: true
+  - type: textarea
+    id: install
+    attributes:
+      label: What was installed and how
+    validations:
+      required: true
+  - type: textarea
+    id: signal
+    attributes:
+      label: Signal that showed it loaded
+      description: What told you the skill or guidance was actually read by the host, not just present on disk?
+    validations:
+      required: true
+  - type: textarea
+    id: observations
+    attributes:
+      label: Hook or MCP observations
+      description: Include control runs, what happened without the hook or skill installed, if you ran one.
+    validations:
+      required: false
+  - type: input
+    id: date
+    attributes:
+      label: Date
+      placeholder: YYYY-MM-DD
+    validations:
+      required: true
