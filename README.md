@@ -87,7 +87,7 @@ Installable via skills.sh into 50+ runtimes; verified only on the runtimes and d
 
 ## What's in the box
 
-### `catpilot-security-core` (bundle `2026.09.13`, nine components at `1.0.0`)
+### `catpilot-security-core` (bundle `2026.09.14`; `cloud-cli-safety` at `1.0.1`, the other eight at `1.0.0`)
 
 Guidance for code generation, file edits, and shell commands. "Always-on" in older content described intended use; the bundle now says what it is: advice the agent reads, applied whenever the host has loaded it.
 
@@ -169,8 +169,8 @@ cp -r catpilot-ai-guardrails/skills/catpilot-safe-building ~/.claude/skills/
 ## Versioning
 
 - **Repository releases** are CalVer (`YYYY.MM.DD`). Current release: **`2026.09.13`**.
-- **Source skill components** inside a release are semver; every component is at `1.0.0`. The bundle frontmatter records which versions of which components shipped.
-- Both bundles are at `2026.09.13`. The core bundle changed only in its description, preamble, and a new `mode: advisory` field; its nine components are unchanged.
+- **Source skill components** inside a release are semver. `cloud-cli-safety` is at `1.0.1` after the Azure environment-variable correction; every other component is at `1.0.0`. The bundle frontmatter records which versions of which components shipped.
+- The core bundle is `2026.09.14`; the safe-building bundle is `2026.09.13`. The core bundle's earlier `2026.09.13` step changed only its description, preamble, and a new `mode: advisory` field.
 - The `2026.09.11` release added the evaluation foundation and protection contract. The `2026.06.25` release added framework-level agentic/OpenClaw guardrails under `frameworks/`.
 
 CalVer matches the cadence of a content repo: each release is a dated snapshot, and the date is the meaningful signal for users and auditors. Semver on individual components carries the breaking-change semantics that matter for downstream consumers.
