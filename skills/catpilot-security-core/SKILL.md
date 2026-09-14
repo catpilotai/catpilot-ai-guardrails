@@ -6,11 +6,11 @@ metadata:
   catpilot:
     bundle:
       name: catpilot-security-core
-      version: 2026.09.13
+      version: 2026.09.14
       tier: core
       components:
       - id: cloud-cli-safety
-        version: 1.0.0
+        version: 1.0.1
       - id: database-safety
         version: 1.0.0
       - id: docker-safety
@@ -228,12 +228,14 @@ heuristics: hostnames or resource names containing `prod`, `production`,
 
 > [!agent] Before executing any mutating cloud CLI command, complete all
 > six steps in order. Do not skip step 4 even if the user has previously
-> said "go ahead" in this session — confirmation is per-command.
+> authorized unrelated work. Existing explicit authorization covers the
+> named, scoped change; ask again if its target, impact, or scope changes.
 
 1. **[critical]** **Query current state.** Run the read-only equivalent
    first and show the relevant fields to the user.
-2. **[critical]** **Show the full command.** No truncation, no `…`, no
-   variable interpolation hidden behind `$VAR`. Expand everything.
+2. **[critical]** **Show the command and affected targets.** Preserve
+   environment-variable/secret references. Never expand credentials into
+   chat, logs, shell history, or rollback files; redact sensitive values.
 3. **[critical]** **Enumerate fields that will change.** Especially env
    vars, IAM bindings, replica counts, CPU/memory, probes.
 4. **[critical]** **Get explicit confirmation.** A literal "yes" or
@@ -246,7 +248,7 @@ heuristics: hostnames or resource names containing `prod`, `production`,
 #### Always-blocked patterns
 
 - **[critical]** `az containerapp update --yaml <partial>` — overwrites all unspecified fields.
-- **[critical]** `az containerapp update --set-env-vars X=Y` without first reading existing env — clears every other env var.
+- **[critical]** `az containerapp update --replace-env-vars ...` removes unspecified variables. `--set-env-vars` adds/updates only named variables; do not flatten and resend unrelated values or secret references.
 - **[critical]** `aws lambda update-function-configuration --environment "Variables={ONLY_ONE=value}"` — replaces, does not merge.
 - **[critical]** `aws s3 rm s3://bucket --recursive` without prior `aws s3 ls` and explicit confirmation.
 - **[critical]** `gcloud projects set-iam-policy PROJECT policy.json` — wipes existing bindings. Use `add-iam-policy-binding` instead.
@@ -260,13 +262,13 @@ heuristics: hostnames or resource names containing `prod`, `production`,
 - **[critical]** `kubectl apply -f -` reading from stdin without showing the manifest first.
 - **[high]** `helm upgrade RELEASE CHART` without prior `helm diff upgrade` (requires the helm-diff plugin).
 - **[high]** Any `--force` flag on `kubectl delete`.
-- **[high]** Any `--quiet` / `-q` / `--yes` / `-y` flag on a mutating command. The agent must not use these.
+- **[high]** Do not use noninteractive flags to bypass missing authorization. They may implement an already authorized, bounded change; their presence alone is not evidence of an unsafe operation.
 
 #### Always-required patterns
 
 - **[high]** Use **additive** IAM commands (`add-iam-policy-binding`) over **replace** commands (`set-iam-policy`).
 - **[high]** Use `--dry-run=client` (kubectl) or `terraform plan -out=tfplan` (then `terraform apply tfplan`) before any apply.
-- **[high]** When updating env vars, **read all current env vars first** and pass the full merged set on the update command.
+- **[high]** Check the provider's update semantics. For additive updates, send only intended changes. For replacement APIs, preserve typed values and secret references without exposing them. Prepare rollback for both changed and newly added names.
 - **[medium]** Pin Terraform provider versions; never use `latest`.
 - **[medium]** For multi-resource changes, prefer one mutating command per turn so each can be confirmed individually.
 
@@ -316,24 +318,31 @@ helm upgrade prod-api ./chart
 #### Azure Container Apps — preserve env vars on update
 
 ```bash
-# ✅ Step 1: Query
+# ✅ Inspect names and secret references, not plaintext values
 az containerapp show \
   --name myapp --resource-group prod-rg \
-  --query "properties.template.containers[0].env" -o json > current-env.json
+  --query "properties.template.containers[0].env[].{name:name,secretRef:secretRef}" -o json
 
-# ✅ Step 2: Patch only the field you want, keep the rest
-jq '. + [{"name":"NEW_FLAG","value":"true"}]' current-env.json > merged-env.json
+# This example assumes NEW_FLAG is confirmed absent and non-sensitive.
+# For multiple containers, explicitly select the intended container.
+# Record the target/revision and confirm the scoped change before execution.
 
-# ✅ Step 3: Show full command, get confirmation, then update
+# ✅ Add only NEW_FLAG; existing values and secret references are preserved
 az containerapp update \
   --name myapp --resource-group prod-rg \
-  --set-env-vars $(jq -r '.[] | "\(.name)=\(.value)"' merged-env.json | tr '\n' ' ')
+  --set-env-vars 'NEW_FLAG=true'
 
-# ✅ Rollback prepared in advance
-echo "az containerapp update --name myapp --resource-group prod-rg \\
-  --set-env-vars $(jq -r '.[] | \"\\(.name)=\\(.value)\"' current-env.json | tr '\n' ' ')" \
-  > rollback.sh
+# Rollback if needed: remove only the newly added name
+# az containerapp update --name myapp --resource-group prod-rg --remove-env-vars NEW_FLAG
+# For an existing changed name, restore its prior value/secretref instead.
 ```
+
+Secret references use `NAME=secretref:secret-name`. Construct argument arrays,
+not shell-split strings. The pure planner `env_patch.py`, shipped with this
+component (under `scripts/cloud-cli-safety/` in the installed bundle),
+preserves typed values and inverse changes; it never invokes Azure. Its
+returned arguments can contain private configuration: use `summarize_patch`
+for display.
 
 #### AWS Lambda — merge env vars instead of replace
 
@@ -469,7 +478,9 @@ Treat **any** of the following as production until proven otherwise:
 
 - Resource name, hostname, or namespace contains: `prod`, `production`, `live`, `prd`.
 - Env var: `NODE_ENV=production`, `ENV=prod`, `ENVIRONMENT=production`, `APP_ENV=prod`.
-- Current git branch matches: `main`, `master`, `production`, `release/*`.
+- Current git branch matches `main`, `master`, `production`, or `release/*`:
+  a contextual clue only, not proof of the target environment or a reason to
+  block a scoped read-only command. Confirm the actual account/resource.
 - Cloud subscription / project / account name contains the above tokens.
 - DNS name resolves to a public IP that responds with a non-staging cert SAN.
 

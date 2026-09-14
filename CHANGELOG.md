@@ -30,6 +30,10 @@ Direction: the civilian-builder wedge (`CATPILOT_OSS_GUARDRAILS_DIRECTION.md`, S
 - CI: third-party actions pinned to commit SHAs with a read-only token; the bundle check validates every skill directory and the overlay example; the evaluation workflow validates both fixture sets.
 - The legacy `copilot-instructions.md` gains a short safe-building section so repository-based agents see both skills.
 
+### Fixed
+
+- **`cloud-cli-safety` 1.0.1, core bundle `2026.09.14`.** The Azure Container Apps guidance was wrong in a way that mattered: `az containerapp update --set-env-vars` adds or updates only the named variables, while `--replace-env-vars` is the call that removes unspecified ones. The component now says so, keeps secret references as references instead of expanding them into chat or rollback files, treats noninteractive flags as a signal rather than proof of an unsafe operation, treats a `main` branch as a clue rather than proof of production, and ships a tested pure planner (`env_patch.py`) that builds additive `--set-env-vars` arguments with an inverse for rollback and never calls Azure. Ported from the hardening branch (PR #16) with its tests.
+
 ### Not included
 
 No MCP server (not before the design partner names the host), no telemetry, no framework or advanced bundles, no new compliance mappings, no enforcement claim beyond the documented hook path, and no verification claim for any host without a date in the tested-runtimes table.

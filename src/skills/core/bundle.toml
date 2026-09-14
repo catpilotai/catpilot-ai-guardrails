@@ -1,7 +1,7 @@
 [bundle]
 name = "catpilot-security-core"
 tier = "core"
-version = "2026.09.13"
+version = "2026.09.14"
 category = "security"
 mode = "advisory"
 
