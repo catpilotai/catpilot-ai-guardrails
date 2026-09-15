@@ -20,24 +20,35 @@ production incidents. Guidance the agent reads, not a runtime control.
 preamble = """
 # Catpilot Security Core
 
-Catpilot's universal security baseline for AI coding agents. The nine
-components in this bundle are intended to apply on every file write, diff
-review, and shell command the agent is about to run, regardless of
-language or framework, whenever the host has loaded this skill. They are
-advice the agent reads: installing this bundle is not activation, and an
-instruction the agent has read is not an enforced control. The repository's
-protection contract explains the difference between advice, coaching, and
-enforcement.
+Catpilot's universal security baseline for AI coding agents, intended to
+apply on every file write, diff review, and shell command the agent is about
+to run, regardless of language or framework, whenever the host has loaded
+this skill. It is advice the agent reads: installing this bundle is not
+activation, and an instruction the agent has read is not an enforced
+control. The repository's protection contract explains the difference
+between advice, coaching, and enforcement.
 
-Each component below is a self-contained skill with its own rules, detection
-patterns, and remediation guidance. Component IDs match the entries in
-`metadata.catpilot.bundle.components` in the frontmatter so a finding can be
-mapped back to a specific source skill (and to its severity, version, and
+This file is deliberately short. Each component below names its reference
+file, states when it applies, and lists the rules that always hold. Do not
+answer from this file alone: before acting in a component's area (a cloud
+command that changes infrastructure, a database migration or data change, a
+Dockerfile, a dependency change, anything that handles a secret or real
+personal data, or code in the language-baseline patterns), read the named
+reference file with your file-reading tool and follow it. The examples, the
+remediation steps, and the detection patterns live there, and so do the
+facts that decide whether a command is safe. Component IDs match the entries in
+`metadata.catpilot.bundle.components` in the frontmatter so a finding can
+be mapped back to a specific source skill (and to its severity, version, and
 control mappings).
 
 This bundle is generated deterministically from
 `src/skills/core/<id>/SKILL.md` by `tools/bundle.py` in the
-catpilotai/catpilot-ai-guardrails repository. Edits to this file are
-overwritten on the next bundle. To change behavior, edit the corresponding
-source skill and rebuild.
+catpilotai/catpilot-ai-guardrails repository. Edits to this file or to the
+reference files are overwritten on the next bundle. To change behavior, edit
+the corresponding source skill and rebuild.
 """
+
+[bundle.layout]
+kind = "baseline-references"
+baseline_section = "Baseline"
+max_lines = 500

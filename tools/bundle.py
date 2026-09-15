@@ -73,8 +73,9 @@ SURFACES = ("app-builder", "chat", "coding-agent")
 CONTROL_FRAMEWORKS = ["soc2", "pci_dss", "iso_27001", "nist_csf", "owasp_top_10"]
 BUNDLE_CFG_KEYS = {
     "name", "tier", "version", "category", "description", "preamble",
-    "mode", "training_module", "slots", "targets", "mcp",
+    "mode", "training_module", "slots", "targets", "mcp", "layout",
 }
+LAYOUT_KINDS = ("single", "baseline-references")
 
 # Anthropic spec name regex: 1-64 chars, lowercase a-z + digits + hyphens,
 # no leading/trailing/consecutive hyphens.
@@ -100,7 +101,7 @@ CATPILOT_KEY_ORDER = [
     "maintainers",
     "references",
 ]
-BUNDLE_KEY_ORDER = ["name", "version", "tier", "components"]
+BUNDLE_KEY_ORDER = ["name", "version", "tier", "layout", "components"]
 
 
 @dataclass
@@ -517,6 +518,9 @@ def build_bundle_frontmatter(
     }
     if overlay_meta:
         cp["overlay"] = overlay_meta
+    if layout_kind(bundle_cfg) != "single":
+        cp["bundle"]["layout"] = layout_kind(bundle_cfg)
+        cp["bundle"] = order_dict(cp["bundle"], BUNDLE_KEY_ORDER)
     if bundle_cfg.get("mode"):
         cp["mode"] = bundle_cfg["mode"]
     training_module = aggregate_training_module(bundle_cfg, skills)
@@ -533,7 +537,52 @@ def build_bundle_frontmatter(
     return order_dict(fm, TOP_KEY_ORDER)
 
 
+def layout_kind(bundle_cfg: dict) -> str:
+    return (bundle_cfg.get("layout") or {}).get("kind", "single")
+
+
+def extract_section(body: str, heading: str) -> str:
+    """The text under `## <heading>` up to the next H2, fence-aware, without the heading line."""
+    lines = body.splitlines()
+    in_fence = False
+    start = end = None
+    for i, line in enumerate(lines):
+        if _FENCE_RE.match(line.strip()):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if start is None:
+            if re.fullmatch(rf"##\s+{re.escape(heading)}\s*", line.strip()):
+                start = i + 1
+        elif line.startswith("## "):
+            end = i
+            break
+    if start is None:
+        raise ValueError(f"missing '## {heading}' section")
+    return "\n".join(lines[start:end if end is not None else len(lines)]).strip("\n")
+
+
+def reference_path(skill: SourceSkill) -> str:
+    return f"references/{skill.id}.md"
+
+
+def build_reference(bundle_name: str, skill: SourceSkill, body: str) -> str:
+    """One reference file per component: the complete component text, opened on demand."""
+    title = skill.title or skill.id
+    head = [
+        f"# {title}",
+        "",
+        f"Component `{skill.id}` · version {skill.version} · severity {skill.severity} · category {skill.cp.get('category', '')}.",
+        f"Full text of one component of the `{bundle_name}` bundle. The baseline rules are in `../SKILL.md`; this file has the rest: examples, remediation, and detection patterns.",
+        "",
+    ]
+    return "\n".join(head) + body.lstrip("\n").rstrip() + "\n"
+
+
 def build_bundle_body(bundle_cfg: dict, skills: list[SourceSkill], values: dict) -> str:
+    kind = layout_kind(bundle_cfg)
+    section = (bundle_cfg.get("layout") or {}).get("baseline_section", "Baseline")
     parts = [render_slots(bundle_cfg["preamble"].strip(), values, "preamble"), ""]
     for s in sorted(skills, key=lambda s: s.id):
         parts.append("---")
@@ -549,10 +598,20 @@ def build_bundle_body(bundle_cfg: dict, skills: list[SourceSkill], values: dict)
             parts.append(f"## {s.id}")
         parts.append("")
         body = render_slots(s.body.lstrip("\n"), values, s.id)
-        # Demote any H1/H2 inside component bodies by one level so the
-        # bundle's H2 component heading stays the highest within the section.
-        body = _demote_headings(body)
-        parts.append(body.rstrip())
+        if kind == "baseline-references":
+            try:
+                body = extract_section(body, section)
+            except ValueError as e:
+                raise ValueError(f"{s.path}: {e}; every component in a baseline-references bundle needs one") from e
+            body = _demote_headings(body)
+            parts.append(f"Before acting in this area, read [{reference_path(s)}]({reference_path(s)}) in this skill's directory; the rules below are the minimum, not the whole component.")
+            parts.append("")
+            parts.append(body.rstrip())
+        else:
+            # Demote any H1/H2 inside component bodies by one level so the
+            # bundle's H2 component heading stays the highest within the section.
+            body = _demote_headings(body)
+            parts.append(body.rstrip())
         parts.append("")
     return "\n".join(parts).rstrip() + "\n"
 
@@ -675,6 +734,19 @@ def load_bundle_cfg(tier_dir: Path) -> dict:
     if mcp_cfg:
         if not isinstance(mcp_cfg, dict) or not isinstance(mcp_cfg.get("defaults"), str) or ".." in mcp_cfg["defaults"] or mcp_cfg["defaults"].startswith("/"):
             raise ValueError(f"{tier_dir}/bundle.toml: [bundle.mcp] needs a relative 'defaults' path")
+    layout = cfg.get("layout", {})
+    if layout:
+        if not isinstance(layout, dict) or layout.get("kind") not in LAYOUT_KINDS:
+            raise ValueError(f"{tier_dir}/bundle.toml: [bundle.layout] kind must be one of {LAYOUT_KINDS}")
+        unknown_layout = set(layout) - {"kind", "baseline_section", "max_lines"}
+        if unknown_layout:
+            raise ValueError(f"{tier_dir}/bundle.toml: unknown [bundle.layout] keys {sorted(unknown_layout)}")
+        section = layout.get("baseline_section", "Baseline")
+        if not isinstance(section, str) or not section.strip():
+            raise ValueError(f"{tier_dir}/bundle.toml: [bundle.layout] baseline_section must be a nonempty string")
+        max_lines = layout.get("max_lines", 500)
+        if not isinstance(max_lines, int) or isinstance(max_lines, bool) or max_lines < 50:
+            raise ValueError(f"{tier_dir}/bundle.toml: [bundle.layout] max_lines must be an integer of at least 50")
     targets = cfg.get("targets", {})
     if targets:
         if not isinstance(targets, dict) or not isinstance(targets.get("enabled"), list):
@@ -757,6 +829,11 @@ def build_tier(
     if overlay is not None:
         fm["description"] = (fm["description"] + f" Includes reviewed company values for {overlay['organization']}.")[:1024]
     rendered = render_skill_md(fm, body)
+    if layout_kind(cfg) == "baseline-references":
+        max_lines = (cfg.get("layout") or {}).get("max_lines", 500)
+        n_lines = len(rendered.splitlines())
+        if n_lines > max_lines:
+            raise ValueError(f"{tier_dir}: the baseline SKILL.md is {n_lines} lines; [bundle.layout] max_lines is {max_lines}. Shorten the components' baseline sections.")
 
     # Every input is validated above; only now touch the output tree, and never
     # follow a link or delete anything outside the output root.
@@ -772,6 +849,11 @@ def build_tier(
 
     for s in skills:
         copy_companions(s.path, bundle_dir, namespace=s.id)
+    if layout_kind(cfg) == "baseline-references":
+        (bundle_dir / "references").mkdir(exist_ok=True)
+        for s in skills:
+            ref = bundle_dir / reference_path(s)
+            ref.write_text(build_reference(bundle_name, s, render_slots(s.body, values, s.id)), encoding="utf-8", newline="\n")
 
     enabled = list(cfg.get("targets", {}).get("enabled", []))
     if with_targets and enabled:

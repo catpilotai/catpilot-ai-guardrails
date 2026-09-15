@@ -4,7 +4,13 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
-## [Unreleased]
+## [2026.09.15] — 2026-09-15
+
+Repository release covering the review-driven corrections and the core bundle split. The core bundle is stamped `2026.09.15`; the safe-building bundle stays `2026.09.13`.
+
+### Changed
+
+- **`catpilot-security-core`: baseline-references layout.** `skills/catpilot-security-core/SKILL.md` is now the baseline: 396 lines, about 22 KB, holding the preamble and, per component, the title, a read-this-reference-first line naming the component's reference file, "Applies when", "Always", and "Never". Nine new files, `skills/catpilot-security-core/references/<component>.md`, carry each component's full text: examples, remediation, and detection patterns. Before this change the single file was 3,663 lines, about 134 KB, and a host read it in full on every activation. The Agent Skills specification recommends a body under 500 lines with detail left in reference files the model opens when relevant. Configured in `src/skills/core/bundle.toml`: `[bundle.layout]` with `kind = "baseline-references"`, `baseline_section = "Baseline"`, `max_lines = 500`. The bundler refuses to build if the rendered baseline exceeds `max_lines`, or if a component lacks the section. Each core source component now starts its body with a `## Baseline` section of at most 35 lines: a bold "Applies when:" line, an "Always:" bullet list, an optional "Never:" bullet list, and a closing line telling the model to open the full component before acting. Component versions: `cloud-cli-safety` to `1.0.3`; `local-cli-safety`, `secret-blocking`, and `supply-chain` to `1.0.2`; `database-safety`, `docker-safety`, `language-baseline`, `pii-and-test-data`, and `secrets-management` to `1.0.1`. The core bundle stays `2026.09.15`. The bundle frontmatter now records `metadata.catpilot.bundle.layout: baseline-references`. This reverses the one-file-per-tier decision recorded when PR #16 was closed; `catpilot-safe-building` keeps the single-file layout, unchanged at 641 lines. Tests: `tests/test_bundle_layout.py` adds six tests covering the baseline and reference output, the unchanged single layout, the missing-section failure, the line cap, config validation, and fence-aware section extraction. Full suite: 130 tests. Host check on 2026-09-15 (`evals/reports/2026.09.15-core-layout-verification.md`): Codex opened the baseline and the cloud reference; Claude Code with Sonnet opened the reference once the read-first line led each component, having answered wrongly from the baseline alone before that, so the cloud baseline now states the merge-versus-replace fact itself.
 
 ### Fixed
 

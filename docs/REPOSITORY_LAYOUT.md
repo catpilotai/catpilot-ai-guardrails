@@ -11,7 +11,9 @@ src/skills/                 # source components (semver, edited by hand)
     data-in-prompts/SKILL.md
     ...                     # eight components, plain language, {{slot}} markers
 skills/                     # shipped bundles (CalVer, generated)
-  catpilot-security-core/SKILL.md
+  catpilot-security-core/
+    SKILL.md                # baseline: per component, applies-when/always/never plus a reference link
+    references/<component>.md  # each component's full text: examples, remediation, detection patterns
   catpilot-safe-building/SKILL.md
 dist/2026.09.13/            # per-host artifacts (generated): zip, paste blocks, web page
 hooks/claude-code/          # the two hooks, their example settings, and their README

@@ -47,6 +47,8 @@ src/skills/core/secret-blocking/
 └── (optional) references/, scripts/, assets/ — bundler namespaces these into the bundle
 ```
 
+Core component bodies must start with a `## Baseline` section, at most 35 lines: a bold `Applies when:` line, an `Always:` bullet list, an optional `Never:` bullet list, and a closing line telling the model to open the full component before acting. The bundler refuses to build a core component that lacks this section.
+
 Core bodies should:
 - Lead with **why** the rule exists (concrete incident or class of incident)
 - State **when to apply** (file types, command shapes, language patterns)

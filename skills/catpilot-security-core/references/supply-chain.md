@@ -1,64 +1,7 @@
----
-name: supply-chain
-description: Block typosquats, unpinned dependencies, floating GitHub Actions tags, `curl | bash` installs, unverified agent skills/MCP servers, and post-install scripts from unknown publishers before they reach a developer machine, a CI runner, or a production image. Require lockfile-based installs, SHA-pinned third-party actions, registry-namespace verification, and provenance checks (Sigstore, npm provenance, GitHub attestations) for any code that will run.
-license: MIT
-metadata:
-  catpilot:
-    id: supply-chain
-    version: 1.0.2
-    severity: high
-    category: supply-chain
-    applies_to:
-      languages:
-      - any
-      frameworks:
-      - any
-      runtimes:
-      - claude-code
-      - cursor
-      - openclaw
-      - cline
-      - aider
-      - copilot
-      - codex-cli
-    control_mappings:
-      soc2:
-      - CC6.1
-      - CC6.8
-      - CC7.1
-      - CC8.1
-      pci_dss:
-      - 6.3.2
-      - '6.4'
-      - 6.4.5
-      - 12.8.3
-      iso_27001:
-      - A.12.6.1
-      - A.14.2.1
-      - A.14.2.7
-      - A.15.1.1
-      nist_csf:
-      - ID.SC-1
-      - ID.SC-2
-      - PR.IP-1
-      - PR.IP-12
-      owasp_top_10:
-      - A05:2021
-      - A06:2021
-      - A08:2021
-    provenance:
-      origin: catpilot
-      incident_derived: false
-    maintainers:
-    - team: catpilot-security
-    references:
-    - https://slsa.dev/spec/v1.0/levels
-    - https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions
-    - https://docs.npmjs.com/generating-provenance-statements
-    - https://www.sigstore.dev/
-    - https://owasp.org/www-project-top-10-ci-cd-security-risks/
----
+# supply-chain
 
+Component `supply-chain` · version 1.0.2 · severity high · category supply-chain.
+Full text of one component of the `catpilot-security-core` bundle. The baseline rules are in `../SKILL.md`; this file has the rest: examples, remediation, and detection patterns.
 ## Baseline
 
 **Applies when:** Adding a dependency to a manifest or running an install command, referencing a third-party CI action, building a `Dockerfile`/compose that pulls images or binaries, piping `curl`/`wget` output into a shell, or installing an agent skill, MCP server, or IDE extension.
