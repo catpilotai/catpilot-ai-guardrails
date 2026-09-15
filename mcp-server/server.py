@@ -69,14 +69,39 @@ def get_guidance(topic: str) -> dict[str, Any]:
 
 
 @server.tool(annotations=READ_ONLY, structured_output=True)
-def check_plan(description: str, data_types: list[str] | None = None, audience: str | None = None, hosting: str | None = None) -> dict[str, Any]:
+def check_plan(
+    description: str,
+    data_classes: list[str] | None = None,
+    audience: str | None = None,
+    hosting: str | None = None,
+    services: list[str] | None = None,
+    write_access: bool | None = None,
+    data_types: list[str] | None = None,
+) -> dict[str, Any]:
     """Deterministic check of a building plan against the eight checkpoints and, when configured, the company overlay.
 
-    Describe what is being built in plain words; optionally list the data types involved, who will use it,
-    and where it will run. Returns risks ranked by severity with a safer alternative each, one next step,
-    whether to ask a human, and a short checklist. Keyword matching, not judgment; a clean result is not approval.
+    The fields decide; the description is only read for hints, because free text names a risk as often to
+    rule it out ("no external users", "synthetic records only") as to choose it. Pass every field you know:
+
+    - description: what is being built, in plain words. Required.
+    - data_classes: what data the app will touch, one item per class, in the person's own words
+      ("customer names and emails", "synthetic patient records", "an API key"). `data_types` is the old
+      name for this field and is merged into it.
+    - audience: who can open it ("our ops team", "customers", "anyone with the link").
+    - hosting: where it will run ("Internal App Platform", "my personal Replit account").
+    - services: software services it will connect to, one per item ("the approved transactional email
+      service", "a new enrichment API").
+    - write_access: true if it writes to a system of record (CRM, ERP, HR, finance, tickets, the
+      production database), false if it only reads or writes to its own store.
+
+    Returns `outcome` (permitted, requires_review, prohibited, or unknown, the worst across the fields),
+    `decisions` (one per field, each with the rule that decided it and whether that rule came from the
+    company overlay or a generic default), `hints` from the description that are questions rather than
+    findings, risks ranked by severity with a safer alternative each, one next step, whether to ask a
+    human, and a checklist. Advisory: a missing field returns `unknown`, not a pass, and no outcome here
+    approves or blocks anything.
     """
-    return tools.check_plan(description, GUIDANCE, _policy(), data_types, audience, hosting)
+    return tools.check_plan(description, GUIDANCE, _policy(), data_classes, audience, hosting, services, write_access, data_types)
 
 
 @server.tool(annotations=READ_ONLY, structured_output=True)

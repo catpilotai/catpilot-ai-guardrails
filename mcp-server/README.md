@@ -17,7 +17,7 @@ default.
 | Tool | Input | Returns |
 | --- | --- | --- |
 | `get_guidance(topic)` | `data-in-prompts`, `access`, `hosting`, `sharing`, `credentials`, `third-party`, `untrusted-input`, `review` | what to ask, how to name the risk, the safe alternative, when to stop and ask a human, and the relevant company values with their source |
-| `check_plan(description, data_types?, audience?, hosting?)` | a plain-language plan | risks ranked by severity with a safer alternative each, one next step, `ask_a_human`, `who_to_ask`, a checklist, and the labels that fired |
+| `check_plan(description, data_classes?, audience?, hosting?, services?, write_access?)` | a plain-language plan, plus the fields that decide it | `outcome`, one `decision` per field with the rule that decided it, `hints` from the description, risks ranked by severity with a safer alternative each, one next step, `ask_a_human`, `who_to_ask`, a checklist, and the labels that fired |
 | `get_template(kind)` | `internal-lookup-tool`, `form-to-spreadsheet`, `dashboard`, `document-summarizer`, `chatbot-over-docs` | a generic starting point with constraints, and the company's approved starting point as a reference when its overlay names one |
 | `list_approved(category)` | `hosting`, `services`, `data-classes`, `contacts` | the company's items when an approved overlay exists, otherwise generic defaults labeled as such |
 
@@ -25,16 +25,87 @@ Every answer carries `unknown_policy`, `policy_status`, `policy_source`
 (organization, owner, review and expiry dates, overlay hash), the release the
 guidance came from, and `enforcement: "none"`.
 
-`check_plan` is keyword matching against the eight checkpoints and the
-overlay. It is deterministic and readable, and it is not judgment: a clean
-result means no keyword fired, not that the plan is safe. An overlay item
-fires when its content words (lowercased, singular, stop words dropped) all
-appear in the plan in any order, or when a hosting or service synonym such as
-"unmanaged" or "unapproved" appears with one of them; every risk carries the
-`rule` that fired and the `evidence` words from the plan. When `hosting` or
-`audience` is not supplied, the labels say `unknown` and the checklist asks
-for it. An optional model pass is a possible future addition, never a
-requirement.
+### `check_plan`: the fields decide, the description only hints
+
+Free text names a risk as often to rule it out as to choose it. "No external
+users or public links" and "synthetic patient records only" are safe plans
+that say the dangerous words, so the description alone can never produce an
+outcome. The explicit fields do:
+
+| Field | Type | Values | Outcome |
+| --- | --- | --- | --- |
+| `hosting` | string | where it will run | on the overlay's approved list: `permitted`. On its not-approved list: `prohibited`. Anything else, with an overlay: `requires_review`. A personal account, free tier, trial workspace, home server, or laptop, with no overlay: `requires_review`. Not given, or no overlay to check it against: `unknown` |
+| `audience` | string | normalized to `internal`, `external`, `public`, `unknown` | `internal`: `permitted`. `external` or `public`: `requires_review`. `unknown`: `unknown` |
+| `data_classes` | list of strings | what data the app touches, one class per item | one decision per item, against the overlay's `never_in_prompts` (`prohibited`), `ok_with_approval` (`requires_review`), and `ok` (`permitted`); with no overlay, payment, government, health, and credential data are `prohibited`, employee and customer records `requires_review`, synthetic or made-up data `permitted`, anything else `unknown` |
+| `services` | list of strings | software services it will connect to | on the overlay's approved list: `permitted`. Everything else: `requires_review` |
+| `write_access` | bool | does it write to a system of record (CRM, ERP, HR, finance, tickets, the production database) | `true`: `requires_review`. `false`: `permitted`. Not given: `unknown` |
+
+`data_types` is the old name for `data_classes`; it still works and is merged
+into it. `outcome` is the worst of the decisions, ordered `prohibited` >
+`requires_review` > `unknown` > `permitted`. A missing field is `unknown` and
+adds its question to the checklist, never a pass. Every decision names the
+`rule` that decided it and whether that rule came from the `company overlay`
+or a `generic default`.
+
+`hints` are the findings from the description, each labelled as a hint. A hint
+adds a question and a risk, never an outcome, and a hint under a negation
+("no external users", "synthetic records only", "instead of the real export",
+"the approved email service") does not fire at all. A hint can set
+`ask_a_human` only for the three cases that were always review triggers: real
+sensitive data, credentials, and an external audience. Each risk carries
+`basis: "decision"` or `basis: "hint"` so a caller can tell the two apart.
+
+Matching is deterministic keyword work, and it is not judgment: a clean result
+means no rule fired, not that the plan is safe. An overlay item fires when its
+content words (lowercased, singular, stop words dropped) all appear in the
+value or the plan in any order, or when a hosting or service synonym such as
+"unmanaged" or "unapproved" appears with one of them; every decision and risk
+carries the `rule` that fired and the `evidence` words. An optional model pass
+is a possible future addition, never a requirement.
+
+```jsonc
+// check_plan("A lookup tool for the ops team over last month's CRM export.",
+//            data_classes=["customer names and business email addresses"],
+//            audience="our ops team", hosting="my personal Replit account",
+//            services=["a new enrichment API"], write_access=true)
+{
+  "outcome": "prohibited",
+  "decisions": [
+    {"field": "hosting", "value": "my personal Replit account", "outcome": "prohibited",
+     "rule": "Personal cloud accounts", "source": "company overlay",
+     "evidence": ["personal", "account"], "note": "on the company's not-approved hosting list"},
+    {"field": "audience", "value": "internal", "outcome": "permitted",
+     "rule": "Company sign-in, smallest named group that needs access",
+     "source": "company overlay", "evidence": ["ops", "team"], "note": null},
+    {"field": "data_classes", "value": "customer names and business email addresses",
+     "outcome": "requires_review", "rule": "Customer names and business email addresses",
+     "source": "company overlay", "evidence": ["customer", "name"], "note": null},
+    {"field": "services", "value": "a new enrichment API", "outcome": "requires_review",
+     "rule": "any new software service needs review", "source": "generic default",
+     "evidence": ["new", "enrichment", "api"],
+     "note": "named services are reviewed by default; nothing here says this one is approved"},
+    {"field": "write_access", "value": true, "outcome": "requires_review",
+     "rule": "Writes to a system of record", "source": "company overlay",
+     "evidence": ["system of record"], "note": null}
+  ],
+  "hints": [
+    {"component": "data-in-prompts", "evidence": "crm export",
+     "note": "the description mentions customer records; a hint only, pass data_classes to decide"}
+  ],
+  "risks": [
+    {"component": "hosting-and-where-it-runs", "severity": "high", "basis": "decision",
+     "why": "Company hosting rule, not approved: Personal cloud accounts.",
+     "rule": "Personal cloud accounts", "overlay_list": "hosting.not_approved",
+     "evidence": ["personal", "account"], "safer_alternative": "...", "ask": "...", "title": "..."}
+  ],
+  "ask_a_human": true,
+  "who_to_ask": "security-review@example.org",
+  "next_step": "Build in the company's approved place from the start, even for a first version. ...",
+  "checklist": ["Where will the finished thing live, and who looks after that place?", "..."],
+  "labels": {"hosting": "not_approved", "audience": "internal", "...": "..."},
+  "enforcement": "none"
+}
+```
 
 ## Run it
 
