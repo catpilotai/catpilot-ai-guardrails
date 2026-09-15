@@ -17,11 +17,30 @@ EXAMPLE = ROOT / "docs" / "spec" / "overlay.example.yaml"
 TODAY = dt.date(2026, 9, 14)
 
 
+def _load_example_with_template(allowed_hosts: set) -> policy.PolicyState:
+    """Load a temporary copy of the shipped example with a template appended.
+
+    The shipped example (EXAMPLE) has no templates entry: a template's host must
+    be allowlisted, and the example is meant to load as approved with no extra
+    configuration (see test_shipped_example_loads_as_approved_with_no_extra_host_configuration
+    below). This helper builds a temporary copy with a template added, for tests
+    that need one, such as get_template's approved_starting_point path.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        overlay_path = Path(tmp) / "overlay.yaml"
+        text = EXAMPLE.read_text() + (
+            '\ntemplates:\n  - kind: internal-lookup-tool\n    location: "https://intranet.example.org/templates/lookup"\n'
+        )
+        overlay_path.write_text(text)
+        return policy.load_policy(str(overlay_path), allowed_hosts, now=TODAY)
+
+
 class Fixtures:
     guidance = content.load_guidance()
     templates = content.load_templates()
     none = policy.load_policy(None)
     approved = policy.load_policy(str(EXAMPLE), {"intranet.example.org"}, now=TODAY)
+    approved_with_template = _load_example_with_template({"intranet.example.org"})
     expired = policy.load_policy(str(EXAMPLE), {"intranet.example.org"}, now=dt.date(2027, 6, 1))
 
 
@@ -216,7 +235,7 @@ class TemplateAndApprovedTests(unittest.TestCase):
             self.assertTrue(out["starting_point"].startswith("## "))
             self.assertTrue(out["constraints"])
             self.assertIsNone(out["approved_starting_point"])
-        out = mcp_tools.get_template("internal-lookup-tool", Fixtures.templates, Fixtures.guidance, Fixtures.approved)
+        out = mcp_tools.get_template("internal-lookup-tool", Fixtures.templates, Fixtures.guidance, Fixtures.approved_with_template)
         self.assertEqual(out["approved_starting_point"]["location"], "https://intranet.example.org/templates/lookup")
         self.assertEqual(mcp_tools.get_template("nope", Fixtures.templates, Fixtures.guidance, Fixtures.none)["error"], "unknown-kind")
 
@@ -278,8 +297,22 @@ class PolicyStateTests(unittest.TestCase):
         self.assertEqual(policy.load_policy("/definitely/not/here.yaml").status, "missing")
         self.assertEqual(Fixtures.approved.status, "approved")
         self.assertEqual(Fixtures.expired.status, "expired")
-        self.assertEqual(policy.load_policy(str(EXAMPLE), set(), now=TODAY).status, "invalid")  # template host not allowlisted
         self.assertEqual(len(Fixtures.approved.source["sha256"]), 64)
+
+    def test_shipped_example_loads_as_approved_with_no_extra_host_configuration(self):
+        """The shipped overlay.example.yaml has no templates entry, so it needs no
+        allowed_hosts (no CATPILOT_TEMPLATE_HOSTS) to load as approved, as shipped.
+
+        EXAMPLE is an absolute path built from the repository root (ROOT, derived
+        from this test file's own location), not a machine-specific path.
+        """
+        state = policy.load_policy(str(EXAMPLE), set(), now=TODAY)
+        self.assertEqual(state.status, "approved")
+        self.assertTrue(state.approved)
+
+    def test_template_host_not_allowlisted_is_invalid(self):
+        state = _load_example_with_template(set())
+        self.assertEqual(state.status, "invalid")
 
 
 if __name__ == "__main__":

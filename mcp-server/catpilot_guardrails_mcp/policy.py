@@ -55,7 +55,10 @@ def load_policy(path: str | None, allowed_hosts: set[str] | None = None, now: dt
         "expires_on": overlay["expires_on"].isoformat(),
         "sha256": hashlib.sha256(raw).hexdigest(),
     }
-    content_errors = validate_overlay.validate_content(overlay, allowed_hosts or set())
+    try:
+        content_errors = validate_overlay.validate_content(overlay, allowed_hosts or set())
+    except validate_overlay.OverlayError as exc:
+        return PolicyState("invalid", f"The configured overlay did not validate: {exc.__class__.__name__}.", None, source)
     if content_errors:
         return PolicyState("invalid", "The configured overlay failed the content scan; ask the owner to fix it.", None, source)
     if overlay["expires_on"] < today:

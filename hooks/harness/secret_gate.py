@@ -56,11 +56,22 @@ def gate_shell_command(command: str) -> str | None:
     return verdict["hookSpecificOutput"]["permissionDecisionReason"]
 
 
-def gate_tool_call(tool_name: str, tool_input: dict) -> str | None:
-    """Same check for a harness whose shell tool has another name; pass the command under 'command'."""
+def gate_tool_call(tool_name: str, tool_input: dict, field: str = "command") -> str | None:
+    """Same check for a harness whose shell tool has another name.
+
+    The command text is read from `tool_input[field]` (default "command"); pass
+    `field` when an adapter's tool uses a different key. Fails closed: a missing,
+    null, or non-string value for that field returns a deny reason naming the
+    field, instead of silently treating it as an empty (so always-allowed) command.
+    """
     if not isinstance(tool_input, dict):
         raise ValueError("tool_input must be a mapping")
-    verdict = _hook.decide({"tool_name": "Bash", "tool_input": {"command": tool_input.get("command", "")}})
+    if field not in tool_input:
+        return f"Catpilot secret check: the tool call has no '{field}' field, so it was not allowed."
+    command = tool_input[field]
+    if not isinstance(command, str):
+        return f"Catpilot secret check: the '{field}' field must be a string, so the tool call was not allowed."
+    verdict = _hook.decide({"tool_name": "Bash", "tool_input": {"command": command}})
     return verdict["hookSpecificOutput"]["permissionDecisionReason"] if verdict else None
 
 

@@ -25,6 +25,8 @@ terminal. There is no bypass flag, on purpose.
 
 Standard library only. Python 3.8+.
 """
+from __future__ import annotations
+
 import json
 import re
 import sys
@@ -33,11 +35,22 @@ MAX_INPUT_BYTES = 1_048_576
 
 # (label, compiled pattern). Patterns are conservative on length and charset
 # to keep false positives low; they mirror the secret-blocking table.
+#
+# A pattern that needs to tell a credential's actual value apart from a
+# surrounding key name, URL scheme, or quotes captures that value into a
+# named group "val" (the four "literal ... assignment" patterns, the two
+# database-URL patterns, and the unquoted CLI/env forms below); find_credential
+# checks only the captured value against the placeholder/env-reference/
+# short-value allowances in _is_placeholder_value. A pattern with no "val"
+# group (the token-shaped patterns, where the whole match is the credential)
+# is checked the same way against its whole match, so the one allowance
+# applies uniformly everywhere.
 PATTERNS = [
     ("Stripe secret or restricted key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b")),
     ("AWS access key ID", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    ("AWS secret access key", re.compile(r"aws_secret_access_key\s*=\s*[\"']?[A-Za-z0-9/+=]{40}[\"']?", re.IGNORECASE)),
+    ("AWS secret access key", re.compile(r"aws_secret_access_key\s*=\s*[\"']?(?P<val>[A-Za-z0-9/+=]{40})[\"']?", re.IGNORECASE)),
     ("GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36}\b")),
+    ("GitHub fine-grained personal access token", re.compile(r"\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b")),
     ("GitLab personal token", re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b")),
     ("Anthropic API key", re.compile(r"\bsk-ant-(?:api|admin)\d+-[A-Za-z0-9_\-]{80,}\b")),
     ("OpenAI API key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{40,}\b")),
@@ -48,14 +61,14 @@ PATTERNS = [
     ("SendGrid API key", re.compile(r"\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b")),
     ("npm access token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
     ("JSON Web Token", re.compile(r"\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\b")),
-    ("private key block", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----")),
-    ("database URL with an embedded password", re.compile(r"\b(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqps?)://[^:\s/]*:[^@\s]+@", re.IGNORECASE)),
+    ("private key block", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----")),
+    ("database URL with an embedded password", re.compile(r"\b(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqps?)://[^:\s/]*:(?P<val>[^@\s]+)@", re.IGNORECASE)),
     ("bearer token", re.compile(r"\bbearer\s+[A-Za-z0-9_\-\.=]{16,}\b", re.IGNORECASE)),
-    ("literal API key assignment", re.compile(r"\b(?:api[_-]?key|apikey)\s*[:=]\s*[\"']?[A-Za-z0-9_\-]{16,}[\"']?", re.IGNORECASE)),
-    ("literal password assignment", re.compile(r"\b(?:password|passwd|pwd)\s*[:=]\s*[\"'][^\"'$]{6,}[\"']", re.IGNORECASE)),
-    ("literal client secret", re.compile(r"\b(?:secret|client_secret)\s*[:=]\s*[\"'][A-Za-z0-9_\-]{16,}[\"']", re.IGNORECASE)),
-    ("literal auth token assignment", re.compile(r"\b(?:token|auth_token|access_token)\s*[:=]\s*[\"'][A-Za-z0-9_\-\.]{16,}[\"']", re.IGNORECASE)),
-    ("literal DATABASE_URL", re.compile(r"\bDATABASE_URL\s*=\s*[\"']?(?:mongodb|postgres|mysql|redis|amqp)[^\s\"']*://[^\s\"']*:[^\s\"'@]+@", re.IGNORECASE)),
+    ("literal API key assignment", re.compile(r"\b(?:api[_-]?key|apikey)\s*[:=]\s*[\"']?(?P<val>[A-Za-z0-9_\-]{16,})[\"']?", re.IGNORECASE)),
+    ("literal password assignment", re.compile(r"\b(?:password|passwd|pwd)\s*[:=]\s*[\"'](?P<val>[^\"'$]{6,})[\"']", re.IGNORECASE)),
+    ("literal client secret", re.compile(r"\b(?:secret|client_secret)\s*[:=]\s*[\"'](?P<val>[A-Za-z0-9_\-]{16,})[\"']", re.IGNORECASE)),
+    ("literal auth token assignment", re.compile(r"\b(?:token|auth_token|access_token)\s*[:=]\s*[\"'](?P<val>[A-Za-z0-9_\-\.]{16,})[\"']", re.IGNORECASE)),
+    ("literal DATABASE_URL", re.compile(r"\bDATABASE_URL\s*=\s*[\"']?(?:mongodb|postgres|mysql|redis|amqp)[^\s\"']*://[^\s\"']*:(?P<val>[^\s\"'@]+)@", re.IGNORECASE)),
     # Unquoted CLI/env forms: same literal-credential shape as above, but without the
     # quotes that the four "literal ... assignment" patterns require. Each captures the
     # bare value into the named group "val" so find_credential can apply the same
@@ -102,17 +115,20 @@ def _is_placeholder_value(value: str) -> bool:
 
 
 def find_credential(command: str):
-    """Return the label of the first credential-shaped literal in the command, or None."""
+    """Return the label of the first credential-shaped literal in the command, or None.
+
+    The same placeholder/env-reference/short-value allowance applies whether or not the
+    pattern captured a separate "val" group, so a quoted assignment such as
+    password="REPLACE_ME" is allowed exactly like the unquoted --password=REPLACE_ME.
+    """
     if not command:
         return None
     for label, pattern in PATTERNS:
         for match in pattern.finditer(command):
-            if "val" in pattern.groupindex:
-                if _is_placeholder_value(match.group("val")):
-                    continue
-                return label
-            if not ENV_REFERENCE.fullmatch(match.group(0)):
-                return label
+            value = match.group("val") if "val" in pattern.groupindex else match.group(0)
+            if _is_placeholder_value(value):
+                continue
+            return label
     return None
 
 

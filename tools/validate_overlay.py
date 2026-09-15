@@ -184,27 +184,47 @@ def _walk_strings(node: object, path: str = "overlay"):
 
 
 def validate_content(overlay: dict, allowed_hosts: set[str]) -> list[str]:
-    """Return content errors: secrets, disallowed URLs, identifiers, narratives."""
+    """Return content errors: secrets, disallowed URLs, identifiers, narratives.
+
+    A template's location is validated directly (not by first finding something
+    URL-shaped in it with URL_RE), because a value that is not URL-shaped at all
+    is still not an https URL and must be rejected: `javascript:alert(1)` has no
+    `://`, so it never matches URL_RE, but it is not an https location either.
+    A location that fails to parse as a URL is a validator bug surface, not a
+    content error, so it raises OverlayError instead of being appended silently.
+    """
     errors: list[str] = []
-    template_locations = {t.get("location") for t in overlay.get("templates", [])}
+    templates = overlay.get("templates", [])
+    template_location_paths = set()
+    for i, template in enumerate(templates):
+        location = template.get("location")
+        if location is None:
+            continue
+        label = f"overlay.templates[{i}].location"
+        template_location_paths.add(label)
+        try:
+            parts = urlsplit(location)
+        except ValueError as exc:
+            raise OverlayError(f"{label}: could not parse as a URL ({exc})") from None
+        if parts.scheme != "https":
+            errors.append(f"{label}: must be an https URL, not {parts.scheme or 'a schemeless value'!r}")
+        elif not parts.hostname:
+            errors.append(f"{label}: must include a hostname")
+        elif parts.username or parts.password:
+            errors.append(f"{label}: must not carry credentials")
+        elif parts.query or parts.fragment:
+            errors.append(f"{label}: must not carry a query string or fragment")
+        elif parts.hostname not in allowed_hosts:
+            errors.append(f"{label}: host {parts.hostname!r} is not on the allowlist (pass --allow-host)")
     for path, text in _walk_strings(overlay):
         for pattern in SECRET_PATTERNS:
             if pattern.search(text):
                 errors.append(f"{path}: looks like a secret; overlays never contain credentials")
                 break
-        for url in URL_RE.findall(text):
-            if text in template_locations and path.endswith(".location"):
-                parts = urlsplit(url)
-                if parts.scheme != "https":
-                    errors.append(f"{path}: template locations must use https")
-                elif parts.username or parts.password:
-                    errors.append(f"{path}: template locations must not carry credentials")
-                elif parts.query or parts.fragment:
-                    errors.append(f"{path}: template locations must not carry a query string or fragment")
-                elif (parts.hostname or "") not in allowed_hosts:
-                    errors.append(f"{path}: host {parts.hostname!r} is not on the allowlist (pass --allow-host)")
-            else:
+        if path not in template_location_paths:
+            for _ in URL_RE.findall(text):
                 errors.append(f"{path}: URLs are only allowed in templates[].location")
+                break
         if path != "overlay.owner" and EMAIL_RE.search(text):
             errors.append(f"{path}: email addresses are only allowed in owner")
         for candidate in IP_RE.findall(text):
