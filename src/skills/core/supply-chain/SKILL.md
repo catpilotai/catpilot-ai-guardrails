@@ -5,7 +5,7 @@ license: MIT
 metadata:
   catpilot:
     id: supply-chain
-    version: 1.0.0
+    version: 1.0.1
     severity: high
     category: supply-chain
     applies_to:
@@ -241,7 +241,10 @@ The agent:
   `local-cli-safety` Rule 5.
 - Where install scripts are non-malicious but inconvenient,
   prefers running installs with the script disabled
-  (`npm install --ignore-scripts`, `pip install --no-build-isolation`)
+  (`npm install --ignore-scripts`; pip has no equivalent, and
+  `--no-build-isolation` still runs `setup.py` and the build backend,
+  so prefer `pip install --only-binary=:all:`, which installs wheels
+  and never runs package build code)
   unless the project documentation requires the hook.
 
 ### Rule 6 — Agent skills, MCP servers, and IDE extensions are vetted as code

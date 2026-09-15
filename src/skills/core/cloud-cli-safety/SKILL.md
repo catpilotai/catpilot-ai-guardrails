@@ -5,7 +5,7 @@ license: MIT
 metadata:
   catpilot:
     id: cloud-cli-safety
-    version: 1.0.1
+    version: 1.0.2
     severity: critical
     category: cloud-cli
     applies_to:
@@ -54,6 +54,7 @@ metadata:
     - https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-best-practices.html
     - https://cloud.google.com/sdk/docs/best-practices
     - https://kubernetes.io/docs/concepts/overview/working-with-objects/object-management/
+    - https://developer.hashicorp.com/terraform/language/state
 ---
 ## Why
 
@@ -244,10 +245,12 @@ aws lambda get-function-configuration --function-name api-prod \
 # ✅ Merge
 jq '. + {"NEW_FLAG":"true"}' current.json > merged.json
 
-# ✅ Update with the FULL merged set
+# ✅ Update with the FULL merged set, as JSON. The shorthand form
+# (Variables={KEY=value,...}) does not accept a JSON object after "Variables=";
+# the CLI rejects it with "Expected: '=', received: '\"'".
 aws lambda update-function-configuration \
   --function-name api-prod \
-  --environment "Variables=$(jq -c . merged.json)"
+  --environment "{\"Variables\":$(jq -c . merged.json)}"
 ```
 
 ### AWS S3 — list before recursive delete
@@ -350,6 +353,24 @@ terraform state show <addr>
 # terraform destroy -auto-approve
 ```
 
+State recovery is **not** rollback. Terraform state records which real
+resources map to which configuration addresses; it does not record the
+desired configuration. Restoring an older state version and then applying
+the current configuration does not undo a change, and can destroy or
+recreate resources whose mappings differ between the two versions. Use
+this procedure only for corrupted or lost state:
+
+```bash
+# ✅ Corrupted or lost state: restore a state version, then reconcile before any apply
+terraform state pull > state-current.tfstate.backup   # keep what is there now
+# Restore the wanted version from the backend (S3 object version, GCS generation,
+# HCP Terraform / Terraform Cloud state version), or `terraform state push` a backup.
+terraform plan
+# Every planned create, destroy, or replace here is a mapping mismatch to resolve
+# with `terraform import` / `terraform state rm` / `terraform state mv`, not to apply.
+# Apply only once the plan shows no unintended changes.
+```
+
 ### Rollback templates by platform
 
 | Platform | Rollback |
@@ -360,7 +381,7 @@ terraform state show <addr>
 | App Engine | `gcloud app services set-traffic default --splits=PREVIOUS_VERSION=1` |
 | Kubernetes | `kubectl rollout undo deployment/X -n NS` |
 | Helm | `helm rollback RELEASE <REVISION>` |
-| Terraform | Restore prior state file from versioned backend (S3 versioning, GCS, Terraform Cloud) and `terraform apply` again |
+| Terraform | Revert the configuration (`git revert`, or check out the previous commit), run `terraform plan`, review the plan for destroys and replacements, then `terraform apply`. Do not restore an old state file to roll back: state records resource mappings, not desired configuration, so applying the current configuration against an old state destroys or recreates resources. State recovery is a separate procedure (see above). |
 
 ## Production detection heuristics
 
@@ -386,3 +407,4 @@ how AWS, GCP, and Azure consoles handle destructive console actions.
 - Kubernetes object management: <https://kubernetes.io/docs/concepts/overview/working-with-objects/object-management/>
 - helm-diff plugin: <https://github.com/databus23/helm-diff>
 - Terraform plan/apply workflow: <https://developer.hashicorp.com/terraform/cli/run>
+- Terraform state (purpose, and why it is not the desired configuration): <https://developer.hashicorp.com/terraform/language/state>

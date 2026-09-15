@@ -6,11 +6,11 @@ metadata:
   catpilot:
     bundle:
       name: catpilot-security-core
-      version: 2026.09.14
+      version: 2026.09.15
       tier: core
       components:
       - id: cloud-cli-safety
-        version: 1.0.1
+        version: 1.0.2
       - id: database-safety
         version: 1.0.0
       - id: docker-safety
@@ -18,15 +18,15 @@ metadata:
       - id: language-baseline
         version: 1.0.0
       - id: local-cli-safety
-        version: 1.0.0
+        version: 1.0.1
       - id: pii-and-test-data
         version: 1.0.0
       - id: secret-blocking
-        version: 1.0.0
+        version: 1.0.1
       - id: secrets-management
         version: 1.0.0
       - id: supply-chain
-        version: 1.0.0
+        version: 1.0.1
     severity: critical
     category: security
     mode: advisory
@@ -354,10 +354,12 @@ aws lambda get-function-configuration --function-name api-prod \
 # ✅ Merge
 jq '. + {"NEW_FLAG":"true"}' current.json > merged.json
 
-# ✅ Update with the FULL merged set
+# ✅ Update with the FULL merged set, as JSON. The shorthand form
+# (Variables={KEY=value,...}) does not accept a JSON object after "Variables=";
+# the CLI rejects it with "Expected: '=', received: '\"'".
 aws lambda update-function-configuration \
   --function-name api-prod \
-  --environment "Variables=$(jq -c . merged.json)"
+  --environment "{\"Variables\":$(jq -c . merged.json)}"
 ```
 
 #### AWS S3 — list before recursive delete
@@ -460,6 +462,24 @@ terraform state show <addr>
 # terraform destroy -auto-approve
 ```
 
+State recovery is **not** rollback. Terraform state records which real
+resources map to which configuration addresses; it does not record the
+desired configuration. Restoring an older state version and then applying
+the current configuration does not undo a change, and can destroy or
+recreate resources whose mappings differ between the two versions. Use
+this procedure only for corrupted or lost state:
+
+```bash
+# ✅ Corrupted or lost state: restore a state version, then reconcile before any apply
+terraform state pull > state-current.tfstate.backup   # keep what is there now
+# Restore the wanted version from the backend (S3 object version, GCS generation,
+# HCP Terraform / Terraform Cloud state version), or `terraform state push` a backup.
+terraform plan
+# Every planned create, destroy, or replace here is a mapping mismatch to resolve
+# with `terraform import` / `terraform state rm` / `terraform state mv`, not to apply.
+# Apply only once the plan shows no unintended changes.
+```
+
 #### Rollback templates by platform
 
 | Platform | Rollback |
@@ -470,7 +490,7 @@ terraform state show <addr>
 | App Engine | `gcloud app services set-traffic default --splits=PREVIOUS_VERSION=1` |
 | Kubernetes | `kubectl rollout undo deployment/X -n NS` |
 | Helm | `helm rollback RELEASE <REVISION>` |
-| Terraform | Restore prior state file from versioned backend (S3 versioning, GCS, Terraform Cloud) and `terraform apply` again |
+| Terraform | Revert the configuration (`git revert`, or check out the previous commit), run `terraform plan`, review the plan for destroys and replacements, then `terraform apply`. Do not restore an old state file to roll back: state records resource mappings, not desired configuration, so applying the current configuration against an old state destroys or recreates resources. State recovery is a separate procedure (see above). |
 
 ### Production detection heuristics
 
@@ -496,6 +516,7 @@ how AWS, GCP, and Azure consoles handle destructive console actions.
 - Kubernetes object management: <https://kubernetes.io/docs/concepts/overview/working-with-objects/object-management/>
 - helm-diff plugin: <https://github.com/databus23/helm-diff>
 - Terraform plan/apply workflow: <https://developer.hashicorp.com/terraform/cli/run>
+- Terraform state (purpose, and why it is not the desired configuration): <https://developer.hashicorp.com/terraform/language/state>
 
 ---
 
@@ -2042,9 +2063,14 @@ stat -c '%a %n' ~/.ssh/id_rsa 2>/dev/null \
 #### Safe `git` force-update
 
 ```bash
-# ✅ Force-with-lease — fails if remote moved since last fetch
+# ✅ Force-with-lease — fails if the remote moved since you last looked.
+# Record the remote tip BEFORE rewriting history and pass it as the expected
+# value. `--force-with-lease=feature/x:HEAD` would compare the remote against
+# the rewritten local tip, which never matches after a rebase or amend.
 git fetch origin
-git push --force-with-lease=feature/x:HEAD origin feature/x
+EXPECTED=$(git rev-parse origin/feature/x)
+# ... rebase / amend ...
+git push --force-with-lease=feature/x:"$EXPECTED" origin feature/x
 
 # ✅ Hard reset only after preview
 git status
@@ -2592,7 +2618,7 @@ agent layer, before the file write, is the cheapest place to catch this.
 | `\brk_live_[A-Za-z0-9]{20,}\b` | Stripe restricted key | `rk_live_...` |
 | `\bAKIA[0-9A-Z]{16}\b` | AWS Access Key ID | `AKIAIOSFODNN7EXAMPLE` |
 | `\bASIA[0-9A-Z]{16}\b` | AWS temp Access Key ID | `ASIAIOSFODNN7EXAMPLE` |
-| `aws_secret_access_key\s*=\s*["']?[A-Za-z0-9/+=]{40}["']?` | AWS secret access key | 40-char base64 |
+| `(?i)aws_secret_access_key\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}["']?` | AWS secret access key (`=` or `:`; `AWS_SECRET_ACCESS_KEY: ...` in YAML/compose/CI is the common shape) | 40-char base64 |
 | `\bghp_[A-Za-z0-9]{36}\b` | GitHub personal token | `ghp_xxxxxxxx...` |
 | `\bgho_[A-Za-z0-9]{36}\b` | GitHub OAuth token | `gho_xxxxxxxx...` |
 | `\bghu_[A-Za-z0-9]{36}\b` | GitHub user-to-server | `ghu_xxxxxxxx...` |
@@ -3426,7 +3452,10 @@ The agent:
   `local-cli-safety` Rule 5.
 - Where install scripts are non-malicious but inconvenient,
   prefers running installs with the script disabled
-  (`npm install --ignore-scripts`, `pip install --no-build-isolation`)
+  (`npm install --ignore-scripts`; pip has no equivalent, and
+  `--no-build-isolation` still runs `setup.py` and the build backend,
+  so prefer `pip install --only-binary=:all:`, which installs wheels
+  and never runs package build code)
   unless the project documentation requires the hook.
 
 #### Rule 6 — Agent skills, MCP servers, and IDE extensions are vetted as code

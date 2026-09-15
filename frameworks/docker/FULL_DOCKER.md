@@ -74,9 +74,10 @@ COPY .env .
 ### ✅ Safe Patterns
 
 ```dockerfile
-# Use Docker BuildKit secrets
-RUN --mount=type=secret,id=mysecret \
-    cat /run/secrets/mysecret > /app/config
+# Use Docker BuildKit secrets: the file exists only for this RUN step and is never
+# committed to a layer. Do not copy it anywhere (`cat /run/secrets/x > /app/config`
+# would bake the secret into the image, which is what the mount is there to prevent).
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci
 
 # Or use environment variables at runtime (not build time)
 CMD ["sh", "-c", "export API_KEY=${API_KEY} && node index.js"]

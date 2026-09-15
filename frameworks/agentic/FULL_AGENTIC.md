@@ -29,17 +29,24 @@ def fetch_url(url: str) -> str:
 ### ✅ Always Do This
 
 ```python
-import subprocess, os
+import subprocess, os, socket, ipaddress
 from pathlib import Path
 
-ALLOWED_COMMANDS = {"ls", "cat", "grep", "wc", "head", "tail", "find"}
-ALLOWED_DIRS = {Path("/app/workspace").resolve()}
+# No `find` (its -exec runs arbitrary programs) and no other command with an exec/eval flag.
+ALLOWED_COMMANDS = {"ls", "cat", "grep", "wc", "head", "tail"}
+WORKSPACE = Path("/app/workspace").resolve()
+ALLOWED_DIRS = {WORKSPACE}
 BLOCKED_DOMAINS = {"169.254.169.254", "metadata.google.internal", "localhost"}
 
 def safe_shell(command: str, args: list[str]) -> str:
     if command not in ALLOWED_COMMANDS:
         raise PermissionError(f"Command '{command}' not in allowlist")
-    return subprocess.run([command, *args], capture_output=True, timeout=30).stdout
+    # An allowlisted command still reads whatever path it is handed (`cat ~/.ssh/id_rsa`),
+    # so every non-flag argument gets the same directory check as safe_read.
+    for arg in args:
+        if not arg.startswith("-") and not any((WORKSPACE / arg).resolve().is_relative_to(d) for d in ALLOWED_DIRS):
+            raise PermissionError(f"Argument '{arg}' outside allowed directories")
+    return subprocess.run([command, *args], capture_output=True, timeout=30, cwd=WORKSPACE).stdout
 
 def safe_read(path: str) -> str:
     resolved = Path(path).resolve()
@@ -49,10 +56,18 @@ def safe_read(path: str) -> str:
 
 def safe_fetch(url: str) -> str:
     from urllib.parse import urlparse
-    host = urlparse(url).hostname
-    if host in BLOCKED_DOMAINS or host.startswith("10.") or host.startswith("192.168."):
-        raise PermissionError(f"Blocked: internal/metadata endpoint '{host}'")
-    return requests.get(url, timeout=10).text
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if parsed.scheme not in ("http", "https") or not host or host in BLOCKED_DOMAINS:
+        raise PermissionError(f"Blocked: '{url}'")
+    # Check the resolved addresses, not the hostname string: a string prefix check misses
+    # 127.0.0.1, 0.0.0.0, ::1, 172.16/12, and any DNS name that points at an internal address.
+    for info in socket.getaddrinfo(host, None):
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified:
+            raise PermissionError(f"Blocked: '{host}' resolves to internal address {ip}")
+    # Never follow redirects: an allowed public host can 302 to the metadata endpoint.
+    return requests.get(url, timeout=10, allow_redirects=False).text
 ```
 
 ---

@@ -67,16 +67,29 @@ function Comment({ content }: { content: string }) {
   return <div dangerouslySetInnerHTML={{ __html: sanitized }} />
 }
 
-// 2. Use JSON.stringify for data in scripts
+// 2. Serialize data for inline scripts, then escape it for the HTML script context.
+// JSON.stringify alone is not enough: it does not escape "</script>" or "<!--",
+// so a value like '</script><script>alert(1)</script>' ends the script early.
+const toScriptJson = (value: unknown) =>
+  JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+
 function Analytics({ userId }: { userId: string }) {
   return (
     <script
       dangerouslySetInnerHTML={{
-        __html: `analytics.identify(${JSON.stringify(userId)})`,
+        __html: `analytics.identify(${toScriptJson(userId)})`,
       }}
     />
   )
 }
+// Better still: put the value in a data-* attribute (JSX escapes it for you) or a
+// <script type="application/json"> tag escaped the same way, and read it from a
+// separate script instead of building JavaScript source from data.
 
 // 3. Validate URL protocols
 function UserLink({ url }: { url: string }) {
@@ -230,10 +243,15 @@ export async function POST(request: Request) {
   
   try {
     const parsed = new URL(url)
-    if (!ALLOWED_HOSTS.includes(parsed.host)) {
+    if (parsed.protocol !== 'https:' || !ALLOWED_HOSTS.includes(parsed.host)) {
       return Response.json({ error: 'URL not allowed' }, { status: 400 })
     }
-    const response = await fetch(url)
+    // Do not follow redirects: fetch follows them by default, so an allowed host
+    // could 302 to an internal address after the allowlist check has passed.
+    const response = await fetch(url, { redirect: 'manual' })
+    if (response.status >= 300 && response.status < 400) {
+      return Response.json({ error: 'Redirects not allowed' }, { status: 400 })
+    }
     return Response.json(await response.json())
   } catch {
     return Response.json({ error: 'Invalid URL' }, { status: 400 })
@@ -434,10 +452,13 @@ await prisma.$queryRawUnsafe(`SELECT * FROM users WHERE id = '${userId}'`)
 // ✅ Use tagged template (Prisma parameterizes this)
 await prisma.$queryRaw`SELECT * FROM users WHERE id = ${userId}`
 
-// ✅ Or explicit parameterization
+// ✅ Or build the query separately with Prisma.sql (values are still bound as parameters)
 await prisma.$queryRaw(
-  Prisma.sql`SELECT * FROM users WHERE id = ${Prisma.raw(userId)}`
+  Prisma.sql`SELECT * FROM users WHERE id = ${userId}`
 )
+
+// ❌ Prisma.raw() splices its argument into the SQL text unescaped; never pass it user input
+// await prisma.$queryRaw(Prisma.sql`SELECT * FROM users WHERE id = ${Prisma.raw(userId)}`)
 ```
 
 ---
@@ -470,8 +491,11 @@ const securityHeaders = [
     value: 'origin-when-cross-origin',
   },
   {
+    // 'unsafe-inline' and 'unsafe-eval' in script-src would let injected scripts run, which
+    // is the XSS that CSP exists to block. Next.js needs a per-request nonce for its own
+    // inline scripts: generate one in middleware and pass it as `'nonce-<value>'` here.
     key: 'Content-Security-Policy',
-    value: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline';",
+    value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';",
   },
 ]
 
