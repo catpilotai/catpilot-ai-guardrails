@@ -34,8 +34,8 @@ Installation makes the instructions available to a compatible host. It does **no
 
 Nobody has to open a terminal.
 
-- **Read the eight checkpoints** in five minutes: [`dist/2026.09.13/web/safe-ai-building.html`](dist/2026.09.13/web/safe-ai-building.html), the source for `catpilot.ai/safe-ai-building`.
-- **Claude.ai:** upload [`dist/2026.09.13/catpilot-safe-building.zip`](dist/2026.09.13/catpilot-safe-building.zip) under Customize → Skills. An organization owner uploads it once under Organization settings → Skills and every member gets it.
+- **Read the eight checkpoints** in five minutes: [`skills/catpilot-safe-building/SKILL.md`](skills/catpilot-safe-building/SKILL.md), the same text the tool follows. The web page source is [`dist/2026.09.13/web/safe-ai-building.html`](dist/2026.09.13/web/safe-ai-building.html); the formatted page ships with the website pass.
+- **Claude.ai:** download `catpilot-safe-building.zip` from the [latest release](https://github.com/catpilotai/catpilot-ai-guardrails/releases/latest) (also at [`dist/2026.09.13/`](dist/2026.09.13/)) and upload it under Customize → Skills. An organization owner uploads it once under Organization settings → Skills and every member gets it.
 - **ChatGPT, Microsoft Copilot Studio, Lovable, Bolt, Replit, v0:** paste the block for your tool from [`dist/2026.09.13/`](dist/2026.09.13/). Each file says where it goes, and each is under 8,000 characters.
 - **Repository-based agents:** append the `AGENTS.md` or `copilot-instructions.md` block from the same directory.
 
