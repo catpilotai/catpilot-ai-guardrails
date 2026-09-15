@@ -49,6 +49,13 @@ two cannot drift. It never returns "allow"; a command without a match returns
 `None` and your loop's own rules apply. A non-string command raises, so a
 broken caller fails closed.
 
+If your tool's shell argument is not named `command`, use
+`gate_tool_call(tool_name, tool_input, field="cmd")` rather than pulling the
+value out yourself: it reads `tool_input[field]` (default `"command"`) and
+fails closed the same way `gate_shell_command` does. A missing, null, or
+non-string value for that field returns a deny reason that names the field,
+instead of silently treating it as an empty, always-allowed command.
+
 ## What you can and cannot claim afterwards
 
 - You can say: shell commands that pass through `run_shell` are refused when

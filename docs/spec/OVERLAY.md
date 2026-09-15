@@ -80,9 +80,13 @@ templates:                                 # optional: approved starting points
 ```
 
 Field limits are in the JSON Schema. Every list item is one phrase of at most
-200 characters. `templates[].location` must be HTTPS, carry no credentials or
-query string, and its host must be passed to the validator with
-`--allow-host`.
+200 characters. `templates[].location` must be HTTPS with a hostname, carry no
+credentials, query string, or fragment, and its host must be on the caller's
+allowlist: `--allow-host` (repeatable) for `tools/validate_overlay.py` and
+`tools/bundle.py`, or the `CATPILOT_TEMPLATE_HOSTS` environment variable
+(comma-separated) for the reference MCP server (`mcp-server/README.md`). A
+location whose host is not allowed fails validation; that is why the shipped
+[`overlay.example.yaml`](./overlay.example.yaml) has no `templates` entry.
 
 ## 4. Slots
 

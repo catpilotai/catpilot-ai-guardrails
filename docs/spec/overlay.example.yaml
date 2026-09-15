@@ -53,6 +53,12 @@ review_triggers:
   - "Payments or refunds"
   - "Writes to a system of record"
 
-templates:
-  - kind: internal-lookup-tool
-    location: "https://intranet.example.org/templates/lookup"
+# `templates` is optional and omitted here on purpose: a template's location must
+# be on the validator's host allowlist, and this shipped example has none configured
+# so it loads cleanly with no extra setup. To add an approved starting template:
+#   templates:
+#     - kind: internal-lookup-tool
+#       location: "https://intranet.example.org/templates/lookup"
+# then allow its host: `--allow-host intranet.example.org` for tools/validate_overlay.py
+# and tools/bundle.py, or CATPILOT_TEMPLATE_HOSTS=intranet.example.org for the
+# reference MCP server (see docs/spec/OVERLAY.md and mcp-server/README.md).

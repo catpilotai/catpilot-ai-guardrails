@@ -12,6 +12,8 @@ pretooluse-secrets.py), file reads, prompts, or other tools. Standard library
 only; no network, no logging.
 """
 
+from __future__ import annotations
+
 import json
 import re
 import sys

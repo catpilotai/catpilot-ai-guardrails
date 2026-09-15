@@ -167,6 +167,13 @@ class OverlayGuardTests(unittest.TestCase):
 class PrivateBuildTests(unittest.TestCase):
     def test_private_bundle_renders_overlay_values_and_provenance(self):
         overlay, raw = load_example()
+        # The shipped example ships with no templates (a template's host must be
+        # allowlisted, and the example is meant to load with no extra configuration;
+        # see docs/spec/overlay.example.yaml). Add one here so the {{templates}} slot
+        # rendering still has coverage; overlay_bytes stays the real file's bytes,
+        # which is all the provenance hash assertions below depend on.
+        overlay = copy.deepcopy(overlay)
+        overlay["templates"] = [{"kind": "internal-lookup-tool", "location": "https://intranet.example.org/templates/lookup"}]
         with tempfile.TemporaryDirectory() as tmp:
             out = bundle.build_tier(TIER, Path(tmp), overlay=overlay, overlay_bytes=raw)
             self.assertEqual(out.name, "catpilot-safe-building-example-org")

@@ -1,10 +1,10 @@
 # Protection contract
 
-Status: two advisory skills shipped; one narrowly scoped hook shipped and labeled as enforcement for its path only; live-host results recorded in the README's tested-runtimes table.
+Status: two advisory skills shipped; two narrowly scoped hooks shipped and labeled as enforcement for their paths only; live-host results recorded in the README's tested-runtimes table.
 
 ## What the repository provides
 
-The public package provides local security instructions for two audiences, reference material, a deterministic bundler with per-host rendering, an organization-overlay schema and validator, one host hook, a self-hosted reference MCP server, and offline evaluation tooling. None of it observes an employee's work, authenticates an organization, runs security scans automatically, or installs a mandatory execution gate on every path.
+The public package provides local security instructions for two audiences, reference material, a deterministic bundler with per-host rendering, an organization-overlay schema and validator, two host hooks, a self-hosted reference MCP server, and offline evaluation tooling. None of it observes an employee's work, authenticates an organization, runs security scans automatically, or installs a mandatory execution gate on every path.
 
 The baseline does not call Catpilot or send telemetry. Installing it does not change the AI host's own data-handling terms or permissions. Do not put confidential company material in this public repository or a public fork; an overlay lives outside the tree, and the bundler refuses to build if one is inside it.
 
@@ -16,7 +16,7 @@ The baseline does not call Catpilot or send telemetry. Installing it does not ch
 | Contextual coaching | A supported event produces a brief explanation and one useful next step | The event, response, and observed follow-through; not an implied quiz or completion |
 | Enforcement | A particular action cannot proceed without an external, trusted check | Tool/action trace showing the check and denial/allow decision on that path, including failure-mode tests |
 
-Both skills in this repository are advice. The safe-building skill also tells the assistant how to coach, but a coaching *event* (a supported trigger in a work surface) is a Catpilot platform capability, not something a skill file can produce. The only enforcement in this repository is the Claude Code hook in `hooks/`, and its claim is limited to the Bash tool path on the host versions in the tested-runtimes table.
+Both skills in this repository are advice. The safe-building skill also tells the assistant how to coach, but a coaching *event* (a supported trigger in a work surface) is a Catpilot platform capability, not something a skill file can produce. The only enforcement in this repository is the two Claude Code hooks in `hooks/`: one denies a literal credential in a `Bash` command, the other denies a private-key block in a `Write`, `Edit`, `MultiEdit`, or `NotebookEdit` write. Each hook's claim is limited to that tool path on the host versions in the tested-runtimes table.
 
 A refusal in a conversation is not proof that every action path is blocked. A published skill is not necessarily installed; an installed skill is not necessarily active; an active instruction is not necessarily followed. A correct learner answer is not proof that an application changed. A pasted instruction block in ChatGPT, Copilot, Lovable, Bolt, Replit, or v0 is text the model may or may not weigh; nothing on those hosts blocks anything.
 
@@ -39,12 +39,12 @@ Do not replace these states with one green “protected” badge. Report unknown
 | Claim | Where it is recorded | What it is based on |
 | --- | --- | --- |
 | A skill loads on a host | README, tested-runtimes table | A host signal from a recorded session (for Claude Code, the session's own listing of available skills), not the model saying so |
-| The hook blocks a command | README, tested-runtimes table; `evals/reports/` verification notes | A tool-result trace showing the host applied the hook's deny decision, plus a control run without the hook |
+| A hook blocks a Bash command or a private-key write | README, tested-runtimes table; `evals/reports/` verification notes | A tool-result trace showing the host applied the hook's deny decision, plus a control run without the hook |
 | The safe-building skill changes responses | `evals/reports/<release>.md` when one exists | The with/without runner in `tools/eval.py`, heuristic scores, human review |
 | Company values are current | The private bundle's `catpilot.json` (`overlay`) and its `metadata.catpilot-overlay` frontmatter summary | The overlay's `reviewed_on` and `expires_on`, checked at build time |
 | A host called the reference MCP server | README, tested-runtimes "Coaching (MCP)" column; `evals/reports/` verification notes | A tool call and its result in the host's own transcript, with the server's `unknown_policy` and `policy_source` fields in the result |
 
-Anything not in that table is not claimed. In particular: no coaching events (a lookup the model chose to make is not a triggered event), no authentication or tenant isolation in the reference MCP server, no coverage of file writes by the hook, no Cursor hook, and no verified activation on Cursor, Claude.ai, or any skills.sh host beyond those listed.
+Anything not in that table is not claimed. In particular: no coaching events (a lookup the model chose to make is not a triggered event), no authentication or tenant isolation in the reference MCP server, no coverage of file reads, prompts, or any tool path other than the `Bash` and `Write`/`Edit`/`MultiEdit`/`NotebookEdit` paths the two hooks cover, no Cursor hook, and no verified activation on Cursor, Claude.ai, or any skills.sh host beyond those listed.
 
 ## Company policy boundaries
 
@@ -59,7 +59,7 @@ Anything not in that table is not claimed. In particular: no coaching events (a 
 
 Before claiming enforcement, verify the protected action and all relevant execution paths, configuration ownership, activation, supported denial semantics, behavior during errors/timeouts, and handling of disabled or stale checks. For a high-risk protected action, unavailable checks must halt or route to an authorized reviewer according to approved policy. The UI must not silently report protection when the check did not run.
 
-The shipped hook meets the parts of this it can meet on its own: it never returns allow, it fails closed on malformed input, and its scope is written down. It does not meet the rest by itself: a hook the host did not load, timed out, or that a person disabled protects nothing, and only a host-level test can show which of those happened. Keep explicit human approval for consequential changes. Do not implement “check failed, therefore allow” or rely on an agent promising to call an optional tool. Scope the claim to the host/version, actions, and conditions actually tested.
+The shipped hooks meet the parts of this they can meet on their own: neither ever returns allow, both fail closed on malformed input, and each one's scope is written down. They do not meet the rest by themselves: a hook the host did not load, timed out, or that a person disabled protects nothing, and only a host-level test can show which of those happened. Keep explicit human approval for consequential changes. Do not implement “check failed, therefore allow” or rely on an agent promising to call an optional tool. Scope the claim to the host/version, actions, and conditions actually tested.
 
 ## Learning and work are different modes
 

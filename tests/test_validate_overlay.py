@@ -54,9 +54,14 @@ class OverlayValidatorTests(unittest.TestCase):
             "email in list": lambda d: d["review_triggers"].append("Ask alice@example.org"),
             "ip": lambda d: d["hosting"]["approved"].append("Server 10.1.2.3"),
             "narrative": lambda d: d["review_triggers"].append("After last year's breach we require review"),
-            "http template": lambda d: d["templates"][0].update(location="http://intranet.example.org/t"),
-            "template query": lambda d: d["templates"][0].update(location="https://intranet.example.org/t?x=1"),
-            "template credentials": lambda d: d["templates"][0].update(location="https://user:pw@intranet.example.org/t"),
+            # The shipped example ships with no templates (see overlay.example.yaml), so
+            # these cases add one to exercise the template-location checks directly.
+            "http template": lambda d: d.update(templates=[{"kind": "internal-lookup-tool", "location": "http://intranet.example.org/t"}]),
+            "template query": lambda d: d.update(templates=[{"kind": "internal-lookup-tool", "location": "https://intranet.example.org/t?x=1"}]),
+            "template credentials": lambda d: d.update(templates=[{"kind": "internal-lookup-tool", "location": "https://user:pw@intranet.example.org/t"}]),
+            "template javascript scheme": lambda d: d.update(templates=[{"kind": "internal-lookup-tool", "location": "javascript:alert(1)"}]),
+            "template data scheme": lambda d: d.update(templates=[{"kind": "internal-lookup-tool", "location": "data:text/html,hi"}]),
+            "template missing hostname": lambda d: d.update(templates=[{"kind": "internal-lookup-tool", "location": "https:///t"}]),
         }
         for label, mutate in cases.items():
             data = copy.deepcopy(self.data)
@@ -64,8 +69,17 @@ class OverlayValidatorTests(unittest.TestCase):
             with self.subTest(case=label):
                 self.assertTrue(self.errors(data), label)
 
+    def test_template_malformed_url_raises_overlay_error_instead_of_crashing(self):
+        data = copy.deepcopy(self.data)
+        data["templates"] = [{"kind": "internal-lookup-tool", "location": "https://[::1"}]
+        with self.assertRaises(vo.OverlayError):
+            self.errors(data)
+
     def test_template_host_must_be_allowlisted(self):
-        self.assertTrue(any("allowlist" in e for e in self.errors(self.data, hosts=set())))
+        data = copy.deepcopy(self.data)
+        data["templates"] = [{"kind": "internal-lookup-tool", "location": "https://intranet.example.org/templates/lookup"}]
+        self.assertTrue(any("allowlist" in e for e in self.errors(data, hosts=set())))
+        self.assertEqual(self.errors(data, hosts=HOSTS), [])
 
     def test_expiry_window(self):
         data = copy.deepcopy(self.data)
@@ -75,8 +89,9 @@ class OverlayValidatorTests(unittest.TestCase):
         self.assertTrue(any("in the future" in e for e in errors))
 
     def test_cli_on_example(self):
+        # The shipped example ships with no templates, so it validates with no extra flags.
+        self.assertEqual(vo.main([str(EXAMPLE)]), 0)
         self.assertEqual(vo.main([str(EXAMPLE), "--allow-host", "intranet.example.org"]), 0)
-        self.assertEqual(vo.main([str(EXAMPLE)]), 1)
 
 
 if __name__ == "__main__":

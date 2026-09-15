@@ -27,6 +27,14 @@ DENIED = {
     # bare CLI/env-assignment form was not.
     "unquoted --password flag": 'mysql -u root --password=hunter22 -e "select 1"',
     "PGPASSWORD assignment": 'PGPASSWORD=hunter22 psql -h db.internal -U app -c "select 1"',
+    # Fine-grained GitHub PATs (github_pat_<22 chars>_<59 chars>) are a different shape
+    # than the classic ghp_/gho_/ghu_/ghs_/ghr_ tokens and need their own pattern.
+    "GitHub fine-grained token-shaped": "GH_TOKEN=github_pat_" + "1" * 22 + "_" + "a" * 59 + " gh api user",
+    # The private-key header must match the same BLOCK-suffixed PGP variant the write hook covers.
+    "PGP private key block header": 'printf -- "-----BEGIN PGP PRIVATE KEY BLOCK-----" > key.asc',
+    # A quoted assignment with a realistic value must still be denied; only the
+    # placeholder value itself is allowed (see the ALLOWED cases below).
+    "quoted password realistic value": 'echo password="Sup3rSecretValue1"',
 }
 ALLOWED = {
     "env reference": 'curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/user',
@@ -42,6 +50,13 @@ ALLOWED = {
     "PGPASSWORD placeholder": "PGPASSWORD=REPLACE_ME psql -c \"select 1\"",
     "JSON credential placeholder": '{"api_key": "REPLACE_ME"}',
     "JSON credential short value": '{"token": "abc"}',
+    # The placeholder allowance must apply to the quoted assignment forms exactly like
+    # the unquoted ones above (mysql --password=, PGPASSWORD=): quoted or not, one rule.
+    "quoted password placeholder": 'echo password="REPLACE_ME"',
+    "quoted API key placeholder": 'echo api_key="' + "X" * 16 + '"',
+    "quoted client secret placeholder": 'echo client_secret="' + "X" * 16 + '"',
+    "quoted auth token placeholder": 'echo token="' + "X" * 16 + '"',
+    "DATABASE_URL placeholder password": "DATABASE_URL=postgres://user:REPLACE_ME@host/db node app.js",
 }
 
 
@@ -137,3 +152,28 @@ class HarnessGateTests(unittest.TestCase):
         allowed = subprocess.run([sys.executable, str(script), "ls", "-la"], capture_output=True, text=True, timeout=10)
         self.assertEqual(allowed.returncode, 0)
         self.assertIn("allowed", allowed.stdout)
+
+    def test_gate_tool_call_fails_closed_on_missing_or_invalid_command_field(self):
+        """A missing/null/non-string command must be refused, not silently treated as ''."""
+        from hooks.harness.secret_gate import gate_tool_call
+        cases = {
+            "missing field": {},
+            "null command": {"command": None},
+            "non-string command": {"command": 5},
+        }
+        for label, tool_input in cases.items():
+            with self.subTest(label=label):
+                reason = gate_tool_call("run_command", tool_input)
+                self.assertIsNotNone(reason)
+                self.assertIn("command", reason)
+
+    def test_gate_tool_call_custom_field_name(self):
+        from hooks.harness.secret_gate import gate_tool_call
+        reason = gate_tool_call("run_command", {"cmd": "export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"}, field="cmd")
+        self.assertIsNotNone(reason)
+        self.assertIn("AWS access key ID", reason)
+        self.assertIsNone(gate_tool_call("run_command", {"cmd": "ls -la"}, field="cmd"))
+        # The default field name is not consulted once a different one is requested.
+        missing = gate_tool_call("run_command", {"command": "ls -la"}, field="cmd")
+        self.assertIsNotNone(missing)
+        self.assertIn("cmd", missing)
