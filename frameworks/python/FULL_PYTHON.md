@@ -89,7 +89,7 @@ from pydantic import BaseModel
 
 class User(BaseModel):
     id: int
-    name: string
+    name: str
 
 user = User.model_validate_json(json_string)
 ```
@@ -157,14 +157,23 @@ except requests.Timeout:
     print("Request timed out")
 
 # 2. SSRF Prevention (Basic)
+import ipaddress
+import socket
 from urllib.parse import urlparse
 
 def is_safe_url(url):
     parsed = urlparse(url)
-    if parsed.scheme not in ('http', 'https'):
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname:
         return False
-    # Add allow-list logic here (e.g., deny private IPs)
+    # Check the resolved addresses, not the hostname string, so localhost,
+    # 169.254.169.254, and DNS names that point at internal ranges are all rejected.
+    for info in socket.getaddrinfo(parsed.hostname, None):
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified:
+            return False
     return True
+
+# Then fetch with allow_redirects=False: a safe URL can still redirect to an unsafe one.
 ```
 
 ---

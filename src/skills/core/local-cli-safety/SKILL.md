@@ -5,7 +5,7 @@ license: MIT
 metadata:
   catpilot:
     id: local-cli-safety
-    version: 1.0.0
+    version: 1.0.1
     severity: critical
     category: local-cli
     applies_to:
@@ -345,9 +345,14 @@ stat -c '%a %n' ~/.ssh/id_rsa 2>/dev/null \
 ### Safe `git` force-update
 
 ```bash
-# ✅ Force-with-lease — fails if remote moved since last fetch
+# ✅ Force-with-lease — fails if the remote moved since you last looked.
+# Record the remote tip BEFORE rewriting history and pass it as the expected
+# value. `--force-with-lease=feature/x:HEAD` would compare the remote against
+# the rewritten local tip, which never matches after a rebase or amend.
 git fetch origin
-git push --force-with-lease=feature/x:HEAD origin feature/x
+EXPECTED=$(git rev-parse origin/feature/x)
+# ... rebase / amend ...
+git push --force-with-lease=feature/x:"$EXPECTED" origin feature/x
 
 # ✅ Hard reset only after preview
 git status

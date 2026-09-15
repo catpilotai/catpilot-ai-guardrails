@@ -231,7 +231,8 @@ const authenticate = (req, res, next) => {
   const token = authHeader.split(' ')[1];
   
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // Pin the algorithm: without this, jsonwebtoken accepts whatever `alg` the token header claims.
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
     req.user = decoded;
     next();
   } catch (err) {
@@ -353,7 +354,9 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],  // Avoid if possible
+      // 'unsafe-inline' here would let injected inline scripts run, which is the XSS
+      // that CSP exists to block. Inline scripts need a per-request nonce or a hash.
+      scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "https:"],
     },

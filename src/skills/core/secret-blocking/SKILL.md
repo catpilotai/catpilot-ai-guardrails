@@ -5,7 +5,7 @@ license: MIT
 metadata:
   catpilot:
     id: secret-blocking
-    version: 1.0.0
+    version: 1.0.1
     severity: critical
     category: secrets
     applies_to:
@@ -105,7 +105,7 @@ agent layer, before the file write, is the cheapest place to catch this.
 | `\brk_live_[A-Za-z0-9]{20,}\b` | Stripe restricted key | `rk_live_...` |
 | `\bAKIA[0-9A-Z]{16}\b` | AWS Access Key ID | `AKIAIOSFODNN7EXAMPLE` |
 | `\bASIA[0-9A-Z]{16}\b` | AWS temp Access Key ID | `ASIAIOSFODNN7EXAMPLE` |
-| `aws_secret_access_key\s*=\s*["']?[A-Za-z0-9/+=]{40}["']?` | AWS secret access key | 40-char base64 |
+| `(?i)aws_secret_access_key\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}["']?` | AWS secret access key (`=` or `:`; `AWS_SECRET_ACCESS_KEY: ...` in YAML/compose/CI is the common shape) | 40-char base64 |
 | `\bghp_[A-Za-z0-9]{36}\b` | GitHub personal token | `ghp_xxxxxxxx...` |
 | `\bgho_[A-Za-z0-9]{36}\b` | GitHub OAuth token | `gho_xxxxxxxx...` |
 | `\bghu_[A-Za-z0-9]{36}\b` | GitHub user-to-server | `ghu_xxxxxxxx...` |
