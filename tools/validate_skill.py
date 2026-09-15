@@ -5,12 +5,24 @@ Checks the frontmatter shape in docs/spec/SKILL_FORMAT.md, the version regime
 marker survives into a shipped bundle, and that relative Markdown links
 resolve inside the skill directory.
 
+The two shapes are validated differently, because only one of them ships:
+
+  - A shipped bundle (skills/<bundle>/) must satisfy the Agent Skills
+    specification, which defines `metadata` as a map from string keys to
+    string values. So every `metadata` value must be a string, the manifest
+    named by `metadata.catpilot-manifest` must parse, its
+    `bundle.components` must agree with `metadata.catpilot-components`, and
+    every component `reference` path must exist.
+  - A source component (src/skills/<tier>/<name>/) is an authoring file, not
+    a shipped skill, and keeps the nested `metadata.catpilot.*` form.
+
 It does not prove a host loads the skill, and it is not a security scanner.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -45,6 +57,57 @@ def _local_link_errors(path: Path) -> list[str]:
     return errors
 
 
+def _manifest_errors(path: Path, meta: dict) -> list[str]:
+    """Check the catpilot.json sidecar of a shipped bundle against its frontmatter."""
+    errors: list[str] = []
+    manifest_name = meta.get("catpilot-manifest")
+    if not isinstance(manifest_name, str) or not manifest_name:
+        return [f"{path}: metadata.catpilot-manifest is required on a shipped bundle"]
+    manifest_path = path / manifest_name
+    if "/" in manifest_name or not manifest_path.is_file():
+        return [f"{path}: metadata.catpilot-manifest names {manifest_name!r}, which is not a file in the skill directory"]
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        return [f"{path}: {manifest_name} does not parse: {exc}"]
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("bundle"), dict):
+        return [f"{path}: {manifest_name} must be an object with a 'bundle' object"]
+
+    components = manifest["bundle"].get("components")
+    if not isinstance(components, list) or not components:
+        return [f"{path}: {manifest_name}: bundle.components must be a nonempty list"]
+    for c in components:
+        if not isinstance(c, dict) or not bundle.NAME_RE.match(str(c.get("id", ""))) or not bundle.SEMVER_RE.match(str(c.get("version", ""))):
+            errors.append(f"{path}: {manifest_name}: bad component entry {c!r}")
+            return errors
+        reference = c.get("reference")
+        if reference is not None and not (path / reference).is_file():
+            errors.append(f"{path}: {manifest_name}: component {c['id']} names a missing reference {reference!r}")
+
+    summary = meta.get("catpilot-components")
+    if not isinstance(summary, str) or not summary.strip():
+        errors.append(f"{path}: metadata.catpilot-components is required on a shipped bundle")
+    else:
+        try:
+            declared = bundle.parse_components_field(summary)
+        except ValueError as exc:
+            errors.append(f"{path}: metadata.catpilot-components: {exc}")
+        else:
+            listed = [(c["id"], c["version"]) for c in components]
+            if declared != listed:
+                errors.append(
+                    f"{path}: metadata.catpilot-components does not match {manifest_name} bundle.components "
+                    f"({declared} vs {listed})"
+                )
+    for surface in manifest.get("applies_to", {}).get("surfaces", []) if isinstance(manifest.get("applies_to"), dict) else []:
+        if surface not in bundle.SURFACES:
+            errors.append(f"{path}: {manifest_name}: unknown surface {surface!r}")
+    for fw in manifest.get("control_mappings", {}) if isinstance(manifest.get("control_mappings"), dict) else []:
+        if fw not in bundle.CONTROL_FRAMEWORKS:
+            errors.append(f"{path}: {manifest_name}: unknown control framework {fw!r}")
+    return errors
+
+
 def validate_skill_dir(path: Path) -> tuple[list[str], list[str]]:
     """Return (errors, warnings) for one skill directory."""
     errors: list[str] = []
@@ -56,9 +119,8 @@ def validate_skill_dir(path: Path) -> tuple[list[str], list[str]]:
         fm, body = bundle.split_frontmatter(skill_md.read_text(encoding="utf-8"))
     except (ValueError, yaml.YAMLError) as exc:
         return [f"{path}: {exc}"], warnings
-    cp = fm.get("metadata", {}).get("catpilot", {}) if isinstance(fm.get("metadata"), dict) else {}
-    is_bundle = isinstance(cp, dict) and isinstance(cp.get("bundle"), dict)
-    if is_bundle:
+    meta = fm.get("metadata") if isinstance(fm.get("metadata"), dict) else {}
+    if "catpilot-bundle" in meta:
         name = fm.get("name")
         if not isinstance(name, str) or len(name) > 64 or not bundle.NAME_RE.match(name):
             errors.append(f"{path}: bundle name {name!r} fails the skill name grammar")
@@ -69,29 +131,22 @@ def validate_skill_dir(path: Path) -> tuple[list[str], list[str]]:
             errors.append(f"{path}: description missing or >1024 chars")
         if not fm.get("license"):
             errors.append(f"{path}: license required")
-        meta = cp["bundle"]
-        if meta.get("name") != name:
-            errors.append(f"{path}: metadata.catpilot.bundle.name != name")
-        version = meta.get("version")
+        for key in sorted(meta):
+            if not isinstance(meta[key], str):
+                errors.append(
+                    f"{path}: metadata.{key} is {type(meta[key]).__name__}; the Agent Skills "
+                    "specification allows only string values under metadata"
+                )
+        if meta.get("catpilot-bundle") != name:
+            errors.append(f"{path}: metadata.catpilot-bundle != name")
+        version = meta.get("catpilot-version")
         if not isinstance(version, str) or not bundle.CALVER_RE.match(version):
             errors.append(f"{path}: bundle version {version!r} is not CalVer")
-        components = meta.get("components")
-        if not isinstance(components, list) or not components:
-            errors.append(f"{path}: bundle.components must be a nonempty list")
-        else:
-            for c in components:
-                if not isinstance(c, dict) or not bundle.NAME_RE.match(str(c.get("id", ""))) or not bundle.SEMVER_RE.match(str(c.get("version", ""))):
-                    errors.append(f"{path}: bad component entry {c!r}")
-        if cp.get("severity") not in bundle.SEVERITY_ORDER:
-            errors.append(f"{path}: bad bundle severity {cp.get('severity')!r}")
-        if "mode" in cp and cp["mode"] not in bundle.MODES:
+        if meta.get("catpilot-severity") not in bundle.SEVERITY_ORDER:
+            errors.append(f"{path}: bad bundle severity {meta.get('catpilot-severity')!r}")
+        if "catpilot-mode" in meta and meta["catpilot-mode"] not in bundle.MODES:
             errors.append(f"{path}: mode must be one of {bundle.MODES}")
-        for surface in cp.get("applies_to", {}).get("surfaces", []) if isinstance(cp.get("applies_to"), dict) else []:
-            if surface not in bundle.SURFACES:
-                errors.append(f"{path}: unknown surface {surface!r}")
-        for fw in cp.get("control_mappings", {}) if isinstance(cp.get("control_mappings"), dict) else []:
-            if fw not in bundle.CONTROL_FRAMEWORKS:
-                errors.append(f"{path}: unknown control framework {fw!r}")
+        errors.extend(_manifest_errors(path, meta))
         if bundle.SLOT_RE.search(re.sub(r"`[^`\n]*`", "", bundle.strip_fences(body))):
             errors.append(f"{path}: unresolved {{{{slot}}}} marker in a shipped bundle")
         if not body.strip():

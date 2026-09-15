@@ -3,140 +3,15 @@ name: catpilot-security-core
 description: 'Catpilot''s universal AI-coding-agent security baseline: advisory guardrails across nine components: cloud CLI mutations, database state changes, local CLI destruction, Docker container builds, hardcoded secrets, secrets management, supply-chain integrity, PII / test-data hygiene, and language-agnostic secure-coding patterns (SQL injection, command injection, XSS, path traversal, insecure deserialization, eval-class APIs, SSRF). Intended to apply on every code generation, file write, and shell command in a host that has loaded it. Born from real production incidents. Guidance the agent reads, not a runtime control.'
 license: MIT
 metadata:
-  catpilot:
-    bundle:
-      name: catpilot-security-core
-      version: 2026.09.15
-      tier: core
-      layout: baseline-references
-      components:
-      - id: cloud-cli-safety
-        version: 1.0.3
-      - id: database-safety
-        version: 1.0.1
-      - id: docker-safety
-        version: 1.0.1
-      - id: language-baseline
-        version: 1.0.1
-      - id: local-cli-safety
-        version: 1.0.2
-      - id: pii-and-test-data
-        version: 1.0.1
-      - id: secret-blocking
-        version: 1.0.2
-      - id: secrets-management
-        version: 1.0.1
-      - id: supply-chain
-        version: 1.0.2
-    severity: critical
-    category: security
-    mode: advisory
-    applies_to:
-      languages:
-      - any
-      frameworks:
-      - any
-      runtimes:
-      - aider
-      - claude-code
-      - cline
-      - codex-cli
-      - copilot
-      - cursor
-      - openclaw
-    control_mappings:
-      soc2:
-      - A1.2
-      - C1.1
-      - CC6.1
-      - CC6.3
-      - CC6.6
-      - CC6.7
-      - CC6.8
-      - CC7.1
-      - CC7.2
-      - CC8.1
-      - P3.1
-      pci_dss:
-      - '10.2'
-      - 12.8.3
-      - 2.2.1
-      - '3.4'
-      - 3.4.1
-      - '3.5'
-      - '3.6'
-      - 3.6.1
-      - '6.2'
-      - 6.2.4
-      - 6.3.2
-      - '6.4'
-      - 6.4.3
-      - 6.4.5
-      - 6.4.5.2
-      - 6.5.1
-      - 6.5.4
-      - 6.5.7
-      - '7.1'
-      - 7.2.1
-      - '8.2'
-      - 8.2.1
-      - 8.2.2
-      iso_27001:
-      - A.10.1.1
-      - A.10.1.2
-      - A.12.1.2
-      - A.12.3.1
-      - A.12.5.1
-      - A.12.6.1
-      - A.13.1.3
-      - A.14.2.1
-      - A.14.2.2
-      - A.14.2.3
-      - A.14.2.5
-      - A.14.2.7
-      - A.14.2.8
-      - A.14.3.1
-      - A.15.1.1
-      - A.18.1.3
-      - A.18.1.4
-      - A.18.1.5
-      - A.8.2.3
-      - A.9.2.1
-      - A.9.2.3
-      - A.9.4.1
-      - A.9.4.3
-      nist_csf:
-      - DE.CM-7
-      - DE.DP-2
-      - ID.SC-1
-      - ID.SC-2
-      - PR.AC-1
-      - PR.AC-4
-      - PR.DS-1
-      - PR.DS-5
-      - PR.IP-1
-      - PR.IP-12
-      - PR.IP-2
-      - PR.IP-3
-      - PR.IP-4
-      - PR.IP-6
-      - PR.PT-3
-      - RS.MI-2
-      owasp_top_10:
-      - A01:2021
-      - A02:2021
-      - A03:2021
-      - A04:2021
-      - A05:2021
-      - A06:2021
-      - A07:2021
-      - A08:2021
-      - A10:2021
-    provenance:
-      origin: catpilot
-      incident_derived: true
-    maintainers:
-    - team: catpilot-security
+  catpilot-bundle: catpilot-security-core
+  catpilot-version: 2026.09.15
+  catpilot-tier: core
+  catpilot-layout: baseline-references
+  catpilot-severity: critical
+  catpilot-category: security
+  catpilot-mode: advisory
+  catpilot-components: cloud-cli-safety@1.0.3, database-safety@1.0.1, docker-safety@1.0.1, language-baseline@1.0.1, local-cli-safety@1.0.2, pii-and-test-data@1.0.1, secret-blocking@1.0.2, secrets-management@1.0.1, supply-chain@1.0.2
+  catpilot-manifest: catpilot.json
 ---
 
 # Catpilot Security Core
@@ -157,10 +32,10 @@ Dockerfile, a dependency change, anything that handles a secret or real
 personal data, or code in the language-baseline patterns), read the named
 reference file with your file-reading tool and follow it. The examples, the
 remediation steps, and the detection patterns live there, and so do the
-facts that decide whether a command is safe. Component IDs match the entries in
-`metadata.catpilot.bundle.components` in the frontmatter so a finding can
-be mapped back to a specific source skill (and to its severity, version, and
-control mappings).
+facts that decide whether a command is safe. Component IDs match the `catpilot-components` entry in the frontmatter and
+the `bundle.components` list in `catpilot.json` next to this file, so a
+finding can be mapped back to a specific source skill (and to its severity,
+version, and control mappings).
 
 This bundle is generated deterministically from
 `src/skills/core/<id>/SKILL.md` by `tools/bundle.py` in the

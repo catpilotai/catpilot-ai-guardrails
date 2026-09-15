@@ -53,11 +53,15 @@ Patterns for autonomous agent systems: identity integrity, multi-agent auth, cro
 
 ## 3. Bundling mechanics
 
-The bundler is `tools/bundle.py` (Python, deterministic). Input: a tier directory under `src/skills/`. Output: a single skill directory under `skills/` containing one `SKILL.md` plus copied `references/`, `scripts/`, and `assets/` from each component.
+The bundler is `tools/bundle.py` (Python, deterministic). Input: a tier directory under `src/skills/`. Output: a single skill directory under `skills/` containing one `SKILL.md`, its `catpilot.json` manifest, plus copied `references/`, `scripts/`, and `assets/` from each component.
 
-### 3.1 Output frontmatter
+### 3.1 Output frontmatter and manifest
 
-A bundle's `SKILL.md` has its own frontmatter, generated mechanically from its components:
+A bundle's `SKILL.md` has its own frontmatter, generated mechanically from its
+components. The Agent Skills specification defines `metadata` as a map from
+string keys to string values, so every value below is a string and the
+structured metadata lives in the `catpilot.json` sidecar beside it. Full key
+list and manifest schema: `SKILL_FORMAT.md` §3.5.
 
 ```yaml
 ---
@@ -70,30 +74,44 @@ description: |
   shell command. Born from real production incidents.
 license: MIT
 metadata:
-  catpilot:
-    bundle:
-      name: catpilot-security-core
-      version: 2026.05.06               # CalVer; bumped per release
-      tier: core
-      components:
-        - id: secret-blocking
-          version: 1.0.0
-        - id: cloud-cli-safety
-          version: 1.0.0
-        # ... one row per source skill
-    severity: critical                    # max(component severities)
-    mode: advisory                        # from bundle.toml; every bundle here is advisory
-    control_mappings:                     # union of all components
-      soc2: [CC6.1, CC6.6, CC7.2, CC8.1, A1.2]
-      pci_dss: ["3.4", "3.5", "3.6", "6.4.5", "6.4.5.2", "8.2.1", "10.2"]
-      iso_27001: [A.9.4.3, A.10.1.1, A.10.1.2, A.12.1.2, A.12.5.1, A.14.2.2, A.14.2.3]
-      nist_csf: [PR.AC-1, PR.DS-1, PR.DS-5, PR.IP-1, PR.IP-3, DE.CM-7, RS.MI-2]
-      owasp_top_10: ["A02:2021", "A05:2021", "A07:2021", "A08:2021"]
-    applies_to:
-      languages: [any]
-      frameworks: [any]
-      runtimes: [claude-code, cursor, openclaw, cline, aider, github-copilot, codex]
+  catpilot-bundle: catpilot-security-core
+  catpilot-version: 2026.05.06            # CalVer; bumped per release
+  catpilot-tier: core
+  catpilot-layout: baseline-references    # omitted when the layout is `single`
+  catpilot-severity: critical             # max(component severities)
+  catpilot-category: security
+  catpilot-mode: advisory                 # from bundle.toml; every bundle here is advisory
+  catpilot-components: cloud-cli-safety@1.0.3, database-safety@1.0.1, ...
+  catpilot-manifest: catpilot.json
 ---
+```
+
+```json
+{
+  "schema_version": 1,
+  "bundle": {
+    "name": "catpilot-security-core",
+    "version": "2026.05.06",
+    "tier": "core",
+    "layout": "baseline-references",
+    "components": [
+      {
+        "id": "cloud-cli-safety",
+        "version": "1.0.3",
+        "severity": "critical",
+        "category": "cloud-cli",
+        "reference": "references/cloud-cli-safety.md"
+      }
+    ]
+  },
+  "severity": "critical",
+  "category": "security",
+  "mode": "advisory",
+  "applies_to": { "languages": ["any"], "frameworks": ["any"], "runtimes": ["claude-code", "cursor"] },
+  "control_mappings": { "soc2": ["CC6.1", "CC6.6"], "owasp_top_10": ["A02:2021"] },
+  "provenance": { "origin": "catpilot", "incident_derived": true },
+  "maintainers": [{ "team": "catpilot-security" }]
+}
 ```
 
 ### 3.2 Aggregation rules
@@ -103,13 +121,13 @@ metadata:
 | `name` | Constant per tier (`catpilot-security-core`, `catpilot-django-security`, `catpilot-security-advanced`). |
 | `description` | Hand-curated per tier. The bundler enforces ≤1024 chars but does not generate the prose. |
 | `license` | Inherited from `LICENSE` at repo root (MIT). |
-| `metadata.catpilot.bundle.version` | Hand-set in `bundle.toml` at the tier root. **CalVer** (`YYYY.MM.DD` or `YYYY.MM`) — bumped per release. The bundler refuses non-CalVer values. |
-| `metadata.catpilot.bundle.components[]` | Auto-listed from source skills, with their individual versions. |
-| `metadata.catpilot.severity` | `max(component severities)` using the ordering `info < low < medium < high < critical`. |
-| `metadata.catpilot.control_mappings.<fw>` | `union(component[*].control_mappings.<fw>)`, sorted, deduplicated. |
-| `metadata.catpilot.applies_to.languages` | `union(...)`, with `any` collapsing the set. |
-| `metadata.catpilot.applies_to.frameworks` | `union(...)`, with `any` collapsing the set. |
-| `metadata.catpilot.applies_to.runtimes` | `intersection(...)` if all components specify; else `union`. |
+| `catpilot-version`, `bundle.version` | Hand-set in `bundle.toml` at the tier root. **CalVer** (`YYYY.MM.DD` or `YYYY.MM`), bumped per release. The bundler refuses non-CalVer values. |
+| `catpilot-components`, `bundle.components[]` | Auto-listed from source skills, with their individual versions. The frontmatter carries `id@version` in id order; the manifest adds each component's severity, category, title, and reference path. |
+| `catpilot-severity`, `severity` | `max(component severities)` using the ordering `info < low < medium < high < critical`. |
+| `control_mappings.<fw>` | `union(component[*].control_mappings.<fw>)`, sorted, deduplicated. Manifest only. |
+| `applies_to.languages` | `union(...)`, with `any` collapsing the set. Manifest only. |
+| `applies_to.frameworks` | `union(...)`, with `any` collapsing the set. Manifest only. |
+| `applies_to.runtimes` | `intersection(...)` if all components specify; else `union`. Manifest only. |
 
 ### 3.3 Body composition
 
@@ -146,6 +164,7 @@ Component headings use the source skill's `metadata.catpilot.id` so that an agen
 ```
 skills/catpilot-security-core/
 ├── SKILL.md
+├── catpilot.json
 ├── references/
 │   ├── secret-blocking/
 │   │   └── REFERENCE.md
@@ -176,7 +195,7 @@ Determinism rules:
 
 1. Component ordering: lexicographic by `metadata.catpilot.id`.
 2. List-valued aggregations (`control_mappings`, `applies_to`, etc.): sorted alphabetically, deduplicated.
-3. Frontmatter key ordering: stable schema (defined in `tools/bundle.py`).
+3. Frontmatter key ordering: stable schema (defined in `tools/bundle.py`). The `catpilot.json` manifest is JSON with sorted keys.
 4. Newlines: LF only. Bundler enforces.
 5. No timestamps in output.
 
@@ -229,7 +248,7 @@ enables targets today.
 
 | Target | File | Host |
 |---|---|---|
-| `claude-zip` | `catpilot-safe-building.zip` | Claude.ai: individual upload, or organization-wide provisioning by an owner. One folder with `SKILL.md` inside. |
+| `claude-zip` | `catpilot-safe-building.zip` | Claude.ai: individual upload, or organization-wide provisioning by an owner. One folder with `SKILL.md` and `catpilot.json` inside. |
 | `chatgpt` | `chatgpt-project-instructions.md` | ChatGPT Project or Custom GPT instructions (≤8,000 characters). |
 | `copilot` | `copilot-agent-instructions.md`, `copilot-declarative-agent.stub.json` | Copilot Studio instructions; Microsoft 365 declarative-agent manifest stub. |
 | `agents-md` | `AGENTS.md` | Block to append to a project's `AGENTS.md`. |
@@ -309,7 +328,8 @@ reference file opens with `# <title>` and one line naming the component's
 id, version, severity, and category.
 
 **Frontmatter.** A bundle built with this layout records
-`metadata.catpilot.bundle.layout: baseline-references`.
+`metadata.catpilot-layout: baseline-references`, and the manifest records
+`bundle.layout` with each component's `reference` path.
 
 **Choosing a layout.** Keep a bundle on `single` while a host reading it in
 full on every activation stays under 500 lines. Move it to

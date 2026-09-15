@@ -1,0 +1,174 @@
+{
+  "applies_to": {
+    "frameworks": [
+      "any"
+    ],
+    "languages": [
+      "any"
+    ],
+    "runtimes": [
+      "aider",
+      "bolt",
+      "chatgpt",
+      "claude-ai",
+      "claude-code",
+      "cline",
+      "codex-cli",
+      "copilot",
+      "copilot-studio",
+      "cursor",
+      "lovable",
+      "microsoft-copilot",
+      "openclaw",
+      "replit",
+      "v0"
+    ],
+    "surfaces": [
+      "app-builder",
+      "chat",
+      "coding-agent"
+    ]
+  },
+  "bundle": {
+    "components": [
+      {
+        "category": "safe-ai-building",
+        "id": "access-and-identity",
+        "severity": "high",
+        "title": "Access and identity",
+        "version": "1.0.0"
+      },
+      {
+        "category": "safe-ai-building",
+        "id": "data-in-prompts",
+        "severity": "high",
+        "title": "Data in prompts",
+        "version": "1.0.0"
+      },
+      {
+        "category": "safe-ai-building",
+        "id": "hosting-and-where-it-runs",
+        "severity": "medium",
+        "title": "Hosting and where it runs",
+        "version": "1.0.0"
+      },
+      {
+        "category": "safe-ai-building",
+        "id": "keys-and-credentials",
+        "severity": "high",
+        "title": "Keys and credentials",
+        "version": "1.0.0"
+      },
+      {
+        "category": "safe-ai-building",
+        "id": "sharing-and-publishing",
+        "severity": "medium",
+        "title": "Sharing and publishing",
+        "version": "1.0.0"
+      },
+      {
+        "category": "safe-ai-building",
+        "id": "third-party-services",
+        "severity": "medium",
+        "title": "Third-party services",
+        "version": "1.0.0"
+      },
+      {
+        "category": "safe-ai-building",
+        "id": "untrusted-input",
+        "severity": "medium",
+        "title": "Untrusted input",
+        "version": "1.0.0"
+      },
+      {
+        "category": "safe-ai-building",
+        "id": "when-to-ask-a-human",
+        "severity": "medium",
+        "title": "When to ask a human",
+        "version": "1.0.0"
+      }
+    ],
+    "layout": "single",
+    "name": "catpilot-safe-building",
+    "tier": "safe-building",
+    "version": "2026.09.13"
+  },
+  "category": "safe-ai-building",
+  "control_mappings": {
+    "iso_27001": [
+      "A.10.1.2",
+      "A.12.1.2",
+      "A.13.2.1",
+      "A.14.2.1",
+      "A.14.2.5",
+      "A.15.1.1",
+      "A.15.1.2",
+      "A.16.1.2",
+      "A.18.1.4",
+      "A.7.2.2",
+      "A.8.2.3",
+      "A.9.2.1",
+      "A.9.4.1",
+      "A.9.4.3"
+    ],
+    "nist_csf": [
+      "ID.SC-1",
+      "ID.SC-2",
+      "PR.AC-1",
+      "PR.AC-4",
+      "PR.AT-1",
+      "PR.DS-5",
+      "PR.IP-1",
+      "PR.IP-2",
+      "RS.CO-2"
+    ],
+    "owasp_top_10": [
+      "A01:2021",
+      "A02:2021",
+      "A03:2021",
+      "A05:2021",
+      "A06:2021",
+      "A07:2021",
+      "A08:2021"
+    ],
+    "pci_dss": [
+      "12.6",
+      "12.8.1",
+      "12.8.3",
+      "3.4",
+      "3.4.1",
+      "6.2.4",
+      "7.2",
+      "8.2",
+      "8.2.1"
+    ],
+    "soc2": [
+      "C1.1",
+      "CC2.2",
+      "CC6.1",
+      "CC6.2",
+      "CC6.3",
+      "CC6.6",
+      "CC6.7",
+      "CC6.8",
+      "CC7.1",
+      "CC7.2",
+      "CC8.1",
+      "CC9.2",
+      "P3.1"
+    ]
+  },
+  "maintainers": [
+    {
+      "team": "catpilot-security"
+    }
+  ],
+  "mode": "advisory",
+  "provenance": {
+    "incident_derived": false,
+    "origin": "catpilot"
+  },
+  "schema_version": 1,
+  "severity": "high",
+  "training_module": "399"
+}

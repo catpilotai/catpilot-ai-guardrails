@@ -67,7 +67,10 @@ class BaselineReferencesTests(unittest.TestCase):
         self.assertNotIn("Long rule one.", skill)
         self.assertIn("[references/demo-safety.md](references/demo-safety.md)", skill)
         fm, _ = bundle.split_frontmatter(skill)
-        self.assertEqual(fm["metadata"]["catpilot"]["bundle"]["layout"], "baseline-references")
+        self.assertEqual(fm["metadata"]["catpilot-layout"], "baseline-references")
+        manifest = json.loads((out / bundle.MANIFEST_NAME).read_text())
+        self.assertEqual(manifest["bundle"]["layout"], "baseline-references")
+        self.assertEqual(manifest["bundle"]["components"][0]["reference"], "references/demo-safety.md")
         ref = (out / "references" / "demo-safety.md").read_text()
         self.assertTrue(ref.startswith("# Demo safety\n"))
         self.assertIn("Long rule one.", ref)
@@ -82,7 +85,10 @@ class BaselineReferencesTests(unittest.TestCase):
         self.assertIn("Long rule one.", skill)
         self.assertFalse((out / "references").exists())
         fm, _ = bundle.split_frontmatter(skill)
-        self.assertNotIn("layout", fm["metadata"]["catpilot"]["bundle"])
+        self.assertNotIn("catpilot-layout", fm["metadata"])
+        manifest = json.loads((out / bundle.MANIFEST_NAME).read_text())
+        self.assertEqual(manifest["bundle"]["layout"], "single")
+        self.assertNotIn("reference", manifest["bundle"]["components"][0])
 
     def test_missing_baseline_section_fails_before_writing(self):
         self.write_skill("## Why\n\nNo baseline here.\n")

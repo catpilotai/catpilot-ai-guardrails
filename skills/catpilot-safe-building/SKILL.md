@@ -3,120 +3,14 @@ name: catpilot-safe-building
 description: 'Plain-language security guidance for anyone building an app, automation, dashboard, or data tool with an AI assistant, whether or not they can read code. Use whenever the conversation is about building, connecting, deploying, or sharing something that touches company data or company systems. Eight checkpoints: data in prompts, access and identity, hosting, sharing and publishing, keys and credentials, third-party services, untrusted input, and when to ask a human. Advisory guidance the assistant reads; not monitoring, not enforcement, and not a review of the app.'
 license: MIT
 metadata:
-  catpilot:
-    bundle:
-      name: catpilot-safe-building
-      version: 2026.09.13
-      tier: safe-building
-      components:
-      - id: access-and-identity
-        version: 1.0.0
-      - id: data-in-prompts
-        version: 1.0.0
-      - id: hosting-and-where-it-runs
-        version: 1.0.0
-      - id: keys-and-credentials
-        version: 1.0.0
-      - id: sharing-and-publishing
-        version: 1.0.0
-      - id: third-party-services
-        version: 1.0.0
-      - id: untrusted-input
-        version: 1.0.0
-      - id: when-to-ask-a-human
-        version: 1.0.0
-    severity: high
-    category: safe-ai-building
-    mode: advisory
-    training_module: '399'
-    applies_to:
-      languages:
-      - any
-      frameworks:
-      - any
-      runtimes:
-      - aider
-      - bolt
-      - chatgpt
-      - claude-ai
-      - claude-code
-      - cline
-      - codex-cli
-      - copilot
-      - copilot-studio
-      - cursor
-      - lovable
-      - microsoft-copilot
-      - openclaw
-      - replit
-      - v0
-      surfaces:
-      - app-builder
-      - chat
-      - coding-agent
-    control_mappings:
-      soc2:
-      - C1.1
-      - CC2.2
-      - CC6.1
-      - CC6.2
-      - CC6.3
-      - CC6.6
-      - CC6.7
-      - CC6.8
-      - CC7.1
-      - CC7.2
-      - CC8.1
-      - CC9.2
-      - P3.1
-      pci_dss:
-      - '12.6'
-      - 12.8.1
-      - 12.8.3
-      - '3.4'
-      - 3.4.1
-      - 6.2.4
-      - '7.2'
-      - '8.2'
-      - 8.2.1
-      iso_27001:
-      - A.10.1.2
-      - A.12.1.2
-      - A.13.2.1
-      - A.14.2.1
-      - A.14.2.5
-      - A.15.1.1
-      - A.15.1.2
-      - A.16.1.2
-      - A.18.1.4
-      - A.7.2.2
-      - A.8.2.3
-      - A.9.2.1
-      - A.9.4.1
-      - A.9.4.3
-      nist_csf:
-      - ID.SC-1
-      - ID.SC-2
-      - PR.AC-1
-      - PR.AC-4
-      - PR.AT-1
-      - PR.DS-5
-      - PR.IP-1
-      - PR.IP-2
-      - RS.CO-2
-      owasp_top_10:
-      - A01:2021
-      - A02:2021
-      - A03:2021
-      - A05:2021
-      - A06:2021
-      - A07:2021
-      - A08:2021
-    provenance:
-      origin: catpilot
-      incident_derived: false
-    maintainers:
-    - team: catpilot-security
+  catpilot-bundle: catpilot-safe-building
+  catpilot-version: 2026.09.13
+  catpilot-tier: safe-building
+  catpilot-severity: high
+  catpilot-category: safe-ai-building
+  catpilot-mode: advisory
+  catpilot-components: access-and-identity@1.0.0, data-in-prompts@1.0.0, hosting-and-where-it-runs@1.0.0, keys-and-credentials@1.0.0, sharing-and-publishing@1.0.0, third-party-services@1.0.0, untrusted-input@1.0.0, when-to-ask-a-human@1.0.0
+  catpilot-manifest: catpilot.json
 ---
 
 # How to coach someone building with AI

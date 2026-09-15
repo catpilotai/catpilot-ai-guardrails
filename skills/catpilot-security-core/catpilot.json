@@ -1,0 +1,197 @@
+{
+  "applies_to": {
+    "frameworks": [
+      "any"
+    ],
+    "languages": [
+      "any"
+    ],
+    "runtimes": [
+      "aider",
+      "claude-code",
+      "cline",
+      "codex-cli",
+      "copilot",
+      "cursor",
+      "openclaw"
+    ]
+  },
+  "bundle": {
+    "components": [
+      {
+        "category": "cloud-cli",
+        "id": "cloud-cli-safety",
+        "reference": "references/cloud-cli-safety.md",
+        "severity": "critical",
+        "version": "1.0.3"
+      },
+      {
+        "category": "database",
+        "id": "database-safety",
+        "reference": "references/database-safety.md",
+        "severity": "critical",
+        "version": "1.0.1"
+      },
+      {
+        "category": "container",
+        "id": "docker-safety",
+        "reference": "references/docker-safety.md",
+        "severity": "critical",
+        "version": "1.0.1"
+      },
+      {
+        "category": "secure-coding",
+        "id": "language-baseline",
+        "reference": "references/language-baseline.md",
+        "severity": "high",
+        "version": "1.0.1"
+      },
+      {
+        "category": "local-cli",
+        "id": "local-cli-safety",
+        "reference": "references/local-cli-safety.md",
+        "severity": "critical",
+        "version": "1.0.2"
+      },
+      {
+        "category": "data-protection",
+        "id": "pii-and-test-data",
+        "reference": "references/pii-and-test-data.md",
+        "severity": "high",
+        "version": "1.0.1"
+      },
+      {
+        "category": "secrets",
+        "id": "secret-blocking",
+        "reference": "references/secret-blocking.md",
+        "severity": "critical",
+        "version": "1.0.2"
+      },
+      {
+        "category": "secrets",
+        "id": "secrets-management",
+        "reference": "references/secrets-management.md",
+        "severity": "critical",
+        "version": "1.0.1"
+      },
+      {
+        "category": "supply-chain",
+        "id": "supply-chain",
+        "reference": "references/supply-chain.md",
+        "severity": "high",
+        "version": "1.0.2"
+      }
+    ],
+    "layout": "baseline-references",
+    "name": "catpilot-security-core",
+    "tier": "core",
+    "version": "2026.09.15"
+  },
+  "category": "security",
+  "control_mappings": {
+    "iso_27001": [
+      "A.10.1.1",
+      "A.10.1.2",
+      "A.12.1.2",
+      "A.12.3.1",
+      "A.12.5.1",
+      "A.12.6.1",
+      "A.13.1.3",
+      "A.14.2.1",
+      "A.14.2.2",
+      "A.14.2.3",
+      "A.14.2.5",
+      "A.14.2.7",
+      "A.14.2.8",
+      "A.14.3.1",
+      "A.15.1.1",
+      "A.18.1.3",
+      "A.18.1.4",
+      "A.18.1.5",
+      "A.8.2.3",
+      "A.9.2.1",
+      "A.9.2.3",
+      "A.9.4.1",
+      "A.9.4.3"
+    ],
+    "nist_csf": [
+      "DE.CM-7",
+      "DE.DP-2",
+      "ID.SC-1",
+      "ID.SC-2",
+      "PR.AC-1",
+      "PR.AC-4",
+      "PR.DS-1",
+      "PR.DS-5",
+      "PR.IP-1",
+      "PR.IP-12",
+      "PR.IP-2",
+      "PR.IP-3",
+      "PR.IP-4",
+      "PR.IP-6",
+      "PR.PT-3",
+      "RS.MI-2"
+    ],
+    "owasp_top_10": [
+      "A01:2021",
+      "A02:2021",
+      "A03:2021",
+      "A04:2021",
+      "A05:2021",
+      "A06:2021",
+      "A07:2021",
+      "A08:2021",
+      "A10:2021"
+    ],
+    "pci_dss": [
+      "10.2",
+      "12.8.3",
+      "2.2.1",
+      "3.4",
+      "3.4.1",
+      "3.5",
+      "3.6",
+      "3.6.1",
+      "6.2",
+      "6.2.4",
+      "6.3.2",
+      "6.4",
+      "6.4.3",
+      "6.4.5",
+      "6.4.5.2",
+      "6.5.1",
+      "6.5.4",
+      "6.5.7",
+      "7.1",
+      "7.2.1",
+      "8.2",
+      "8.2.1",
+      "8.2.2"
+    ],
+    "soc2": [
+      "A1.2",
+      "C1.1",
+      "CC6.1",
+      "CC6.3",
+      "CC6.6",
+      "CC6.7",
+      "CC6.8",
+      "CC7.1",
+      "CC7.2",
+      "CC8.1",
+      "P3.1"
+    ]
+  },
+  "maintainers": [
+    {
+      "team": "catpilot-security"
+    }
+  ],
+  "mode": "advisory",
+  "provenance": {
+    "incident_derived": true,
+    "origin": "catpilot"
+  },
+  "schema_version": 1,
+  "severity": "critical"
+}

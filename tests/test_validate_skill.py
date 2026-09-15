@@ -1,5 +1,6 @@
 """Skill directory validator over the repository and over broken synthetic skills."""
 
+import json
 import shutil
 import tempfile
 import unittest
@@ -38,6 +39,46 @@ class ValidateSkillTests(unittest.TestCase):
             errors, _ = validate_skill.validate_skill_dir(out)
             self.assertTrue(any("unresolved" in e for e in errors))
             self.assertTrue(any("broken local link" in e for e in errors))
+
+    def test_built_bundle_with_a_non_string_metadata_value_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = bundle.build_tier(ROOT / "src" / "skills" / "safe-building", Path(tmp))
+            skill = out / "SKILL.md"
+            fm, body = bundle.split_frontmatter(skill.read_text())
+            fm["metadata"]["catpilot-components"] = [
+                {"id": "data-in-prompts", "version": "1.0.0"}
+            ]
+            skill.write_text(bundle.render_skill_md(fm, body))
+            errors, _ = validate_skill.validate_skill_dir(out)
+            self.assertTrue(any("only string values under metadata" in e for e in errors), errors)
+
+    def test_built_bundle_whose_manifest_components_disagree_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = bundle.build_tier(ROOT / "src" / "skills" / "safe-building", Path(tmp))
+            manifest_path = out / bundle.MANIFEST_NAME
+            manifest = json.loads(manifest_path.read_text())
+            manifest["bundle"]["components"][0]["version"] = "9.9.9"
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            errors, _ = validate_skill.validate_skill_dir(out)
+            self.assertTrue(any("does not match" in e for e in errors), errors)
+
+    def test_built_bundle_with_a_missing_or_unparseable_manifest_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = bundle.build_tier(ROOT / "src" / "skills" / "core", Path(tmp))
+            manifest_path = out / bundle.MANIFEST_NAME
+            manifest = json.loads(manifest_path.read_text())
+            manifest["bundle"]["components"][0]["reference"] = "references/gone.md"
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            errors, _ = validate_skill.validate_skill_dir(out)
+            self.assertTrue(any("missing reference" in e for e in errors), errors)
+
+            manifest_path.write_text("{not json")
+            errors, _ = validate_skill.validate_skill_dir(out)
+            self.assertTrue(any("does not parse" in e for e in errors), errors)
+
+            manifest_path.unlink()
+            errors, _ = validate_skill.validate_skill_dir(out)
+            self.assertTrue(any("not a file in the skill directory" in e for e in errors), errors)
 
     def test_cli(self):
         self.assertEqual(validate_skill.main([]), 0)

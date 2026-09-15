@@ -1,7 +1,7 @@
 # Skill Format
 
 **Status:** Active.
-**Conformance:** Catpilot skills are valid [Anthropic Agent Skills](https://agentskills.io/specification). The `metadata.catpilot.*` block is a Catpilot extension that other runtimes ignore.
+**Conformance:** Catpilot skills are valid [Anthropic Agent Skills](https://agentskills.io/specification). The specification defines `metadata` as a map from string keys to string values, so a shipped bundle carries only string values under `metadata`, each key prefixed `catpilot-`, and the structured Catpilot extension lives in a `catpilot.json` manifest beside the `SKILL.md`. Source components under `src/skills/` are authoring files, not shipped skills, and keep the nested `metadata.catpilot.*` form. See §3.5.
 **Distribution:** Skills install via [`npx skills add`](https://github.com/vercel-labs/skills) and appear on the [skills.sh](https://skills.sh) leaderboard.
 
 ---
@@ -118,12 +118,12 @@ These are defined by the Agent Skills spec. Catpilot does not redefine them.
 | `description` | yes | 1–1024 chars, single line recommended, agent-discoverable keywords |
 | `license` | no, but Catpilot **requires** it | License name (`MIT`, `Apache-2.0`) or reference to a bundled `LICENSE` file |
 | `compatibility` | no | Free-form environment requirement note. ≤500 chars. |
-| `metadata` | no, but Catpilot uses it | Free-form key-value map. Catpilot extensions live under `metadata.catpilot.*`. |
+| `metadata` | no, but Catpilot uses it | A map from string keys to string values. Source components nest the authoring block under `metadata.catpilot.*` (§3.2); shipped bundles carry string-only `catpilot-*` keys and a `catpilot.json` manifest (§3.5). |
 | `allowed-tools` | no | Experimental Anthropic field. Not used by Catpilot today. |
 
-### 3.2 The `metadata.catpilot.*` extension
+### 3.2 The `metadata.catpilot.*` authoring extension
 
-Other agents ignore unknown metadata keys, so the Catpilot block is invisible to them and load-bearing for our tooling.
+This is the **source** form, used by the component files under `src/skills/<tier>/<name>/SKILL.md`. Those files are inputs to the bundler, never installed by a host, so they may nest freely. What ships is described in §3.5.
 
 | Key | Required | Type | Notes |
 |---|---|---|---|
@@ -167,6 +167,58 @@ build (see [`OVERLAY.md`](./OVERLAY.md)). A list value renders as a bulleted
 list; a string renders inline. A marker without a default fails the build. A
 tier without a `[bundle.slots]` table gets no slot processing at all, so
 `{{...}}` in a core component's code example is just text.
+
+### 3.5 Shipped frontmatter and the manifest
+
+The Agent Skills specification defines `metadata` as **a map from string keys to
+string values**. A shipped bundle therefore carries no nested objects or lists
+under `metadata`. Everything structured moves to a sidecar file next to the
+`SKILL.md`, and the frontmatter keeps a flat, human-readable summary.
+
+This applies to what the bundler writes: `skills/<bundle>/` and the private
+bundles a `--overlay` build produces. It does not apply to the source
+components under `src/skills/`, which keep the nested authoring form of §3.2
+because they are inputs to the bundler and are never installed by a host.
+
+**Shipped `metadata` keys**, in this order. Every value is a string.
+
+| Key | Present | Value |
+|---|---|---|
+| `catpilot-bundle` | always | The bundle name. Equals `name`. |
+| `catpilot-version` | always | The bundle's CalVer release. |
+| `catpilot-tier` | always | The source tier the bundle was built from. |
+| `catpilot-layout` | when not `single` | The body layout, for example `baseline-references` (PACKAGING.md §10). |
+| `catpilot-severity` | always | `max(component severities)`. |
+| `catpilot-category` | always | The bundle's category. |
+| `catpilot-mode` | when set | `advisory \| coaching \| enforcement`. |
+| `catpilot-components` | always | Comma-separated `id@version` entries, in id order. |
+| `catpilot-manifest` | always | The manifest filename, `catpilot.json`. |
+| `catpilot-overlay` | private builds | One line: organization, `reviewed_on`, `expires_on`, and the first 12 hex characters of the overlay digest. |
+| `catpilot-content-sha256` | private builds | The full SHA-256 of the rendered body. |
+
+**The manifest**, `skills/<bundle>/catpilot.json`. Pretty-printed JSON, sorted
+keys, trailing newline, no timestamps, so it is byte-identical on every
+rebuild and `tools/bundle.py --check` covers it like any other built file.
+
+| Key | Notes |
+|---|---|
+| `schema_version` | `1`. Bumped if the shape changes incompatibly. |
+| `bundle.name`, `bundle.version`, `bundle.tier` | As in the frontmatter. |
+| `bundle.layout` | Always present here, `single` or `baseline-references`. |
+| `bundle.components[]` | One entry per component, in id order: `id`, `version`, `severity`, `category`, `title` when the component has one, and `reference` (`references/<id>.md`) under the baseline-references layout. |
+| `severity`, `category`, `mode`, `training_module` | The bundle-level values. `training_module` is a string, or a list when components name more than one. |
+| `applies_to` | `languages`, `frameworks`, `runtimes`, and `surfaces` when any component sets them. |
+| `control_mappings` | Per framework, sorted and deduplicated. |
+| `provenance` | `origin`, and `incident_derived` true when any component is. |
+| `maintainers` | Team entries. |
+| `overlay` | Private builds only: `organization`, `reviewed_on`, `expires_on`, `overlay_sha256`, `content_sha256`. |
+
+Nothing that the nested frontmatter used to carry was dropped. A consumer that
+wants the structure reads `catpilot.json`; one that wants a quick answer reads
+the frontmatter; `tools/validate_skill.py` checks that the two agree.
+
+Any artifact that ships the skill directory ships the manifest with it. The
+Claude.ai upload zip holds `SKILL.md` and `catpilot.json` in one folder.
 
 ## 4. SKILL.md body
 
@@ -222,15 +274,16 @@ A `SKILL.md` is valid when **all** of the following hold:
 3. `name` matches `^[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]$` (Anthropic spec) and matches the parent directory name.
 4. `description` is ≤1024 chars.
 5. `license` is set (Catpilot requirement, not Anthropic).
-6. `metadata.catpilot.id` equals `name`.
-7. `metadata.catpilot.version` is a valid semver string.
-8. `metadata.catpilot.severity` is one of the enum values in §3.3.
-9. `metadata.catpilot.category` is set.
+6. In a source component: `metadata.catpilot.id` equals `name`.
+7. In a source component: `metadata.catpilot.version` is a valid semver string.
+8. `severity` is one of the enum values in §3.3.
+9. `category` is set.
 10. Body is non-empty after the frontmatter.
 11. Body length is ≤500 lines (warning, not error, above 500).
 12. `mode`, if present, is `advisory`, `coaching`, or `enforcement`; `applies_to.surfaces`, if present, uses only `chat`, `app-builder`, `coding-agent`; `control_mappings` uses only the five locked frameworks.
 13. A shipped bundle contains no `{{slot}}` marker outside fenced code.
 14. Relative Markdown links resolve to files inside the skill directory.
+15. In a shipped bundle: every value under `metadata` is a string; `catpilot-manifest` names a file in the skill directory that parses as JSON; its `bundle.components` agrees with `catpilot-components`; and every component `reference` path exists.
 
 The validator lives at `tools/validate_skill.py` and runs in CI on pull requests that touch skills. It checks structure and links, not activation and not security.
 
@@ -246,8 +299,9 @@ Bundles version independently from their components. See `PACKAGING.md` §3.
 
 ## 8. Forward compatibility
 
-- New optional `metadata.catpilot.*` keys may be added in any minor release without bumping major.
-- Removing or renaming an existing `metadata.catpilot.*` key is a major bump for that skill.
+- New optional `metadata.catpilot.*` authoring keys may be added in any minor release without bumping major.
+- Removing or renaming an existing `metadata.catpilot.*` authoring key is a major bump for that skill.
+- New optional manifest keys may be added without bumping `schema_version`. Removing or renaming one, or changing the meaning of an existing key, bumps it.
 - Anthropic spec additions (new top-level fields) are absorbed transparently.
 
 ## 9. Non-goals

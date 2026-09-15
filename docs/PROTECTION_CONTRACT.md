@@ -41,7 +41,7 @@ Do not replace these states with one green “protected” badge. Report unknown
 | A skill loads on a host | README, tested-runtimes table | A host signal from a recorded session (for Claude Code, the session's own listing of available skills), not the model saying so |
 | The hook blocks a command | README, tested-runtimes table; `evals/reports/` verification notes | A tool-result trace showing the host applied the hook's deny decision, plus a control run without the hook |
 | The safe-building skill changes responses | `evals/reports/<release>.md` when one exists | The with/without runner in `tools/eval.py`, heuristic scores, human review |
-| Company values are current | The private bundle's frontmatter (`metadata.catpilot.overlay`) | The overlay's `reviewed_on` and `expires_on`, checked at build time |
+| Company values are current | The private bundle's `catpilot.json` (`overlay`) and its `metadata.catpilot-overlay` frontmatter summary | The overlay's `reviewed_on` and `expires_on`, checked at build time |
 | A host called the reference MCP server | README, tested-runtimes "Coaching (MCP)" column; `evals/reports/` verification notes | A tool call and its result in the host's own transcript, with the server's `unknown_policy` and `policy_source` fields in the result |
 
 Anything not in that table is not claimed. In particular: no coaching events (a lookup the model chose to make is not a triggered event), no authentication or tenant isolation in the reference MCP server, no coverage of file writes by the hook, no Cursor hook, and no verified activation on Cursor, Claude.ai, or any skills.sh host beyond those listed.

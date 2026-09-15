@@ -120,9 +120,12 @@ python tools/validate_overlay.py /private/path/overlay.yaml --allow-host intrane
 python tools/bundle.py --overlay /private/path/overlay.yaml --private-out /private/path/private-skills --allow-host intranet.example.org
 ```
 
-The private bundle's frontmatter records `metadata.catpilot.overlay` with the
+The private bundle's `catpilot.json` records an `overlay` block with the
 organization, `reviewed_on`, `expires_on`, the SHA-256 of the overlay file, and
-the SHA-256 of the rendered body. Its `name` is the public name plus the
+the SHA-256 of the rendered body. Its frontmatter carries the same facts as two
+strings, `metadata.catpilot-overlay` and `metadata.catpilot-content-sha256`,
+because the Agent Skills specification allows only string values under
+`metadata` (`SKILL_FORMAT.md` §3.5). Its `name` is the public name plus the
 organization slug, because the Agent Skills name grammar allows only lowercase
 letters, digits, and hyphens (`+ACME` is not a valid skill name).
 
