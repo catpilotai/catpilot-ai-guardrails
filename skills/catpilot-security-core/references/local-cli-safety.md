@@ -1,63 +1,7 @@
----
-name: local-cli-safety
-description: Block irreversible filesystem operations, history-destroying git commands on shared branches, network exposure to non-loopback interfaces, world-readable credential paths, and credential exfiltration patterns before they run on a developer or CI machine. Covers `rm`/`find -delete`/`dd`/`chmod -R`, `git push --force`/`reset --hard`/`clean -fd` on protected branches, `--bind 0.0.0.0` services, and patterns that pipe `~/.ssh`, `~/.aws`, or environment variables into external requests.
-license: MIT
-metadata:
-  catpilot:
-    id: local-cli-safety
-    version: 1.0.2
-    severity: critical
-    category: local-cli
-    applies_to:
-      languages:
-      - any
-      frameworks:
-      - any
-      runtimes:
-      - claude-code
-      - cursor
-      - openclaw
-      - cline
-      - aider
-      - copilot
-      - codex-cli
-    control_mappings:
-      soc2:
-      - CC6.1
-      - CC6.6
-      - CC7.2
-      - CC8.1
-      pci_dss:
-      - '7.1'
-      - 7.2.1
-      - '8.2'
-      - '10.2'
-      iso_27001:
-      - A.9.2.3
-      - A.9.4.1
-      - A.12.1.2
-      - A.13.1.3
-      nist_csf:
-      - PR.AC-4
-      - PR.IP-1
-      - PR.PT-3
-      - DE.CM-7
-      owasp_top_10:
-      - A01:2021
-      - A05:2021
-      - A08:2021
-    provenance:
-      origin: catpilot
-      incident_derived: true
-    maintainers:
-    - team: catpilot-security
-    references:
-    - https://git-scm.com/docs/git-push#Documentation/git-push.txt---force-with-lease
-    - https://man7.org/linux/man-pages/man1/rm.1.html
-    - https://www.gnu.org/software/coreutils/manual/html_node/chmod-invocation.html
-    - https://owasp.org/www-community/vulnerabilities/Unintended_proxy_or_intermediary
----
+# local-cli-safety
 
+Component `local-cli-safety` · version 1.0.2 · severity critical · category local-cli.
+Full text of one component of the `catpilot-security-core` bundle. The baseline rules are in `../SKILL.md`; this file has the rest: examples, remediation, and detection patterns.
 ## Baseline
 
 **Applies when:** Running `rm`/`find ... -delete`/`shred`/`dd` on paths outside the project or from a variable, `chmod`/`chown` with `-R` near credential directories, history-rewriting `git` commands, commands that start a network service, or anything piping credentials or `env` into a network request.

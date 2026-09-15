@@ -69,9 +69,9 @@ Installable via skills.sh into 50+ runtimes; verified only on the runtimes and d
 
 | Runtime | Skill loads | Coaching (MCP) | Enforcement (hook) | Last verified | Release |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code 2.1.241 | yes: a project `.claude/skills/` install is listed in the session init | yes: `list_approved` returned over stdio and through the hosted `http` endpoint | yes: the `Bash` credential hook and the `Write`/`Edit` private-key hook each denied the action; each control run without the hook performed it | 2026-09-14 | 2026.09.13 |
+| Claude Code 2.1.241 | yes: a project `.claude/skills/` install is listed in the session init; with the split core skill, Sonnet invoked it and read `references/cloud-cli-safety.md` before answering (2026-09-15), Haiku did not invoke it on the same prompt | yes: `list_approved` returned over stdio and through the hosted `http` endpoint | yes: the `Bash` credential hook and the `Write`/`Edit` private-key hook each denied the action; each control run without the hook performed it | 2026-09-15 | 2026.09.13 |
 | Cursor | not verified | not verified | not tested | | |
-| Codex CLI 0.154.0 | yes, with a caveat: a project `.agents/skills/` install; the host reads the skill on demand and emits no load event, so the signal is the model naming the skill and input usage rising from about 17k to over 90k tokens | yes: `mcp_tool_call` completed over stdio and through the hosted endpoint | none | 2026-09-14 | 2026.09.13 |
+| Codex CLI 0.154.0 | yes, with a caveat: a project `.agents/skills/` install; the host reads the skill on demand and emits no load event, so the signal is the model naming the skill and input usage rising from about 17k to over 90k tokens; with the split core skill it read the baseline and `references/cloud-cli-safety.md` (2026-09-15) | yes: `mcp_tool_call` completed over stdio and through the hosted endpoint | none | 2026-09-14 | 2026.09.13 |
 | Claude.ai (individual upload or organization provisioning) | not verified | custom connector to the hosted endpoint not yet verified | none, advisory only | | |
 | ChatGPT (project or GPT instructions) | n/a, pasted text; manual protocol in [`evals/HOST_VERIFICATION.md`](evals/HOST_VERIFICATION.md), not yet run | custom connector to the hosted endpoint not yet verified | none | | |
 | Microsoft Copilot Studio | n/a, pasted text | not verified | none | | |
@@ -134,9 +134,11 @@ Example configs for both: [`mcp-server/host-configs/`](mcp-server/host-configs/)
 
 ## What's in the box
 
-### `catpilot-security-core` (bundle `2026.09.15`; `cloud-cli-safety` at `1.0.2`, `local-cli-safety`, `secret-blocking`, and `supply-chain` at `1.0.1`, the other five at `1.0.0`)
+### `catpilot-security-core` (bundle `2026.09.15`; `cloud-cli-safety` at `1.0.3`, `local-cli-safety`, `secret-blocking`, and `supply-chain` at `1.0.2`, the other five at `1.0.1`)
 
 Guidance for code generation, file edits, and shell commands. "Always-on" in older content described intended use; the bundle now says what it is: advice the agent reads, applied whenever the host has loaded it.
+
+The bundle uses a baseline-references layout. `SKILL.md` is the baseline: the host reads it on every activation, and it holds a short entry per component with a link to that component's reference. Each reference file, under `references/<component>.md`, carries that component's full text: examples, remediation, and detection patterns. The host opens a reference only when it is acting in that component's area. The baseline is 396 lines, about 22 KB. Before this change the single file was 3,663 lines, about 134 KB, and a host read it in full on every activation. The `catpilot-safe-building` skill below stays one file.
 
 | Component | Severity | Guidance covers |
 |---|---|---|
@@ -190,14 +192,14 @@ A recognized file layout helps distribution; it does not guarantee that a host l
 ## Versioning
 
 - **Repository releases** are CalVer (`YYYY.MM.DD`), listed on the Releases page and in the badge above, with the details in [`CHANGELOG.md`](CHANGELOG.md).
-- **Source skill components** inside a release are semver. `cloud-cli-safety` is at `1.0.2` after the Azure environment-variable and Terraform rollback corrections; `local-cli-safety`, `secret-blocking`, and `supply-chain` are at `1.0.1` after the 2026-09-15 example sweep; every other component is at `1.0.0`. The bundle frontmatter records which versions of which components shipped.
+- **Source skill components** inside a release are semver. `cloud-cli-safety` is at `1.0.3`; `local-cli-safety`, `secret-blocking`, and `supply-chain` are at `1.0.2`; `database-safety`, `docker-safety`, `language-baseline`, `pii-and-test-data`, and `secrets-management` are at `1.0.1`. Each bumped after gaining the `## Baseline` section the baseline-references layout requires. The bundle frontmatter records which versions of which components shipped.
 - The core bundle is `2026.09.15`; the safe-building bundle is `2026.09.13`. A bundle's version changes only when its content does.
 
 CalVer matches the cadence of a content repo: each release is a dated snapshot, and the date is the meaningful signal for users and auditors. Semver on individual components carries the breaking-change semantics that matter for downstream consumers.
 
 ## How it's built
 
-`tools/bundle.py` turns the source components under `src/skills/` into the shipped bundles under `skills/` and the per-host artifacts under `dist/<release>/`, deterministically; CI fails on drift. The directory tree and the aggregation rules: [`docs/REPOSITORY_LAYOUT.md`](docs/REPOSITORY_LAYOUT.md) and [`docs/spec/PACKAGING.md`](docs/spec/PACKAGING.md).
+`tools/bundle.py` turns the source components under `src/skills/` into the shipped bundles under `skills/` and the per-host artifacts under `dist/<release>/`, deterministically; CI fails on drift. The core tier renders a baseline plus per-component references; the safe-building tier renders one file plus its per-host targets. The directory tree and the aggregation rules: [`docs/REPOSITORY_LAYOUT.md`](docs/REPOSITORY_LAYOUT.md) and [`docs/spec/PACKAGING.md`](docs/spec/PACKAGING.md).
 
 ## Evaluation
 

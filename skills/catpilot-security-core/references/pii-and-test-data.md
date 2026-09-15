@@ -1,64 +1,7 @@
----
-name: pii-and-test-data
-description: Block real customer data from appearing in test fixtures, code comments, documentation, debug output, or shared transcripts. Require synthetic generators (`faker`, `@faker-js/faker`, provider test cards), reserved test ranges (555 phone numbers, `@example.com` emails, RFC 5737 IPs), and redaction of PII/PHI/PCI from logs and error messages. Refuse to copy production rows into development environments under any framing.
-license: MIT
-metadata:
-  catpilot:
-    id: pii-and-test-data
-    version: 1.0.1
-    severity: high
-    category: data-protection
-    applies_to:
-      languages:
-      - any
-      frameworks:
-      - any
-      runtimes:
-      - claude-code
-      - cursor
-      - openclaw
-      - cline
-      - aider
-      - copilot
-      - codex-cli
-    control_mappings:
-      soc2:
-      - CC6.1
-      - CC6.7
-      - C1.1
-      - P3.1
-      pci_dss:
-      - '3.4'
-      - 3.4.1
-      - '6.4'
-      - 6.4.3
-      iso_27001:
-      - A.8.2.3
-      - A.14.3.1
-      - A.18.1.4
-      - A.18.1.5
-      nist_csf:
-      - PR.DS-5
-      - PR.DS-1
-      - PR.IP-6
-      - DE.DP-2
-      owasp_top_10:
-      - A01:2021
-      - A02:2021
-      - A04:2021
-    provenance:
-      origin: catpilot
-      incident_derived: false
-    maintainers:
-    - team: catpilot-security
-    references:
-    - https://docs.stripe.com/testing
-    - https://www.faker.cloud/
-    - https://www.rfc-editor.org/rfc/rfc2606
-    - https://www.rfc-editor.org/rfc/rfc5737
-    - https://gdpr.eu/data-protection-impact-assessment-template/
----
+# pii-and-test-data
 
+Component `pii-and-test-data` · version 1.0.1 · severity high · category data-protection.
+Full text of one component of the `catpilot-security-core` bundle. The baseline rules are in `../SKILL.md`; this file has the rest: examples, remediation, and detection patterns.
 ## Baseline
 
 **Applies when:** Writing test fixtures, seed data, illustrative doc/comment records, error messages, logs, telemetry, screenshots or recordings shared outside the org, migrations/ETL between environments, or LLM prompts, fine-tuning sets, and RAG corpora.

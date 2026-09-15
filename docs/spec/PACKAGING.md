@@ -257,3 +257,62 @@ outside the repository. The public build refuses to run if an overlay-shaped
 file is present under `src/`, `skills/`, or `dist/`. Details and the seam
 between the open tooling and the Catpilot Plus product are in
 [`OVERLAY.md`](./OVERLAY.md).
+
+## 11. Layouts
+
+A tier's `bundle.toml` sets `[bundle.layout]` to choose how the bundler
+renders each component body into the shipped `SKILL.md`. Two layouts exist:
+`single` and `baseline-references`.
+
+### 11.1 `single`
+
+The default. The bundler concatenates every component body under one
+`SKILL.md`, as described in §3.3. `catpilot-safe-building` uses this layout
+(641 lines).
+
+### 11.2 `baseline-references`
+
+The bundler splits each component into a short baseline entry inside
+`SKILL.md` and a full reference file. `catpilot-security-core` uses this
+layout. Configure it in the tier's `bundle.toml`:
+
+```toml
+[bundle.layout]
+kind = "baseline-references"
+baseline_section = "Baseline"
+max_lines = 500
+```
+
+- `kind`: set to `"baseline-references"` to select this layout. Defaults to
+  `"single"`.
+- `baseline_section`: the heading name the bundler looks for in each
+  component body, for example `"Baseline"`.
+- `max_lines`: the line cap for the rendered `SKILL.md`. The bundler refuses
+  to build if the rendered baseline exceeds this cap.
+
+**The Baseline section.** Each component's source body must start with a
+section matching `baseline_section` (for example `## Baseline`), at most 35
+lines, containing:
+
+- A bold `Applies when:` line.
+- An `Always:` bullet list.
+- An optional `Never:` bullet list.
+- A closing line telling the model to open the full component before
+  acting.
+
+The bundler refuses to build if a component lacks this section.
+
+**Reference files.** The bundler lifts the Baseline section into the
+bundle's `SKILL.md` and writes the component's full body, including its
+Baseline section, to `skills/<bundle-name>/references/<id>.md`. Each
+reference file opens with `# <title>` and one line naming the component's
+id, version, severity, and category.
+
+**Frontmatter.** A bundle built with this layout records
+`metadata.catpilot.bundle.layout: baseline-references`.
+
+**Choosing a layout.** Keep a bundle on `single` while a host reading it in
+full on every activation stays under 500 lines. Move it to
+`baseline-references` once the full content would exceed that cap, so the
+host reads a short baseline and opens each component's reference only when
+it is acting in that component's area.

@@ -1,57 +1,7 @@
----
-name: secret-blocking
-description: Detects and blocks hardcoded secrets — API keys, tokens, private keys, and database connection strings — before they are written to disk, committed to git, or echoed to logs. Covers 40+ patterns across Stripe, AWS, GitHub, GitLab, OpenAI, Anthropic, Slack, Google, SendGrid, Mailgun, Square, Twilio, and generic credential formats. Apply on every file write, every diff review, and every shell command that emits configuration.
-license: MIT
-metadata:
-  catpilot:
-    id: secret-blocking
-    version: 1.0.2
-    severity: critical
-    category: secrets
-    applies_to:
-      languages:
-      - any
-      frameworks:
-      - any
-      runtimes:
-      - claude-code
-      - cursor
-      - openclaw
-      - cline
-      - aider
-      - copilot
-      - codex-cli
-    control_mappings:
-      soc2:
-      - CC6.1
-      - CC6.6
-      - CC7.2
-      pci_dss:
-      - '3.4'
-      - '3.5'
-      - '3.6'
-      - 8.2.1
-      iso_27001:
-      - A.9.4.3
-      - A.10.1.1
-      - A.10.1.2
-      nist_csf:
-      - PR.AC-1
-      - PR.DS-1
-      - PR.DS-5
-      owasp_top_10:
-      - A02:2021
-      - A07:2021
-    provenance:
-      origin: catpilot
-      incident_derived: false
-    maintainers:
-    - team: catpilot-security
-    references:
-    - https://owasp.org/www-project-top-ten/A02_2021-Cryptographic_Failures/
-    - https://docs.github.com/en/code-security/secret-scanning/about-secret-scanning
-    - https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html
----
+# secret-blocking
+
+Component `secret-blocking` · version 1.0.2 · severity critical · category secrets.
+Full text of one component of the `catpilot-security-core` bundle. The baseline rules are in `../SKILL.md`; this file has the rest: examples, remediation, and detection patterns.
 ## Baseline
 
 **Applies when:** Every code generation, file write, file edit, and diff review, and any shell command with inline credentials, environment-variable assignments, or `curl -H` headers.

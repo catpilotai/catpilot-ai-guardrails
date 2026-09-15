@@ -1,66 +1,7 @@
----
-name: docker-safety
-description: Block container runtime escape paths, root-by-default images, build-time secrets baked into layers, and supply-chain risks from floating base tags before they reach a registry or a host. Require non-root `USER`, digest-pinned base images, BuildKit secret mounts (never `ENV`/`ARG` for secrets), `--no-install-recommends` + cache cleanup, and refuse `--privileged`, `--net=host`, `--pid=host`, host root bind-mounts, and `chmod 777` inside containers.
-license: MIT
-metadata:
-  catpilot:
-    id: docker-safety
-    version: 1.0.1
-    severity: critical
-    category: container
-    applies_to:
-      languages:
-      - any
-      frameworks:
-      - docker
-      - docker-compose
-      - kubernetes
-      - any
-      runtimes:
-      - claude-code
-      - cursor
-      - openclaw
-      - cline
-      - aider
-      - copilot
-      - codex-cli
-    control_mappings:
-      soc2:
-      - CC6.1
-      - CC6.6
-      - CC6.8
-      - CC7.2
-      pci_dss:
-      - 2.2.1
-      - '6.2'
-      - 6.4.5
-      - 7.2.1
-      iso_27001:
-      - A.12.1.2
-      - A.12.5.1
-      - A.12.6.1
-      - A.14.2.5
-      nist_csf:
-      - PR.AC-4
-      - PR.IP-1
-      - PR.IP-3
-      - PR.PT-3
-      owasp_top_10:
-      - A05:2021
-      - A06:2021
-      - A08:2021
-    provenance:
-      origin: catpilot
-      incident_derived: false
-    maintainers:
-    - team: catpilot-security
-    references:
-    - https://docs.docker.com/develop/dev-best-practices/
-    - https://docs.docker.com/build/building/secrets/
-    - https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities
-    - https://www.cisecurity.org/benchmark/docker
----
+# docker-safety
 
+Component `docker-safety` · version 1.0.1 · severity critical · category container.
+Full text of one component of the `catpilot-security-core` bundle. The baseline rules are in `../SKILL.md`; this file has the rest: examples, remediation, and detection patterns.
 ## Baseline
 
 **Applies when:** Writing or running a `Dockerfile`/`Containerfile`, `docker-compose.yml`, `docker build`/`run`/`exec` (or podman/nerdctl/buildah equivalents), or a Kubernetes manifest setting `securityContext`, `hostNetwork`, `hostPID`, `hostIPC`, `privileged`, or `hostPath` volumes.

@@ -1,64 +1,7 @@
----
-name: secrets-management
-description: Govern how secrets are stored, scoped, distributed, rotated, and surfaced to running code — never committed `.env` files, never echoed in CI logs, never embedded in URLs or error messages, never shared across environments. Complements `secret-blocking` (which detects hardcoded patterns at write time) by enforcing the lifecycle around already-secured secrets — `.gitignore` hygiene, CI log redaction, vault-backed access, scoped credentials per environment, and a documented response when exposure happens.
-license: MIT
-metadata:
-  catpilot:
-    id: secrets-management
-    version: 1.0.1
-    severity: critical
-    category: secrets
-    applies_to:
-      languages:
-      - any
-      frameworks:
-      - any
-      runtimes:
-      - claude-code
-      - cursor
-      - openclaw
-      - cline
-      - aider
-      - copilot
-      - codex-cli
-    control_mappings:
-      soc2:
-      - CC6.1
-      - CC6.3
-      - CC6.6
-      - CC7.2
-      pci_dss:
-      - '3.5'
-      - 3.6.1
-      - '8.2'
-      - 8.2.1
-      - 8.2.2
-      iso_27001:
-      - A.9.2.1
-      - A.9.4.3
-      - A.10.1.1
-      - A.10.1.2
-      nist_csf:
-      - PR.AC-1
-      - PR.AC-4
-      - PR.DS-5
-      - PR.IP-1
-      owasp_top_10:
-      - A02:2021
-      - A05:2021
-      - A07:2021
-    provenance:
-      origin: catpilot
-      incident_derived: false
-    maintainers:
-    - team: catpilot-security
-    references:
-    - https://owasp.org/www-community/vulnerabilities/Insecure_Storage_of_Sensitive_Information
-    - https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html
-    - https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions
-    - https://learn.microsoft.com/en-us/azure/key-vault/general/best-practices
----
+# secrets-management
 
+Component `secrets-management` · version 1.0.1 · severity critical · category secrets.
+Full text of one component of the `catpilot-security-core` bundle. The baseline rules are in `../SKILL.md`; this file has the rest: examples, remediation, and detection patterns.
 ## Baseline
 
 **Applies when:** Writing or committing `.env`/secret files, `.gitignore` or CI workflow configuration, container/Kubernetes/Terraform manifests defining runtime config, application code that reads credentials or logs errors, or incident-response steps after a secret is exposed.

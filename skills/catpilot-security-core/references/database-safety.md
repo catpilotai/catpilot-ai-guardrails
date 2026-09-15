@@ -1,63 +1,7 @@
----
-name: database-safety
-description: Require preview-before-modify, row-count disclosure, transactional execution, and rollback preparation before any SQL or ORM operation that mutates data or schema. Block destructive statements without a WHERE clause, schema drops without confirmation, prod migrations without dry-run, and raw string interpolation into queries. Covers PostgreSQL, MySQL, SQL Server, SQLite, and ORM equivalents.
-license: MIT
-metadata:
-  catpilot:
-    id: database-safety
-    version: 1.0.1
-    severity: critical
-    category: database
-    applies_to:
-      languages:
-      - any
-      frameworks:
-      - any
-      runtimes:
-      - claude-code
-      - cursor
-      - openclaw
-      - cline
-      - aider
-      - copilot
-      - codex-cli
-    control_mappings:
-      soc2:
-      - CC6.1
-      - CC7.2
-      - CC8.1
-      - A1.2
-      pci_dss:
-      - '3.4'
-      - 6.4.5
-      - '8.2'
-      - '10.2'
-      iso_27001:
-      - A.10.1.1
-      - A.12.1.2
-      - A.12.3.1
-      - A.18.1.3
-      nist_csf:
-      - PR.IP-1
-      - PR.IP-4
-      - PR.DS-1
-      - DE.CM-7
-      owasp_top_10:
-      - A03:2021
-      - A04:2021
-      - A08:2021
-    provenance:
-      origin: catpilot
-      incident_derived: true
-    maintainers:
-    - team: catpilot-security
-    references:
-    - https://www.postgresql.org/docs/current/sql-begin.html
-    - https://dev.mysql.com/doc/refman/8.0/en/innodb-autocommit-commit-rollback.html
-    - https://learn.microsoft.com/en-us/sql/t-sql/language-elements/transactions-transact-sql
-    - https://owasp.org/www-community/attacks/SQL_Injection
----
+# database-safety
 
+Component `database-safety` · version 1.0.1 · severity critical · category database.
+Full text of one component of the `catpilot-security-core` bundle. The baseline rules are in `../SKILL.md`; this file has the rest: examples, remediation, and detection patterns.
 ## Baseline
 
 **Applies when:** Any SQL execution, ORM write, schema operation, migration command, or query-string construction against a real database, especially `prod`/`production`/`live`/`customer` environments.
