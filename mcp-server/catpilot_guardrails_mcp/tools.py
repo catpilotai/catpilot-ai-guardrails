@@ -235,7 +235,11 @@ def list_approved(category: str, guidance: dict, policy: PolicyState) -> dict:
     if category not in CATEGORIES:
         return _error("unknown-category", f"category must be one of {', '.join(CATEGORIES)}.", categories=list(CATEGORIES))
     slots = guidance["slots"]
-    o = policy.overlay if policy.status in ("approved", "expired") else None
+    # Only a currently approved overlay contributes values, matching get_guidance,
+    # check_plan, and get_template: an expired or not-yet-valid overlay behaves exactly
+    # like no overlay here. Its expiry and owner are still visible in policy_status and
+    # policy_note (see _provenance), just never mixed into the "approved" items below.
+    o = policy.overlay if policy.approved else None
     if category == "hosting":
         items = {"approved": o["hosting"]["approved"], "not_approved": o["hosting"]["not_approved"]} if o else {"approved": slots["approved_hosting"], "not_approved": slots["not_approved_hosting"]}
     elif category == "services":
@@ -244,10 +248,8 @@ def list_approved(category: str, guidance: dict, policy: PolicyState) -> dict:
         items = dict(o["data_classes"]) if o else {"never_in_prompts": slots["data_never_in_prompts"], "ok_with_approval": slots["data_ok_with_approval"], "ok": slots["data_ok"]}
     else:
         items = {"owner": o["owner"]} if o else {"owner": slots["owner"]}
-    if policy.approved:
+    if o:
         source, last_reviewed = f"company overlay for {policy.source['organization']}", policy.source["reviewed_on"]
-    elif policy.status == "expired":
-        source, last_reviewed = f"company overlay for {policy.source['organization']}, EXPIRED on {policy.source['expires_on']}; treat as unknown", policy.source["reviewed_on"]
     else:
         source, last_reviewed = "generic defaults from catpilot-safe-building; not your company's policy", None
     return {"category": category, "items": items, "source": source, "last_reviewed": last_reviewed, **_provenance(policy, guidance)}

@@ -23,6 +23,10 @@ DENIED = {
     "private key header": 'printf -- "-----BEGIN RSA PRIVATE KEY-----" > key.pem',
     "literal password": 'mysql -u root --password="hunter22" -e "select 1"',
     "slack token-shaped": "export SLACK_TOKEN=xoxb-1234567890-abcdefghijk",
+    # Unquoted forms of the same shapes above; the quoted form was already denied, the
+    # bare CLI/env-assignment form was not.
+    "unquoted --password flag": 'mysql -u root --password=hunter22 -e "select 1"',
+    "PGPASSWORD assignment": 'PGPASSWORD=hunter22 psql -h db.internal -U app -c "select 1"',
 }
 ALLOWED = {
     "env reference": 'curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/user',
@@ -30,6 +34,14 @@ ALLOWED = {
     "plain command": "ls -la && git status",
     "placeholder": "STRIPE_API_KEY=REPLACE_ME node app.js",
     "short value": 'export TOKEN="abc"',
+    "unquoted --password with env var": 'mysql -u root --password=$DB_PASSWORD -e "select 1"',
+    "quoted --password with env var": 'mysql -u root --password="$DB_PASSWORD" -e "select 1"',
+    "mysql -p with no attached value (prompts)": 'mysql -u root -p -e "select 1"',
+    "PGPASSWORD with env var": "PGPASSWORD=$DB_PASSWORD psql -c \"select 1\"",
+    "PGPASSWORD with braced env var, quoted": 'PGPASSWORD="${DB_PASSWORD}" psql -c "select 1"',
+    "PGPASSWORD placeholder": "PGPASSWORD=REPLACE_ME psql -c \"select 1\"",
+    "JSON credential placeholder": '{"api_key": "REPLACE_ME"}',
+    "JSON credential short value": '{"token": "abc"}',
 }
 
 
@@ -52,6 +64,23 @@ class HookTests(unittest.TestCase):
                 self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "PreToolUse")
                 secret_fragment = command.split("=")[-1].split()[0].strip('"')[:12]
                 self.assertNotIn(secret_fragment, proc.stdout)
+
+    def test_denies_unquoted_and_json_forms_the_split_heuristic_cannot_isolate(self):
+        """mysql's attached -p<value> and JSON-style "key": "value" have no '=' to split on."""
+        cases = {
+            "mysql -p<password> attached": ('mysql -u root -phunter22secret -e "select 1"', "hunter22secret"),
+            "JSON api_key property": ('{"api_key": "abcdef1234567890"}', "abcdef1234567890"),
+            "JSON password property": ('{"password": "hunter22ABC"}', "hunter22ABC"),
+            "JSON token property": ('{"token": "abcdef123456"}', "abcdef123456"),
+            "JSON secret property": ('{"secret": "abcdef123456"}', "abcdef123456"),
+        }
+        for label, (command, secret) in cases.items():
+            with self.subTest(label=label):
+                proc = run_hook(event(command))
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                out = json.loads(proc.stdout)
+                self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertNotIn(secret, proc.stdout)
 
     def test_allows_env_references_and_ordinary_commands(self):
         for label, command in ALLOWED.items():

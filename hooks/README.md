@@ -54,8 +54,11 @@ The patterns are the shell-relevant subset of the secret-blocking component's
 detection table: Stripe, AWS, GitHub, GitLab, Anthropic, OpenAI, Slack,
 Google, Square, SendGrid, npm, JSON Web Tokens, private key blocks, database
 URLs with embedded passwords, bearer tokens, and literal `api_key`,
-`password`, `secret`, `token`, and `DATABASE_URL` assignments. Read the
-script; it is short.
+`password`, `secret`, `token`, and `DATABASE_URL` assignments — both the
+quoted form (`password="value"`) and the unquoted CLI/env-assignment form
+(`--password=value`, mysql/mysqldump/mariadb's attached `-pvalue`,
+`PGPASSWORD=value`), plus a JSON-style quoted key (`"password": "value"`).
+Read the script; it is short.
 
 ## Claude Code: private-key blocks in file writes
 

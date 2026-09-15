@@ -129,10 +129,47 @@ class TemplateAndApprovedTests(unittest.TestCase):
         self.assertFalse(approved["unknown_policy"])
         self.assertIn("The company LLM gateway", approved["items"]["approved"])
         self.assertEqual(approved["last_reviewed"], "2026-09-13")
-        expired = mcp_tools.list_approved("contacts", Fixtures.guidance, Fixtures.expired)
-        self.assertTrue(expired["unknown_policy"])
-        self.assertIn("EXPIRED", expired["source"])
         self.assertEqual(mcp_tools.list_approved("nope", Fixtures.guidance, Fixtures.none)["error"], "unknown-category")
+
+    def test_expired_overlay_contributes_no_values_anywhere(self):
+        """An expired (or not-yet-valid) overlay must behave exactly like no overlay for
+        every value a tool returns. Only policy_status and policy_note, both from
+        _provenance, may say the overlay expired and name the owner to ask."""
+        for category in content.CATEGORIES:
+            with self.subTest(category=category):
+                none_out = mcp_tools.list_approved(category, Fixtures.guidance, Fixtures.none)
+                expired_out = mcp_tools.list_approved(category, Fixtures.guidance, Fixtures.expired)
+                self.assertEqual(expired_out["items"], none_out["items"])
+                self.assertEqual(expired_out["source"], none_out["source"])
+                self.assertEqual(expired_out["last_reviewed"], none_out["last_reviewed"])
+                self.assertTrue(expired_out["unknown_policy"])
+
+        for topic in content.TOPICS:
+            with self.subTest(topic=topic):
+                none_out = mcp_tools.get_guidance(topic, Fixtures.guidance, Fixtures.none)
+                expired_out = mcp_tools.get_guidance(topic, Fixtures.guidance, Fixtures.expired)
+                self.assertEqual(expired_out["company_values"], none_out["company_values"])
+                self.assertEqual(expired_out["dont"], none_out["dont"])
+
+        for kind in content.TEMPLATE_KINDS:
+            with self.subTest(kind=kind):
+                none_out = mcp_tools.get_template(kind, Fixtures.templates, Fixtures.guidance, Fixtures.none)
+                expired_out = mcp_tools.get_template(kind, Fixtures.templates, Fixtures.guidance, Fixtures.expired)
+                self.assertEqual(expired_out["approved_starting_point"], none_out["approved_starting_point"])
+                self.assertEqual(expired_out["approved_starting_point_note"], none_out["approved_starting_point_note"])
+
+        none_plan = mcp_tools.check_plan("A dashboard for the sales team.", Fixtures.guidance, Fixtures.none, hosting="my personal Replit account")
+        expired_plan = mcp_tools.check_plan("A dashboard for the sales team.", Fixtures.guidance, Fixtures.expired, hosting="my personal Replit account")
+        self.assertEqual(expired_plan["risks"], none_plan["risks"])
+        self.assertEqual(expired_plan["who_to_ask"], none_plan["who_to_ask"])
+        self.assertFalse(expired_plan["labels"]["unapproved_hosting"])
+
+        # policy_status and policy_note (the only place expiry may show through) are unaffected.
+        expired_guidance = mcp_tools.get_guidance("hosting", Fixtures.guidance, Fixtures.expired)
+        self.assertEqual(expired_guidance["policy_status"], "expired")
+        self.assertIn("expired on", expired_guidance["policy_note"])
+        self.assertIn(Fixtures.expired.source["expires_on"], expired_guidance["policy_note"])
+        self.assertIn(Fixtures.expired.overlay["owner"], expired_guidance["policy_note"])
 
 
 class PolicyStateTests(unittest.TestCase):
