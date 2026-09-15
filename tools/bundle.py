@@ -4,10 +4,20 @@ Reads source skills under src/skills/<tier>/<name>/SKILL.md and produces
 shipped bundles at skills/<bundle-name>/SKILL.md, in the Anthropic Agent
 Skills format expected by `npx skills add`.
 
+Shipped frontmatter and the manifest (SKILL_FORMAT.md §3.5):
+  - The Agent Skills specification defines `metadata` as a map from string
+    keys to string values, so a shipped SKILL.md carries only string values
+    under `metadata`, each key prefixed `catpilot-`.
+  - The structured Catpilot metadata lives beside it in catpilot.json, named
+    by `metadata.catpilot-manifest`. Source components under src/skills/ are
+    authoring files, not shipped skills, and keep the nested
+    `metadata.catpilot.*` form.
+
 Determinism rules (PACKAGING.md §5):
   1. Components are emitted in lexicographic order by metadata.catpilot.id.
   2. List-valued aggregations are sorted alphabetically and deduplicated.
-  3. Frontmatter key order is fixed by KEY_ORDER below.
+  3. Frontmatter key order is fixed by the KEY_ORDER lists below; the
+     manifest is JSON with sorted keys.
   4. Output uses LF line endings exclusively.
   5. No timestamps appear in output.
 
@@ -43,6 +53,7 @@ import argparse
 import datetime as dt
 import difflib
 import hashlib
+import json
 import re
 import shutil
 import stat
@@ -88,20 +99,25 @@ _FENCE_RE = re.compile(r"^(```|~~~)")
 
 # Stable frontmatter key order. Anything not listed appears after, sorted.
 TOP_KEY_ORDER = ["name", "description", "license", "compatibility", "metadata"]
-CATPILOT_KEY_ORDER = [
-    "bundle",
-    "overlay",
-    "severity",
-    "category",
-    "mode",
-    "training_module",
-    "applies_to",
-    "control_mappings",
-    "provenance",
-    "maintainers",
-    "references",
+# Shipped `metadata` keys. Every value is a string; the structure is in the manifest.
+METADATA_KEY_ORDER = [
+    "catpilot-bundle",
+    "catpilot-version",
+    "catpilot-tier",
+    "catpilot-layout",
+    "catpilot-severity",
+    "catpilot-category",
+    "catpilot-mode",
+    "catpilot-components",
+    "catpilot-manifest",
+    "catpilot-overlay",
+    "catpilot-content-sha256",
 ]
 BUNDLE_KEY_ORDER = ["name", "version", "tier", "layout", "components"]
+
+# The sidecar that carries everything the string-only frontmatter cannot.
+MANIFEST_NAME = targets_module.MANIFEST_NAME
+MANIFEST_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -485,21 +501,102 @@ def dump_yaml(d: dict) -> str:
     return yaml.dump(d, sort_keys=False, allow_unicode=True, width=10_000, default_flow_style=False)
 
 
+def components_field(skills: list[SourceSkill]) -> str:
+    """The shipped `id@version` summary, in id order. The manifest holds the full list."""
+    return ", ".join(f"{s.id}@{s.version}" for s in sorted(skills, key=lambda s: s.id))
+
+
+def parse_components_field(value: str) -> list[tuple[str, str]]:
+    """Inverse of components_field. Raises on anything that is not `id@version`."""
+    out: list[tuple[str, str]] = []
+    for part in value.split(","):
+        item = part.strip()
+        if item.count("@") != 1 or not all(item.split("@")):
+            raise ValueError(f"component entry {item!r} is not `id@version`")
+        component_id, version = item.split("@")
+        out.append((component_id, version))
+    return out
+
+
+def overlay_summary(overlay_meta: dict) -> str:
+    """The one-string frontmatter rendering of the overlay block in the manifest."""
+    return (
+        f"{overlay_meta['organization']}, reviewed {overlay_meta['reviewed_on']}, "
+        f"expires {overlay_meta['expires_on']}, "
+        f"overlay sha256 {overlay_meta['overlay_sha256'][:12]}"
+    )
+
+
 def build_bundle_frontmatter(
     bundle_name: str,
     bundle_cfg: dict,
     skills: list[SourceSkill],
     overlay_meta: dict | None = None,
 ) -> dict:
-    components = [
-        {"id": s.id, "version": s.version} for s in sorted(skills, key=lambda s: s.id)
-    ]
-    cp: dict = {
+    """Shipped frontmatter. Every value under `metadata` is a string, because the
+    Agent Skills specification defines `metadata` as a map from string keys to
+    string values. The structure lives in the manifest; see build_manifest."""
+    meta: dict[str, str] = {
+        "catpilot-bundle": bundle_name,
+        "catpilot-version": bundle_cfg["version"],
+        "catpilot-tier": bundle_cfg["tier"],
+        "catpilot-severity": max_severity([s.severity for s in skills]),
+        "catpilot-category": bundle_cfg.get("category", "security"),
+        "catpilot-components": components_field(skills),
+        "catpilot-manifest": MANIFEST_NAME,
+    }
+    if layout_kind(bundle_cfg) != "single":
+        meta["catpilot-layout"] = layout_kind(bundle_cfg)
+    if bundle_cfg.get("mode"):
+        meta["catpilot-mode"] = bundle_cfg["mode"]
+    if overlay_meta:
+        meta["catpilot-overlay"] = overlay_summary(overlay_meta)
+        meta["catpilot-content-sha256"] = overlay_meta["content_sha256"]
+    meta = order_dict(meta, METADATA_KEY_ORDER)
+    not_strings = sorted(k for k, v in meta.items() if not isinstance(v, str))
+    if not_strings:
+        raise ValueError(f"{bundle_name}: metadata values must be strings: {not_strings}")
+
+    fm = {
+        "name": bundle_name,
+        "description": bundle_cfg["description"].strip().replace("\n", " "),
+        "license": "MIT",
+        "metadata": meta,
+    }
+    return order_dict(fm, TOP_KEY_ORDER)
+
+
+def build_manifest(
+    bundle_name: str,
+    bundle_cfg: dict,
+    skills: list[SourceSkill],
+    overlay_meta: dict | None = None,
+) -> dict:
+    """The catpilot.json sidecar: every Catpilot field the shipped frontmatter
+    used to nest under metadata.catpilot, plus per-component severity, category,
+    title, and reference path."""
+    kind = layout_kind(bundle_cfg)
+    components = []
+    for s in sorted(skills, key=lambda s: s.id):
+        entry = {
+            "id": s.id,
+            "version": s.version,
+            "severity": s.severity,
+            "category": s.cp.get("category", ""),
+        }
+        if s.title:
+            entry["title"] = s.title
+        if kind == "baseline-references":
+            entry["reference"] = reference_path(s)
+        components.append(entry)
+    manifest: dict = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "bundle": order_dict(
             {
                 "name": bundle_name,
                 "version": bundle_cfg["version"],
                 "tier": bundle_cfg["tier"],
+                "layout": kind,
                 "components": components,
             },
             BUNDLE_KEY_ORDER,
@@ -516,25 +613,18 @@ def build_bundle_frontmatter(
         },
         "maintainers": [{"team": "catpilot-security"}],
     }
-    if overlay_meta:
-        cp["overlay"] = overlay_meta
-    if layout_kind(bundle_cfg) != "single":
-        cp["bundle"]["layout"] = layout_kind(bundle_cfg)
-        cp["bundle"] = order_dict(cp["bundle"], BUNDLE_KEY_ORDER)
     if bundle_cfg.get("mode"):
-        cp["mode"] = bundle_cfg["mode"]
+        manifest["mode"] = bundle_cfg["mode"]
     training_module = aggregate_training_module(bundle_cfg, skills)
     if training_module:
-        cp["training_module"] = training_module
-    cp = order_dict(cp, CATPILOT_KEY_ORDER)
+        manifest["training_module"] = training_module
+    if overlay_meta:
+        manifest["overlay"] = dict(overlay_meta)
+    return manifest
 
-    fm = {
-        "name": bundle_name,
-        "description": bundle_cfg["description"].strip().replace("\n", " "),
-        "license": "MIT",
-        "metadata": {"catpilot": cp},
-    }
-    return order_dict(fm, TOP_KEY_ORDER)
+
+def render_manifest(manifest: dict) -> str:
+    return json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def layout_kind(bundle_cfg: dict) -> str:
@@ -826,6 +916,7 @@ def build_tier(
             "content_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
         }
     fm = build_bundle_frontmatter(bundle_name, cfg, skills, overlay_meta)
+    manifest_json = render_manifest(build_manifest(bundle_name, cfg, skills, overlay_meta))
     if overlay is not None:
         fm["description"] = (fm["description"] + f" Includes reviewed company values for {overlay['organization']}.")[:1024]
     rendered = render_skill_md(fm, body)
@@ -846,6 +937,7 @@ def build_tier(
         shutil.rmtree(bundle_dir)
     bundle_dir.mkdir(parents=True)
     (bundle_dir / "SKILL.md").write_text(rendered, encoding="utf-8", newline="\n")
+    (bundle_dir / MANIFEST_NAME).write_text(manifest_json, encoding="utf-8", newline="\n")
 
     for s in skills:
         copy_companions(s.path, bundle_dir, namespace=s.id)
@@ -862,13 +954,17 @@ def build_tier(
         rendered_bodies = {s.id: render_slots(s.body, values, s.id) for s in skills}
         if overlay is None:
             release_dir = (targets_root or TARGETS_ROOT) / cfg["version"]
-            targets_module.render_all(cfg, skills, rendered_bodies, rendered, release_dir, enabled)
+            targets_module.render_all(
+                cfg, skills, rendered_bodies, rendered, release_dir, enabled,
+                manifest_json=manifest_json,
+            )
         else:
             hosts_dir = dist_root / f"{bundle_name}-hosts"
             if hosts_dir.exists():
                 shutil.rmtree(hosts_dir)
             targets_module.render_all(
                 cfg, skills, rendered_bodies, rendered, hosts_dir, [t for t in enabled if t != "web"],
+                manifest_json=manifest_json,
                 bundle_name=bundle_name, values_block=overlay_values_block(overlay), install_source=install_source or "<your private repository>",
             )
     return bundle_dir

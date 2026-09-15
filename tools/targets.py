@@ -31,6 +31,9 @@ TARGET_NAMES = (
     "v0",
     "web",
 )
+# The bundler's sidecar manifest. Defined here because bundle.py imports this
+# module, not the other way round; bundle.MANIFEST_NAME aliases this name.
+MANIFEST_NAME = "catpilot.json"
 PASTE_LIMIT = 8000  # ChatGPT project/GPT instructions and Copilot Studio instructions
 PASTE_HEADROOM = 300  # room for the per-file header line so the whole pasted file fits
 REPO_URL = "https://github.com/catpilotai/catpilot-ai-guardrails"
@@ -202,7 +205,8 @@ def calver_tuple(release: str) -> tuple[int, int, int]:
     return int(core[0]), int(core[1]), int(core[2]) if len(core) > 2 else 1
 
 
-def claude_zip(name: str, release: str, bundle_skill_md: str) -> bytes:
+def claude_zip(name: str, release: str, bundle_skill_md: str, manifest_json: str) -> bytes:
+    """The uploadable skill directory: SKILL.md and its catpilot.json manifest."""
     y, m, d = calver_tuple(release)
     stamp = (y, m, d, 0, 0, 0)
     buffer = io.BytesIO()
@@ -210,10 +214,11 @@ def claude_zip(name: str, release: str, bundle_skill_md: str) -> bytes:
         folder = zipfile.ZipInfo(f"{name}/", date_time=stamp)
         folder.external_attr = (0o755 << 16) | 0x10
         zf.writestr(folder, b"")
-        info = zipfile.ZipInfo(f"{name}/SKILL.md", date_time=stamp)
-        info.compress_type = zipfile.ZIP_DEFLATED
-        info.external_attr = 0o644 << 16
-        zf.writestr(info, bundle_skill_md.encode("utf-8"))
+        for filename, text in (("SKILL.md", bundle_skill_md), (MANIFEST_NAME, manifest_json)):
+            info = zipfile.ZipInfo(f"{name}/{filename}", date_time=stamp)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            zf.writestr(info, text.encode("utf-8"))
     return buffer.getvalue()
 
 
@@ -354,8 +359,10 @@ def web_page(cfg: dict, digests: list[dict], paste: str, release: str, npx_comma
 # Rendering
 
 
-def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_md: str, out_dir: Path, enabled: list[str], *, bundle_name: str | None = None, values_block: str | None = None, install_source: str = "catpilotai/catpilot-ai-guardrails") -> list[Path]:
-    """Render the enabled targets. For a private build pass bundle_name, values_block, and the private install source."""
+def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_md: str, out_dir: Path, enabled: list[str], *, manifest_json: str, bundle_name: str | None = None, values_block: str | None = None, install_source: str = "catpilotai/catpilot-ai-guardrails") -> list[Path]:
+    """Render the enabled targets. Artifacts that ship the skill directory carry
+    the catpilot.json manifest alongside SKILL.md. For a private build pass
+    bundle_name, values_block, and the private install source."""
     release = cfg["version"]
     name = bundle_name or cfg["name"]
     private = values_block is not None
@@ -369,7 +376,7 @@ def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_
 
     files: dict[str, bytes] = {}
     if "claude-zip" in enabled:
-        files[f"{name}.zip"] = claude_zip(name, release, bundle_skill_md)
+        files[f"{name}.zip"] = claude_zip(name, release, bundle_skill_md, manifest_json)
     if "chatgpt" in enabled:
         files["chatgpt-project-instructions.md"] = (_md_header(name, release, "Paste into a ChatGPT Project's Instructions or a Custom GPT's Instructions") + paste).encode("utf-8")
     if "copilot" in enabled:
@@ -412,7 +419,7 @@ def dist_readme(cfg: dict, release: str, names: list[str], *, name: str | None =
     name = name or cfg["name"]
     npx_command = npx_command or f"npx skills add catpilotai/catpilot-ai-guardrails --skill {name}"
     rows = {
-        f"{name}.zip": ("Claude.ai (individual or organization)", "Customize → Skills, or Organization settings → Skills. The zip holds one folder with SKILL.md inside."),
+        f"{name}.zip": ("Claude.ai (individual or organization)", f"Customize → Skills, or Organization settings → Skills. The zip holds one folder with SKILL.md and the `{MANIFEST_NAME}` manifest inside."),
         "chatgpt-project-instructions.md": ("ChatGPT", "Project → Instructions, or a Custom GPT's Instructions. Under 8,000 characters."),
         "copilot-agent-instructions.md": ("Microsoft Copilot Studio", "Agent → Instructions. Under 8,000 characters."),
         "copilot-declarative-agent.stub.json": ("Microsoft 365 declarative agent", "Manifest stub with the same instructions. Validate against Microsoft's current schema, then publish through the tenant's agent catalog."),

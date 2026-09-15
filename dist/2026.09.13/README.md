@@ -11,7 +11,7 @@ anything, and pasting them is not evidence that a host loaded them.
 | --- | --- | --- |
 | `AGENTS.md` | Repository-based agents | Append the block to the project's AGENTS.md. |
 | `bolt-prompt.txt` | Bolt | Save as .bolt/prompt in the project. |
-| `catpilot-safe-building.zip` | Claude.ai (individual or organization) | Customize → Skills, or Organization settings → Skills. The zip holds one folder with SKILL.md inside. |
+| `catpilot-safe-building.zip` | Claude.ai (individual or organization) | Customize → Skills, or Organization settings → Skills. The zip holds one folder with SKILL.md and the `catpilot.json` manifest inside. |
 | `chatgpt-project-instructions.md` | ChatGPT | Project → Instructions, or a Custom GPT's Instructions. Under 8,000 characters. |
 | `copilot-agent-instructions.md` | Microsoft Copilot Studio | Agent → Instructions. Under 8,000 characters. |
 | `copilot-declarative-agent.stub.json` | Microsoft 365 declarative agent | Manifest stub with the same instructions. Validate against Microsoft's current schema, then publish through the tenant's agent catalog. |

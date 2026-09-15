@@ -185,7 +185,7 @@ Do not put private incidents, customer data, secrets, employee identifiers, or i
 
 ## Format
 
-Skills use the [Agent Skills](https://agentskills.io/specification) format exactly. A skill is a directory containing a `SKILL.md` file with YAML frontmatter and a markdown body. Catpilot extensions (severity, control mappings, applies-to, mode, training-module links, evidence patterns) live under `metadata.catpilot.*`, which other runtimes ignore. Details: [`docs/spec/SKILL_FORMAT.md`](docs/spec/SKILL_FORMAT.md).
+Skills use the [Agent Skills](https://agentskills.io/specification) format exactly. A skill is a directory containing a `SKILL.md` file with YAML frontmatter and a markdown body. Catpilot extensions (severity, control mappings, applies-to, mode, training-module links, evidence patterns) live in `catpilot.json` next to the shipped `SKILL.md`, and as string-valued `catpilot-*` keys in `metadata`, because the specification defines `metadata` as a map from string keys to string values; other runtimes ignore both. Details: [`docs/spec/SKILL_FORMAT.md`](docs/spec/SKILL_FORMAT.md).
 
 A recognized file layout helps distribution; it does not guarantee that a host loads every instruction or reference. Follow the host's current installation guidance and record the activation and behavioral checks you actually perform.
 

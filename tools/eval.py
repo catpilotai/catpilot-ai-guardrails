@@ -560,7 +560,7 @@ def render_report(config: dict, results: list[dict], scenarios: list[dict]) -> s
 
 
 def release_of(skill_md: Path) -> str:
-    return yaml.safe_load(skill_md.read_text(encoding="utf-8").split("\n---\n", 1)[0].lstrip("-\n"))["metadata"]["catpilot"]["bundle"]["version"]
+    return yaml.safe_load(skill_md.read_text(encoding="utf-8").split("\n---\n", 1)[0].lstrip("-\n"))["metadata"]["catpilot-version"]
 
 
 def import_responses(args, scenarios: list[dict], overlay_checks_map: dict | None) -> int:

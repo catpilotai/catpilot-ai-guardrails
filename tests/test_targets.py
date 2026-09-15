@@ -49,12 +49,13 @@ class TargetTests(unittest.TestCase):
     def test_committed_dist_matches_sources(self):
         self.assertEqual(bundle._hash_tree(self.release_dir.parent), bundle._hash_tree(bundle.TARGETS_ROOT))
 
-    def test_zip_has_single_top_level_folder_with_skill(self):
+    def test_zip_has_single_top_level_folder_with_skill_and_manifest(self):
         with zipfile.ZipFile(self.release_dir / "catpilot-safe-building.zip") as zf:
             names = zf.namelist()
-            self.assertEqual(names, ["catpilot-safe-building/", "catpilot-safe-building/SKILL.md"])
-            skill = zf.read("catpilot-safe-building/SKILL.md").decode("utf-8")
-            self.assertEqual(skill, (bundle.DIST_ROOT / "catpilot-safe-building" / "SKILL.md").read_text())
+            self.assertEqual(names, ["catpilot-safe-building/", "catpilot-safe-building/SKILL.md", "catpilot-safe-building/catpilot.json"])
+            for member in ("SKILL.md", "catpilot.json"):
+                shipped = zf.read(f"catpilot-safe-building/{member}").decode("utf-8")
+                self.assertEqual(shipped, (bundle.DIST_ROOT / "catpilot-safe-building" / member).read_text(), member)
             for info in zf.infolist():
                 self.assertEqual(info.date_time[:3], (2026, 9, 13))
 
