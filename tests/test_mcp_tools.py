@@ -1,8 +1,9 @@
 """The reference MCP server's tools as pure functions. No SDK, no network, no model."""
 
-import copy
 import datetime as dt
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -149,7 +150,7 @@ class OverlayMatchingTests(unittest.TestCase):
         )
         self.assertEqual(out["risks"], [])
         self.assertEqual(out["labels"]["hosting"], "approved")
-        self.assertEqual(out["labels"]["audience"], "named")
+        self.assertEqual(out["labels"]["audience"], "internal")
         self.assertEqual(out["labels"]["overlay_rules"], [])
         self.assertFalse(out["ask_a_human"])
 
@@ -162,13 +163,18 @@ class OverlayMatchingTests(unittest.TestCase):
         # The literal word "unknown" counts as not supplied.
         out = mcp_tools.check_plan("A timer.", Fixtures.guidance, Fixtures.none, hosting="unknown")
         self.assertEqual(out["labels"]["hosting"], "unknown")
+        # Named hosting with no overlay to check it against is still unknown, not fine: the decision
+        # says so and names the generic rule it could not apply.
         out = mcp_tools.check_plan("A timer.", Fixtures.guidance, Fixtures.none, hosting="the team server")
-        self.assertEqual(out["labels"]["hosting"], "unchecked")
+        self.assertEqual(out["labels"]["hosting"], "unknown")
+        decision = next(d for d in out["decisions"] if d["field"] == "hosting")
+        self.assertEqual((decision["outcome"], decision["source"]), ("unknown", "generic default"))
+        self.assertIn("generic defaults cannot approve hosting", decision["note"])
 
     def test_named_hosting_off_the_approved_list_cites_the_list(self):
         out = mcp_tools.check_plan("A dashboard for the sales team.", Fixtures.guidance, Fixtures.approved, hosting="a shared workstation in the lab")
         risk = self.hosting_risk(out)
-        self.assertEqual(out["labels"]["hosting"], "not approved")
+        self.assertEqual(out["labels"]["hosting"], "unrecognized")
         self.assertEqual(risk["overlay_list"], "hosting.approved")
         self.assertIn("Internal App Platform (company sign-in)", risk["rule"])
         self.assertEqual(risk["evidence"], ["shared", "workstation", "lab"])
@@ -278,3 +284,318 @@ class PolicyStateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CheckPlanDecisionTests(unittest.TestCase):
+    """check_plan decides from the explicit fields and only hints from the description.
+
+    The overlay under test is a copy of the shipped example with its `templates` entry removed,
+    written to a temporary directory and loaded by absolute path, so no template host has to be
+    allowlisted for these tests.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, tmp, True)
+        text = EXAMPLE.read_text(encoding="utf-8").split("\ntemplates:")[0].rstrip() + "\n"
+        overlay = Path(tmp) / "overlay.yaml"
+        overlay.write_text(text, encoding="utf-8")
+        cls.overlay_path = overlay
+        cls.approved = policy.load_policy(str(overlay), set(), now=TODAY)
+        cls.none = policy.load_policy(None)
+        cls.guidance = content.load_guidance()
+
+    def plan(self, description="A small internal tool.", policy_state=None, **fields):
+        return mcp_tools.check_plan(description, self.guidance, policy_state or self.none, **fields)
+
+    def decision(self, out, field, value=None):
+        for d in out["decisions"]:
+            if d["field"] == field and (value is None or d["value"] == value):
+                return d
+        raise AssertionError(f"no decision for {field} {value!r} in {[(d['field'], d['value']) for d in out['decisions']]}")
+
+    # ---------------------------------------------------------------- shape
+
+    def test_overlay_copy_is_approved_without_a_template_host(self):
+        self.assertEqual(self.approved.status, "approved")
+        self.assertEqual(self.approved.overlay["templates"], [])
+
+    def test_every_field_gets_a_decision_and_the_keys_are_stable(self):
+        out = self.plan("A lookup tool.", data_classes=["made-up records"], audience="our team", hosting="Internal App Platform", services=["the company LLM gateway"], write_access=False)
+        self.assertEqual([d["field"] for d in out["decisions"]], ["hosting", "audience", "data_classes", "services", "write_access"])
+        for d in out["decisions"]:
+            self.assertEqual(set(d), {"field", "value", "outcome", "rule", "source", "evidence", "note"})
+            self.assertIn(d["outcome"], ("permitted", "requires_review", "prohibited", "unknown"))
+            self.assertIn(d["source"], ("company overlay", "generic default"))
+            self.assertTrue(d["rule"])
+        # Every key the tool answered with before is still there.
+        for key in ("risks", "next_step", "ask_a_human", "who_to_ask", "checklist", "labels", "method", "unknown_policy", "policy_status", "policy_note", "policy_source", "source_version", "enforcement"):
+            self.assertIn(key, out)
+        self.assertEqual(out["enforcement"], "none")
+        self.assertIn("explicit fields decide", out["method"])
+
+    def test_one_decision_per_list_item(self):
+        out = self.plan(data_classes=["synthetic names", "salaries"], services=["a new enrichment API", "another new API"])
+        self.assertEqual(len([d for d in out["decisions"] if d["field"] == "data_classes"]), 2)
+        self.assertEqual(len([d for d in out["decisions"] if d["field"] == "services"]), 2)
+
+    def test_outcome_is_the_worst_across_decisions(self):
+        self.assertEqual(self.plan().get("outcome"), "unknown")
+        self.assertEqual(self.plan(audience="our team", hosting="Internal App Platform", data_classes=["made-up records"], services=[], write_access=False, policy_state=self.approved)["outcome"], "unknown")
+        self.assertEqual(self.plan(audience="customers", hosting="Internal App Platform", write_access=False, policy_state=self.approved)["outcome"], "requires_review")
+        self.assertEqual(self.plan(audience="our team", hosting="Internal App Platform", data_classes=["cardholder data"], write_access=False, policy_state=self.approved)["outcome"], "prohibited")
+        permitted = self.plan(audience="our team", hosting="Internal App Platform", data_classes=["made-up records with example.com addresses"], services=["the company LLM gateway"], write_access=False, policy_state=self.approved)
+        self.assertEqual(permitted["outcome"], "permitted")
+        self.assertFalse(permitted["ask_a_human"])
+        self.assertEqual(permitted["risks"], [])
+
+    # ---------------------------------------------------------------- hosting
+
+    def test_hosting_missing_is_unknown_and_asks_where_it_runs(self):
+        out = self.plan()
+        d = self.decision(out, "hosting")
+        self.assertEqual((d["value"], d["outcome"]), ("unknown", "unknown"))
+        self.assertIn(self.guidance["components"]["hosting-and-where-it-runs"]["ask"][0], out["checklist"])
+        self.assertEqual(out["labels"]["hosting"], "unknown")
+        self.assertEqual(self.decision(self.plan(hosting="unknown"), "hosting")["outcome"], "unknown")
+
+    def test_hosting_approved_by_equality_and_by_content_words(self):
+        for value in ("Internal App Platform (company sign-in)", "the internal app platform", "Power Apps in the company tenant"):
+            with self.subTest(value=value):
+                out = self.plan(hosting=value, policy_state=self.approved)
+                d = self.decision(out, "hosting")
+                self.assertEqual(d["outcome"], "permitted")
+                self.assertEqual(d["source"], "company overlay")
+                self.assertIn(d["rule"], self.approved.overlay["hosting"]["approved"])
+                self.assertEqual(out["labels"]["hosting"], "approved")
+                self.assertEqual(out["risks"], [])
+
+    def test_hosting_negation_never_reads_as_approval(self):
+        for value in ("Not Internal App Platform", "a custom build instead of the Internal App Platform", "no internal app platform, a box under my desk"):
+            with self.subTest(value=value):
+                out = self.plan(hosting=value, policy_state=self.approved)
+                d = self.decision(out, "hosting")
+                self.assertNotEqual(d["outcome"], "permitted")
+                self.assertNotEqual(out["labels"]["hosting"], "approved")
+
+    def test_hosting_on_the_not_approved_list_is_prohibited(self):
+        out = self.plan(hosting="a personal cloud account", policy_state=self.approved)
+        d = self.decision(out, "hosting")
+        self.assertEqual((d["outcome"], d["rule"], d["source"]), ("prohibited", "Personal cloud accounts", "company overlay"))
+        self.assertEqual(out["labels"]["hosting"], "not_approved")
+        self.assertTrue(out["labels"]["unapproved_hosting"])
+        risk = next(r for r in out["risks"] if r["component"] == "hosting-and-where-it-runs")
+        self.assertEqual((risk["basis"], risk["severity"], risk["overlay_list"]), ("decision", "high", "hosting.not_approved"))
+
+    def test_hosting_off_both_lists_needs_review_and_notes_the_approved_list(self):
+        out = self.plan(hosting="a shared workstation in the lab", policy_state=self.approved)
+        d = self.decision(out, "hosting")
+        self.assertEqual((d["outcome"], d["rule"]), ("requires_review", "hosting must be on the company's approved list"))
+        self.assertIn("Internal App Platform (company sign-in)", d["note"])
+        self.assertEqual(out["labels"]["hosting"], "unrecognized")
+
+    def test_hosting_without_an_overlay(self):
+        out = self.plan(hosting="my personal Replit account")
+        d = self.decision(out, "hosting")
+        self.assertEqual((d["outcome"], d["source"]), ("requires_review", "generic default"))
+        self.assertTrue(out["labels"]["risky_hosting"])
+        out = self.plan(hosting="the team server")
+        d = self.decision(out, "hosting")
+        self.assertEqual(d["outcome"], "unknown")
+        self.assertEqual(d["note"], "no company overlay; generic defaults cannot approve hosting")
+
+    # ---------------------------------------------------------------- audience
+
+    def test_audience_normalizes_and_decides(self):
+        cases = {
+            "the ops team": ("internal", "permitted"),
+            "colleagues in finance": ("internal", "permitted"),
+            "our customers": ("external", "requires_review"),
+            "a partner agency": ("external", "requires_review"),
+            "anyone with the link": ("public", "requires_review"),
+            "the general public": ("public", "requires_review"),
+            "whoever needs it": ("unknown", "unknown"),
+        }
+        for value, (category, outcome) in cases.items():
+            with self.subTest(value=value):
+                out = self.plan(audience=value)
+                d = self.decision(out, "audience")
+                self.assertEqual((d["value"], d["outcome"]), (category, outcome))
+                self.assertEqual(out["labels"]["audience"], category)
+        out = self.plan(audience="whoever needs it")
+        self.assertIn(self.guidance["components"]["access-and-identity"]["ask"][0], out["checklist"])
+
+    def test_external_audience_cites_the_overlay_review_trigger(self):
+        out = self.plan(audience="our customers", policy_state=self.approved)
+        d = self.decision(out, "audience")
+        self.assertEqual((d["outcome"], d["rule"], d["source"]), ("requires_review", "External users", "company overlay"))
+        self.assertTrue(out["ask_a_human"])
+        self.assertIn("sharing-and-publishing", [r["component"] for r in out["risks"]])
+        generic = self.decision(self.plan(audience="our customers"), "audience")
+        self.assertEqual(generic["source"], "generic default")
+        self.assertIn("outside the company", generic["rule"])
+
+    def test_internal_audience_cites_the_overlay_default(self):
+        d = self.decision(self.plan(audience="the ops team", policy_state=self.approved), "audience")
+        self.assertEqual((d["outcome"], d["rule"]), ("permitted", "Company sign-in, smallest named group that needs access"))
+
+    # ---------------------------------------------------------------- data classes
+
+    def test_data_classes_against_the_overlay(self):
+        cases = {
+            "cardholder data": ("prohibited", "Cardholder data and bank details"),
+            "government identifiers": ("prohibited", "Government identifiers"),
+            "customer names and business email addresses": ("requires_review", "Customer names and business email addresses"),
+            "published product information": ("permitted", "Published product information"),
+        }
+        for value, (outcome, rule) in cases.items():
+            with self.subTest(value=value):
+                d = self.decision(self.plan(data_classes=[value], policy_state=self.approved), "data_classes", value)
+                self.assertEqual((d["outcome"], d["rule"], d["source"]), (outcome, rule, "company overlay"))
+        unmatched = self.decision(self.plan(data_classes=["seating-chart preferences"], policy_state=self.approved), "data_classes")
+        self.assertEqual(unmatched["outcome"], "unknown")
+        self.assertEqual(unmatched["note"], "not in the company's data classes; ask the owner")
+
+    def test_credential_data_class_belongs_to_keys_and_credentials(self):
+        out = self.plan(data_classes=["an API key for the email service"], policy_state=self.approved)
+        d = self.decision(out, "data_classes")
+        self.assertEqual(d["outcome"], "prohibited")
+        self.assertIn("keys-and-credentials", [r["component"] for r in out["risks"]])
+        self.assertNotIn("data-in-prompts", [r["component"] for r in out["risks"]])
+        self.assertTrue(out["labels"]["credentials"])
+
+    def test_data_classes_without_an_overlay(self):
+        cases = {
+            "card numbers from the payments system": "prohibited",
+            "passport numbers": "prohibited",
+            "patient health information": "prohibited",
+            "an smtp password": "prohibited",
+            "the employee records export": "requires_review",
+            "last month's customer export": "requires_review",
+            "synthetic patient records": "permitted",
+            "made-up rows with example.com addresses": "permitted",
+            "seating-chart preferences": "unknown",
+        }
+        for value, outcome in cases.items():
+            with self.subTest(value=value):
+                d = self.decision(self.plan(data_classes=[value]), "data_classes", value)
+                self.assertEqual(d["outcome"], outcome, d)
+                self.assertEqual(d["source"], "generic default")
+        self.assertIn("employee or HR records", self.plan(data_classes=["the employee records export"])["labels"]["sensitive_data"])
+
+    def test_synthetic_data_class_is_permitted_under_the_overlay_too(self):
+        d = self.decision(self.plan(data_classes=["synthetic patient records"], policy_state=self.approved), "data_classes")
+        self.assertEqual(d["outcome"], "permitted")
+        d = self.decision(self.plan(data_classes=["made-up records with example.com addresses"], policy_state=self.approved), "data_classes")
+        self.assertEqual((d["outcome"], d["rule"], d["source"]), ("permitted", "Made-up records with example.com addresses", "company overlay"))
+
+    def test_data_types_is_a_deprecated_alias_for_data_classes(self):
+        out = self.plan(data_types=["cardholder data"], policy_state=self.approved)
+        self.assertEqual(self.decision(out, "data_classes", "cardholder data")["outcome"], "prohibited")
+        both = self.plan(data_classes=["published product information"], data_types=["cardholder data"], policy_state=self.approved)
+        self.assertEqual([d["value"] for d in both["decisions"] if d["field"] == "data_classes"], ["published product information", "cardholder data"])
+        self.assertEqual(both["outcome"], "prohibited")
+
+    # ---------------------------------------------------------------- services
+
+    def test_services_against_the_overlay(self):
+        d = self.decision(self.plan(services=["the approved transactional email service"], policy_state=self.approved), "services")
+        self.assertEqual((d["outcome"], d["rule"], d["source"]), ("permitted", "The approved transactional email service", "company overlay"))
+        d = self.decision(self.plan(services=["a browser extension"], policy_state=self.approved), "services")
+        self.assertEqual((d["outcome"], d["rule"], d["source"]), ("requires_review", "Browser extensions", "company overlay"))
+        d = self.decision(self.plan(services=["Widgetron"], policy_state=self.approved), "services")
+        self.assertEqual((d["outcome"], d["rule"], d["source"]), ("requires_review", "any new software service needs review", "generic default"))
+
+    def test_every_named_service_needs_review_without_an_overlay(self):
+        out = self.plan(services=["the approved transactional email service", "Widgetron"])
+        for d in [d for d in out["decisions"] if d["field"] == "services"]:
+            self.assertEqual((d["outcome"], d["rule"]), ("requires_review", "any new software service needs review"))
+        self.assertTrue(out["labels"]["new_service"])
+
+    def test_an_approved_service_suppresses_the_new_service_hint(self):
+        out = self.plan("Use the approved transactional email service integration.", policy_state=self.approved)
+        self.assertEqual(out["risks"], [])
+        self.assertEqual(out["hints"], [])
+        self.assertFalse(out["labels"]["new_service"])
+        # Even with no overlay, "approved" directly before a service noun is a negation for the generic rule.
+        self.assertEqual(self.plan("Use the approved transactional email service integration.")["hints"], [])
+        # Naming it in `services` suppresses the hint for that name as well.
+        out = self.plan("We will add the enrichment connector.", services=["approved enrichment connector"])
+        self.assertEqual([h["component"] for h in out["hints"]], [])
+        # An unapproved connector still hints.
+        self.assertTrue(self.plan("We will add a new enrichment connector.")["hints"])
+
+    # ---------------------------------------------------------------- write access
+
+    def test_write_access(self):
+        out = self.plan(write_access=True, policy_state=self.approved)
+        d = self.decision(out, "write_access")
+        self.assertEqual((d["value"], d["outcome"], d["rule"], d["source"]), (True, "requires_review", "Writes to a system of record", "company overlay"))
+        self.assertTrue(out["ask_a_human"])
+        d = self.decision(self.plan(write_access=True), "write_access")
+        self.assertEqual((d["outcome"], d["source"]), ("requires_review", "generic default"))
+        self.assertEqual(self.decision(self.plan(write_access=False), "write_access")["outcome"], "permitted")
+        out = self.plan()
+        self.assertEqual(self.decision(out, "write_access")["outcome"], "unknown")
+        self.assertTrue(any("system of record" in q for q in out["checklist"]))
+
+    # ---------------------------------------------------------------- hints and negation
+
+    def test_mention_is_not_choice(self):
+        for description in (
+            "An internal dashboard. No external users or public links.",
+            "Use synthetic patient records only; no actual health information.",
+            "Made-up rows only, never real customer data.",
+            "A sample file instead of the real customer export.",
+        ):
+            for state in (self.none, self.approved):
+                with self.subTest(description=description, overlay=state.status):
+                    out = mcp_tools.check_plan(description, self.guidance, state)
+                    self.assertEqual(out["risks"], [], out["risks"])
+                    self.assertEqual(out["hints"], [], out["hints"])
+                    self.assertFalse(out["ask_a_human"])
+                    self.assertEqual(out["outcome"], "unknown")
+                    self.assertEqual(out["labels"]["sensitive_data"], [])
+
+    def test_the_same_words_without_the_negation_still_hint(self):
+        for description, component in (
+            ("External users will use it", "access-and-identity"),
+            ("Real patient records will be searchable", "data-in-prompts"),
+            ("We will paste the smtp password into the code", "keys-and-credentials"),
+        ):
+            with self.subTest(description=description):
+                out = self.plan(description)
+                self.assertIn(component, [h["component"] for h in out["hints"]])
+                self.assertTrue(out["ask_a_human"])
+                self.assertEqual(out["outcome"], "unknown")
+                self.assertTrue(all("hint" in h["note"] for h in out["hints"]))
+
+    def test_a_hint_never_sets_the_outcome_and_a_field_overrides_it(self):
+        out = self.plan("Real patient records will be searchable", data_classes=["synthetic patient records"], audience="the ops team")
+        self.assertEqual(out["outcome"], "unknown")  # write_access and hosting are still unanswered
+        self.assertEqual(self.decision(out, "data_classes")["outcome"], "permitted")
+        self.assertIn("data-in-prompts", [h["component"] for h in out["hints"]])
+        self.assertTrue(out["ask_a_human"])  # the hint alone still asks a human to look
+
+    def test_overlay_hints_are_negated_too(self):
+        out = mcp_tools.check_plan("An internal timer. Not on an unmanaged virtual machine, and no external users.", self.guidance, self.approved)
+        self.assertEqual(out["risks"], [])
+        self.assertEqual(out["labels"]["overlay_rules"], [])
+        self.assertFalse(out["labels"]["unapproved_hosting"])
+
+    def test_risks_say_whether_a_decision_or_a_hint_raised_them(self):
+        out = self.plan("Customers will search the CRM export.", hosting="a personal cloud account", policy_state=self.approved)
+        basis = {r["component"]: r["basis"] for r in out["risks"]}
+        self.assertEqual(basis["hosting-and-where-it-runs"], "decision")
+        self.assertEqual(basis["data-in-prompts"], "hint")
+        self.assertTrue(all(r["basis"] in ("decision", "hint") for r in out["risks"]))
+
+    def test_next_step_comes_from_the_worst_decision(self):
+        out = self.plan("A small tool.", hosting="a personal cloud account", audience="our customers", policy_state=self.approved)
+        self.assertEqual(out["next_step"], self.guidance["components"]["hosting-and-where-it-runs"]["do"][0])
+        out = self.plan("A small tool.", audience="our customers", hosting="Internal App Platform", policy_state=self.approved)
+        self.assertEqual(out["next_step"], self.guidance["components"]["access-and-identity"]["do"][0])
+        out = self.plan("Real patient records will be searchable")
+        self.assertEqual(out["next_step"], out["risks"][0]["safer_alternative"])
+        self.assertIn("not approval", self.plan("A timer for the team.")["next_step"])

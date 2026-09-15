@@ -46,6 +46,24 @@ class ServerContractTests(unittest.IsolatedAsyncioTestCase):
                     result = await client.call_tool("check_plan", {"description": "Load last month's customer export with card digits into a lookup tool."})
                     self.assertTrue(result.structured_content["risks"])
                     self.assertEqual(result.structured_content["risks"][0]["component"], "data-in-prompts")
+                    # The fields a model has to pass are on the tool's schema, and they decide the outcome.
+                    check_plan = next(t for t in listing.tools if t.name == "check_plan")
+                    properties = check_plan.input_schema["properties"]
+                    for field in ("description", "data_classes", "audience", "hosting", "services", "write_access", "data_types"):
+                        self.assertIn(field, properties)
+                    result = await client.call_tool("check_plan", {
+                        "description": "An internal dashboard. No external users or public links.",
+                        "audience": "our ops team", "hosting": "Internal App Platform",
+                        "data_classes": ["made-up records with example.com addresses"],
+                        "services": ["the company LLM gateway"], "write_access": False,
+                    })
+                    self.assertEqual(result.structured_content["outcome"], "permitted")
+                    self.assertEqual(result.structured_content["risks"], [])
+                    self.assertFalse(result.structured_content["ask_a_human"])
+                    result = await client.call_tool("check_plan", {"description": "A dashboard.", "hosting": "my personal Replit account", "write_access": True})
+                    self.assertEqual(result.structured_content["outcome"], "prohibited")
+                    hosting = next(d for d in result.structured_content["decisions"] if d["field"] == "hosting")
+                    self.assertEqual(hosting["rule"], "Personal cloud accounts")
                     result = await client.call_tool("get_template", {"kind": "dashboard"})
                     self.assertTrue(result.structured_content["starting_point"].startswith("## Dashboard"))
                     # Expiry is live: rewrite the file and the next call reports it.

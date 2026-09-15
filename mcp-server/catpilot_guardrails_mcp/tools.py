@@ -87,7 +87,32 @@ def _company_values_for(topic: str, guidance: dict, policy: PolicyState) -> dict
 
 # ------------------------------------------------------------------ check_plan
 
+# Explicit fields decide; free text only hints. A plan that says "No external users or public
+# links" or "synthetic patient records only" names a risk in order to rule it out, so words
+# alone must never produce an outcome. The caller's fields (hosting, audience, data_classes,
+# services, write_access) carry the decisions; the description is read for questions to ask.
+
 SEVERITY_ORDER = {"high": 2, "medium": 1}
+OUTCOME_ORDER = {"permitted": 0, "unknown": 1, "requires_review": 2, "prohibited": 3}
+
+FIELD_COMPONENT = {
+    "hosting": "hosting-and-where-it-runs",
+    "audience": "access-and-identity",
+    "data_classes": "data-in-prompts",
+    "services": "third-party-services",
+    "write_access": "when-to-ask-a-human",
+}
+# The severity each component has carried since the first release; a prohibited decision is high.
+COMPONENT_SEVERITY = {
+    "data-in-prompts": "high",
+    "access-and-identity": "high",
+    "hosting-and-where-it-runs": "medium",
+    "sharing-and-publishing": "medium",
+    "keys-and-credentials": "high",
+    "third-party-services": "medium",
+    "untrusted-input": "medium",
+    "when-to-ask-a-human": "high",
+}
 
 # Generic keyword rules. Deterministic and readable on purpose; a model pass is not part of this server.
 # Credentials are matched separately from SENSITIVE_DATA (see CREDENTIALS_PATTERN below): a real
@@ -110,6 +135,39 @@ REVIEW_TRIGGERS = (
     r"|(?:build|create|implement|write|custom|our own)(?:ing)? (?:a |the |an )?(?:sign[- ]in|login|authentication|password)|decides? who (?:may|can) see)\b"
 )
 
+# The generic rule sentence a decision cites when no overlay item does.
+GENERIC_RULES = {
+    "hosting_unknown": "hosting has to be named before it can be checked",
+    "hosting_risky": "a personal account, free tier, trial workspace, home server, or unmanaged machine is not a place coworkers should depend on",
+    "hosting_approved_list": "hosting must be on the company's approved list",
+    "audience_internal": "the smallest named group inside the company is the default audience",
+    "audience_external": "people outside the company, or a public link, is a review conversation before it is a build",
+    "audience_unknown": "who can open this has to be named before it can be checked",
+    "data_prohibited": "real payment, government, health, or credential data does not go into prompts, uploads, or test runs",
+    "data_review": "employee and customer records need the data owner's agreement in writing first",
+    "data_ok": "made-up records that keep the shape of the real data are the safe default",
+    "data_missing": "no data classes were named; say what data the app will touch",
+    "service_review": "any new software service needs review",
+    "service_missing": "no services were named; say what the app will connect to",
+    "write_review": "writing to a system of record needs a human review before it goes live",
+    "write_none": "an app that reads, or writes only to its own store, is not a system-of-record change",
+    "write_unknown": "whether this writes to a system of record has to be answered before it can be checked",
+}
+# Generic data classes, when no overlay says otherwise. Credentials are handled separately.
+GENERIC_DATA_OUTCOME = {
+    "payment card or bank data": "prohibited",
+    "government identifiers": "prohibited",
+    "health information": "prohibited",
+    "employee or HR records": "requires_review",
+    "customer records": "requires_review",
+}
+AUDIENCE_WORDS = {
+    "public": ("anyone", "public", "internet", "everyone", "world"),
+    "external": ("customer", "vendor", "partner", "agency", "contractor", "external", "client", "supplier", "outside"),
+    "internal": ("colleague", "team", "employee", "staff", "internal", "manager", "ops", "coworker", "department"),
+}
+WRITE_ACCESS_QUESTION = "Will this write to a system of record (CRM, ERP, HR, finance, tickets, the production database)?"
+
 # Overlay matching. An overlay item is a short phrase ("Unmanaged virtual machines",
 # "Passwords, keys, tokens, and sign-in codes"). The item and the plan are normalized the same
 # way (_words): lowercased, parentheticals and punctuation dropped, simple plurals singularized,
@@ -131,6 +189,16 @@ SERVICE_SYNONYMS = {"unapproved": True, "new": False, "third party": True, "exte
 # precise matcher, and the overlay item is attached to that risk as its rule.
 CREDENTIAL_WORDS = frozenset("password passwd key token secret credential bearer sign code pin otp".split())
 UNKNOWN_VALUES = frozenset({"", "unknown", "?", "tbd", "n/a"})
+
+# A hosting value that carries one of these words is not approved by resemblance: "Not Internal
+# App Platform", "a custom VM instead of the platform" and "unmanaged app platform" all contain
+# the words of an approved item and mean the opposite.
+HOSTING_NEGATION = re.compile(r"\b(?:not|no|never|instead of|unreviewed|custom|unmanaged)\b", re.IGNORECASE)
+# Free text says "synthetic", "no external users", "instead of the real export" to rule a risk
+# out. A match under one of these does not become a hint.
+HINT_NEGATIONS = ("no", "not", "never", "without", "none", "zero", "instead of", "neither", "nor")
+SYNTHETIC = r"(?:synthetic|made[- ]up|make[- ]believe|fake|fictional|sample|dummy|placeholder|pretend|example\.com)"
+CLAUSE_END = re.compile(r"[.;!?]")
 
 
 def _match(pattern: str, text: str) -> bool:
@@ -212,38 +280,133 @@ def _overlay_hits(items: list[str], text: str, synonyms: dict[str, bool] | None 
     return hits, category
 
 
+def _equals_or_contains(items: list[str], value: str) -> list[str]:
+    """Overlay items an explicit field value matches: the normalized value equals the item, or holds all its content words."""
+    value_words = set(_words(value))
+    normalized = " ".join(_words(value))
+    out = []
+    for item in items:
+        item_words = _content_words(item)
+        if normalized == " ".join(_words(item)) or (item_words and all(w in value_words for w in item_words)):
+            out.append(item)
+    return out
+
+
 def _is_credential_class(item: str) -> bool:
     words = _content_words(item)
     return bool(words) and all(w in CREDENTIAL_WORDS for w in words)
 
 
-def check_plan(description: str, guidance: dict, policy: PolicyState, data_types: list[str] | None = None, audience: str | None = None, hosting: str | None = None) -> dict:
+def _clause(text: str, start: int, end: int) -> tuple[str, str, str]:
+    """The sentence around a match: what comes before it, what comes after it, and the whole of it."""
+    left = 0
+    for m in CLAUSE_END.finditer(text, 0, start):
+        left = m.end()
+    m = CLAUSE_END.search(text, end)
+    right = m.start() if m else len(text)
+    return text[left:start], text[end:right], text[left:right]
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9.'\-]+", text.lower())
+
+
+def _negated(text: str, start: int, end: int, extra: tuple[str, ...] = ()) -> bool:
+    """True when the plan names this thing in order to rule it out rather than to choose it.
+
+    Negated: a negation word within about six words before the match, in the same sentence
+    ("No external users"); "only synthetic" and its variants before it; or "only" within about
+    four words after it in a sentence that also says synthetic, made-up, fake, or sample
+    ("Use synthetic patient records only").
+    """
+    before, after, sentence = _clause(text, start, end)
+    prior = " ".join(_tokens(before)[-6:])
+    if re.search(r"\b(?:" + "|".join(HINT_NEGATIONS + extra) + r")\b", prior):
+        return True
+    if re.search(r"\bonly\s+" + SYNTHETIC, prior):
+        return True
+    follow = " ".join(_tokens(after)[:4])
+    return bool(re.search(r"\bonly\b", follow) and re.search(SYNTHETIC, sentence, re.IGNORECASE))
+
+
+def _hint(pattern: str, text: str, extra: tuple[str, ...] = ()) -> str | None:
+    """The first match of a generic rule that the text does not negate, lowercased."""
+    for m in re.finditer(pattern, text, re.IGNORECASE):
+        if not _negated(text, m.start(), m.end(), extra):
+            return m.group(0).lower().strip()
+    return None
+
+
+def _evidence_negated(text: str, words: list[str]) -> bool:
+    """True when every occurrence of every matched overlay word sits under a negation."""
+    seen = False
+    for word in words:
+        for m in re.finditer(r"\b" + re.escape(word) + r"[a-z]{0,3}\b", text, re.IGNORECASE):
+            seen = True
+            if not _negated(text, m.start(), m.end()):
+                return False
+    return seen
+
+
+def _audience_category(value: str) -> str:
+    """internal, external, public, or unknown, ignoring words the value itself rules out."""
+    for category in ("public", "external", "internal"):
+        for word in AUDIENCE_WORDS[category]:
+            for m in re.finditer(r"\b" + word + r"s?\b", value, re.IGNORECASE):
+                if not _negated(value, m.start(), m.end()):
+                    return category
+    return "unknown"
+
+
+def _is_synthetic(value: str) -> bool:
+    return bool(re.search(SYNTHETIC, value, re.IGNORECASE))
+
+
+def check_plan(
+    description: str,
+    guidance: dict,
+    policy: PolicyState,
+    data_classes: list[str] | None = None,
+    audience: str | None = None,
+    hosting: str | None = None,
+    services: list[str] | None = None,
+    write_access: bool | None = None,
+    data_types: list[str] | None = None,
+) -> dict:
+    """Decide from the explicit fields; read the description only for hints.
+
+    `data_types` is the deprecated name for `data_classes` and is merged into it.
+    """
     if not isinstance(description, str) or not description.strip():
         return _error("invalid-input", "description must be a nonempty string.")
-    text = " ".join([description] + [str(d) for d in (data_types or [])] + [audience or "", hosting or ""])
+    named_classes = [str(d).strip() for d in (list(data_classes or []) + list(data_types or [])) if str(d).strip()]
+    named_services = [str(s).strip() for s in (services or []) if str(s).strip()]
     comps = guidance["components"]
+    o = policy.overlay if policy.approved else None
     risks: list[dict] = []
+    decisions: list[dict] = []
+    hints: list[dict] = []
+    questions: list[str] = []
     labels: dict = {
         "sensitive_data": [], "credentials": False, "external_audience": False, "risky_hosting": False, "unapproved_hosting": False,
         "new_service": False, "untrusted_input": False, "review_trigger": False,
-        "hosting": "unknown" if _is_unknown(hosting) else "unchecked",
-        "audience": "unknown" if _is_unknown(audience) else "named",
-        "overlay_rules": [],
+        "hosting": "unknown", "audience": "unknown", "overlay_rules": [],
     }
-    o = policy.overlay if policy.approved else None
 
-    def add(component_id: str, severity: str, why: str, rule: str | None = None, overlay_list: str | None = None, evidence: list[str] | None = None):
+    def add(component_id: str, severity: str, why: str, rule: str | None = None, overlay_list: str | None = None, evidence: list[str] | None = None, basis: str = "hint"):
         """One risk per component. A second hit on the same component merges: highest severity, both reasons, all evidence."""
         existing = next((r for r in risks if r["component"] == component_id), None)
         if existing is None:
             c = comps[component_id]
-            existing = {"component": component_id, "title": c["title"], "severity": severity, "why": why, "safer_alternative": c["do"][0], "ask": c["ask"][0], "rule": None, "overlay_list": None, "evidence": []}
+            existing = {"component": component_id, "title": c["title"], "severity": severity, "why": why, "safer_alternative": c["do"][0], "ask": c["ask"][0], "rule": None, "overlay_list": None, "evidence": [], "basis": basis}
             risks.append(existing)
         else:
             if SEVERITY_ORDER[severity] > SEVERITY_ORDER[existing["severity"]]:
                 existing["severity"] = severity
             if why not in existing["why"]:
                 existing["why"] = existing["why"] + " " + why
+            if basis == "decision":
+                existing["basis"] = "decision"
         if rule:
             existing["rule"] = rule if not existing["rule"] else existing["rule"] + "; " + rule
             existing["overlay_list"] = overlay_list
@@ -253,91 +416,283 @@ def check_plan(description: str, guidance: dict, policy: PolicyState, data_types
             if e not in existing["evidence"]:
                 existing["evidence"].append(e)
 
-    # Data in prompts: generic classes, then the company's never_in_prompts classes.
+    def decide(field: str, value, outcome: str, rule: str, source: str, evidence: list[str] | None = None, note: str | None = None,
+               component: str | None = None, why: str | None = None, overlay_list: str | None = None, risk_rule: str | None = None):
+        """One decision from one explicit field, and the risk it raises when it is not permitted."""
+        decisions.append({"field": field, "value": value, "outcome": outcome, "rule": rule, "source": source, "evidence": evidence or [], "note": note})
+        component = component or FIELD_COMPONENT[field]
+        decision_components.append(component)
+        if outcome in ("prohibited", "requires_review"):
+            severity = "high" if outcome == "prohibited" else COMPONENT_SEVERITY[component]
+            cited = risk_rule if risk_rule is not None else (rule if source == "company overlay" else None)
+            add(component, severity, why or f"{field}: {rule}.", rule=cited, overlay_list=overlay_list, evidence=evidence, basis="decision")
+
+    def hint(component_id: str, evidence: str, note: str):
+        hints.append({"component": component_id, "evidence": evidence, "note": note})
+
+    decision_components: list[str] = []
+
+    # ---------------------------------------------------------------- decisions
+
+    # hosting
+    if _is_unknown(hosting):
+        decide("hosting", "unknown", "unknown", GENERIC_RULES["hosting_unknown"], "generic default", note="hosting was not given")
+        questions.append(comps["hosting-and-where-it-runs"]["ask"][0])
+    else:
+        value = hosting.strip()
+        if _found(RISKY_HOSTING, value):
+            labels["risky_hosting"] = True
+        if o:
+            not_hits, not_category = _overlay_hits(o["hosting"]["not_approved"], value, HOSTING_SYNONYMS)
+            approved_hits = [] if HOSTING_NEGATION.search(value) else _equals_or_contains(o["hosting"]["approved"], value)
+            if not_hits or not_category:
+                item = not_hits[0][0] if not_hits else "; ".join(o["hosting"]["not_approved"])
+                evidence = not_hits[0][1] if not_hits else not_category
+                labels["hosting"], labels["unapproved_hosting"] = "not_approved", True
+                decide("hosting", value, "prohibited", item, "company overlay", evidence,
+                       note="on the company's not-approved hosting list", overlay_list="hosting.not_approved",
+                       why=f"Company hosting rule, not approved: {item}.")
+            elif approved_hits:
+                labels["hosting"] = "approved"
+                decide("hosting", value, "permitted", approved_hits[0], "company overlay", _content_words(value))
+            else:
+                labels["hosting"], labels["unapproved_hosting"] = "unrecognized", True
+                decide("hosting", value, "requires_review", GENERIC_RULES["hosting_approved_list"], "company overlay",
+                       _content_words(value), note="approved hosting: " + "; ".join(o["hosting"]["approved"]),
+                       why="The named hosting is not on the company's approved list.",
+                       risk_rule="; ".join(o["hosting"]["approved"]), overlay_list="hosting.approved")
+        elif labels["risky_hosting"]:
+            labels["hosting"] = "unrecognized"
+            decide("hosting", value, "requires_review", GENERIC_RULES["hosting_risky"], "generic default", _content_words(value),
+                   note="no company overlay; this is the generic rule, not your company's policy",
+                   why="A personal account, free tier, or unmanaged machine is not a place coworkers should depend on.")
+        else:
+            decide("hosting", value, "unknown", GENERIC_RULES["hosting_approved_list"], "generic default", _content_words(value),
+                   note="no company overlay; generic defaults cannot approve hosting")
+
+    # audience
+    if _is_unknown(audience):
+        decide("audience", "unknown", "unknown", GENERIC_RULES["audience_unknown"], "generic default", note="audience was not given")
+        questions.append(comps["access-and-identity"]["ask"][0])
+    else:
+        category = _audience_category(audience)
+        labels["audience"] = category
+        if category in ("external", "public"):
+            labels["external_audience"] = True
+            trigger = _overlay_hits(o["review_triggers"], "external users public " + audience)[0] if o else []
+            rule = trigger[0][0] if trigger else GENERIC_RULES["audience_external"]
+            decide("audience", category, "requires_review", rule, "company overlay" if trigger else "generic default",
+                   _content_words(audience), overlay_list="review_triggers" if trigger else None,
+                   why="People outside the company, or a public link, would be able to open this.")
+            add("sharing-and-publishing", "medium", "Sharing outside the company is the moment a private draft becomes a public fact.",
+                evidence=_content_words(audience), basis="decision")
+        elif category == "internal":
+            rule = o["identity"]["default"] if o else GENERIC_RULES["audience_internal"]
+            decide("audience", category, "permitted", rule, "company overlay" if o else "generic default", _content_words(audience))
+        else:
+            decide("audience", "unknown", "unknown", GENERIC_RULES["audience_unknown"], "generic default", _content_words(audience),
+                   note="the audience given does not say whether these people are inside or outside the company")
+            questions.append(comps["access-and-identity"]["ask"][0])
+
+    # data classes
+    approved_service_names: list[list[str]] = []
+    if not named_classes:
+        decide("data_classes", "unknown", "unknown", GENERIC_RULES["data_missing"], "generic default", note="no data classes were given")
+    for item in named_classes:
+        component = "keys-and-credentials" if (_match(CREDENTIALS_PATTERN, item) or _is_credential_class(item)) else "data-in-prompts"
+        if _is_synthetic(item):
+            ok_hits = _overlay_hits(o["data_classes"]["ok"], item)[0] if o else []
+            if ok_hits:
+                decide("data_classes", item, "permitted", ok_hits[0][0], "company overlay", ok_hits[0][1], component=component)
+            else:
+                decide("data_classes", item, "permitted", GENERIC_RULES["data_ok"], "generic default", component=component)
+            continue
+        if o:
+            hit = _overlay_hits(o["data_classes"]["never_in_prompts"], item)[0]
+            if hit:
+                labels["sensitive_data"].append(f"company data class: {hit[0][0]}")
+                if component == "keys-and-credentials":
+                    labels["credentials"] = True
+                decide("data_classes", item, "prohibited", hit[0][0], "company overlay", hit[0][1], component=component,
+                       overlay_list="data_classes.never_in_prompts",
+                       why=f"Company data class, never in prompts: {hit[0][0]}.")
+                continue
+            hit = _overlay_hits(o["data_classes"]["ok_with_approval"], item)[0]
+            if hit:
+                decide("data_classes", item, "requires_review", hit[0][0], "company overlay", hit[0][1], component=component,
+                       overlay_list="data_classes.ok_with_approval",
+                       why=f"Company data class, allowed only with the owner's approval: {hit[0][0]}.")
+                continue
+            hit = _overlay_hits(o["data_classes"]["ok"], item)[0]
+            if hit:
+                decide("data_classes", item, "permitted", hit[0][0], "company overlay", hit[0][1], component=component)
+                continue
+            decide("data_classes", item, "unknown", GENERIC_RULES["data_missing"], "company overlay", component=component,
+                   note="not in the company's data classes; ask the owner")
+            continue
+        if _match(CREDENTIALS_PATTERN, item):
+            labels["credentials"] = True
+            decide("data_classes", item, "prohibited", GENERIC_RULES["data_prohibited"], "generic default", [item.lower()],
+                   component="keys-and-credentials",
+                   why="A password, key, or token appears to be part of the plan; it must not be typed into a tool or generated code.")
+            continue
+        generic = next((label for label, pattern in SENSITIVE_DATA.items() if _match(pattern, item)), None)
+        if generic:
+            outcome = GENERIC_DATA_OUTCOME[generic]
+            labels["sensitive_data"].append(generic)
+            decide("data_classes", item, outcome, GENERIC_RULES["data_prohibited"] if outcome == "prohibited" else GENERIC_RULES["data_review"],
+                   "generic default", [item.lower()], component=component,
+                   why="Real data of this kind should not go into a prompt, upload, or test: " + generic + ".")
+            continue
+        decide("data_classes", item, "unknown", GENERIC_RULES["data_missing"], "generic default", component=component,
+               note="not a class the generic defaults recognize; ask the data's owner")
+
+    # services
+    if not named_services:
+        decide("services", "unknown", "unknown", GENERIC_RULES["service_missing"], "generic default", note="no services were given")
+    for item in named_services:
+        approved = _equals_or_contains(o["services"]["approved"], item) if o else []
+        starts_approved = bool(re.match(r"^(?:the\s+)?approved\b", item, re.IGNORECASE))
+        if approved or starts_approved:
+            approved_service_names.append(_content_words(item))
+        if approved:
+            decide("services", item, "permitted", approved[0], "company overlay", _content_words(item))
+            continue
+        if o:
+            hit = _overlay_hits(o["services"]["needs_review"], item)[0]
+            if hit:
+                labels["new_service"] = True
+                decide("services", item, "requires_review", hit[0][0], "company overlay", hit[0][1],
+                       overlay_list="services.needs_review", why=f"Company rule, needs review: {hit[0][0]}.")
+                continue
+        labels["new_service"] = True
+        decide("services", item, "requires_review", GENERIC_RULES["service_review"], "generic default", _content_words(item),
+               note="named services are reviewed by default; nothing here says this one is approved",
+               why="A new service, plugin, or connector is an approval question, not a convenience.")
+
+    # write access
+    if write_access is None:
+        decide("write_access", "unknown", "unknown", GENERIC_RULES["write_unknown"], "generic default", note="write_access was not given")
+        questions.append(WRITE_ACCESS_QUESTION)
+    elif write_access:
+        trigger = _overlay_hits(o["review_triggers"], "writes to a system of record")[0] if o else []
+        rule = trigger[0][0] if trigger else GENERIC_RULES["write_review"]
+        decide("write_access", True, "requires_review", rule, "company overlay" if trigger else "generic default",
+               ["system of record"], overlay_list="review_triggers" if trigger else None,
+               why="The app would write to a system of record; a person reviews that before it goes live.")
+    else:
+        decide("write_access", False, "permitted", GENERIC_RULES["write_none"], "generic default")
+
+    outcome = "permitted"
+    for d in decisions:
+        if OUTCOME_ORDER[d["outcome"]] > OUTCOME_ORDER[outcome]:
+            outcome = d["outcome"]
+
+    # ---------------------------------------------------------------- hints from the description
+
+    text = description
     data_evidence: list[str] = []
+    generic_classes: list[str] = []
     for label, pattern in SENSITIVE_DATA.items():
-        found = _found(pattern, text)
+        found = _hint(pattern, text)
         if found:
-            labels["sensitive_data"].append(label)
+            generic_classes.append(label)
             data_evidence.append(found)
+            hint("data-in-prompts", found, f"the description mentions {label}; a hint only, pass data_classes to decide")
     company_data_rules: list[str] = []
     credential_classes = [item for item in o["data_classes"]["never_in_prompts"] if _is_credential_class(item)] if o else []
     if o:
         classes = [item for item in o["data_classes"]["never_in_prompts"] if item not in credential_classes]
         for item, evidence in _overlay_hits(classes, text)[0]:
-            labels["sensitive_data"].append(f"company data class: {item}")
+            if _evidence_negated(text, evidence):
+                continue
+            generic_classes.append(f"company data class: {item}")
             company_data_rules.append(item)
             data_evidence.extend(w for w in evidence if w not in data_evidence)
-    if labels["sensitive_data"]:
-        add("data-in-prompts", "high", "Real data of this kind should not go into a prompt, upload, or test: " + "; ".join(labels["sensitive_data"]) + ".",
+            hint("data-in-prompts", " ".join(evidence), f"the description reads like the company data class {item}; a hint only, pass data_classes to decide")
+    for label in generic_classes:
+        if label not in labels["sensitive_data"]:
+            labels["sensitive_data"].append(label)
+    if generic_classes:
+        add("data-in-prompts", "high", "Real data of this kind should not go into a prompt, upload, or test: " + "; ".join(generic_classes) + ".",
             rule="; ".join(company_data_rules) or None, overlay_list="data_classes.never_in_prompts" if company_data_rules else None, evidence=data_evidence)
 
-    found = _found(CREDENTIALS_PATTERN, text)
+    found = _hint(CREDENTIALS_PATTERN, text)
     if found:
         labels["credentials"] = True
+        hint("keys-and-credentials", found, "the description mentions a password, key, or token; a hint only")
         add("keys-and-credentials", "high", "A password, key, or token appears to be part of the plan; it must not be typed into a tool or generated code.",
             rule="; ".join(credential_classes) or None, overlay_list="data_classes.never_in_prompts" if credential_classes else None, evidence=[found])
 
-    found = _found(EXTERNAL_AUDIENCE, audience or "") or _found(EXTERNAL_AUDIENCE, description)
+    found = _hint(EXTERNAL_AUDIENCE, text)
     if found:
         labels["external_audience"] = True
-        if _match(EXTERNAL_AUDIENCE, audience or ""):
-            labels["audience"] = "external"
+        hint("access-and-identity", found, "the description mentions people outside the company; a hint only, pass audience to decide")
         add("access-and-identity", "high", "People outside the company, or a public link, would be able to open this.", evidence=[found])
         add("sharing-and-publishing", "medium", "Sharing outside the company is the moment a private draft becomes a public fact.", evidence=[found])
 
-    # Hosting: the generic rule, the company's not_approved list anywhere in the plan, then whether
-    # the named hosting is on the approved list. The `hosting` label describes the argument alone.
-    found = _found(RISKY_HOSTING, text)
+    found = _hint(RISKY_HOSTING, text)
     if found:
         labels["risky_hosting"] = True
+        hint("hosting-and-where-it-runs", found, "the description mentions a personal account, free tier, or unmanaged machine; a hint only, pass hosting to decide")
         add("hosting-and-where-it-runs", "medium", "A personal account, free tier, or unmanaged machine is not a place coworkers should depend on.", evidence=[found])
     if o:
         hits, category = _overlay_hits(o["hosting"]["not_approved"], text, HOSTING_SYNONYMS)
         for item, evidence in hits:
+            if _evidence_negated(text, evidence):
+                continue
             labels["unapproved_hosting"] = True
+            hint("hosting-and-where-it-runs", " ".join(evidence), f"the description reads like the company hosting rule {item}; a hint only, pass hosting to decide")
             add("hosting-and-where-it-runs", "medium", f"Company hosting rule, not approved: {item}.", rule=item, overlay_list="hosting.not_approved", evidence=evidence)
-        if category:
+        if category and not _evidence_negated(text, category):
             labels["unapproved_hosting"] = True
+            hint("hosting-and-where-it-runs", " ".join(category), "the description names hosting of a kind the company has not approved; a hint only")
             add("hosting-and-where-it-runs", "medium", "The plan names hosting of a kind the company has not approved (" + ", ".join(category) + ").",
                 rule="; ".join(o["hosting"]["not_approved"]), overlay_list="hosting.not_approved", evidence=category)
-        if labels["hosting"] != "unknown":
-            approved_hits, _ = _overlay_hits(o["hosting"]["approved"], hosting)
-            if approved_hits:
-                labels["hosting"] = "approved"
-            else:
-                labels["hosting"] = "not approved"
-                labels["unapproved_hosting"] = True
-                if not any(r["component"] == "hosting-and-where-it-runs" and r["rule"] for r in risks):
-                    add("hosting-and-where-it-runs", "medium", "The named hosting is not on the company's approved list.",
-                        rule="; ".join(o["hosting"]["approved"]), overlay_list="hosting.approved", evidence=_content_words(hosting))
 
-    found = _found(NEW_SERVICE, text)
+    def _new_service_hint() -> str | None:
+        """A new-service match that the sentence does not already call approved, and that no approved
+        service in `services` accounts for."""
+        for m in re.finditer(NEW_SERVICE, text, re.IGNORECASE):
+            if _negated(text, m.start(), m.end(), ("approved",)):
+                continue
+            sentence_words = set(_words(_clause(text, m.start(), m.end())[2]))
+            if any(name and all(w in sentence_words for w in name) for name in approved_service_names):
+                continue
+            return m.group(0).lower().strip()
+        return None
+
+    found = _new_service_hint()
     if found:
         labels["new_service"] = True
+        hint("third-party-services", found, "the description mentions a new service, plugin, or connector; a hint only, pass services to decide")
         add("third-party-services", "medium", "A new service, plugin, or connector is an approval question, not a convenience.", evidence=[found])
     if o:
         hits, category = _overlay_hits(o["services"]["needs_review"], text, SERVICE_SYNONYMS)
         for item, evidence in hits:
+            if _evidence_negated(text, evidence):
+                continue
             labels["new_service"] = True
+            hint("third-party-services", " ".join(evidence), f"the description reads like the company service rule {item}; a hint only, pass services to decide")
             add("third-party-services", "medium", f"Company rule, needs review: {item}.", rule=item, overlay_list="services.needs_review", evidence=evidence)
-        if category:
+        if category and not _evidence_negated(text, category):
             labels["new_service"] = True
+            hint("third-party-services", " ".join(category), "the description names a service of a kind the company reviews first; a hint only")
             add("third-party-services", "medium", "The plan names a service of a kind the company reviews first (" + ", ".join(category) + ").",
                 rule="; ".join(o["services"]["needs_review"]), overlay_list="services.needs_review", evidence=category)
 
-    found = _found(UNTRUSTED_INPUT, text)
+    found = _hint(UNTRUSTED_INPUT, text)
     if found:
         labels["untrusted_input"] = True
+        hint("untrusted-input", found, "the description says the app reads input from people or documents; a hint only")
         add("untrusted-input", "medium", "The app would read input from people or documents; that input is data, never instructions.", evidence=[found])
 
-    # Any real sensitive-data class (or a real credential) is a review trigger, not just a
-    # data-hygiene tip: see the data-in-prompts and keys-and-credentials "stop and ask a human
-    # if" lists. Keyword matching cannot tell a plan built around real records from one that
-    # only mentions a data type in passing, so it flags both; this is an advisory server and a
-    # false positive costs a human a look, not a blocked action.
+    # A real sensitive-data class or credential in the plan's own words is a review trigger, not
+    # a data-hygiene tip: see the data-in-prompts and keys-and-credentials "stop and ask a human
+    # if" lists. Only a non-negated hint counts, and only these three cases; a hint never sets
+    # the outcome.
     sensitive_hit = bool(labels["sensitive_data"]) or labels["credentials"]
-    found = _found(REVIEW_TRIGGERS, text)
+    found = _hint(REVIEW_TRIGGERS, text)
     if found or labels["external_audience"] or sensitive_hit:
         labels["review_trigger"] = True
         if sensitive_hit:
@@ -345,25 +700,41 @@ def check_plan(description: str, guidance: dict, policy: PolicyState, data_types
             add("when-to-ask-a-human", "high", "This plan's purpose appears to involve real sensitive data or credentials: " + "; ".join(classes) + ". That is a security review conversation, not a data-hygiene tip.", evidence=[found] if found else [])
         else:
             add("when-to-ask-a-human", "high", "This plan hits a review trigger: external users, money, sign-in, or a system of record.", evidence=[found] if found else [])
+        if found:
+            hint("when-to-ask-a-human", found, "the description mentions a review trigger; a hint only, the fields decide")
     if o:
         for trigger, evidence in _overlay_hits(o["review_triggers"], text)[0]:
+            if _evidence_negated(text, evidence):
+                continue
             labels["review_trigger"] = True
+            hint("when-to-ask-a-human", " ".join(evidence), f"the description reads like the company review trigger {trigger}; a hint only")
             add("when-to-ask-a-human", "high", f"Company review trigger: {trigger}.", rule=trigger, overlay_list="review_triggers", evidence=evidence)
 
-    risks.sort(key=lambda r: -SEVERITY_ORDER[r["severity"]])
-    ask_a_human = labels["review_trigger"]
-    if risks:
+    # ---------------------------------------------------------------- answer
+
+    risks.sort(key=lambda r: (-SEVERITY_ORDER[r["severity"]], r["basis"] != "decision"))
+    hint_asks_for_a_human = labels["external_audience"] or sensitive_hit
+    ask_a_human = outcome in ("prohibited", "requires_review") or bool(hint_asks_for_a_human)
+    worst = None
+    for d, component in zip(decisions, decision_components):
+        if d["outcome"] in ("prohibited", "requires_review") and (worst is None or OUTCOME_ORDER[d["outcome"]] > OUTCOME_ORDER[worst[0]]):
+            worst = (d["outcome"], component)
+    if worst:
+        next_step = comps[worst[1]]["do"][0]
+    elif risks:
         next_step = risks[0]["safer_alternative"]
     else:
         next_step = "No checkpoint was triggered by the words in this plan; that is not approval. Build with made-up data, keep the audience small, and run check_plan again before connecting anything or sharing."
     owner = (o["owner"] if o else guidance["slots"]["owner"])
     checklist = [r["ask"] for r in risks] or [comps[c]["ask"][0] for c in ("data-in-prompts", "access-and-identity", "hosting-and-where-it-runs")]
-    # An unsupplied hosting or audience is an open question, not a pass.
-    for label, component in (("hosting", "hosting-and-where-it-runs"), ("audience", "access-and-identity")):
-        question = comps[component]["ask"][0]
-        if labels[label] == "unknown" and question not in checklist:
+    # An unsupplied field is an open question, not a pass.
+    for question in questions:
+        if question not in checklist:
             checklist.append(question)
     return {
+        "outcome": outcome,
+        "decisions": decisions,
+        "hints": hints,
         "risks": risks,
         "next_step": next_step,
         "ask_a_human": ask_a_human,
@@ -371,9 +742,11 @@ def check_plan(description: str, guidance: dict, policy: PolicyState, data_types
         "checklist": checklist,
         "labels": labels,
         "method": (
-            "keyword matching against the eight checkpoints and, when approved, the company overlay; no model pass. "
-            "An overlay item fires when its content words (lowercased, singular, stop words dropped) all appear in the plan in any order, "
-            "or when a hosting or service synonym appears with one of them; each such risk carries the rule and the evidence."
+            "explicit fields decide; free text only hints; keyword matching with negation handling; no model pass. "
+            "hosting, audience, data_classes, services, and write_access produce the decisions and the outcome; "
+            "the description produces hints that name questions to ask and never an outcome. "
+            "An overlay item fires when its content words (lowercased, singular, stop words dropped) all appear in the value or the plan, "
+            "or when a hosting or service synonym appears with one of them; each such decision or risk carries the rule and the evidence."
         ),
         **_provenance(policy, guidance),
     }
