@@ -56,10 +56,49 @@ PATTERNS = [
     ("literal client secret", re.compile(r"\b(?:secret|client_secret)\s*[:=]\s*[\"'][A-Za-z0-9_\-]{16,}[\"']", re.IGNORECASE)),
     ("literal auth token assignment", re.compile(r"\b(?:token|auth_token|access_token)\s*[:=]\s*[\"'][A-Za-z0-9_\-\.]{16,}[\"']", re.IGNORECASE)),
     ("literal DATABASE_URL", re.compile(r"\bDATABASE_URL\s*=\s*[\"']?(?:mongodb|postgres|mysql|redis|amqp)[^\s\"']*://[^\s\"']*:[^\s\"'@]+@", re.IGNORECASE)),
+    # Unquoted CLI/env forms: same literal-credential shape as above, but without the
+    # quotes that the four "literal ... assignment" patterns require. Each captures the
+    # bare value into the named group "val" so find_credential can apply the same
+    # placeholder/short-value/env-reference allowances as the quoted forms get for free
+    # from their own character classes (see _is_placeholder_value).
+    ("literal --password flag", re.compile(r"--password=(?P<val>[^\s\"'$]+)", re.IGNORECASE)),
+    ("literal mysql -p<password> flag", re.compile(r"\b(?:mysql|mysqldump|mariadb)\b.*?\s-p(?P<val>[^\s\"'$=][^\s\"']*)", re.IGNORECASE)),
+    ("literal PGPASSWORD assignment", re.compile(r"\bPGPASSWORD=[\"']?(?P<val>[^\s\"'$]+)")),
+    # Generic quoted-JSON credential property: the existing "literal ... assignment"
+    # patterns above require the key bare (key=value or key: value); they do not match
+    # a JSON-style key that is itself quoted ("password": "value"), because the closing
+    # quote of the key sits between the key and the colon.
+    (
+        "literal credential in a JSON-style property",
+        re.compile(
+            r'"(?:api[_-]?key|apikey|password|passwd|pwd|token|auth_token|access_token|secret|client_secret)"'
+            r'\s*:\s*"(?P<val>[^"$]+)"',
+            re.IGNORECASE,
+        ),
+    ),
 ]
 
 # A value that is only an environment reference is never a literal credential.
 ENV_REFERENCE = re.compile(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
+
+# Obvious placeholder tokens used in documentation and test fixtures, never a real
+# credential. Kept narrow and explicit on purpose: this is an allowance, not a filter.
+PLACEHOLDER_VALUE = re.compile(
+    r"^(?:REPLACE[_-]?ME|SAMPLE[_-]?KEY|YOUR[_-]?(?:API[_-]?)?KEY|CHANGE[_-]?ME|EXAMPLE|PLACEHOLDER|DUMMY|FAKE|TODO|FIXME|X{3,}|\*{3,})$",
+    re.IGNORECASE,
+)
+
+MIN_CREDENTIAL_LENGTH = 6
+
+
+def _is_placeholder_value(value: str) -> bool:
+    """True if a captured unquoted/JSON value is an env reference, a known placeholder, or too short to be real."""
+    value = value.strip("'\"")
+    if len(value) < MIN_CREDENTIAL_LENGTH:
+        return True
+    if ENV_REFERENCE.fullmatch(value):
+        return True
+    return PLACEHOLDER_VALUE.fullmatch(value) is not None
 
 
 def find_credential(command: str):
@@ -68,6 +107,10 @@ def find_credential(command: str):
         return None
     for label, pattern in PATTERNS:
         for match in pattern.finditer(command):
+            if "val" in pattern.groupindex:
+                if _is_placeholder_value(match.group("val")):
+                    continue
+                return label
             if not ENV_REFERENCE.fullmatch(match.group(0)):
                 return label
     return None
