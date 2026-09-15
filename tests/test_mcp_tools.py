@@ -110,6 +110,99 @@ class CheckPlanTests(unittest.TestCase):
         self.assertTrue(out["ask_a_human"])
 
 
+class OverlayMatchingTests(unittest.TestCase):
+    """Overlay items match structurally: content words in any order, singular or plural, or a category synonym.
+
+    The example overlay is loaded by an absolute path built from the repository root (Fixtures.approved).
+    """
+
+    def hosting_risk(self, out):
+        return next(r for r in out["risks"] if r["component"] == "hosting-and-where-it-runs")
+
+    def test_unmanaged_virtual_machine_singular_and_plural(self):
+        for plan in ("Host a team timer on an unmanaged virtual machine", "Host a team timer on unmanaged virtual machines"):
+            with self.subTest(plan=plan):
+                out = mcp_tools.check_plan(plan, Fixtures.guidance, Fixtures.approved)
+                risk = self.hosting_risk(out)
+                self.assertEqual(risk["rule"], "Unmanaged virtual machines")
+                self.assertEqual(risk["overlay_list"], "hosting.not_approved")
+                self.assertEqual(risk["evidence"], ["unmanaged", "virtual", "machine"])
+                self.assertTrue(out["labels"]["unapproved_hosting"])
+                self.assertIn("Unmanaged virtual machines", out["labels"]["overlay_rules"])
+                self.assertEqual(out["enforcement"], "none")
+                self.assertIn("keyword matching", out["method"])
+
+    def test_unapproved_service_matches_through_synonym(self):
+        out = mcp_tools.check_plan("Send proprietary source code to an unapproved AI service", Fixtures.guidance, Fixtures.approved)
+        risk = next(r for r in out["risks"] if r["component"] == "third-party-services")
+        self.assertEqual(risk["rule"], "Any new software service")
+        self.assertEqual(risk["overlay_list"], "services.needs_review")
+        self.assertEqual(risk["evidence"], ["unapproved", "service"])
+        self.assertTrue(out["labels"]["new_service"])
+        self.assertFalse(out["unknown_policy"])
+
+    def test_approved_host_and_approved_service_do_not_fire(self):
+        out = mcp_tools.check_plan(
+            "A vacation-request tracker for our team of six, made-up test data, behind company sign-in, "
+            "on the internal app platform, sending reminders through the approved transactional email service.",
+            Fixtures.guidance, Fixtures.approved, audience="our team", hosting="Internal App Platform",
+        )
+        self.assertEqual(out["risks"], [])
+        self.assertEqual(out["labels"]["hosting"], "approved")
+        self.assertEqual(out["labels"]["audience"], "named")
+        self.assertEqual(out["labels"]["overlay_rules"], [])
+        self.assertFalse(out["ask_a_human"])
+
+    def test_missing_hosting_and_audience_are_unknown_not_fine(self):
+        out = mcp_tools.check_plan("Host a team timer on an unmanaged virtual machine", Fixtures.guidance, Fixtures.approved)
+        self.assertEqual(out["labels"]["hosting"], "unknown")
+        self.assertEqual(out["labels"]["audience"], "unknown")
+        self.assertIn(Fixtures.guidance["components"]["hosting-and-where-it-runs"]["ask"][0], out["checklist"])
+        self.assertIn(Fixtures.guidance["components"]["access-and-identity"]["ask"][0], out["checklist"])
+        # The literal word "unknown" counts as not supplied.
+        out = mcp_tools.check_plan("A timer.", Fixtures.guidance, Fixtures.none, hosting="unknown")
+        self.assertEqual(out["labels"]["hosting"], "unknown")
+        out = mcp_tools.check_plan("A timer.", Fixtures.guidance, Fixtures.none, hosting="the team server")
+        self.assertEqual(out["labels"]["hosting"], "unchecked")
+
+    def test_named_hosting_off_the_approved_list_cites_the_list(self):
+        out = mcp_tools.check_plan("A dashboard for the sales team.", Fixtures.guidance, Fixtures.approved, hosting="a shared workstation in the lab")
+        risk = self.hosting_risk(out)
+        self.assertEqual(out["labels"]["hosting"], "not approved")
+        self.assertEqual(risk["overlay_list"], "hosting.approved")
+        self.assertIn("Internal App Platform (company sign-in)", risk["rule"])
+        self.assertEqual(risk["evidence"], ["shared", "workstation", "lab"])
+        # A weak synonym alone does not fire; with one of the item's own words it does and names the item.
+        out = mcp_tools.check_plan("A dashboard for the sales team.", Fixtures.guidance, Fixtures.approved, hosting="my personal Replit account")
+        self.assertEqual(self.hosting_risk(out)["rule"], "Personal cloud accounts")
+        self.assertEqual(len([r for r in out["risks"] if r["component"] == "hosting-and-where-it-runs"]), 1)
+        out = mcp_tools.check_plan("A KPI dashboard of key metrics that stores personal data for a new team.", Fixtures.guidance, Fixtures.approved)
+        self.assertEqual(out["risks"], [])
+
+    def test_company_data_class_and_review_trigger_carry_rule_and_evidence(self):
+        out = mcp_tools.check_plan("Import the employee HR records and issue refunds from the app.", Fixtures.guidance, Fixtures.approved)
+        data = next(r for r in out["risks"] if r["component"] == "data-in-prompts")
+        self.assertEqual(data["rule"], "Employee HR records")
+        self.assertEqual(data["evidence"], ["hr record", "employee", "hr", "record"])  # generic match first, then the overlay words
+        human = next(r for r in out["risks"] if r["component"] == "when-to-ask-a-human")
+        self.assertEqual(human["rule"], "Payments or refunds")
+        self.assertIn("refund", human["evidence"])
+        self.assertTrue(out["ask_a_human"])
+        # A credential-only data class belongs to the keys-and-credentials risk, not a duplicate data risk.
+        out = mcp_tools.check_plan("A form that emails the inbox, using an API key for the email-sending service.", Fixtures.guidance, Fixtures.approved)
+        components = [r["component"] for r in out["risks"]]
+        self.assertNotIn("data-in-prompts", components)
+        keys = next(r for r in out["risks"] if r["component"] == "keys-and-credentials")
+        self.assertEqual(keys["rule"], "Passwords, keys, tokens, and sign-in codes")
+        self.assertEqual(keys["evidence"], ["api key"])
+
+    def test_generic_risks_have_evidence_and_no_rule(self):
+        out = mcp_tools.check_plan("A tool over last month's CRM export.", Fixtures.guidance, Fixtures.none)
+        data = next(r for r in out["risks"] if r["component"] == "data-in-prompts")
+        self.assertIsNone(data["rule"])
+        self.assertEqual(data["evidence"], ["crm export"])
+
+
 class TemplateAndApprovedTests(unittest.TestCase):
     def test_templates_for_every_kind(self):
         for kind in content.TEMPLATE_KINDS:

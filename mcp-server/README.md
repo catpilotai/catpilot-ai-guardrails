@@ -27,8 +27,14 @@ guidance came from, and `enforcement: "none"`.
 
 `check_plan` is keyword matching against the eight checkpoints and the
 overlay. It is deterministic and readable, and it is not judgment: a clean
-result means no keyword fired, not that the plan is safe. An optional model
-pass is a possible future addition, never a requirement.
+result means no keyword fired, not that the plan is safe. An overlay item
+fires when its content words (lowercased, singular, stop words dropped) all
+appear in the plan in any order, or when a hosting or service synonym such as
+"unmanaged" or "unapproved" appears with one of them; every risk carries the
+`rule` that fired and the `evidence` words from the plan. When `hosting` or
+`audience` is not supplied, the labels say `unknown` and the checklist asks
+for it. An optional model pass is a possible future addition, never a
+requirement.
 
 ## Run it
 
