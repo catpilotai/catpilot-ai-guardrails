@@ -36,10 +36,10 @@ Dockerfile, a dependency change, anything that handles a secret or real
 personal data, or code in the language-baseline patterns), read the named
 reference file with your file-reading tool and follow it. The examples, the
 remediation steps, and the detection patterns live there, and so do the
-facts that decide whether a command is safe. Component IDs match the entries in
-`metadata.catpilot.bundle.components` in the frontmatter so a finding can
-be mapped back to a specific source skill (and to its severity, version, and
-control mappings).
+facts that decide whether a command is safe. Component IDs match the `catpilot-components` entry in the frontmatter and
+the `bundle.components` list in `catpilot.json` next to this file, so a
+finding can be mapped back to a specific source skill (and to its severity,
+version, and control mappings).
 
 This bundle is generated deterministically from
 `src/skills/core/<id>/SKILL.md` by `tools/bundle.py` in the
