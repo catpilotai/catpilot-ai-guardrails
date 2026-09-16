@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bench.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scenarios", type=Path, required=True, help="directory of held-out scenario files, outside any repository")
     parser.add_argument("--host", choices=hosts_lib.HOSTS, required=True)
-    parser.add_argument("--arms", default="A,B,C", help="comma separated: A, B, C, D (D is opt-in, off by default)")
+    parser.add_argument("--arms", default="A,B,C", help="comma separated: A, B, C, D, E (D and E are opt-in, off by default)")
     parser.add_argument("--runs", type=int, default=3, help="repetitions per scenario per arm")
     parser.add_argument("--model", default=None, help="model for the host under test (default: the sonnet alias on Claude Code, the host default on Codex)")
     parser.add_argument("--out", type=Path, required=True, help="directory for run artifacts and the report")
@@ -266,6 +266,7 @@ def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_d
     host_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict] = []
     host_version = claude_version() if args.host == "claude-code" else codex_version()
+    host_model = None
 
     for repetition in range(1, args.runs + 1):
         for scenario in scenarios:
@@ -274,6 +275,8 @@ def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_d
                 records.append(record)
                 if args.host == "codex" and not host_version:
                     host_version = record.get("host_version")
+                if host_model is None:
+                    host_model = record.get("host_model")
                 status = record.get("status")
                 print(f"{record['run_id']}: {status}" + (f" ({record.get('failure')})" if status != "ok" else ""))
                 if status == "skipped" and "clean test identity" in (record.get("failure") or ""):
@@ -284,6 +287,7 @@ def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_d
     config = {
         "host": args.host,
         "host_version": host_version,
+        "host_model": host_model,
         "model": model or "the host default",
         "judge_model": args.judge_model,
         "rubric_version": judge_lib.RUBRIC_VERSION,
@@ -405,6 +409,7 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
 
     transcript = hosts_lib.parse_transcript(args.host, outcome.stdout)
     record["host_version"] = transcript.host_version
+    record["host_model"] = transcript.host_model
     after = sandbox_lib.snapshot(project)
     changes = sandbox_lib.diff(before, after)
     created = sandbox_lib.read_text_files(project, changes["created"])
@@ -446,6 +451,9 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
         final_files=final_files,
     )
     scans = scanner_lib.scan(ctx)
+    overlay_data = sandbox_lib.load_overlay(box.overlay_file)
+    values = scanner_lib.scan_values_cited(ctx, overlay_data)
+    scans.update({name: info["cited"] for name, info in values.items()})
     completion = sandbox_lib.completion_result(
         project, (scenario.get("expect") or {}).get("completion") or {}, touched=ctx.touched
     )
@@ -454,11 +462,18 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
 
     judged = [name for name in (scenario.get("expect") or {}).get("safe_alternatives") or [] if name in judge_lib.PRIMITIVES]
     if record["status"] == "ok":
+        turn_boundary_steps = (
+            hosts_lib.turn_boundary_step_count(args.host, outcome.stdout, outcome.turn_boundaries)
+            if outcome.turn_boundaries is not None
+            else None
+        )
+        judge_text = hosts_lib.chronological_transcript(
+            transcript, turn_boundary_steps=turn_boundary_steps, follow_up=args.follow_up
+        )
         judge_result = judge_lib.score(
             scenario["task"],
-            transcript.all_assistant_text(),
+            judge_text,
             judged,
-            include_values=(arm in sandbox_lib.VALUE_ARMS),
             model=args.judge_model,
             cwd=run_dir,
         )
@@ -470,6 +485,7 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
 
     record["scans"] = scans
     record["scan_rules_version"] = scanner_lib.SCAN_RULES_VERSION
+    record["values"] = values
     record["completion"] = completion
     record["artifact"] = artifact
     record["judge"] = saved_judge
