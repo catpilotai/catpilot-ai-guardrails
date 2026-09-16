@@ -117,6 +117,7 @@ class Transcript:
     output_tokens: int | None = None
     cost_usd: float | None = None
     host_version: str | None = None
+    host_model: str | None = None
     error: str | None = None
     undecoded_lines: int = 0
 
@@ -675,6 +676,73 @@ def parse_transcript(host: str, stdout: str) -> Transcript:
     raise ValueError(f"unknown host '{host}'")
 
 
+def _tool_marker(call: ToolCall) -> str:
+    """One line standing in for a tool event that carries no text of its own.
+
+    `[wrote <path>]` and `[edited <path>]` name the file a write or an edit
+    tool targeted. A shell command -- or a write with no resolved path, which
+    is how a Codex write usually arrives (it writes through the shell) and
+    also how its rarer `file_change`/`patch` items are recorded (see
+    `_parse_codex`) -- is `[ran a command]`. An MCP call, or anything else
+    not covered above, is `[called <tool name>]`. None of the three ever
+    carries the write's contents or the command's text: the judge sees that
+    something happened and when, never what.
+    """
+    name = (call.name or "").lower()
+    if call.kind == "mcp":
+        return f"[called {call.name}]"
+    if name in ("bash", "command_execution"):
+        return "[ran a command]"
+    if call.kind == "write" and call.path:
+        if name in ("edit", "multiedit", "notebookedit"):
+            return f"[edited {call.path}]"
+        return f"[wrote {call.path}]"
+    if call.kind in ("write", "command"):
+        return "[ran a command]"
+    return f"[called {call.name}]"
+
+
+def chronological_transcript(
+    transcript: Transcript, *, turn_boundary_steps: int | None = None, follow_up: str | None = None
+) -> str:
+    """The judge's view of one run: assistant text in order, with a one-line
+    marker (`_tool_marker`) standing in for every tool event that carries no
+    text, so a criterion phrased "before writing any code" has something to
+    anchor to besides the prose.
+
+    Built from `transcript.steps`, the same ordered (kind, item) pairs
+    `text_before_first_write` already walks, so a marker's position relative
+    to a text block is exactly the order the events happened in. On a
+    two-turn `--follow-up` run, `turn_boundary_steps` (from
+    `turn_boundary_step_count`) is how many of those steps belong to the
+    first turn; a `[user: <text>]` marker for `follow_up` is inserted right
+    after them, or at the very end when the first turn produced no steps at
+    all. A single-turn run passes neither argument, and gets no marker.
+    """
+    lines: list[str] = []
+    for index, (kind, item) in enumerate(transcript.steps):
+        if follow_up and turn_boundary_steps is not None and index == turn_boundary_steps:
+            lines.append(f"[user: {follow_up}]")
+        lines.append(str(item) if kind == "text" else _tool_marker(item))
+    if follow_up and turn_boundary_steps is not None and turn_boundary_steps >= len(transcript.steps):
+        lines.append(f"[user: {follow_up}]")
+    return "\n".join(lines)
+
+
+def turn_boundary_step_count(host: str, stdout: str, line_boundary: int) -> int:
+    """How many of `parse_transcript(host, stdout).steps` belong to the first `line_boundary` raw lines.
+
+    `RunOutcome.turn_boundaries` (from `run_conversation`) counts raw stdout
+    lines, not steps. Each host's parser walks events strictly in order with
+    no look-ahead, so re-parsing just that prefix yields exactly the step
+    count the real run's first turn produced -- what `chronological_transcript`
+    needs to place a follow-up's `[user: ...]` marker at the real turn
+    boundary instead of guessing from a line count.
+    """
+    prefix = "\n".join(stdout.splitlines()[:line_boundary])
+    return len(parse_transcript(host, prefix).steps)
+
+
 def _json_lines(stdout: str) -> tuple[list[dict], int]:
     events, undecoded = [], 0
     for line in stdout.splitlines():
@@ -719,6 +787,7 @@ def _parse_claude(stdout: str) -> Transcript:
         kind = event.get("type")
         if kind == "system":
             transcript.host_version = transcript.host_version or event.get("version") or event.get("claude_code_version")
+            transcript.host_model = transcript.host_model or event.get("model")
         elif kind == "assistant":
             for block in (event.get("message") or {}).get("content") or []:
                 if not isinstance(block, dict):
@@ -777,6 +846,9 @@ def _parse_codex(stdout: str) -> Transcript:
         version = event.get("version") or ((event.get("session") or {}) if isinstance(event.get("session"), dict) else {}).get("version")
         if isinstance(version, str) and not transcript.host_version:
             transcript.host_version = version
+        model = event.get("model") or ((event.get("session") or {}) if isinstance(event.get("session"), dict) else {}).get("model")
+        if isinstance(model, str) and model and not transcript.host_model:
+            transcript.host_model = model
         kind = event.get("type")
         if kind == "item.completed":
             item = event.get("item") or {}
@@ -814,7 +886,7 @@ def _parse_codex(stdout: str) -> Transcript:
             # follow-up is not still flagged as failed from the first one.
             transcript.error = None
             usage = event.get("usage") or {}
-            turn_input, turn_breakdown = _sum_input_tokens(usage, ("input_tokens", "cached_input_tokens"))
+            turn_input, turn_breakdown = _codex_input_tokens(usage)
             if turn_input is not None:
                 transcript.input_tokens = (transcript.input_tokens or 0) + turn_input
             for key, value in turn_breakdown.items():
@@ -825,6 +897,8 @@ def _parse_codex(stdout: str) -> Transcript:
         elif kind in ("turn.failed", "error"):
             transcript.error = str(event.get("error") or event.get("message") or kind)
     transcript.turns = completed_items or None
+    if not transcript.host_model:
+        transcript.host_model = "not reported"
     return transcript
 
 
@@ -850,3 +924,23 @@ def _sum_input_tokens(usage: dict, fields: tuple[str, ...]) -> tuple[int | None,
         if value is not None:
             seen = True
     return (sum(parts.values()) if seen else None), parts
+
+
+def _codex_input_tokens(usage: dict) -> tuple[int | None, dict[str, int]]:
+    """Codex's input token total for one turn: `input_tokens` alone.
+
+    Unlike Claude Code's three additive usage parts, Codex's protocol reports
+    `cached_input_tokens` as a *subset* of `input_tokens`, not an addition to
+    it: codex-rs's `TokenUsage::non_cached_input` computes
+    `input_tokens - cached_input_tokens`. Summing the two (as
+    `_sum_input_tokens` does for Claude Code's genuinely additive parts)
+    double-counts the cached portion, so a turn with 1,000 input tokens and
+    800 of them cached previously reported 1,800. The breakdown still keeps
+    both fields, as information only -- `cached_input_tokens` is never added
+    into the total here.
+    """
+    parts = {
+        "input_tokens": _as_int(usage.get("input_tokens")) or 0,
+        "cached_input_tokens": _as_int(usage.get("cached_input_tokens")) or 0,
+    }
+    return _as_int(usage.get("input_tokens")), parts

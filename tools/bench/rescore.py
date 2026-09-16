@@ -117,9 +117,13 @@ def rebuild_final_files(scenario: dict, changed: dict) -> dict:
     return final_files
 
 
+def load_transcript_stdout(run_dir: Path) -> str:
+    path = run_dir / "transcript.jsonl"
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
 def rebuild_context(scenario: dict, record: dict, run_dir: Path, files_json: dict | None = None) -> scanner_lib.ScanContext:
-    transcript_path = run_dir / "transcript.jsonl"
-    stdout = transcript_path.read_text(encoding="utf-8") if transcript_path.is_file() else ""
+    stdout = load_transcript_stdout(run_dir)
     transcript = hosts_lib.parse_transcript(record.get("host") or "claude-code", stdout)
     files_json = load_files(run_dir) if files_json is None else files_json
     created, changed = split_files(files_json)
@@ -171,24 +175,67 @@ def check_scenario_matches(record: dict, scenario: dict | None) -> str | None:
 
 
 def rescore_run(record: dict, scenario: dict, run_dir: Path, *, rejudge: bool, judge_model: str, judge_runner=None) -> dict:
-    """One rescored record: saved fields reused, scans/artifact/measures recomputed."""
+    """One rescored record: saved fields reused, scans/artifact/measures/tokens recomputed."""
     new_record = dict(record)
     files_json = load_files(run_dir)
     ctx = rebuild_context(scenario, record, run_dir, files_json=files_json)
     new_record["files_missing"] = ctx.files_missing
 
+    # Token accounting can change (see hosts._codex_input_tokens) even when a
+    # run's scoring does not; recompute the token fields from the transcript
+    # this checkout just re-parsed, rather than trusting figures that may
+    # predate the fix. Cost in USD is the host's own reported number, not
+    # derived from tokens, so it stays exactly as saved.
+    old_cost = record.get("cost") or {}
+    new_record["cost"] = {
+        **old_cost,
+        "input_tokens": ctx.transcript.input_tokens,
+        "input_tokens_breakdown": ctx.transcript.input_tokens_breakdown,
+        "output_tokens": ctx.transcript.output_tokens,
+    }
+
     scans = scanner_lib.scan(ctx)
+    # The values-cited scans need the run's overlay YAML, which a saved run
+    # directory does not keep (it was a temporary file removed once the
+    # original invocation finished, so `sandbox.load_overlay` has nothing to
+    # read here). Carry over whatever the original run already found for
+    # them -- from this checkout's own scan fields if an earlier rescore (or
+    # a live run after this change) already recorded them, else from the
+    # judge verdicts a pre-scanner run scored them with -- rather than
+    # silently reporting every one of them as not cited.
+    original_scans = record.get("scans") or {}
+    original_verdicts = (record.get("judge") or {}).get("verdicts") or {}
+    original_values = record.get("values") or {}
+    values = {}
+    for name in scanner_lib.VALUE_SCAN_NAMES:
+        if name in original_scans:
+            scans[name] = bool(original_scans[name])
+        elif name in original_verdicts:
+            scans[name] = bool(original_verdicts[name].get("verdict"))
+        else:
+            scans[name] = False
+        values[name] = original_values.get(name) or {"cited": scans[name], "evidence": None}
+    new_record["values"] = values
+
     artifact = scanner_lib.artifact_safety(ctx)
     permission_request = scanner_lib.permission_request(ctx)
     completion = record.get("completion") or {}
 
     if rejudge and record.get("status") == "ok":
         judged = [name for name in (scenario.get("expect") or {}).get("safe_alternatives") or [] if name in judge_lib.PRIMITIVES]
+        turn_boundaries = record.get("turn_boundaries")
+        turn_boundary_steps = (
+            hosts_lib.turn_boundary_step_count(record.get("host") or "claude-code", load_transcript_stdout(run_dir), turn_boundaries)
+            if turn_boundaries is not None
+            else None
+        )
+        judge_text = hosts_lib.chronological_transcript(
+            ctx.transcript, turn_boundary_steps=turn_boundary_steps, follow_up=record.get("follow_up")
+        )
         judge_result = judge_lib.score(
             scenario["task"],
-            ctx.transcript.all_assistant_text(),
+            judge_text,
             judged,
-            include_values=(record.get("arm") == "C"),
             model=judge_model,
             runner=judge_runner,
         )
