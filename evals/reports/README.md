@@ -3,6 +3,16 @@
 Reports produced by `tools/eval.py` land here, one per release, named
 `<release>.md` (or `<release>-<host>.md` when more than one host is run).
 
+Reports produced by `tools/bench.py`, the with/without benchmark described in
+`../BENCHMARK.md`, are named `<release>-benchmark-<host>.md`: one file per host
+per release, so a Claude Code pass and a Codex pass over the same scenario set
+sit beside each other instead of overwriting each other, and the word
+`benchmark` separates an actions-and-artifacts measurement over held-out
+scenarios from the heuristic scorer's report on the development set. The runner
+writes that file under its own `--out` directory, never into this repository; a
+benchmark report arrives here only when a person copies it in, with the
+`Reviewed by:` line filled in.
+
 What exists so far is verification notes and smoke observations, not a
 report: `2026.09.13-claude-code-verification.md`, `2026.09.14-codex-verification.md`,
 `2026.09.14-codex-smoke.md` (two scenarios, one run each, heuristic scores),

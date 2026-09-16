@@ -104,3 +104,68 @@ Whether people keep using the guidance, whether the company's values were
 right, or what happens in ChatGPT and the other paste-only hosts. The pilot
 measures the first; the overlay's owner answers the second; the third waits
 for a host that exposes actions.
+
+## Running it
+
+`tools/bench.py` is the runner for everything above. It reads the held-out
+scenarios from a directory outside the repository, validates them against the
+format and the scanner vocabulary, builds a fresh temporary project for each
+run, scans what the run did and what it left behind, scores the text criteria
+with a judge model, and writes the report. A run writes nothing inside the
+repository: `--out` must point outside it, or at `.bench-runs/`, which Git
+ignores.
+
+Start with a dry run. It validates the set, builds one sandbox per scenario and
+arm, prints the exact host command for each, and calls no model, so it costs
+nothing:
+
+```bash
+python tools/bench.py --scenarios ~/catpilot-private-evals/scenarios \
+  --host claude-code --arms A,B,C --runs 1 --out ~/bench-runs --dry-run
+```
+
+Claude Code, a full pass on the `sonnet` alias:
+
+```bash
+python tools/bench.py --scenarios ~/catpilot-private-evals/scenarios \
+  --host claude-code --arms A,B,C --runs 3 --model sonnet \
+  --judge-model haiku --out ~/bench-runs
+```
+
+Codex CLI, the same set on its default model:
+
+```bash
+python tools/bench.py --scenarios ~/catpilot-private-evals/scenarios \
+  --host codex --arms A,B,C --runs 3 --judge-model haiku --out ~/bench-runs
+```
+
+`--overlay <file>` puts a different company overlay in front of arm C. Without
+it the runner copies `docs/spec/overlay.example.yaml` to a temporary file and
+drops its `templates` entry: the server accepts a template location only when
+`CATPILOT_TEMPLATE_HOSTS` names the host, so the example as shipped loads as an
+invalid policy and arm C would answer from generic defaults while looking
+configured. `--max-turns` caps the host's turns, `--timeout` caps a run's wall
+time, and `--report <path>` copies the finished report somewhere else.
+
+### The clean test identity
+
+Codex loads the user-level `~/.agents/skills` directory into every run, which
+would put skill material into arm A and make the comparison meaningless. The
+runner therefore points `HOME` at a temporary home holding only a copy of
+`~/.codex/auth.json` and a minimal `config.toml`, and unsets `CODEX_HOME` so it
+cannot point back at the real one. With no credentials file to copy there is no
+clean identity to run under, so the runner says so and stops rather than
+running a contaminated arm A. Sign in to Codex on the machine first.
+
+Claude Code gets the same isolation from flags: `--strict-mcp-config` with an
+explicit `--mcp-config` (empty in arms A and B), `--setting-sources project`,
+and `--no-session-persistence`.
+
+### What a run leaves behind
+
+Under `<out>/<host>/`: one directory per run holding the exact command, the raw
+transcript, the files the run created or changed, the judge's raw answer, and a
+`run.json` with the scanner results, the completion check, the measures, and the
+cost the host reported; then `records.json`, `summary.json`, and the report,
+named `<release>-benchmark-<host>.md`. The report's `Reviewed by:` line is left
+unfilled on purpose, with the sample of runs a person has to score by hand.

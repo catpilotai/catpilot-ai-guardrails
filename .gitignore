@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 /.venv/
 /.eval-runs/
+/.bench-runs/
 /private/
 /private-skills/
 overlay.yaml
