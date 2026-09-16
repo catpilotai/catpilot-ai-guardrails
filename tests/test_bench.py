@@ -872,10 +872,15 @@ class CliTests(unittest.TestCase):
             self.assertEqual(cli.check_out_dir(Path(tmp) / "runs"), (Path(tmp) / "runs").resolve())
 
     def test_the_default_overlay_is_the_example_without_its_templates(self):
+        # The shipped example no longer carries a templates entry (it was dropped so the example
+        # loads as approved on the server); the copy must still be template-free either way.
         with tempfile.TemporaryDirectory() as tmp:
             path, note = cli.resolve_overlay(None, Path(tmp))
             self.assertTrue(path.is_file())
-            self.assertIn("templates entry removed", note)
+            self.assertIn("a temporary copy of docs/spec/overlay.example.yaml", note)
+            example = (ROOT / "docs" / "spec" / "overlay.example.yaml").read_text(encoding="utf-8")
+            if "templates:" in example:
+                self.assertIn("templates entry removed", note)
             self.assertNotIn("templates:", path.read_text(encoding="utf-8"))
             self.assertIn("organization:", path.read_text(encoding="utf-8"))
 
