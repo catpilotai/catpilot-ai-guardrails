@@ -340,7 +340,8 @@ def _parse_claude(stdout: str) -> Transcript:
             )
             transcript.output_tokens = _as_int(usage.get("output_tokens"))
             if event.get("is_error") or str(event.get("subtype") or "success") != "success":
-                transcript.error = str(event.get("subtype") or "error")
+                errors = [str(e) for e in (event.get("errors") or []) if str(e).strip()]
+                transcript.error = str(event.get("subtype") or "error") + (": " + "; ".join(errors)[:200] if errors else "")
     if not transcript.final_answer and transcript.assistant_texts:
         transcript.final_answer = transcript.assistant_texts[-1]
     return transcript

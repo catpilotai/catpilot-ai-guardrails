@@ -1049,3 +1049,15 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FailureReasonTests(unittest.TestCase):
+    def test_result_error_subtype_and_errors_are_kept(self):
+        from tools.bench import hosts
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}},
+            {"type": "result", "subtype": "error_max_turns", "is_error": True, "errors": ["Reached maximum number of turns (12)"], "usage": {"input_tokens": 1, "output_tokens": 2}, "total_cost_usd": 0.01, "num_turns": 12},
+        ]
+        text = "\n".join(json.dumps(e) for e in events)
+        transcript = hosts.parse_claude_code_transcript(text) if hasattr(hosts, "parse_claude_code_transcript") else hosts.parse_transcript("claude-code", text)
+        self.assertEqual(transcript.error, "error_max_turns: Reached maximum number of turns (12)")
