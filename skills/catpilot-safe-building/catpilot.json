@@ -43,14 +43,14 @@
         "id": "data-in-prompts",
         "severity": "high",
         "title": "Data in prompts",
-        "version": "1.0.0"
+        "version": "1.0.1"
       },
       {
         "category": "safe-ai-building",
         "id": "hosting-and-where-it-runs",
         "severity": "medium",
         "title": "Hosting and where it runs",
-        "version": "1.0.0"
+        "version": "1.0.1"
       },
       {
         "category": "safe-ai-building",
@@ -64,14 +64,14 @@
         "id": "sharing-and-publishing",
         "severity": "medium",
         "title": "Sharing and publishing",
-        "version": "1.0.0"
+        "version": "1.0.1"
       },
       {
         "category": "safe-ai-building",
         "id": "third-party-services",
         "severity": "medium",
         "title": "Third-party services",
-        "version": "1.0.0"
+        "version": "1.0.1"
       },
       {
         "category": "safe-ai-building",
@@ -91,7 +91,7 @@
     "layout": "single",
     "name": "catpilot-safe-building",
     "tier": "safe-building",
-    "version": "2026.09.13"
+    "version": "2026.09.16"
   },
   "category": "safe-ai-building",
   "control_mappings": {

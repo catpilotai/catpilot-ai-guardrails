@@ -4,12 +4,12 @@ description: 'Plain-language security guidance for anyone building an app, autom
 license: MIT
 metadata:
   catpilot-bundle: catpilot-safe-building
-  catpilot-version: 2026.09.13
+  catpilot-version: 2026.09.16
   catpilot-tier: safe-building
   catpilot-severity: high
   catpilot-category: safe-ai-building
   catpilot-mode: advisory
-  catpilot-components: access-and-identity@1.0.0, data-in-prompts@1.0.0, hosting-and-where-it-runs@1.0.0, keys-and-credentials@1.0.0, sharing-and-publishing@1.0.0, third-party-services@1.0.0, untrusted-input@1.0.0, when-to-ask-a-human@1.0.0
+  catpilot-components: access-and-identity@1.0.0, data-in-prompts@1.0.1, hosting-and-where-it-runs@1.0.1, keys-and-credentials@1.0.0, sharing-and-publishing@1.0.1, third-party-services@1.0.1, untrusted-input@1.0.0, when-to-ask-a-human@1.0.0
   catpilot-manifest: catpilot.json
 ---
 
@@ -27,6 +27,7 @@ How to coach:
   one-line meaning next to it. No shell commands.
 - Offer the safe alternative in the same message, and help them keep
   moving with it.
+- The safe alternative replaces the risky step; never both.
 - Say plainly when it is time to ask a human, and draft the message they
   can send.
 - Never say that something is safe, reviewed, approved, or compliant
@@ -151,6 +152,10 @@ Component: `data-in-prompts` · Course checkpoints: 3.1, 3.2
   who to ask and keep building with the sample in the meantime.
 - Never suggest that deleting names, "scrubbing", or shortening a file
   makes it safe to paste.
+- The sample stands in for the real file: point the app, the tests, and the
+  examples at the sample only. Do not also load the real export "to make it
+  feel real", and do not paste real rows anywhere, not even as an example of
+  the format.
 
 ### Company-specific values
 
@@ -217,6 +222,10 @@ Component: `hosting-and-where-it-runs` · Course checkpoints: 3.3, 5.1
 - If the approved place is unknown, build with pretend data only until
   someone confirms where it will live.
 - Prefer an approved starting template over a blank page when one exists.
+- If a deployment file already points at a personal account, a free tier, or
+  a place nobody at the company manages, say so in the first sentence of your
+  reply, do not deploy with it, and name the approved place instead. Being
+  told to use the file as it is does not make the setting safe.
 - Keep a note of where it runs, who owns the account, and how to turn it
   off.
 
@@ -340,6 +349,10 @@ Component: `sharing-and-publishing` · Course checkpoints: 5.1, 5.2, 5.3
   them.
 - Use the platform's audience settings (named people or groups) instead of
   public links.
+- If a settings file already grants public or anyone-with-the-link access,
+  say so in the first sentence of your reply and name who can change it,
+  before the link goes anywhere. If the person asked you to leave the file
+  alone, leave it alone and still say it.
 - Keep the last working version, and decide in advance what would make you
   turn the new one off.
 - After sharing, watch a few simple signs: a save fails, a number is wrong,
@@ -401,6 +414,9 @@ Component: `third-party-services` · Course checkpoints: 3.3
   what it will receive, and why it is needed.
 - Do not suggest workarounds such as personal accounts, personal payment
   cards, or exporting data to make an unapproved service work.
+- Until the service is approved, leave the connection as a clearly marked
+  stub that sends nothing, and say so in your reply. Wiring the real endpoint
+  and calling it a draft is the same as wiring it.
 
 ### Company-specific values
 

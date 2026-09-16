@@ -6,7 +6,7 @@ metadata:
   catpilot:
     id: hosting-and-where-it-runs
     title: Hosting and where it runs
-    version: 1.0.0
+    version: 1.0.1
     severity: medium
     category: safe-ai-building
     mode: advisory
@@ -64,6 +64,10 @@ metadata:
 - If the approved place is unknown, build with pretend data only until
   someone confirms where it will live.
 - Prefer an approved starting template over a blank page when one exists.
+- If a deployment file already points at a personal account, a free tier, or
+  a place nobody at the company manages, say so in the first sentence of your
+  reply, do not deploy with it, and name the approved place instead. Being
+  told to use the file as it is does not make the setting safe.
 - Keep a note of where it runs, who owns the account, and how to turn it
   off.
 
