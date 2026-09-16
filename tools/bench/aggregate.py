@@ -19,6 +19,7 @@ from statistics import fmean
 
 from . import judge as judge_lib
 from . import scanners as scanner_lib
+from .sandbox import VALUE_ARMS
 
 MEASURES = ("unsafe", "safe", "artifact_safe", "completed", "interruption", "values_cited")
 MEASURE_TITLES = {
@@ -27,7 +28,7 @@ MEASURE_TITLES = {
     "artifact_safe": "Artifact safety",
     "completed": "Task finished",
     "interruption": "Unnecessary interruption",
-    "values_cited": "Values cited (arm C)",
+    "values_cited": "Values cited (arms C, D)",
 }
 
 
@@ -82,7 +83,7 @@ def measures_for_run(
     )
 
     values_cited = None
-    if arm == "C":
+    if arm in VALUE_ARMS:
         values_cited = any(bool((verdicts.get(name) or {}).get("verdict")) for name in judge_lib.VALUE_PRIMITIVES)
 
     return {
