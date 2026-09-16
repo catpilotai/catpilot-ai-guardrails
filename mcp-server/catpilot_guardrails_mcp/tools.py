@@ -190,15 +190,29 @@ SERVICE_SYNONYMS = {"unapproved": True, "new": False, "third party": True, "exte
 CREDENTIAL_WORDS = frozenset("password passwd key token secret credential bearer sign code pin otp".split())
 UNKNOWN_VALUES = frozenset({"", "unknown", "?", "tbd", "n/a"})
 
-# A hosting value that carries one of these words is not approved by resemblance: "Not Internal
-# App Platform", "a custom VM instead of the platform" and "unmanaged app platform" all contain
-# the words of an approved item and mean the opposite.
-HOSTING_NEGATION = re.compile(r"\b(?:not|no|never|instead of|unreviewed|custom|unmanaged)\b", re.IGNORECASE)
 # Free text says "synthetic", "no external users", "instead of the real export" to rule a risk
 # out. A match under one of these does not become a hint.
 HINT_NEGATIONS = ("no", "not", "never", "without", "none", "zero", "instead of", "neither", "nor")
 SYNTHETIC = r"(?:synthetic|made[- ]up|make[- ]believe|fake|fictional|sample|dummy|placeholder|pretend|example\.com)"
 CLAUSE_END = re.compile(r"[.;!?]")
+
+# A data_classes item is synthetic only when the word is not itself being ruled out: "Health
+# records, not synthetic" and "non-synthetic export" name the word to reject it, not to choose
+# it. HINT_NEGATIONS already has "not", "no", "never", "without", "instead of"; these extend it
+# for this check ("non-" is handled separately below, since "non-synthetic" does not tokenize
+# apart into two words).
+SYNTHETIC_NEGATION_EXTRA = ("isn't", "aren't", "rather than", "other than", "except")
+# A real-data cue outweighs a synthetic-looking word: "sample rows and real customer records" is
+# real data, not a safe made-up example. Whole words only, so "surreal" or "realistic" do not count.
+REAL_DATA_CUE = r"\b(?:real|actual|live|production|genuine|customer records|employee records|export from)\b"
+DATA_PROVENANCE_VALUES = ("synthetic", "real", "mixed", "unknown")
+
+# A hosting or service value that names an approved item together with other words, or negates
+# one, is not a plain approval: "Internal App Platform and a personal VPS" and "a new model
+# endpoint instead of the company LLM gateway" both contain an approved item's words but do not
+# simply choose it. HINT_NEGATIONS already has "not", "no", "instead of", "without"; these
+# extend it for this check.
+APPROVED_MENTION_NEGATION_EXTRA = ("rather than", "replacing", "other than", "no longer")
 
 
 def _match(pattern: str, text: str) -> bool:
@@ -280,16 +294,53 @@ def _overlay_hits(items: list[str], text: str, synonyms: dict[str, bool] | None 
     return hits, category
 
 
-def _equals_or_contains(items: list[str], value: str) -> list[str]:
-    """Overlay items an explicit field value matches: the normalized value equals the item, or holds all its content words."""
-    value_words = set(_words(value))
+def _merge_evidence(*groups: list[str]) -> list[str]:
+    """Several evidence lists, flattened and de-duplicated, first occurrence wins."""
+    out: list[str] = []
+    for group in groups:
+        for word in group:
+            if word not in out:
+                out.append(word)
+    return out
+
+
+def _approved_mention(items: list[str], value: str) -> tuple[str, str, list[str]] | None:
+    """How an explicit `hosting` or `services` value relates to one of the approved `items`.
+
+    Returns (kind, item, evidence). "permitted": the value's content words exactly equal one
+    item's, in any order (stop words, punctuation, and plurals aside) -- this is also the old
+    "starts_approved" shortcut, since "approved" is itself a stop word, so "the approved
+    transactional email service" already equals "The approved transactional email service" this
+    way. Otherwise, when an item's words are all present together with other content words,
+    "mixed" (nothing rules it out) or "negated" (a negation -- "not", "instead of", "rather
+    than", "replacing", "other than", "no longer", "without" -- precedes them); evidence is the
+    words beyond the item's own. None when `value` does not name any item at all.
+    """
+    content = _content_words(value)
+    content_set = set(content)
     normalized = " ".join(_words(value))
-    out = []
     for item in items:
         item_words = _content_words(item)
-        if normalized == " ".join(_words(item)) or (item_words and all(w in value_words for w in item_words)):
-            out.append(item)
-    return out
+        if item_words and (normalized == " ".join(_words(item)) or content_set == set(item_words)):
+            return "permitted", item, content
+    for item in items:
+        item_words = _content_words(item)
+        item_set = set(item_words)
+        if item_words and item_set <= content_set:
+            extra = [w for w in content if w not in item_set]
+            kind = "negated" if _negated_approved_mention(value, item_words) else "mixed"
+            return kind, item, extra
+    return None
+
+
+def _negated_approved_mention(value: str, item_words: list[str]) -> bool:
+    """True when a negation precedes the leftmost occurrence of an approved item's words in `value`."""
+    span = None
+    for word in item_words:
+        for m in re.finditer(r"\b" + re.escape(word) + r"[a-z]{0,3}\b", value, re.IGNORECASE):
+            if span is None or m.start() < span[0]:
+                span = (m.start(), m.end())
+    return span is not None and _negated(value, span[0], span[1], APPROVED_MENTION_NEGATION_EXTRA)
 
 
 def _is_credential_class(item: str) -> bool:
@@ -358,8 +409,37 @@ def _audience_category(value: str) -> str:
     return "unknown"
 
 
-def _is_synthetic(value: str) -> bool:
-    return bool(re.search(SYNTHETIC, value, re.IGNORECASE))
+def _synthetic_negation_word(text: str, start: int, end: int) -> str | None:
+    """The word/phrase that means a synthetic-pattern match at [start, end) rules synthetic data
+    out rather than choosing it, or None. Either "not"/"non" sits directly against the match
+    ("non-synthetic", which does not tokenize apart), or a negation occurs earlier in the same
+    clause ("Health records, not synthetic", "rather than sample data", "isn't synthetic")."""
+    immediate = re.search(r"\b(not|non)[\s-]*$", text[:start], re.IGNORECASE)
+    if immediate:
+        return immediate.group(1).lower()
+    before = _clause(text, start, end)[0]
+    m = re.search(r"\b(?:" + "|".join(HINT_NEGATIONS + SYNTHETIC_NEGATION_EXTRA) + r")\b", before, re.IGNORECASE)
+    return m.group(0).lower() if m else None
+
+
+def _data_class_provenance(item: str) -> tuple[bool, list[str], str | None]:
+    """(is_synthetic, evidence, note) inferred from a data_classes item's own words, used when
+    the caller does not pass an explicit `data_provenance`.
+
+    Synthetic only when a SYNTHETIC word appears, is not negated, and no real-data cue is also
+    present. An item with both a synthetic cue and a real cue, or a negated synthetic cue, is
+    evaluated with the real-data rules instead; its evidence and a note say why.
+    """
+    m = re.search(r"\b" + SYNTHETIC + r"\b", item, re.IGNORECASE)
+    if not m:
+        return False, [], None
+    synthetic_word = m.group(0).lower()
+    real_word = _found(REAL_DATA_CUE, item)
+    negation_word = _synthetic_negation_word(item, m.start(), m.end())
+    if real_word or negation_word:
+        evidence = [w for w in (negation_word, synthetic_word, real_word) if w]
+        return False, evidence, "mixed or negated cue; treated as real"
+    return True, [synthetic_word], None
 
 
 def check_plan(
@@ -367,6 +447,7 @@ def check_plan(
     guidance: dict,
     policy: PolicyState,
     data_classes: list[str] | None = None,
+    data_provenance: str | None = None,
     audience: str | None = None,
     hosting: str | None = None,
     services: list[str] | None = None,
@@ -376,9 +457,17 @@ def check_plan(
     """Decide from the explicit fields; read the description only for hints.
 
     `data_types` is the deprecated name for `data_classes` and is merged into it.
+
+    `data_provenance` overrides the text inference for every `data_classes` item: "synthetic"
+    takes the made-up-data branch for all of them; "real" and "mixed" take the real-data rules
+    for all of them, regardless of words like "sample" or "synthetic" in the text; "unknown" is
+    treated as "real" and each data_classes decision carries a note saying so. Any other value
+    is reported back as an error rather than raised.
     """
     if not isinstance(description, str) or not description.strip():
         return _error("invalid-input", "description must be a nonempty string.")
+    if data_provenance is not None and data_provenance not in DATA_PROVENANCE_VALUES:
+        return _error("invalid-input", f"data_provenance must be one of {', '.join(DATA_PROVENANCE_VALUES)}, or omitted.", data_provenance=data_provenance)
     named_classes = [str(d).strip() for d in (list(data_classes or []) + list(data_types or [])) if str(d).strip()]
     named_services = [str(s).strip() for s in (services or []) if str(s).strip()]
     comps = guidance["components"]
@@ -390,7 +479,7 @@ def check_plan(
     labels: dict = {
         "sensitive_data": [], "credentials": False, "external_audience": False, "risky_hosting": False, "unapproved_hosting": False,
         "new_service": False, "untrusted_input": False, "review_trigger": False,
-        "hosting": "unknown", "audience": "unknown", "overlay_rules": [],
+        "hosting": "unknown", "audience": "unknown", "overlay_rules": [], "data_provenance": data_provenance,
     }
 
     def add(component_id: str, severity: str, why: str, rule: str | None = None, overlay_list: str | None = None, evidence: list[str] | None = None, basis: str = "hint"):
@@ -444,7 +533,7 @@ def check_plan(
             labels["risky_hosting"] = True
         if o:
             not_hits, not_category = _overlay_hits(o["hosting"]["not_approved"], value, HOSTING_SYNONYMS)
-            approved_hits = [] if HOSTING_NEGATION.search(value) else _equals_or_contains(o["hosting"]["approved"], value)
+            match = _approved_mention(o["hosting"]["approved"], value)
             if not_hits or not_category:
                 item = not_hits[0][0] if not_hits else "; ".join(o["hosting"]["not_approved"])
                 evidence = not_hits[0][1] if not_hits else not_category
@@ -452,9 +541,18 @@ def check_plan(
                 decide("hosting", value, "prohibited", item, "company overlay", evidence,
                        note="on the company's not-approved hosting list", overlay_list="hosting.not_approved",
                        why=f"Company hosting rule, not approved: {item}.")
-            elif approved_hits:
+            elif match and match[0] == "permitted":
                 labels["hosting"] = "approved"
-                decide("hosting", value, "permitted", approved_hits[0], "company overlay", _content_words(value))
+                decide("hosting", value, "permitted", match[1], "company overlay", _content_words(value))
+            elif match:
+                kind, approved_item, extra = match
+                rule = ("mixed mention: an approved item is named together with something else" if kind == "mixed"
+                        else "negated mention of an approved item")
+                labels["hosting"], labels["unapproved_hosting"] = "unrecognized", True
+                decide("hosting", value, "requires_review", rule, "company overlay", extra, overlay_list="hosting.approved",
+                       note=f"names the approved {approved_item}, " + ("but with something else added" if kind == "mixed" else "but negates it"),
+                       why=(f"An approved hosting is named together with something else: {approved_item}." if kind == "mixed"
+                            else f"This negates the approved hosting {approved_item} instead of choosing it."))
             else:
                 labels["hosting"], labels["unapproved_hosting"] = "unrecognized", True
                 decide("hosting", value, "requires_review", GENERIC_RULES["hosting_approved_list"], "company overlay",
@@ -500,7 +598,15 @@ def check_plan(
         decide("data_classes", "unknown", "unknown", GENERIC_RULES["data_missing"], "generic default", note="no data classes were given")
     for item in named_classes:
         component = "keys-and-credentials" if (_match(CREDENTIALS_PATTERN, item) or _is_credential_class(item)) else "data-in-prompts"
-        if _is_synthetic(item):
+        if data_provenance == "synthetic":
+            is_synthetic, provenance_evidence, provenance_note = True, [], None
+        elif data_provenance in ("real", "mixed"):
+            is_synthetic, provenance_evidence, provenance_note = False, [], None
+        elif data_provenance == "unknown":
+            is_synthetic, provenance_evidence, provenance_note = False, [], "provenance unknown; treated as real"
+        else:
+            is_synthetic, provenance_evidence, provenance_note = _data_class_provenance(item)
+        if is_synthetic:
             ok_hits = _overlay_hits(o["data_classes"]["ok"], item)[0] if o else []
             if ok_hits:
                 decide("data_classes", item, "permitted", ok_hits[0][0], "company overlay", ok_hits[0][1], component=component)
@@ -513,50 +619,62 @@ def check_plan(
                 labels["sensitive_data"].append(f"company data class: {hit[0][0]}")
                 if component == "keys-and-credentials":
                     labels["credentials"] = True
-                decide("data_classes", item, "prohibited", hit[0][0], "company overlay", hit[0][1], component=component,
+                decide("data_classes", item, "prohibited", hit[0][0], "company overlay", _merge_evidence(provenance_evidence, hit[0][1]), component=component,
                        overlay_list="data_classes.never_in_prompts",
-                       why=f"Company data class, never in prompts: {hit[0][0]}.")
+                       why=f"Company data class, never in prompts: {hit[0][0]}.", note=provenance_note)
                 continue
             hit = _overlay_hits(o["data_classes"]["ok_with_approval"], item)[0]
             if hit:
-                decide("data_classes", item, "requires_review", hit[0][0], "company overlay", hit[0][1], component=component,
+                decide("data_classes", item, "requires_review", hit[0][0], "company overlay", _merge_evidence(provenance_evidence, hit[0][1]), component=component,
                        overlay_list="data_classes.ok_with_approval",
-                       why=f"Company data class, allowed only with the owner's approval: {hit[0][0]}.")
+                       why=f"Company data class, allowed only with the owner's approval: {hit[0][0]}.", note=provenance_note)
                 continue
             hit = _overlay_hits(o["data_classes"]["ok"], item)[0]
             if hit:
-                decide("data_classes", item, "permitted", hit[0][0], "company overlay", hit[0][1], component=component)
+                decide("data_classes", item, "permitted", hit[0][0], "company overlay", _merge_evidence(provenance_evidence, hit[0][1]), component=component, note=provenance_note)
                 continue
-            decide("data_classes", item, "unknown", GENERIC_RULES["data_missing"], "company overlay", component=component,
-                   note="not in the company's data classes; ask the owner")
+            decide("data_classes", item, "unknown", GENERIC_RULES["data_missing"], "company overlay", _merge_evidence(provenance_evidence), component=component,
+                   note=provenance_note or "not in the company's data classes; ask the owner")
             continue
         if _match(CREDENTIALS_PATTERN, item):
             labels["credentials"] = True
-            decide("data_classes", item, "prohibited", GENERIC_RULES["data_prohibited"], "generic default", [item.lower()],
+            decide("data_classes", item, "prohibited", GENERIC_RULES["data_prohibited"], "generic default", _merge_evidence(provenance_evidence, [item.lower()]),
                    component="keys-and-credentials",
-                   why="A password, key, or token appears to be part of the plan; it must not be typed into a tool or generated code.")
+                   why="A password, key, or token appears to be part of the plan; it must not be typed into a tool or generated code.", note=provenance_note)
             continue
         generic = next((label for label, pattern in SENSITIVE_DATA.items() if _match(pattern, item)), None)
         if generic:
             outcome = GENERIC_DATA_OUTCOME[generic]
             labels["sensitive_data"].append(generic)
             decide("data_classes", item, outcome, GENERIC_RULES["data_prohibited"] if outcome == "prohibited" else GENERIC_RULES["data_review"],
-                   "generic default", [item.lower()], component=component,
-                   why="Real data of this kind should not go into a prompt, upload, or test: " + generic + ".")
+                   "generic default", _merge_evidence(provenance_evidence, [item.lower()]), component=component,
+                   why="Real data of this kind should not go into a prompt, upload, or test: " + generic + ".", note=provenance_note)
             continue
-        decide("data_classes", item, "unknown", GENERIC_RULES["data_missing"], "generic default", component=component,
-               note="not a class the generic defaults recognize; ask the data's owner")
+        decide("data_classes", item, "unknown", GENERIC_RULES["data_missing"], "generic default", _merge_evidence(provenance_evidence), component=component,
+               note=provenance_note or "not a class the generic defaults recognize; ask the data's owner")
 
     # services
     if not named_services:
         decide("services", "unknown", "unknown", GENERIC_RULES["service_missing"], "generic default", note="no services were given")
     for item in named_services:
-        approved = _equals_or_contains(o["services"]["approved"], item) if o else []
-        starts_approved = bool(re.match(r"^(?:the\s+)?approved\b", item, re.IGNORECASE))
-        if approved or starts_approved:
+        match = _approved_mention(o["services"]["approved"], item) if o else None
+        # "starts_approved": nothing else follows "approved" besides one thing's own words, so a
+        # confirmed mixed or negated mention against the real catalog overrides it.
+        starts_approved = bool(re.match(r"^(?:the\s+)?approved\b", item, re.IGNORECASE)) and (match is None or match[0] == "permitted")
+        if (match and match[0] == "permitted") or starts_approved:
             approved_service_names.append(_content_words(item))
-        if approved:
-            decide("services", item, "permitted", approved[0], "company overlay", _content_words(item))
+        if match and match[0] == "permitted":
+            decide("services", item, "permitted", match[1], "company overlay", _content_words(item))
+            continue
+        if match:
+            kind, approved_item, extra = match
+            rule = ("mixed mention: an approved item is named together with something else" if kind == "mixed"
+                    else "negated mention of an approved item")
+            labels["new_service"] = True
+            decide("services", item, "requires_review", rule, "company overlay", extra, overlay_list="services.approved",
+                   note=f"names the approved {approved_item}, " + ("but with something else added" if kind == "mixed" else "but negates it"),
+                   why=(f"An approved service is named together with something else: {approved_item}." if kind == "mixed"
+                        else f"This negates the approved service {approved_item} instead of choosing it."))
             continue
         if o:
             hit = _overlay_hits(o["services"]["needs_review"], item)[0]

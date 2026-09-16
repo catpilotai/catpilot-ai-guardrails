@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Fixed
+
+- **`check_plan`: negating a word, or naming an approved item together with something else, could still read as safe.** Three inputs the reference MCP server should have flagged came back `permitted`: `data_classes=["Health records, not synthetic"]` (the word "synthetic" took the made-up-data branch before its own negation was checked), and `services=["A new model endpoint instead of the company LLM gateway"]` and `services=["Company LLM gateway and a new model endpoint"]` (both matched because the approved service's words were merely *present* in the value, not the whole of it). `hosting="Internal App Platform and a personal VPS"` had the same gap. `data_classes` text inference now requires a SYNTHETIC word to be un-negated and free of a real-data cue ("real", "actual", "production", "customer records", ...) before an item is read as made-up data; a mixed or negated cue is decided under the real-data rules instead, carrying the trigger words as evidence and a note. `services` and `hosting` now require the whole value to equal an approved entry's words, not merely contain them: a value that names an approved entry together with something else is `requires_review` ("mixed mention: an approved item is named together with something else"), and one where a negation ("not", "instead of", "rather than", "replacing", "other than", "no longer", "without") precedes the approved words is `requires_review` too ("negated mention of an approved item"). A new optional `data_provenance` field (`synthetic`, `real`, `mixed`, `unknown`) lets a caller who already knows a data class's provenance skip the text inference entirely, with `unknown` treated as `real`; an unrecognized value comes back as an `error` in the response, never a crash. `mcp-server/README.md` and the `check_plan` tool docstring updated. Tests in `tests/test_mcp_tools.py` and `tests/test_mcp_server.py`.
+
 ## [2026.09.16] — 2026-09-16
 
 ### Added

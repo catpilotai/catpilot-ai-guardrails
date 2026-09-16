@@ -72,6 +72,7 @@ def get_guidance(topic: str) -> dict[str, Any]:
 def check_plan(
     description: str,
     data_classes: list[str] | None = None,
+    data_provenance: str | None = None,
     audience: str | None = None,
     hosting: str | None = None,
     services: list[str] | None = None,
@@ -87,6 +88,11 @@ def check_plan(
     - data_classes: what data the app will touch, one item per class, in the person's own words
       ("customer names and emails", "synthetic patient records", "an API key"). `data_types` is the old
       name for this field and is merged into it.
+    - data_provenance: where the data_classes items actually come from, when you know it for certain:
+      "synthetic" (made up, shaped like the real thing), "real", "mixed", or "unknown". Overrides the
+      words in data_classes for every item, so "sample" or "synthetic" in the text no longer makes an
+      item that is actually real data read as safe. "unknown" is treated as "real". Leave unset to let
+      the words in each item decide, with "not synthetic", "real", and similar cues read correctly.
     - audience: who can open it ("our ops team", "customers", "anyone with the link").
     - hosting: where it will run ("Internal App Platform", "my personal Replit account").
     - services: software services it will connect to, one per item ("the approved transactional email
@@ -101,7 +107,7 @@ def check_plan(
     human, and a checklist. Advisory: a missing field returns `unknown`, not a pass, and no outcome here
     approves or blocks anything.
     """
-    return tools.check_plan(description, GUIDANCE, _policy(), data_classes, audience, hosting, services, write_access, data_types)
+    return tools.check_plan(description, GUIDANCE, _policy(), data_classes, data_provenance, audience, hosting, services, write_access, data_types)
 
 
 @server.tool(annotations=READ_ONLY, structured_output=True)

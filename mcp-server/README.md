@@ -17,7 +17,7 @@ default.
 | Tool | Input | Returns |
 | --- | --- | --- |
 | `get_guidance(topic)` | `data-in-prompts`, `access`, `hosting`, `sharing`, `credentials`, `third-party`, `untrusted-input`, `review` | what to ask, how to name the risk, the safe alternative, when to stop and ask a human, and the relevant company values with their source |
-| `check_plan(description, data_classes?, audience?, hosting?, services?, write_access?)` | a plain-language plan, plus the fields that decide it | `outcome`, one `decision` per field with the rule that decided it, `hints` from the description, risks ranked by severity with a safer alternative each, one next step, `ask_a_human`, `who_to_ask`, a checklist, and the labels that fired |
+| `check_plan(description, data_classes?, data_provenance?, audience?, hosting?, services?, write_access?)` | a plain-language plan, plus the fields that decide it | `outcome`, one `decision` per field with the rule that decided it, `hints` from the description, risks ranked by severity with a safer alternative each, one next step, `ask_a_human`, `who_to_ask`, a checklist, and the labels that fired |
 | `get_template(kind)` | `internal-lookup-tool`, `form-to-spreadsheet`, `dashboard`, `document-summarizer`, `chatbot-over-docs` | a generic starting point with constraints, and the company's approved starting point as a reference when its overlay names one |
 | `list_approved(category)` | `hosting`, `services`, `data-classes`, `contacts` | the company's items when an approved overlay exists, otherwise generic defaults labeled as such |
 
@@ -34,10 +34,11 @@ outcome. The explicit fields do:
 
 | Field | Type | Values | Outcome |
 | --- | --- | --- | --- |
-| `hosting` | string | where it will run | on the overlay's approved list: `permitted`. On its not-approved list: `prohibited`. Anything else, with an overlay: `requires_review`. A personal account, free tier, trial workspace, home server, or laptop, with no overlay: `requires_review`. Not given, or no overlay to check it against: `unknown` |
+| `hosting` | string | where it will run | the value equal to, or naming only the words of, one of the overlay's approved entries: `permitted`. On its not-approved list: `prohibited`. Naming an approved entry together with other words, or negating one ("not", "instead of", "rather than", ...): `requires_review`. Anything else, with an overlay: `requires_review`. A personal account, free tier, trial workspace, home server, or laptop, with no overlay: `requires_review`. Not given, or no overlay to check it against: `unknown` |
 | `audience` | string | normalized to `internal`, `external`, `public`, `unknown` | `internal`: `permitted`. `external` or `public`: `requires_review`. `unknown`: `unknown` |
-| `data_classes` | list of strings | what data the app touches, one class per item | one decision per item, against the overlay's `never_in_prompts` (`prohibited`), `ok_with_approval` (`requires_review`), and `ok` (`permitted`); with no overlay, payment, government, health, and credential data are `prohibited`, employee and customer records `requires_review`, synthetic or made-up data `permitted`, anything else `unknown` |
-| `services` | list of strings | software services it will connect to | on the overlay's approved list: `permitted`. Everything else: `requires_review` |
+| `data_classes` | list of strings | what data the app touches, one class per item | one decision per item, against the overlay's `never_in_prompts` (`prohibited`), `ok_with_approval` (`requires_review`), and `ok` (`permitted`); with no overlay, payment, government, health, and credential data are `prohibited`, employee and customer records `requires_review`, synthetic or made-up data `permitted`, anything else `unknown`. A word like "sample" or "synthetic" only takes the made-up-data branch when it is not negated ("not synthetic", "non-synthetic") and no real-data cue ("real", "actual", "production", "customer records", ...) is also present; a mixed or negated cue is decided under the real-data rules instead, with a note saying so |
+| `data_provenance` | string, optional | `synthetic`, `real`, `mixed`, or `unknown` | overrides the inference above for every `data_classes` item, regardless of its wording: `synthetic` always takes the made-up-data branch, `real` and `mixed` always take the real-data rules, and `unknown` is treated as `real` with a note on each decision. Any other value comes back as an `error` in the response, not a crash |
+| `services` | list of strings | software services it will connect to | the value equal to, or naming only the words of, one of the overlay's approved entries: `permitted`. Naming an approved entry together with other words, or negating one: `requires_review`. Everything else: `requires_review` |
 | `write_access` | bool | does it write to a system of record (CRM, ERP, HR, finance, tickets, the production database) | `true`: `requires_review`. `false`: `permitted`. Not given: `unknown` |
 
 `data_types` is the old name for `data_classes`; it still works and is merged
@@ -45,7 +46,11 @@ into it. `outcome` is the worst of the decisions, ordered `prohibited` >
 `requires_review` > `unknown` > `permitted`. A missing field is `unknown` and
 adds its question to the checklist, never a pass. Every decision names the
 `rule` that decided it and whether that rule came from the `company overlay`
-or a `generic default`.
+or a `generic default`. Naming an approved hosting or service value alongside
+something else ("Internal App Platform and a personal VPS"), or negating one
+("a new model endpoint instead of the company LLM gateway"), is
+`requires_review`, not `permitted`; only the value itself, or nothing more
+than its own words, is.
 
 `hints` are the findings from the description, each labelled as a hint. A hint
 adds a question and a risk, never an outcome, and a hint under a negation

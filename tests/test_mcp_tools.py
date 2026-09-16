@@ -438,6 +438,26 @@ class CheckPlanDecisionTests(unittest.TestCase):
         self.assertEqual(d["outcome"], "unknown")
         self.assertEqual(d["note"], "no company overlay; generic defaults cannot approve hosting")
 
+    def test_mixed_or_negated_mention_of_an_approved_item_is_requires_review(self):
+        """Naming an approved item together with something else, or negating it, is not a plain approval."""
+        d = self.decision(self.plan(services=["A new model endpoint instead of the company LLM gateway"], policy_state=self.approved), "services")
+        self.assertEqual((d["outcome"], d["rule"], d["source"]), ("requires_review", "negated mention of an approved item", "company overlay"))
+        self.assertEqual(d["evidence"], ["new", "model", "endpoint", "instead"])
+        d = self.decision(self.plan(services=["Company LLM gateway and a new model endpoint"], policy_state=self.approved), "services")
+        self.assertEqual((d["outcome"], d["rule"], d["source"]), ("requires_review", "mixed mention: an approved item is named together with something else", "company overlay"))
+        self.assertEqual(d["evidence"], ["new", "model", "endpoint"])
+        out = self.plan(hosting="Internal App Platform and a personal VPS", policy_state=self.approved)
+        d = self.decision(out, "hosting")
+        self.assertEqual((d["outcome"], d["rule"], d["source"]), ("requires_review", "mixed mention: an approved item is named together with something else", "company overlay"))
+        self.assertEqual(d["evidence"], ["personal", "vps"])
+        self.assertEqual(out["labels"]["hosting"], "unrecognized")
+        self.assertTrue(out["labels"]["unapproved_hosting"])
+        # An exact match, including one that drops the optional leading "The", still permits.
+        for value in ("Company LLM gateway", "The company LLM gateway", "Internal object storage"):
+            with self.subTest(value=value):
+                d = self.decision(self.plan(services=[value], policy_state=self.approved), "services")
+                self.assertEqual(d["outcome"], "permitted")
+
     # ---------------------------------------------------------------- audience
 
     def test_audience_normalizes_and_decides(self):
@@ -529,6 +549,54 @@ class CheckPlanDecisionTests(unittest.TestCase):
         both = self.plan(data_classes=["published product information"], data_types=["cardholder data"], policy_state=self.approved)
         self.assertEqual([d["value"] for d in both["decisions"] if d["field"] == "data_classes"], ["published product information", "cardholder data"])
         self.assertEqual(both["outcome"], "prohibited")
+
+    def test_health_records_not_synthetic_is_prohibited_with_and_without_the_overlay(self):
+        """The word "synthetic" must not take the safe branch before its own negation is checked."""
+        for policy_state in (self.approved, self.none):
+            with self.subTest(overlay=policy_state.status):
+                d = self.decision(self.plan(data_classes=["Health records, not synthetic"], policy_state=policy_state), "data_classes")
+                self.assertEqual(d["outcome"], "prohibited")
+                self.assertEqual(d["note"], "mixed or negated cue; treated as real")
+
+    def test_synthetic_negation_variants_are_read_correctly(self):
+        for value in ("non-synthetic health records", "health records rather than sample data", "Health records, isn't synthetic"):
+            with self.subTest(value=value):
+                d = self.decision(self.plan(data_classes=[value], policy_state=self.approved), "data_classes")
+                self.assertEqual((d["outcome"], d["rule"], d["source"]), ("prohibited", "Health records", "company overlay"))
+                self.assertEqual(d["note"], "mixed or negated cue; treated as real")
+
+    def test_mixed_synthetic_and_real_cue_is_treated_as_real(self):
+        """A cue like "real" or "customer records" outweighs a synthetic-looking word in the same item."""
+        d = self.decision(self.plan(data_classes=["sample rows and real customer records"]), "data_classes")
+        self.assertEqual(d["outcome"], "requires_review")
+        self.assertEqual(d["note"], "mixed or negated cue; treated as real")
+        self.assertIn("sample", d["evidence"])
+        self.assertIn("real", d["evidence"])
+
+    def test_data_provenance_overrides_the_text_inference(self):
+        # "synthetic" forces the made-up-data branch even with no synthetic-sounding word at all.
+        d = self.decision(self.plan(data_classes=["health records"], data_provenance="synthetic", policy_state=self.approved), "data_classes")
+        self.assertEqual(d["outcome"], "permitted")
+        # "real" forces the real-data rules even with a synthetic-sounding word right there.
+        d = self.decision(self.plan(data_classes=["sample health records"], data_provenance="real", policy_state=self.approved), "data_classes")
+        self.assertEqual((d["outcome"], d["rule"]), ("prohibited", "Health records"))
+
+    def test_data_provenance_unknown_is_treated_as_real_with_a_note(self):
+        out = self.plan(data_classes=["sample health records"], data_provenance="unknown", policy_state=self.approved)
+        d = self.decision(out, "data_classes")
+        self.assertEqual(d["outcome"], "prohibited")
+        self.assertEqual(d["note"], "provenance unknown; treated as real")
+        self.assertEqual(out["labels"]["data_provenance"], "unknown")
+
+    def test_invalid_data_provenance_is_an_error_not_a_crash(self):
+        out = self.plan(data_classes=["health records"], data_provenance="maybe", policy_state=self.approved)
+        self.assertEqual(out["error"], "invalid-input")
+        self.assertNotIn("outcome", out)
+        self.assertNotIn("decisions", out)
+
+    def test_data_provenance_label_reports_what_was_given(self):
+        self.assertIsNone(self.plan(data_classes=["health records"])["labels"]["data_provenance"])
+        self.assertEqual(self.plan(data_classes=["health records"], data_provenance="synthetic")["labels"]["data_provenance"], "synthetic")
 
     # ---------------------------------------------------------------- services
 
@@ -632,3 +700,19 @@ class CheckPlanDecisionTests(unittest.TestCase):
         out = self.plan("Real patient records will be searchable")
         self.assertEqual(out["next_step"], out["risks"][0]["safer_alternative"])
         self.assertIn("not approval", self.plan("A timer for the team.")["next_step"])
+
+    def test_fully_benign_plan_is_permitted_overall(self):
+        """Internal audience, synthetic data, approved hosting, approved service, no write access: a clean pass."""
+        out = self.plan(
+            "A small internal tool for the ops team.",
+            audience="our ops team",
+            data_classes=["synthetic patient records"],
+            hosting="Internal App Platform",
+            services=["the company LLM gateway"],
+            write_access=False,
+            policy_state=self.approved,
+        )
+        self.assertEqual(out["outcome"], "permitted")
+        self.assertFalse(out["ask_a_human"])
+        self.assertEqual(out["risks"], [])
+        self.assertTrue(all(d["outcome"] == "permitted" for d in out["decisions"]))
