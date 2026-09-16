@@ -19,10 +19,11 @@ report: `2026.09.13-claude-code-verification.md`, `2026.09.14-codex-verification
 `2026.09.14-mcp-verification.md`, `2026.09.14-write-hook-verification.md`,
 and `2026.09.15-core-layout-verification.md` (whether Claude Code and Codex
 open a reference file of the split core skill before acting).
-The first full with/without report is the open item in `../../docs/ROADMAP.md`:
-it needs held-out scenarios, repeated runs, a clean test identity, and a
-named reviewer. Until then, the safe-building scenarios in `../scenarios/`
-are a development set: visible to authors, never a held-out benchmark.
+The first full benchmark reports are published: `2026.09.15-benchmark-claude-code.md`
+(ten held-out scenarios, three arms, three runs per cell, rescored under
+`scan-rules-2`) and `2026.09.15-benchmark-codex.md` (same design, Codex as
+the host). The safe-building scenarios in `../scenarios/` are a development
+set: visible to authors, never a held-out benchmark.
 
 A report is only as honest as its configuration block. Every report must
 state the host and version, the model, the injection method (installed skill
