@@ -63,6 +63,16 @@ NOT_JUDGED = {
     "error": "run did not complete, not judged",
 }
 
+# Kept in sync by hand with cli.save_files's own copy of this list: cli.py is
+# under a separate, narrower change constraint for this project, so this is
+# not a shared import. A path under one of these segments was never expected
+# to be saved to files.json in the first place, so it is not "missing".
+DEPENDENCY_PATH_SEGMENTS = {".venv", "venv", "node_modules", "__pycache__", ".git", "site-packages"}
+
+
+def _is_dependency_path(path: str) -> bool:
+    return any(part in DEPENDENCY_PATH_SEGMENTS for part in Path(path).parts)
+
 
 # ---------------------------------------------------------------------------
 # Rebuilding a run's saved artifacts into a ScanContext
@@ -122,6 +132,26 @@ def rebuild_context(scenario: dict, record: dict, run_dir: Path) -> scanner_lib.
     )
 
 
+def missing_files(record: dict, files_json: dict) -> list[str]:
+    """Paths `run.json` says the run created or changed that files.json never saved.
+
+    The saved-files budget (`cli.save_files`) can skip a file entirely rather
+    than truncate it, most often because a run's own dependency directory
+    (`.venv`, `node_modules`, ...) crowded it out; a run's `files_omitted`
+    already names those when the run is new enough to carry it, and an older
+    saved run is covered the same way, by diffing what `run.json` declares
+    against what `files.json` actually has. A scan sees a decoy path missing
+    like this fall back to the transcript's write texts instead (see
+    `scanners.loads_decoy_export_at_runtime`), which is why this is reported
+    rather than silently accepted.
+    """
+    declared = list((record.get("files") or {}).get("created") or [])
+    declared += list((record.get("files") or {}).get("changed") or [])
+    declared += list(record.get("files_omitted") or [])
+    saved = {key.split(":", 1)[1] for key in files_json if ":" in key}
+    return sorted({path for path in declared if path not in saved and not _is_dependency_path(path)})
+
+
 # ---------------------------------------------------------------------------
 # Per-run and per-host-directory rescoring
 
@@ -142,6 +172,7 @@ def rescore_run(record: dict, scenario: dict, run_dir: Path, *, rejudge: bool, j
     """One rescored record: saved fields reused, scans/artifact/measures recomputed."""
     new_record = dict(record)
     ctx = rebuild_context(scenario, record, run_dir)
+    new_record["files_missing"] = missing_files(record, load_files(run_dir))
 
     scans = scanner_lib.scan(ctx)
     artifact = scanner_lib.artifact_safety(ctx)
@@ -222,24 +253,34 @@ def find_release(host_dir: Path, host: str) -> str | None:
     return report.name[: -len(f"-benchmark-{host}.md")]
 
 
-def build_config(
-    host_dir: Path,
-    host: str,
-    records: list[dict],
-    scenarios: list[dict],
-    *,
-    rejudge: bool,
-    judge_model: str,
-) -> dict:
-    """As much of the original run's configuration as the saved artifacts carry.
+def load_original_config(host_dir: Path) -> dict | None:
+    """`<host_dir>/config.json`, if `cli.execute` saved one, else None.
 
-    `tools/bench.py` never writes its config dict to disk on its own: it only
-    ever appears rendered into a report's Markdown text. What a saved run
-    carries covers most of what a reader needs -- host, model, judge model and
-    rubric version, the arms and scenarios actually run -- and the rest
-    (max turns, timeout, the skill and overlay identity) is not recoverable
-    from a saved run directory; `report.render` already falls back to
-    "unknown" / "not reported" text for those fields when they are absent.
+    Runs from before that one-line addition (every run this command was first
+    exercised against, 2026-09-15) have no such file, so `build_config` falls
+    back to reconstructing what it can.
+    """
+    path = host_dir / "config.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _reconstruct_config(host_dir: Path, host: str, records: list[dict], scenarios: list[dict]) -> dict:
+    """Best-effort config for a saved run directory with no `config.json`.
+
+    `tools/bench.py` did not always write its config dict to disk on its own:
+    on an older run it only ever appears rendered into a report's Markdown
+    text. What the run itself carries covers most of what a reader needs --
+    host, model, judge model and rubric version, the arms and scenarios
+    actually run -- and the rest (max turns, timeout, the skill and overlay
+    identity) is not recoverable from a saved run directory; `report.render`
+    already falls back to "unknown" / "not reported" text for those fields
+    when they are absent.
     """
     ok = [r for r in records if r.get("status") == "ok"]
     sample = ok[0] if ok else (records[0] if records else {})
@@ -256,33 +297,83 @@ def build_config(
     # None, or it would print as the word "None" instead of falling back.
     date = release.replace(".", "-") if release and re.fullmatch(r"\d{4}\.\d{2}\.\d{2}", release) else None
 
-    if rejudge:
-        judge_model_value, rubric_version_value = judge_model, judge_lib.RUBRIC_VERSION
-        rescore_note = f"Judge re-run on model {judge_model} against rubric {judge_lib.RUBRIC_VERSION}."
-    else:
-        judge_model_value = original_judge.get("model")
-        rubric_version_value = original_judge.get("rubric_version")
-        rescore_note = "Judge verdicts reused from the original run."
-
     config = {
         "host": host,
         "host_version": sample.get("host_version"),
         "model": sample.get("model"),
-        "judge_model": judge_model_value,
-        "rubric_version": rubric_version_value,
-        "scan_rules_version": scanner_lib.SCAN_RULES_VERSION,
+        "judge_model": original_judge.get("model"),
+        "rubric_version": original_judge.get("rubric_version"),
         "arms": arms,
         "runs": runs,
         "scenarios": scenario_list,
-        "rescored_from": f"{host_dir.resolve().parent.name}/{host_dir.resolve().name}",
-        "rescored_on": dt.date.today().isoformat(),
-        "rescore_note": rescore_note,
     }
     if release:
         config["release"] = release
     if date:
         config["date"] = date
     return config
+
+
+def build_config(
+    host_dir: Path,
+    host: str,
+    records: list[dict],
+    scenarios: list[dict],
+    *,
+    rejudge: bool,
+    judge_model: str,
+) -> dict:
+    """The original run's configuration, preferring a saved `config.json`.
+
+    Falls back to `_reconstruct_config` for a run directory saved before
+    `cli.execute` started writing that file. Either way, the rescore-specific
+    fields (scan rules, provenance, the judge note) are layered on the same
+    way, and a `--rejudge` overrides the judge model and rubric version to
+    the ones actually used for the fresh verdicts.
+    """
+    original = load_original_config(host_dir)
+    config = dict(original) if original is not None else _reconstruct_config(host_dir, host, records, scenarios)
+    config.setdefault("host", host)
+
+    if rejudge:
+        config["judge_model"] = judge_model
+        config["rubric_version"] = judge_lib.RUBRIC_VERSION
+        rescore_note = f"Judge re-run on model {judge_model} against rubric {judge_lib.RUBRIC_VERSION}."
+    else:
+        rescore_note = "Judge verdicts reused from the original run."
+
+    config["scan_rules_version"] = scanner_lib.SCAN_RULES_VERSION
+    config["rescored_from"] = f"{host_dir.resolve().parent.name}/{host_dir.resolve().name}"
+    config["rescored_on"] = dt.date.today().isoformat()
+    config["rescore_note"] = rescore_note
+    return config
+
+
+def missing_files_paragraph(missing_by_run: dict[str, list[str]]) -> str:
+    """The note for the rescored report, or "" when nothing was missing."""
+    if not missing_by_run:
+        return ""
+    count = len(missing_by_run)
+    run_ids = ", ".join(f"`{run_id}`" for run_id in sorted(missing_by_run))
+    return (
+        f"{count} run{'s' if count != 1 else ''} had files the original run created but did not save "
+        "(the saved-files budget was spent on dependency directories); their scans use the "
+        f"transcript's write texts for those files. Affected: {run_ids}."
+    )
+
+
+def insert_under_results_table(text: str, paragraph: str) -> str:
+    """`paragraph` right under the Results table -- before its explanatory prose."""
+    if not paragraph:
+        return text
+    anchor = "Unsafe action counts only what a run itself wrote"
+    block = paragraph + "\n\n"
+    if anchor in text:
+        return text.replace(anchor, block + anchor, 1)
+    marker = "### By scenario"
+    if marker in text:
+        return text.replace(marker, block + marker, 1)
+    return text.rstrip("\n") + "\n\n" + paragraph + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +426,10 @@ def main(argv: list[str] | None = None) -> int:
     for record in new_records:
         print(f"{record['run_id']}: rescored ({record.get('status')})")
 
+    missing_by_run = {r["run_id"]: r["files_missing"] for r in new_records if r.get("files_missing")}
+    for run_id, missing in sorted(missing_by_run.items()):
+        print(f"warning: {run_id} is missing saved content for: {', '.join(missing)}")
+
     summary = aggregate_lib.summarize(new_records)
     config = build_config(host_dir, host, new_records, scenarios, rejudge=args.rejudge, judge_model=args.judge_model)
 
@@ -342,6 +437,7 @@ def main(argv: list[str] | None = None) -> int:
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
 
     text = report_lib.render(config, summary, new_records)
+    text = insert_under_results_table(text, missing_files_paragraph(missing_by_run))
     completion_data = rescore_completion.collect(host_dir)
     artifact_lines = rescore_completion.render_lines(
         completion_data["by_arm"], completion_data["by_scenario"], completion_data["strict_by_arm"]

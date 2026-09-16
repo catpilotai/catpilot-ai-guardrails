@@ -277,6 +277,7 @@ def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_d
 
     (host_dir / "records.json").write_text(json.dumps(records, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (host_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    (host_dir / "config.json").write_text(json.dumps(config, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     text = report_lib.render(config, summary, records)
     report_path = host_dir / report_lib.report_name(config["release"], args.host)
     report_path.write_text(text, encoding="utf-8")
@@ -359,7 +360,7 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
         "input_tokens_breakdown": transcript.input_tokens_breakdown,
         "output_tokens": transcript.output_tokens,
     }
-    save_files(run_dir, created, changed)
+    record["files_omitted"] = save_files(run_dir, created, changed, (scenario.get("expect") or {}).get("completion") or {})
 
     if outcome.timed_out:
         record.update(status="failed", failure=f"timed out after {args.timeout}s")
@@ -410,14 +411,58 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
     return record
 
 
-def save_files(run_dir: Path, created: dict, changed: dict) -> None:
+# A file under one of these path segments is never saved to files.json: a
+# run's own .venv or node_modules can hold far more text than a hand-written
+# file, so saving it first (plain alphabetical order sorts a dot-prefixed
+# ".venv" ahead of "app.py") can spend the whole budget on dependencies
+# before ever reaching the file a scan actually needs.
+DEPENDENCY_PATH_SEGMENTS = {".venv", "venv", "node_modules", "__pycache__", ".git", "site-packages"}
+
+
+def _is_dependency_path(path: str) -> bool:
+    return any(part in DEPENDENCY_PATH_SEGMENTS for part in Path(path).parts)
+
+
+def _completion_priority_paths(paths, completion: dict) -> list[str]:
+    """The paths, among `paths`, that the scenario's completion check names.
+
+    `file_exists` names one exact path; `file_glob` can match more than one
+    of the files a run touched. Order among themselves is alphabetical, same
+    as everything else `save_files` was not asked to prioritize.
+    """
+    file_exists = completion.get("file_exists")
+    if file_exists:
+        return [file_exists] if file_exists in paths else []
+    file_glob = completion.get("file_glob")
+    if file_glob:
+        return sorted(path for path in paths if Path(path).match(file_glob))
+    return []
+
+
+def save_files(run_dir: Path, created: dict, changed: dict, completion: dict | None = None) -> list[str]:
+    """Save the files a run touched, skipping dependency directories, under budget.
+
+    The scenario's completion check names the file(s) a scan and a reader
+    care about most, so those go first; everything else follows
+    alphabetically. Returns the paths the budget still forced out (saved on
+    the run record as `files_omitted`), so a later rescore can tell a file
+    the run never touched apart from one that was simply never saved.
+    """
+    completion = completion or {}
     budget = MAX_SAVED_FILE_CHARS
-    contents = {}
+    contents: dict[str, str] = {}
+    omitted: list[str] = []
+
     for group, files in (("created", created), ("changed", changed)):
-        for path, text in files.items():
+        kept = {path: text for path, text in files.items() if not _is_dependency_path(path)}
+        priority = _completion_priority_paths(list(kept), completion)
+        ordered = priority + sorted(path for path in kept if path not in priority)
+        for path in ordered:
             if budget <= 0:
-                break
-            piece = text[:budget]
+                omitted.append(path)
+                continue
+            piece = kept[path][:budget]
             budget -= len(piece)
             contents[f"{group}:{path}"] = piece
     (run_dir / "files.json").write_text(json.dumps(contents, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return omitted
