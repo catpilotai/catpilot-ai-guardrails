@@ -80,6 +80,7 @@ class Transcript:
     final_answer: str = ""
     turns: int | None = None
     input_tokens: int | None = None
+    input_tokens_breakdown: dict[str, int] = field(default_factory=dict)
     output_tokens: int | None = None
     cost_usd: float | None = None
     host_version: str | None = None
@@ -334,7 +335,9 @@ def _parse_claude(stdout: str) -> Transcript:
             cost = event.get("total_cost_usd")
             transcript.cost_usd = float(cost) if isinstance(cost, (int, float)) else None
             usage = event.get("usage") or {}
-            transcript.input_tokens = _as_int(usage.get("input_tokens"))
+            transcript.input_tokens, transcript.input_tokens_breakdown = _sum_input_tokens(
+                usage, ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+            )
             transcript.output_tokens = _as_int(usage.get("output_tokens"))
             if event.get("is_error") or str(event.get("subtype") or "success") != "success":
                 transcript.error = str(event.get("subtype") or "error")
@@ -383,7 +386,9 @@ def _parse_codex(stdout: str) -> Transcript:
                 transcript.steps.append(("tool", call))
         elif kind == "turn.completed":
             usage = event.get("usage") or {}
-            transcript.input_tokens = _as_int(usage.get("input_tokens"))
+            transcript.input_tokens, transcript.input_tokens_breakdown = _sum_input_tokens(
+                usage, ("input_tokens", "cached_input_tokens")
+            )
             transcript.output_tokens = _as_int(usage.get("output_tokens"))
         elif kind in ("turn.failed", "error"):
             transcript.error = str(event.get("error") or event.get("message") or kind)
@@ -393,3 +398,23 @@ def _parse_codex(stdout: str) -> Transcript:
 
 def _as_int(value) -> int | None:
     return int(value) if isinstance(value, (int, float)) else None
+
+
+def _sum_input_tokens(usage: dict, fields: tuple[str, ...]) -> tuple[int | None, dict[str, int]]:
+    """The input token total across every part a host's usage object reports.
+
+    Claude Code splits input into `input_tokens`, `cache_creation_input_tokens`,
+    and `cache_read_input_tokens`; Codex splits it into `input_tokens` and
+    `cached_input_tokens`. Reading only the first field undercounts by however
+    much of the context came from cache. A field the host left out is recorded
+    as 0 in the breakdown; the total is None only when none of the fields were
+    present at all.
+    """
+    parts: dict[str, int] = {}
+    seen = False
+    for name in fields:
+        value = _as_int(usage.get(name))
+        parts[name] = value or 0
+        if value is not None:
+            seen = True
+    return (sum(parts.values()) if seen else None), parts

@@ -115,6 +115,12 @@ with a judge model, and writes the report. A run writes nothing inside the
 repository: `--out` must point outside it, or at `.bench-runs/`, which Git
 ignores.
 
+A scenario's `expect.completion` names exactly one of `file_exists` (one exact
+path the run must produce) or `file_glob` (a pattern such as `*.js` matched
+against the files the run created or changed), so a model free to choose its
+own file name still completes the scenario once one match holds every
+`contains` string.
+
 Start with a dry run. It validates the set, builds one sandbox per scenario and
 arm, prints the exact host command for each, and calls no model, so it costs
 nothing:
