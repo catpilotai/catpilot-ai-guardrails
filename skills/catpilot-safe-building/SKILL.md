@@ -4,12 +4,12 @@ description: 'Plain-language security guidance for anyone building an app, autom
 license: MIT
 metadata:
   catpilot-bundle: catpilot-safe-building
-  catpilot-version: 2026.09.16
+  catpilot-version: 2026.09.16-1
   catpilot-tier: safe-building
   catpilot-severity: high
   catpilot-category: safe-ai-building
   catpilot-mode: advisory
-  catpilot-components: access-and-identity@1.0.0, data-in-prompts@1.0.1, hosting-and-where-it-runs@1.0.1, keys-and-credentials@1.0.0, sharing-and-publishing@1.0.1, third-party-services@1.0.1, untrusted-input@1.0.0, when-to-ask-a-human@1.0.0
+  catpilot-components: access-and-identity@1.0.0, data-in-prompts@1.0.2, hosting-and-where-it-runs@1.0.1, keys-and-credentials@1.0.0, sharing-and-publishing@1.0.1, third-party-services@1.0.2, untrusted-input@1.0.0, when-to-ask-a-human@1.0.0
   catpilot-manifest: catpilot.json
 ---
 
@@ -145,6 +145,9 @@ Component: `data-in-prompts` · Course checkpoints: 3.1, 3.2
   invented names, addresses that are obviously fake, emails ending in
   example.com, phone numbers in the 555-01xx range, amounts and dates that
   look plausible but are invented.
+- The sample stands in for the real file: point the app, the tests, and the
+  examples at the sample only, never also at the real export, and never
+  paste real rows anywhere, even as an example of the format.
 - Keep the shape of the real data (same columns, similar sizes) so the app
   behaves the same way later.
 - If the person truly needs real data to finish, that is a decision for the
@@ -152,10 +155,6 @@ Component: `data-in-prompts` · Course checkpoints: 3.1, 3.2
   who to ask and keep building with the sample in the meantime.
 - Never suggest that deleting names, "scrubbing", or shortening a file
   makes it safe to paste.
-- The sample stands in for the real file: point the app, the tests, and the
-  examples at the sample only. Do not also load the real export "to make it
-  feel real", and do not paste real rows anywhere, not even as an example of
-  the format.
 
 ### Company-specific values
 
@@ -410,13 +409,13 @@ Component: `third-party-services` · Course checkpoints: 3.3
   usually already connected somewhere.
 - Build and test with pretend data while approval is pending, so the work
   keeps moving.
+- Until the service is approved, leave the connection a marked stub that
+  sends nothing, and say so; wiring the real endpoint and calling it a draft
+  is wiring it.
 - Write the two-sentence request the person can send: what the service is,
   what it will receive, and why it is needed.
 - Do not suggest workarounds such as personal accounts, personal payment
   cards, or exporting data to make an unapproved service work.
-- Until the service is approved, leave the connection as a clearly marked
-  stub that sends nothing, and say so in your reply. Wiring the real endpoint
-  and calling it a draft is the same as wiring it.
 
 ### Company-specific values
 

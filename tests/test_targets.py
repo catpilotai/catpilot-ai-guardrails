@@ -57,7 +57,15 @@ class TargetTests(unittest.TestCase):
                 shipped = zf.read(f"catpilot-safe-building/{member}").decode("utf-8")
                 self.assertEqual(shipped, (bundle.DIST_ROOT / "catpilot-safe-building" / member).read_text(), member)
             for info in zf.infolist():
-                self.assertEqual(info.date_time[:3], tuple(int(part) for part in self.cfg["version"].split(".")))
+                stamped = bundle.calver_date(self.cfg["version"])
+                self.assertEqual(info.date_time[:3], (stamped.year, stamped.month, stamped.day))
+
+    def test_paste_targets_keep_the_critical_rules(self):
+        """The condensed renderer keeps the first three safe alternatives per checkpoint, so the rules that matter most must sit there."""
+        for name in ("chatgpt-project-instructions.md", "copilot-agent-instructions.md", "copilot-instructions.md", "AGENTS.md", "lovable-knowledge.md", "bolt-prompt.txt", "replit-instructions.md", "v0-instructions.md"):
+            text = (self.release_dir / name).read_text()
+            for phrase in ("never both", "stands in for the real file", "stub that sends nothing"):
+                self.assertIn(phrase, text, f"{name} lost the rule: {phrase}")
 
     def test_paste_targets_fit_instruction_limits_and_carry_release(self):
         release = self.cfg["version"]

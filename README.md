@@ -34,9 +34,9 @@ Installation makes the instructions available to a compatible host. It does **no
 
 Nobody has to open a terminal.
 
-- **Read the eight checkpoints** in five minutes: [`skills/catpilot-safe-building/SKILL.md`](skills/catpilot-safe-building/SKILL.md), the same text the tool follows. The web page source is [`dist/2026.09.16/web/safe-ai-building.html`](dist/2026.09.16/web/safe-ai-building.html); the formatted page ships with the website pass.
-- **Claude.ai:** download `catpilot-safe-building.zip` from the [latest release](https://github.com/catpilotai/catpilot-ai-guardrails/releases/latest) (also at [`dist/2026.09.16/`](dist/2026.09.16/)) and upload it under Customize → Skills. An organization owner uploads it once under Organization settings → Skills and every member gets it.
-- **ChatGPT, Microsoft Copilot Studio, Lovable, Bolt, Replit, v0:** paste the block for your tool from [`dist/2026.09.16/`](dist/2026.09.16/). Each file says where it goes, and each is under 8,000 characters.
+- **Read the eight checkpoints** in five minutes: [`skills/catpilot-safe-building/SKILL.md`](skills/catpilot-safe-building/SKILL.md), the same text the tool follows. The web page source is [`dist/2026.09.16-1/web/safe-ai-building.html`](dist/2026.09.16-1/web/safe-ai-building.html); the formatted page ships with the website pass.
+- **Claude.ai:** download `catpilot-safe-building.zip` from the [latest release](https://github.com/catpilotai/catpilot-ai-guardrails/releases/latest) (also at [`dist/2026.09.16-1/`](dist/2026.09.16-1/)) and upload it under Customize → Skills. An organization owner uploads it once under Organization settings → Skills and every member gets it.
+- **ChatGPT, Microsoft Copilot Studio, Lovable, Bolt, Replit, v0:** paste the block for your tool from [`dist/2026.09.16-1/`](dist/2026.09.16-1/). Each file says where it goes, and each is under 8,000 characters.
 - **Repository-based agents:** append the `AGENTS.md` or `copilot-instructions.md` block from the same directory.
 
 What it does and does not do: guidance the tool can reference while you build. It is not monitoring, not enforcement, and not a substitute for your company's own controls.
@@ -154,7 +154,7 @@ The bundle uses a baseline-references layout. `SKILL.md` is the baseline: the ho
 
 Components carry control references for **SOC 2, PCI-DSS, ISO 27001, NIST CSF, and OWASP Top 10**, with severity, suggested evidence patterns, and worked negative examples. These references do not establish compliance, current control applicability, or that a check ran. Review mappings against the relevant standard version and customer scope.
 
-### `catpilot-safe-building` (bundle `2026.09.16`; `data-in-prompts`, `hosting-and-where-it-runs`, `sharing-and-publishing`, and `third-party-services` at `1.0.1`, the other four at `1.0.0`)
+### `catpilot-safe-building` (bundle `2026.09.16-1`; `data-in-prompts` and `third-party-services` at `1.0.2`, `hosting-and-where-it-runs` and `sharing-and-publishing` at `1.0.1`, the other four at `1.0.0`)
 
 Plain language for a person with a deadline: one question at a time, the risk in one sentence, the safe alternative, and when to stop and ask a human. Each component mirrors checkpoints in Catpilot's Safe AI-assisted building course (Module 399), so the human course and the tool guidance are one artifact in two forms.
 
@@ -192,8 +192,8 @@ A recognized file layout helps distribution; it does not guarantee that a host l
 ## Versioning
 
 - **Repository releases** are CalVer (`YYYY.MM.DD`), listed on the Releases page and in the badge above, with the details in [`CHANGELOG.md`](CHANGELOG.md).
-- **Source skill components** inside a release are semver. `cloud-cli-safety` is at `1.0.3`; `local-cli-safety`, `secret-blocking`, and `supply-chain` are at `1.0.2`; `database-safety`, `docker-safety`, `language-baseline`, `pii-and-test-data`, and `secrets-management` are at `1.0.1`. Each bumped after gaining the `## Baseline` section the baseline-references layout requires. The bundle frontmatter records which versions of which components shipped.
-- The core bundle is `2026.09.15`; the safe-building bundle is `2026.09.16`. A bundle's version changes only when its content does.
+- **Source skill components** inside a release are semver. `cloud-cli-safety` and `secret-blocking` are at `1.0.3`; `local-cli-safety` and `supply-chain` are at `1.0.2`; `database-safety`, `docker-safety`, `language-baseline`, `pii-and-test-data`, and `secrets-management` are at `1.0.1`. Each bumped after gaining the `## Baseline` section the baseline-references layout requires. The bundle frontmatter records which versions of which components shipped.
+- The core bundle is `2026.09.16`; the safe-building bundle is `2026.09.16-1`, a second content revision on the same day. A bundle's version changes only when its content does.
 
 CalVer matches the cadence of a content repo: each release is a dated snapshot, and the date is the meaningful signal for users and auditors. Semver on individual components carries the breaking-change semantics that matter for downstream consumers.
 
