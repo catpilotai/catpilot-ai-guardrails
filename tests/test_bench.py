@@ -878,8 +878,9 @@ class CliTests(unittest.TestCase):
             path, note = cli.resolve_overlay(None, Path(tmp))
             self.assertTrue(path.is_file())
             self.assertIn("a temporary copy of docs/spec/overlay.example.yaml", note)
-            example = (ROOT / "docs" / "spec" / "overlay.example.yaml").read_text(encoding="utf-8")
-            if "templates:" in example:
+            import yaml
+            example = yaml.safe_load((ROOT / "docs" / "spec" / "overlay.example.yaml").read_text(encoding="utf-8"))
+            if "templates" in example:
                 self.assertIn("templates entry removed", note)
             self.assertNotIn("templates:", path.read_text(encoding="utf-8"))
             self.assertIn("organization:", path.read_text(encoding="utf-8"))
