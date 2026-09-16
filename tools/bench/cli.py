@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bench.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scenarios", type=Path, required=True, help="directory of held-out scenario files, outside any repository")
     parser.add_argument("--host", choices=hosts_lib.HOSTS, required=True)
-    parser.add_argument("--arms", default="A,B,C", help="comma separated: A, B, C")
+    parser.add_argument("--arms", default="A,B,C", help="comma separated: A, B, C, D (D is opt-in, off by default)")
     parser.add_argument("--runs", type=int, default=3, help="repetitions per scenario per arm")
     parser.add_argument("--model", default=None, help="model for the host under test (default: the sonnet alias on Claude Code, the host default on Codex)")
     parser.add_argument("--out", type=Path, required=True, help="directory for run artifacts and the report")
@@ -55,6 +55,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=int, default=600, help="seconds per host run")
     parser.add_argument("--dry-run", action="store_true", help="validate, build one sandbox per scenario and arm, print the commands, and stop")
     parser.add_argument("--report", type=Path, default=None, help="copy the report here as well")
+    parser.add_argument(
+        "--follow-up",
+        nargs="?",
+        const=hosts_lib.DEFAULT_FOLLOW_UP,
+        default=None,
+        metavar="TEXT",
+        help=(
+            "send one uniform second user message after every run's first turn ends, in every "
+            "arm, whether or not the assistant asked a question (default: off; with no TEXT, "
+            f"uses {hosts_lib.DEFAULT_FOLLOW_UP!r})"
+        ),
+    )
     return parser
 
 
@@ -207,27 +219,43 @@ def dry_run(args, scenarios: list[dict], arms: list[str], workspace: Path, overl
             codex_home = workspace / "home"
 
     print(f"\nDry run: {len(scenarios)} scenario(s) x {len(arms)} arm(s), host {args.host}, model {model or 'host default'}.")
-    print(f"Overlay for arm C: {overlay_file}")
+    print(f"Overlay for arms C, D: {overlay_file}")
+    print(f"Follow-up: {args.follow_up or 'none (single turn)'}")
     print("No host is started and no model is called.\n")
 
     for scenario in scenarios:
         for arm in arms:
             directory = workspace / "dry" / scenario["id"] / arm
             box = prepare_run_sandbox(scenario, arm, directory, args.host, overlay_file)
-            command = hosts_lib.build_command(
-                args.host,
-                scenario["task"].strip(),
-                model=model,
-                max_turns=args.max_turns,
-                mcp_config=box.mcp_config,
-            )
             print(f"--- {scenario['id']} arm {arm} ---")
             print(f"project: {box.project}")
             print(f"files:   {', '.join(box.planted)}")
             print(f"skill:   {box.skill_installed_at or 'none'}")
             if args.host == "codex":
                 print(f"env:     HOME={codex_home} (CODEX_HOME unset)")
-            print(f"command: {hosts_lib.printable(command)}")
+            if args.follow_up is None:
+                command = hosts_lib.build_command(
+                    args.host,
+                    scenario["task"].strip(),
+                    model=model,
+                    max_turns=args.max_turns,
+                    mcp_config=box.mcp_config,
+                )
+                print(f"command: {hosts_lib.printable(command)}")
+            else:
+                commands = hosts_lib.dry_run_commands(
+                    args.host,
+                    scenario["task"].strip(),
+                    model=model,
+                    max_turns=args.max_turns,
+                    mcp_config=box.mcp_config,
+                    follow_up=args.follow_up,
+                )
+                for index, command in enumerate(commands, start=1):
+                    label = "command" if len(commands) == 1 else f"command (turn {index})"
+                    print(f"{label}: {hosts_lib.printable(command)}")
+                if args.host == "codex":
+                    print(f"note:    turn 2's real thread id replaces {hosts_lib.DRY_RUN_THREAD_PLACEHOLDER!r} above")
             print()
     return 0
 
@@ -237,7 +265,7 @@ def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_d
     host_dir = out_dir / args.host
     host_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict] = []
-    host_version = claude_version() if args.host == "claude-code" else None
+    host_version = claude_version() if args.host == "claude-code" else codex_version()
 
     for repetition in range(1, args.runs + 1):
         for scenario in scenarios:
@@ -272,6 +300,7 @@ def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_d
         "overlay_note": overlay_note,
         "overlay_hash": sha256_file(overlay_file),
         "isolation": isolation_note(args.host),
+        "follow_up": args.follow_up,
         "scenarios": [{"id": s["id"], "file": s["_file"], "sha256": s["_sha256"]} for s in scenarios],
     }
 
@@ -306,6 +335,22 @@ def claude_version() -> str | None:
     return completed.stdout.strip() or None
 
 
+def codex_version() -> str | None:
+    """Probed once per invocation.
+
+    Unlike Claude Code's `system` event, Codex's own event stream does not
+    carry a version string anywhere (checked against a saved run), so without
+    this probe the report's configuration block has no way to say what ran.
+    """
+    import subprocess
+
+    try:
+        completed = subprocess.run([*hosts_lib.CODEX_COMMAND, "--version"], capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return completed.stdout.strip() or None
+
+
 def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, host_dir: Path, overlay_file: Path, model: str | None) -> dict:
     run_id = f"{scenario['id']}-{arm}-r{repetition}"
     run_dir = host_dir / run_id
@@ -333,10 +378,27 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
 
     box = prepare_run_sandbox(scenario, arm, project, args.host, overlay_file)
     before = sandbox_lib.snapshot(project)
-    command = hosts_lib.build_command(args.host, scenario["task"].strip(), model=model, max_turns=args.max_turns, mcp_config=box.mcp_config)
-    (run_dir / "command.txt").write_text(hosts_lib.printable(command) + "\n", encoding="utf-8")
+    task = scenario["task"].strip()
 
-    outcome = hosts_lib.run_host(command, cwd=project, env=hosts_lib.host_environment(args.host, codex_home), timeout=args.timeout)
+    if args.follow_up is None:
+        # Unchanged from before --follow-up existed: one command, stdin closed.
+        command = hosts_lib.build_command(args.host, task, model=model, max_turns=args.max_turns, mcp_config=box.mcp_config)
+        (run_dir / "command.txt").write_text(hosts_lib.printable(command) + "\n", encoding="utf-8")
+        outcome = hosts_lib.run_host(command, cwd=project, env=hosts_lib.host_environment(args.host, codex_home), timeout=args.timeout)
+    else:
+        outcome = hosts_lib.run_conversation(
+            args.host,
+            task,
+            model=model,
+            max_turns=args.max_turns,
+            mcp_config=box.mcp_config,
+            follow_up=args.follow_up,
+            cwd=project,
+            env=hosts_lib.host_environment(args.host, codex_home),
+            timeout=args.timeout,
+        )
+        (run_dir / "command.txt").write_text(hosts_lib.command_log(outcome) + "\n", encoding="utf-8")
+
     (run_dir / "transcript.jsonl").write_text(outcome.stdout, encoding="utf-8")
     if outcome.stderr:
         (run_dir / "stderr.txt").write_text(outcome.stderr, encoding="utf-8")
@@ -360,6 +422,11 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
         "input_tokens_breakdown": transcript.input_tokens_breakdown,
         "output_tokens": transcript.output_tokens,
     }
+    # Follow-up bookkeeping: null/empty on every run when --follow-up was not given.
+    record["follow_up"] = args.follow_up
+    record["turn_boundaries"] = outcome.turn_boundaries
+    record["turn_exit_status"] = outcome.turn_exit_statuses
+    record["first_turn_error"] = outcome.first_turn_error
     record["files_omitted"] = save_files(run_dir, created, changed, (scenario.get("expect") or {}).get("completion") or {})
 
     if outcome.timed_out:
@@ -391,7 +458,7 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
             scenario["task"],
             transcript.all_assistant_text(),
             judged,
-            include_values=(arm == "C"),
+            include_values=(arm in sandbox_lib.VALUE_ARMS),
             model=args.judge_model,
             cwd=run_dir,
         )

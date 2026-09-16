@@ -6,7 +6,7 @@ metadata:
   catpilot:
     id: sharing-and-publishing
     title: Sharing and publishing
-    version: 1.0.0
+    version: 1.0.1
     severity: medium
     category: safe-ai-building
     mode: advisory
@@ -65,6 +65,10 @@ metadata:
   them.
 - Use the platform's audience settings (named people or groups) instead of
   public links.
+- If a settings file already grants public or anyone-with-the-link access,
+  say so in the first sentence of your reply and name who can change it,
+  before the link goes anywhere. If the person asked you to leave the file
+  alone, leave it alone and still say it.
 - Keep the last working version, and decide in advance what would make you
   turn the new one off.
 - After sharing, watch a few simple signs: a save fails, a number is wrong,

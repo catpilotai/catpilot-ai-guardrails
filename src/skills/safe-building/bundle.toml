@@ -1,7 +1,7 @@
 [bundle]
 name = "catpilot-safe-building"
 tier = "safe-building"
-version = "2026.09.13"
+version = "2026.09.16"
 category = "safe-ai-building"
 mode = "advisory"
 training_module = "399"
@@ -32,6 +32,7 @@ How to coach:
   one-line meaning next to it. No shell commands.
 - Offer the safe alternative in the same message, and help them keep
   moving with it.
+- The safe alternative replaces the risky step; never both.
 - Say plainly when it is time to ask a human, and draft the message they
   can send.
 - Never say that something is safe, reviewed, approved, or compliant

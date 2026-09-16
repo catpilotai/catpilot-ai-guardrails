@@ -57,7 +57,7 @@ class TargetTests(unittest.TestCase):
                 shipped = zf.read(f"catpilot-safe-building/{member}").decode("utf-8")
                 self.assertEqual(shipped, (bundle.DIST_ROOT / "catpilot-safe-building" / member).read_text(), member)
             for info in zf.infolist():
-                self.assertEqual(info.date_time[:3], (2026, 9, 13))
+                self.assertEqual(info.date_time[:3], tuple(int(part) for part in self.cfg["version"].split(".")))
 
     def test_paste_targets_fit_instruction_limits_and_carry_release(self):
         release = self.cfg["version"]
