@@ -6,7 +6,7 @@ metadata:
   catpilot:
     id: third-party-services
     title: Third-party services
-    version: 1.0.1
+    version: 1.0.2
     severity: medium
     category: safe-ai-building
     mode: advisory
@@ -62,13 +62,13 @@ metadata:
   usually already connected somewhere.
 - Build and test with pretend data while approval is pending, so the work
   keeps moving.
+- Until the service is approved, leave the connection a marked stub that
+  sends nothing, and say so; wiring the real endpoint and calling it a draft
+  is wiring it.
 - Write the two-sentence request the person can send: what the service is,
   what it will receive, and why it is needed.
 - Do not suggest workarounds such as personal accounts, personal payment
   cards, or exporting data to make an unapproved service work.
-- Until the service is approved, leave the connection as a clearly marked
-  stub that sends nothing, and say so in your reply. Wiring the real endpoint
-  and calling it a draft is the same as wiring it.
 
 ## Company-specific values
 

@@ -5,7 +5,7 @@ license: MIT
 metadata:
   catpilot:
     id: secret-blocking
-    version: 1.0.2
+    version: 1.0.3
     severity: critical
     category: secrets
     applies_to:
@@ -59,7 +59,7 @@ metadata:
 **Always:**
 - Scan every file write, edit, and diff for secret patterns before it lands, including shell commands with inline credentials or env assignments.
 - Stop and do not write the file when a detection pattern matches; name the provider to the user and propose an environment-variable or secret-manager remediation.
-- Treat a match for Stripe (`sk_live_`/`sk_test_`/`pk_live_`), AWS (`AKIA`/`ASIA`/`aws_secret_access_key`), GitHub (`ghp_`/`gho_`/`ghs_`), GitLab (`glpat-`), Anthropic (`sk-ant-`), OpenAI (`sk-`), Slack (`xox[abprs]-`), Google (`AIza`/`ya29.`), a private-key block (`-----BEGIN ... PRIVATE KEY-----`), or a credentialed DB URI as a stop condition.
+- Treat a match for Stripe (`sk_live_`/`sk_test_`/`rk_live_`; publishable `pk_` keys are not secrets), AWS (`AKIA`/`ASIA`/`aws_secret_access_key`), GitHub (`ghp_`/`gho_`/`ghs_`), GitLab (`glpat-`), Anthropic (`sk-ant-`), OpenAI (`sk-`), Slack (`xox[abprs]-`), Google (`AIza`/`ya29.`), a private-key block (`-----BEGIN ... PRIVATE KEY-----`), or a credentialed DB URI as a stop condition.
 - Use environment variables or a secret manager instead of a literal value.
 - Generate `.env.example` with placeholder values and confirm `.env` is in `.gitignore`.
 - Use clearly fake placeholders (`your-api-key-here`, `REPLACE_ME`) in example code, never realistic-looking strings.
@@ -121,8 +121,6 @@ agent layer, before the file write, is the cheapest place to catch this.
 |---|---|---|
 | `\bsk_live_[A-Za-z0-9]{20,}\b` | Stripe live secret key | `sk_live_51H...` |
 | `\bsk_test_[A-Za-z0-9]{20,}\b` | Stripe test secret key | `sk_test_4eC39...` |
-| `\bpk_live_[A-Za-z0-9]{20,}\b` | Stripe live publishable | `pk_live_51H...` |
-| `\bpk_test_[A-Za-z0-9]{20,}\b` | Stripe test publishable | `pk_test_TYoo...` |
 | `\brk_live_[A-Za-z0-9]{20,}\b` | Stripe restricted key | `rk_live_...` |
 | `\bAKIA[0-9A-Z]{16}\b` | AWS Access Key ID | `AKIAIOSFODNN7EXAMPLE` |
 | `\bASIA[0-9A-Z]{16}\b` | AWS temp Access Key ID | `ASIAIOSFODNN7EXAMPLE` |
@@ -160,6 +158,8 @@ agent layer, before the file write, is the cheapest place to catch this.
 | `(?i)\bbearer\s+[A-Za-z0-9_\-\.=]{16,}\b` | Bearer in headers | `Authorization: Bearer ...` |
 | `(?i)\baz(?:ure)?[_-]?(?:client[_-]?secret\|tenant[_-]?id)\s*[:=]\s*` | Azure credentials | inline assignments |
 | `(?i)\bDATABASE_URL\s*=\s*[^$\s][^"'\s]+` | DB URL set to literal (not `${...}`) | `DATABASE_URL=postgres://...` |
+
+Not secrets, and not stop conditions: Stripe publishable keys (`pk_live_`, `pk_test_`) are designed for client-side code, as Stripe's own documentation says; the shipped Bash hook does not block them either. Flag one only when it sits next to a secret key or in a file that also holds `sk_`/`rk_` values.
 
 > Patterns are intentionally conservative on length/charset to minimize
 > false positives in test fixtures. When in doubt, ask the user.

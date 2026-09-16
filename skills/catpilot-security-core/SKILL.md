@@ -4,13 +4,13 @@ description: 'Catpilot''s universal AI-coding-agent security baseline: advisory 
 license: MIT
 metadata:
   catpilot-bundle: catpilot-security-core
-  catpilot-version: 2026.09.15
+  catpilot-version: 2026.09.16
   catpilot-tier: core
   catpilot-layout: baseline-references
   catpilot-severity: critical
   catpilot-category: security
   catpilot-mode: advisory
-  catpilot-components: cloud-cli-safety@1.0.3, database-safety@1.0.1, docker-safety@1.0.1, language-baseline@1.0.1, local-cli-safety@1.0.2, pii-and-test-data@1.0.1, secret-blocking@1.0.2, secrets-management@1.0.1, supply-chain@1.0.2
+  catpilot-components: cloud-cli-safety@1.0.3, database-safety@1.0.1, docker-safety@1.0.1, language-baseline@1.0.1, local-cli-safety@1.0.2, pii-and-test-data@1.0.1, secret-blocking@1.0.3, secrets-management@1.0.1, supply-chain@1.0.2
   catpilot-manifest: catpilot.json
 ---
 
@@ -206,7 +206,7 @@ Before acting in this area, read [references/secret-blocking.md](references/secr
 **Always:**
 - Scan every file write, edit, and diff for secret patterns before it lands, including shell commands with inline credentials or env assignments.
 - Stop and do not write the file when a detection pattern matches; name the provider to the user and propose an environment-variable or secret-manager remediation.
-- Treat a match for Stripe (`sk_live_`/`sk_test_`/`pk_live_`), AWS (`AKIA`/`ASIA`/`aws_secret_access_key`), GitHub (`ghp_`/`gho_`/`ghs_`), GitLab (`glpat-`), Anthropic (`sk-ant-`), OpenAI (`sk-`), Slack (`xox[abprs]-`), Google (`AIza`/`ya29.`), a private-key block (`-----BEGIN ... PRIVATE KEY-----`), or a credentialed DB URI as a stop condition.
+- Treat a match for Stripe (`sk_live_`/`sk_test_`/`rk_live_`; publishable `pk_` keys are not secrets), AWS (`AKIA`/`ASIA`/`aws_secret_access_key`), GitHub (`ghp_`/`gho_`/`ghs_`), GitLab (`glpat-`), Anthropic (`sk-ant-`), OpenAI (`sk-`), Slack (`xox[abprs]-`), Google (`AIza`/`ya29.`), a private-key block (`-----BEGIN ... PRIVATE KEY-----`), or a credentialed DB URI as a stop condition.
 - Use environment variables or a secret manager instead of a literal value.
 - Generate `.env.example` with placeholder values and confirm `.env` is in `.gitignore`.
 - Use clearly fake placeholders (`your-api-key-here`, `REPLACE_ME`) in example code, never realistic-looking strings.

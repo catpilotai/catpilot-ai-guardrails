@@ -65,7 +65,7 @@
         "id": "secret-blocking",
         "reference": "references/secret-blocking.md",
         "severity": "critical",
-        "version": "1.0.2"
+        "version": "1.0.3"
       },
       {
         "category": "secrets",
@@ -85,7 +85,7 @@
     "layout": "baseline-references",
     "name": "catpilot-security-core",
     "tier": "core",
-    "version": "2026.09.15"
+    "version": "2026.09.16"
   },
   "category": "security",
   "control_mappings": {
