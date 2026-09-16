@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Changed
+
+- **`catpilot-safe-building` 2026.09.16-1: the two new rules now reach the paste targets.** The condensed renderer keeps the first three safe alternatives per checkpoint, so the 2026.09.16 bullets "the sample stands in for the real file" and "leave an unapproved service as a marked stub that sends nothing" were in the full skill but missing from the ChatGPT, Copilot, `AGENTS.md`, and other paste exports (found by an outside review). They now sit within the first three, shortened to fit the paste budget; `data-in-prompts` and `third-party-services` move to 1.0.2, and `tests/test_targets.py` checks that every paste target carries the three critical phrases.
+- **`catpilot-security-core` 2026.09.16, `secret-blocking` 1.0.3: Stripe publishable keys are not secrets.** The baseline listed `pk_live_` as a stop condition and the detection table carried `pk_live_`/`pk_test_` patterns, while Stripe's documentation places publishable keys in client-side code and the shipped Bash hook does not block them. The guidance now matches the hook: `sk_`/`rk_` keys stop the write, `pk_` keys do not, with a note to flag one only when it sits beside a secret key.
+
 ## [2026.09.16] — 2026-09-16
 
 ### Added
