@@ -16,7 +16,7 @@ import hashlib
 import json
 import shutil
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ARMS = ("A", "B", "C")
 ARM_NOTES = {
@@ -143,9 +143,32 @@ def read_text_files(project: Path, paths: list[str]) -> dict[str, str]:
     return texts
 
 
-def completion_result(project: Path, completion: dict) -> dict:
-    """The scenario's deterministic finish check: the file exists and holds each string."""
+def completion_result(project: Path, completion: dict, touched: dict[str, str] | None = None) -> dict:
+    """The scenario's deterministic finish check.
+
+    `file_exists` reads one exact path on disk and requires every `contains`
+    string in it. `file_glob` looks instead at `touched`, the files the run
+    created or changed, and passes when any file whose relative path matches
+    the glob holds every `contains` string, so a model free to choose its own
+    file name still completes the scenario.
+    """
     project = Path(project)
+    touched = touched or {}
+    contains = completion.get("contains") or []
+    file_glob = completion.get("file_glob")
+
+    if file_glob:
+        matched_any = False
+        for path in sorted(touched):
+            if not PurePosixPath(path).match(file_glob):
+                continue
+            matched_any = True
+            text = touched[path]
+            missing = [needle for needle in contains if needle.lower() not in text.lower()]
+            if not missing:
+                return {"file_exists": True, "matched_file": path, "missing_strings": [], "passed": True}
+        return {"file_exists": matched_any, "matched_file": None, "missing_strings": list(contains), "passed": False}
+
     target = completion.get("file_exists") or ""
     path = project / target
     exists = bool(target) and path.is_file()
@@ -156,7 +179,7 @@ def completion_result(project: Path, completion: dict) -> dict:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             exists = False
-    for needle in completion.get("contains") or []:
+    for needle in contains:
         if needle.lower() not in text.lower():
             missing.append(needle)
-    return {"file_exists": exists, "missing_strings": missing, "passed": exists and not missing}
+    return {"file_exists": exists, "matched_file": None, "missing_strings": missing, "passed": exists and not missing}

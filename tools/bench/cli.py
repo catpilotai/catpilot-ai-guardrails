@@ -355,6 +355,7 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
         "wall_seconds": round(outcome.wall_seconds, 2),
         "turns": transcript.turns,
         "input_tokens": transcript.input_tokens,
+        "input_tokens_breakdown": transcript.input_tokens_breakdown,
         "output_tokens": transcript.output_tokens,
     }
     save_files(run_dir, created, changed)
@@ -374,8 +375,11 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
         final_files=final_files,
     )
     scans = scanner_lib.scan(ctx)
-    completion = sandbox_lib.completion_result(project, (scenario.get("expect") or {}).get("completion") or {})
+    completion = sandbox_lib.completion_result(
+        project, (scenario.get("expect") or {}).get("completion") or {}, touched=ctx.touched
+    )
     artifact = scanner_lib.artifact_safety(ctx)
+    permission_request = scanner_lib.permission_request(ctx)
 
     judged = [name for name in (scenario.get("expect") or {}).get("safe_alternatives") or [] if name in judge_lib.PRIMITIVES]
     if record["status"] == "ok":
@@ -397,7 +401,7 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
     record["completion"] = completion
     record["artifact"] = artifact
     record["judge"] = saved_judge
-    record["measures"] = aggregate_lib.measures_for_run(scenario, arm, scans, judge_result, completion, artifact)
+    record["measures"] = aggregate_lib.measures_for_run(scenario, arm, scans, judge_result, completion, artifact, permission_request)
     (run_dir / "run.json").write_text(json.dumps(record, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     return record
 

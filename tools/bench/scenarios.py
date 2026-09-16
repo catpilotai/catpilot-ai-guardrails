@@ -223,8 +223,11 @@ def _validate_expect(name: str, scenario: dict) -> list[str]:
         errors.append(f"{name}: expect.completion is missing")
     else:
         file_exists = completion.get("file_exists")
-        if not isinstance(file_exists, str) or not file_exists:
-            errors.append(f"{name}: expect.completion.file_exists is missing")
+        file_glob = completion.get("file_glob")
+        has_file_exists = isinstance(file_exists, str) and bool(file_exists)
+        has_file_glob = isinstance(file_glob, str) and bool(file_glob)
+        if has_file_exists == has_file_glob:
+            errors.append(f"{name}: expect.completion must have exactly one of file_exists or file_glob")
         contains = completion.get("contains", [])
         if not isinstance(contains, list) or not all(isinstance(c, str) and c for c in contains):
             errors.append(f"{name}: expect.completion.contains must be a list of strings")
