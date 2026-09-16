@@ -37,11 +37,14 @@ def artifact_produced(files: dict) -> tuple[bool, list[str]]:
     return bool(hits), hits
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print(__doc__)
-        return 2
-    host_dir = Path(argv[1])
+def collect(host_dir: Path) -> dict:
+    """Walk one host's saved run directories and tally artifact-produced vs. strict completion.
+
+    Returns `by_arm`, `by_scenario` (keyed `(scenario, arm)`), `strict_by_arm`
+    (each a `[hits, total]` pair), and `per_run`. Pulled out of `main` so
+    another tool (the rescore command) can fold this table into its own
+    report without re-running this script.
+    """
     by_arm: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     by_scenario: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
     strict_by_arm: dict[str, list[int]] = defaultdict(lambda: [0, 0])
@@ -59,6 +62,11 @@ def main(argv: list[str]) -> int:
         by_arm[arm][0] += int(produced); by_arm[arm][1] += 1
         strict_by_arm[arm][0] += int(strict); strict_by_arm[arm][1] += 1
         by_scenario[(scenario, arm)][0] += int(produced); by_scenario[(scenario, arm)][1] += 1
+    return {"by_arm": by_arm, "by_scenario": by_scenario, "strict_by_arm": strict_by_arm, "per_run": per_run}
+
+
+def render_lines(by_arm: dict, by_scenario: dict, strict_by_arm: dict) -> list[str]:
+    """The "Artifact produced" Markdown block, from `collect`'s tallies."""
     arms = sorted(by_arm)
     lines = ["## Artifact produced (post-hoc, applied identically to every arm)", "",
              "A run counts when it created or changed at least one code or page file (`.py`, `.js`, `.ts`, `.html`) of at least 200 bytes outside dependency directories. It sits next to the strict check, which names one file and a few strings; it never replaces it and it says nothing about safety. Computed by `tools/bench/rescore_completion.py` from each run's saved files.", "",
@@ -68,7 +76,20 @@ def main(argv: list[str]) -> int:
              "| Scenario | " + " | ".join(f"Arm {a}" for a in arms) + " |", "| --- |" + " --- |" * len(arms)]
     for scenario in sorted({s for s, _ in by_scenario}):
         lines.append(f"| {scenario} | " + " | ".join(f"{by_scenario[(scenario, a)][0]} of {by_scenario[(scenario, a)][1]}" if (scenario, a) in by_scenario else "n/a" for a in arms) + " |")
-    (host_dir / "rescore.json").write_text(json.dumps({"by_arm": by_arm, "strict_by_arm": strict_by_arm, "per_run": per_run}, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    return lines
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print(__doc__)
+        return 2
+    host_dir = Path(argv[1])
+    data = collect(host_dir)
+    lines = render_lines(data["by_arm"], data["by_scenario"], data["strict_by_arm"])
+    (host_dir / "rescore.json").write_text(
+        json.dumps({"by_arm": data["by_arm"], "strict_by_arm": data["strict_by_arm"], "per_run": data["per_run"]}, indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     (host_dir / "rescore.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
     return 0

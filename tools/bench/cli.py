@@ -259,6 +259,7 @@ def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_d
         "model": model or "the host default",
         "judge_model": args.judge_model,
         "rubric_version": judge_lib.RUBRIC_VERSION,
+        "scan_rules_version": scanner_lib.SCAN_RULES_VERSION,
         "arms": arms,
         "runs": args.runs,
         "max_turns": args.max_turns,
@@ -400,6 +401,7 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
     saved_judge = {key: value for key, value in judge_result.items() if key != "raw"}
 
     record["scans"] = scans
+    record["scan_rules_version"] = scanner_lib.SCAN_RULES_VERSION
     record["completion"] = completion
     record["artifact"] = artifact
     record["judge"] = saved_judge
