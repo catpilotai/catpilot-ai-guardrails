@@ -49,7 +49,7 @@ class ServerContractTests(unittest.IsolatedAsyncioTestCase):
                     # The fields a model has to pass are on the tool's schema, and they decide the outcome.
                     check_plan = next(t for t in listing.tools if t.name == "check_plan")
                     properties = check_plan.input_schema["properties"]
-                    for field in ("description", "data_classes", "audience", "hosting", "services", "write_access", "data_types"):
+                    for field in ("description", "data_classes", "data_provenance", "audience", "hosting", "services", "write_access", "data_types"):
                         self.assertIn(field, properties)
                     result = await client.call_tool("check_plan", {
                         "description": "An internal dashboard. No external users or public links.",
