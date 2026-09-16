@@ -6,6 +6,10 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 
 ## [Unreleased]
 
+### Changed
+
+- **`catpilot-safe-building` 2026.09.16: the safe alternative replaces the risky step.** The first benchmark (`evals/reports/`, 2026-09-15) showed one host doing what it was told and adding the safer path beside it: loading the real export and also making a sample, wiring the unvetted service and also asking whether it was approved, flagging a public or personal-account setting and shipping with it anyway. The coaching preamble now says the safe alternative replaces the risky step, never both; `data-in-prompts` says the sample stands in for the real file and real rows are not pasted anywhere, not even as a format example; `third-party-services` says an unapproved service stays a clearly marked stub that sends nothing; `hosting-and-where-it-runs` and `sharing-and-publishing` say that a deployment or settings file already pointing at a personal account, a free tier, or anyone-with-the-link access is named in the first sentence of the reply and not deployed or shared with, even when the person asked for the file to be left alone. Component versions 1.0.1 for those four; the paste targets keep their first three safe alternatives per checkpoint, so only the preamble line reaches them.
+
 ### Added
 
 - **Benchmark runner: post-hoc artifact measure and real failure reasons.** `tools/bench/rescore_completion.py` computes an "artifact produced" measure from each run's saved files (a code or page file of at least 200 bytes outside dependency directories), reported next to the strict completion check and never instead of it, because a single-turn run that asks first ends without an artifact. A failed run now records the host's own reason (for example `error_max_turns: Reached maximum number of turns (12)`) instead of an often-empty stderr.

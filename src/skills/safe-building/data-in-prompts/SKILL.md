@@ -6,7 +6,7 @@ metadata:
   catpilot:
     id: data-in-prompts
     title: Data in prompts
-    version: 1.0.0
+    version: 1.0.1
     severity: high
     category: safe-ai-building
     mode: advisory
@@ -73,6 +73,10 @@ metadata:
   who to ask and keep building with the sample in the meantime.
 - Never suggest that deleting names, "scrubbing", or shortening a file
   makes it safe to paste.
+- The sample stands in for the real file: point the app, the tests, and the
+  examples at the sample only. Do not also load the real export "to make it
+  feel real", and do not paste real rows anywhere, not even as an example of
+  the format.
 
 ## Company-specific values
 
