@@ -363,7 +363,9 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
     if outcome.timed_out:
         record.update(status="failed", failure=f"timed out after {args.timeout}s")
     elif outcome.exit_status not in (0, None):
-        record.update(status="failed", failure=f"host exited {outcome.exit_status}: {outcome.stderr.strip()[:200]}")
+        # Prefer the host's own reason (for example error_max_turns) over stderr, which is often empty.
+        reason = transcript.error or outcome.stderr.strip()[:200]
+        record.update(status="failed", failure=f"host exited {outcome.exit_status}: {reason}")
     elif transcript.error:
         record.update(status="failed", failure=f"host reported {transcript.error}")
 
