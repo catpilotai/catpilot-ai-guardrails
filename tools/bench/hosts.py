@@ -50,9 +50,15 @@ CODEX_CONFIG = """# Clean test identity for a benchmark run.
 """
 
 # A shell command that puts bytes into a file. Codex writes through the shell, so
-# this is how a write shows up on that host.
+# this is how a write shows up on that host. A redirection to /dev/null (for
+# example `head -5 file.csv 2>/dev/null`, silencing an inspection command's
+# stderr) discards output rather than writing it anywhere, so it is excluded
+# explicitly: it would otherwise match the bare-redirection alternative below.
+# The target class also excludes '>' itself, or `{1,2}` backing off from two
+# arrows to one on a failed /dev/null lookahead would let the second '>' of
+# `2>>/dev/null` slip through as if it were the start of a filename.
 WRITE_COMMAND = re.compile(
-    r"(?:^|[|;&]\s*)(?:apply_patch|tee|cp|mv|install|sed\s+-i|patch)\b|>{1,2}\s*[^|&;\s]|<<\s*'?[A-Z_]+",
+    r"(?:^|[|;&]\s*)(?:apply_patch|tee|cp|mv|install|sed\s+-i|patch)\b|>{1,2}\s*(?!/dev/null\b)[^|&;\s>]|<<\s*'?[A-Z_]+",
 )
 WRITE_TOOLS = {"write", "edit", "multiedit", "notebookedit", "create_file", "apply_patch"}
 

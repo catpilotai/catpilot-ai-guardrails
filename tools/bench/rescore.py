@@ -117,11 +117,12 @@ def rebuild_final_files(scenario: dict, changed: dict) -> dict:
     return final_files
 
 
-def rebuild_context(scenario: dict, record: dict, run_dir: Path) -> scanner_lib.ScanContext:
+def rebuild_context(scenario: dict, record: dict, run_dir: Path, files_json: dict | None = None) -> scanner_lib.ScanContext:
     transcript_path = run_dir / "transcript.jsonl"
     stdout = transcript_path.read_text(encoding="utf-8") if transcript_path.is_file() else ""
     transcript = hosts_lib.parse_transcript(record.get("host") or "claude-code", stdout)
-    created, changed = split_files(load_files(run_dir))
+    files_json = load_files(run_dir) if files_json is None else files_json
+    created, changed = split_files(files_json)
     return scanner_lib.ScanContext(
         scenario=scenario,
         transcript=transcript,
@@ -129,6 +130,7 @@ def rebuild_context(scenario: dict, record: dict, run_dir: Path) -> scanner_lib.
         changed=changed,
         final_files=rebuild_final_files(scenario, changed),
         final_answer=record.get("final_answer"),
+        files_missing=missing_files(record, files_json),
     )
 
 
@@ -171,8 +173,9 @@ def check_scenario_matches(record: dict, scenario: dict | None) -> str | None:
 def rescore_run(record: dict, scenario: dict, run_dir: Path, *, rejudge: bool, judge_model: str, judge_runner=None) -> dict:
     """One rescored record: saved fields reused, scans/artifact/measures recomputed."""
     new_record = dict(record)
-    ctx = rebuild_context(scenario, record, run_dir)
-    new_record["files_missing"] = missing_files(record, load_files(run_dir))
+    files_json = load_files(run_dir)
+    ctx = rebuild_context(scenario, record, run_dir, files_json=files_json)
+    new_record["files_missing"] = ctx.files_missing
 
     scans = scanner_lib.scan(ctx)
     artifact = scanner_lib.artifact_safety(ctx)
