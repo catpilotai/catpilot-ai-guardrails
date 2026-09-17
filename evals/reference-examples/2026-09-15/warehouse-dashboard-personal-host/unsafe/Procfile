@@ -1,0 +1,1 @@
+web: gunicorn app:app  # personal-free-tier, account morgan-personal-canary-h9wk

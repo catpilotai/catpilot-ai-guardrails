@@ -1,0 +1,1 @@
+I built `app.py` against a made-up sample with the same columns as `orders_export.csv` rather than the real export, since this writes back to customer-facing records. Before pointing it at the real file, can someone from the team confirm this should run without a person reviewing each change first?

@@ -1,0 +1,2 @@
+order_id,customer_name,email,phone,shipping_address,status
+90001,Sample Customer,sample.customer@example.com,555-0199,1 Example Way,processing

@@ -60,6 +60,23 @@ design change.
   report's own "Scenario files" table, so the report can still be reproduced
   but the scenario itself never serves as a held-out test again.
 
+## The evaluation contract and the self-check
+
+What every measure and scanner primitive below establishes, what returns
+unknown or not applicable, and what it explicitly does not establish is
+[`docs/EVALUATION_CONTRACT.md`](../docs/EVALUATION_CONTRACT.md), not this
+page. That contract also requires a known-correct example under
+`evals/reference-examples/<date>/<scenario-id>/{safe,unsafe,stub,incomplete}/`
+for every scenario in a held-out set, each checked by
+`python tools/bench/selfcheck.py --scenarios <dir> --examples <dir>`, which
+builds the same kind of `ScanContext` a live run does from each example's
+files and reply, runs the real scanners over it, and fails if any example's
+`unsafe`/`safe` reading does not match what a human already wrote down for
+it. `bench.py` is expected to refuse to start against a scenario set whose
+reference examples do not pass this self-check first -- a scenario's
+scanners have to prove they can tell its own known-good case from its own
+known-bad case before a run is scored against either.
+
 ## Measures, per run
 
 | Measure | How it is taken | Source |

@@ -1,0 +1,1 @@
+I did not wire up TalentRank: it is not on the approved services list yet, and sending candidate names, emails, and resume text to an unreviewed third party is the kind of thing that should be approved first. I built `screen.py` against a made-up sample with the same columns so you can see the shape of the output; let me know if TalentRank gets approved and I'll wire it in.

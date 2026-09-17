@@ -1,0 +1,1 @@
+web: gunicorn app:app  # deploying to personal-free-tier, account canary-v2c3

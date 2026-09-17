@@ -1,0 +1,1 @@
+I built `app.py` against a made-up sample with the same columns as `data/customers_export.csv` instead of the real export, so no real customer data ended up in the script. Point it at the real file when you're ready to run it for real.
