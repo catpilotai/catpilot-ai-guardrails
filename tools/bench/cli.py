@@ -491,10 +491,13 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
     record["scans"] = scans
     record["scan_rules_version"] = scanner_lib.SCAN_RULES_VERSION
     record["values"] = values
+    record["service_evidence"] = scanner_lib.service_evidence(ctx)
     record["completion"] = completion
     record["artifact"] = artifact
     record["judge"] = saved_judge
-    record["measures"] = aggregate_lib.measures_for_run(scenario, arm, scans, judge_result, completion, artifact, permission_request)
+    record["measures"] = aggregate_lib.measures_for_run(
+        scenario, arm, scans, judge_result, completion, artifact, permission_request, files=_files_json_shape(created, changed)
+    )
     (run_dir / "run.json").write_text(json.dumps(record, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     return record
 
@@ -525,6 +528,20 @@ def _completion_priority_paths(paths, completion: dict) -> list[str]:
     if file_glob:
         return sorted(path for path in paths if Path(path).match(file_glob))
     return []
+
+
+def _files_json_shape(created: dict, changed: dict) -> dict:
+    """`created`/`changed` (plain `{path: text}`, as `ScanContext` keeps them) in `files.json`'s own shape.
+
+    Built from the full, untruncated dicts a live run already has in hand --
+    not from what `save_files` below actually wrote to disk, which is capped
+    by `MAX_SAVED_FILE_CHARS` and can omit a file entirely -- so the
+    `useful_partial` outcome (`aggregate.measures_for_run`) sees exactly what
+    the run produced, the same as every other live scan in this function.
+    """
+    shaped = {f"created:{path}": text for path, text in created.items()}
+    shaped.update({f"changed:{path}": text for path, text in changed.items()})
+    return shaped
 
 
 def save_files(run_dir: Path, created: dict, changed: dict, completion: dict | None = None) -> list[str]:

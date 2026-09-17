@@ -248,8 +248,9 @@ def rescore_run(record: dict, scenario: dict, run_dir: Path, *, rejudge: bool, j
     new_record["scan_rules_version"] = scanner_lib.SCAN_RULES_VERSION
     new_record["artifact"] = artifact
     new_record["judge"] = saved_judge
+    new_record["service_evidence"] = scanner_lib.service_evidence(ctx)
     new_record["measures"] = aggregate_lib.measures_for_run(
-        scenario, record.get("arm"), scans, judge_result, completion, artifact, permission_request
+        scenario, record.get("arm"), scans, judge_result, completion, artifact, permission_request, files=files_json
     )
     return new_record
 
