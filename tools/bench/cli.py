@@ -306,6 +306,9 @@ def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_d
         "overlay_note": overlay_note,
         "overlay_hash": sha256_file(overlay_file),
         "isolation": isolation_note(args.host),
+        "claude_tools": hosts_lib.CLAUDE_TOOLS if args.host == "claude-code" else None,
+        "claude_disallowed_skills": list(hosts_lib.CLAUDE_BUILTIN_SKILLS) if args.host == "claude-code" else None,
+        "allowed_tools": hosts_lib.ALLOWED_TOOLS if args.host == "claude-code" else None,
         "follow_up": args.follow_up,
         "scenarios": [{"id": s["id"], "file": s["_file"], "sha256": s["_sha256"]} for s in scenarios],
     }

@@ -2,10 +2,19 @@
 
 Two hosts, both driven in print mode with a machine-readable event stream:
 
-  Claude Code  `claude -p ... --output-format stream-json --verbose`, one JSON
-               object per line, `system` / `assistant` / `user` / `result`
-               events, `tool_use` and `tool_result` content blocks, and
-               `total_cost_usd` plus `usage` on the result.
+  Claude Code  `claude -p ... --output-format stream-json --verbose --tools
+               <CLAUDE_TOOLS> --disallowedTools "Skill(<built-in>),..."`, one
+               JSON object per line, `system` / `assistant` / `user` /
+               `result` events, `tool_use` and `tool_result` content blocks,
+               and `total_cost_usd` plus `usage` on the result. `--tools`
+               keeps the run to the project's own tools (`CLAUDE_TOOLS`) plus
+               whatever `--mcp-config` adds, so the desktop app's own tool set
+               (Task, Artifact, WebFetch, ...) and its built-in skills never
+               leak into a run the way they do from a bare `claude -p`;
+               `--disallowedTools` then denies each of those built-in skills
+               by name (`CLAUDE_BUILTIN_SKILLS`), so only the project's own
+               skill can still be invoked through the `Skill` tool that
+               `--tools` leaves in place.
   Codex CLI    `npx -y @openai/codex exec --skip-git-repo-check --json`, with
                `item.completed` events whose `item.type` is
                `command_execution`, `agent_message`, or `mcp_tool_call`, and a
@@ -57,8 +66,53 @@ CLAUDE_BINARY = "claude"
 CODEX_COMMAND = ("npx", "-y", "@openai/codex")
 ALLOWED_TOOLS = (
     "Skill,Read,Write,Edit,MultiEdit,Glob,Grep,Bash(ls:*),Bash(cat:*),"
+    "Bash(python3:*),Bash(python:*),Bash(node:*),Bash(npm:*),Bash(npx:*),Bash(pip:*),Bash(pip3:*),"
     "mcp__catpilot-guardrails__get_guidance,mcp__catpilot-guardrails__check_plan,"
     "mcp__catpilot-guardrails__get_template,mcp__catpilot-guardrails__list_approved"
+)
+
+# `--tools` restricts what the host advertises to the model, on top of what
+# `--allowedTools` (above) merely pre-approves among tools already advertised.
+# Verified against the standalone `claude` CLI 2.1.241: with no `--tools`
+# flag, a bare `claude -p` advertises the desktop app's full tool set (Task,
+# Artifact, CronCreate, DesignSync, Monitor, PushNotification, SendMessage,
+# ToolSearch, WebFetch, WebSearch, Workflow, ...) alongside its built-in
+# skills, none of which belongs in a benchmark run: on a "page" task the bare
+# host invoked the app's own `artifact-design` skill, wrote the page into the
+# app's scratchpad directory instead of the project, and then stalled the run
+# asking for approval to publish it with the (not pre-approved) `Artifact`
+# tool. `CLAUDE_TOOLS` is what `--tools` is set to instead: the project's own
+# tools, plus whatever `--mcp-config` adds.
+CLAUDE_TOOLS = "Read,Write,Edit,Glob,Grep,Bash,Skill"
+
+# The desktop app's own built-in skills (as opposed to the project's own
+# skill under test, installed in arms B and up), rendered by
+# `claude_disallowed_tools_arg` into one `--disallowedTools` argument,
+# `"Skill(<name>),Skill(<name>),..."`, alongside `CLAUDE_TOOLS`'s `--tools
+# ...,Skill`: `Skill` stays invocable, for the project's own skill, but an
+# attempt to invoke any one of these specific built-in ones comes back denied
+# ("blocked by permission rules") instead of running.
+CLAUDE_BUILTIN_SKILLS = (
+    "deep-research",
+    "design",
+    "design-sync",
+    "dataviz",
+    "artifact-design",
+    "artifact-diagramming",
+    "artifact-capabilities",
+    "update-config",
+    "verify",
+    "debug",
+    "code-review",
+    "simplify",
+    "batch",
+    "fewer-permission-prompts",
+    "doctor",
+    "loop",
+    "schedule",
+    "claude-api",
+    "run",
+    "run-skill-generator",
 )
 CODEX_AUTH = Path("~/.codex/auth.json")
 CODEX_CONFIG = """# Clean test identity for a benchmark run.
@@ -164,6 +218,11 @@ def resolve_model(host: str, model: str | None) -> str | None:
     return DEFAULT_MODEL[host]
 
 
+def claude_disallowed_tools_arg() -> str:
+    """`CLAUDE_BUILTIN_SKILLS` rendered as one `--disallowedTools` argument."""
+    return ",".join(f"Skill({name})" for name in CLAUDE_BUILTIN_SKILLS)
+
+
 def claude_command(task: str, *, model: str | None, max_turns: int, mcp_config_json: str) -> list[str]:
     command = [CLAUDE_BINARY, "-p", task]
     if model:
@@ -174,6 +233,8 @@ def claude_command(task: str, *, model: str | None, max_turns: int, mcp_config_j
         "--max-turns", str(max_turns),
         "--setting-sources", "project",
         "--no-session-persistence",
+        "--tools", CLAUDE_TOOLS,
+        "--disallowedTools", claude_disallowed_tools_arg(),
         "--allowedTools", ALLOWED_TOOLS,
         "--mcp-config", mcp_config_json,
         "--strict-mcp-config",
@@ -198,6 +259,8 @@ def claude_stream_command(*, model: str | None, max_turns: int, mcp_config_json:
         "--max-turns", str(max_turns),
         "--setting-sources", "project",
         "--no-session-persistence",
+        "--tools", CLAUDE_TOOLS,
+        "--disallowedTools", claude_disallowed_tools_arg(),
         "--allowedTools", ALLOWED_TOOLS,
         "--mcp-config", mcp_config_json,
         "--strict-mcp-config",
