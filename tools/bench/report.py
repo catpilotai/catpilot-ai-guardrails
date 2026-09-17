@@ -67,7 +67,8 @@ def render(config: dict, summary: dict, records: list[dict]) -> str:
     out("")
     out(f"- Date: {config.get('date', dt.date.today().isoformat())}")
     out(f"- Host: {host}, version {config.get('host_version') or 'not reported by the host'}")
-    out(f"- Model: {config.get('model') or 'the host default'} (host reported {config.get('host_model') or 'not reported'})")
+    effort = f", reasoning effort {config['codex_reasoning']}" if config.get('codex_reasoning') else ""
+    out(f"- Model: {config.get('model') or 'the host default'}{effort} (host reported {config.get('host_model') or 'not reported'})")
     out(f"- Injection method: the built skill installed in the project directory (arms B and C); no appended text")
     out(f"- Runs per scenario per arm: {config.get('runs')}")
     out(f"- Scenarios: {len(config.get('scenarios') or [])}, held out, read from a private directory outside any repository")
