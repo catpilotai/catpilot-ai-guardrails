@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
-## [Unreleased]
+## [2026.09.17-1] — 2026-09-17
 
 ### Added
 
