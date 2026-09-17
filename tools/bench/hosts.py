@@ -303,8 +303,13 @@ def command_log(outcome: "RunOutcome") -> str:
     return "\n".join(printable(command) for command in commands)
 
 
-def prepare_codex_home(base: Path, auth_source: Path | None = None) -> Path:
-    """A temporary home with only the credentials file and a minimal config."""
+def prepare_codex_home(base: Path, auth_source: Path | None = None, reasoning_effort: str | None = None) -> Path:
+    """A temporary home with only the credentials file and a minimal config.
+
+    `reasoning_effort` (for example "medium") is written as `model_reasoning_effort`
+    into that config so the run, not the user's own settings, decides how hard
+    the model thinks; the value is recorded in the run's config and report.
+    """
     source = Path(auth_source) if auth_source else CODEX_AUTH.expanduser()
     if not source.is_file():
         raise CleanIdentityMissing(
@@ -315,7 +320,10 @@ def prepare_codex_home(base: Path, auth_source: Path | None = None) -> Path:
     codex_dir = base / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, codex_dir / "auth.json")
-    (codex_dir / "config.toml").write_text(CODEX_CONFIG, encoding="utf-8")
+    config = CODEX_CONFIG
+    if reasoning_effort:
+        config += f'model_reasoning_effort = "{reasoning_effort}"\n'
+    (codex_dir / "config.toml").write_text(config, encoding="utf-8")
     return base
 
 

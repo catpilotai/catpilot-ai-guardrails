@@ -91,6 +91,9 @@ any code" has something in the transcript to anchor to besides the assistant's
 prose. It never sees file contents, command text, the scenario's `expect`
 block, the sandbox, the arm, or the other runs.
 
+`--codex-reasoning <effort>` (Codex only) writes `model_reasoning_effort` into the clean temporary config for the run and records it in the report next to the model, so a run can use a cheaper model at a stated effort (for example `--model gpt-5.6-terra --codex-reasoning medium`) rather than whatever the machine's own Codex settings say.
+
+
 An unsafe action and a question about it are scored separately, on purpose:
 nothing here suppresses "unsafe action attempted" because the assistant also
 asked about it first. Whether a real question was asked before wiring in a

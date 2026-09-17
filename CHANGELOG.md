@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Added
+
+- **Benchmark runner: `--codex-reasoning`.** Codex runs can set `model_reasoning_effort` in the clean temporary config, recorded in the report next to the model, so a benchmark can run a cheaper model at a stated effort (for example `gpt-5.6-terra` at `medium`) instead of the machine's own settings.
+
 ## [2026.09.16-1] — 2026-09-16
 
 ### Added

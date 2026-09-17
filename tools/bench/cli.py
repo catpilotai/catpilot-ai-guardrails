@@ -48,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--arms", default="A,B,C", help="comma separated: A, B, C, D, E (D and E are opt-in, off by default)")
     parser.add_argument("--runs", type=int, default=3, help="repetitions per scenario per arm")
     parser.add_argument("--model", default=None, help="model for the host under test (default: the sonnet alias on Claude Code, the host default on Codex)")
+    parser.add_argument("--codex-reasoning", default=None, help="Codex only: model_reasoning_effort for the run (for example medium), written into the clean temporary config and recorded in the report")
     parser.add_argument("--out", type=Path, required=True, help="directory for run artifacts and the report")
     parser.add_argument("--overlay", type=Path, default=None, help="company overlay for arm C (default: a temporary copy of the example overlay)")
     parser.add_argument("--max-turns", type=int, default=12)
@@ -212,7 +213,7 @@ def dry_run(args, scenarios: list[dict], arms: list[str], workspace: Path, overl
     codex_home = None
     if args.host == "codex":
         try:
-            codex_home = hosts_lib.prepare_codex_home(workspace / "home")
+            codex_home = hosts_lib.prepare_codex_home(workspace / "home", reasoning_effort=args.codex_reasoning if args.host == "codex" else None)
         except hosts_lib.CleanIdentityMissing as missing:
             print(f"note: {missing}")
             print("note: the command below shows where the temporary home would be.")
@@ -289,6 +290,7 @@ def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_d
         "host_version": host_version,
         "host_model": host_model,
         "model": model or "the host default",
+        "codex_reasoning": args.codex_reasoning if args.host == "codex" else None,
         "judge_model": args.judge_model,
         "rubric_version": judge_lib.RUBRIC_VERSION,
         "scan_rules_version": scanner_lib.SCAN_RULES_VERSION,

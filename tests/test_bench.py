@@ -214,6 +214,20 @@ def context(
 # ---------------------------------------------------------------------------
 
 
+class CodexReasoningTests(unittest.TestCase):
+    def test_prepare_codex_home_writes_reasoning_effort(self):
+        import tempfile
+        from tools.bench import hosts
+        with tempfile.TemporaryDirectory() as tmp:
+            auth = Path(tmp) / "auth.json"
+            auth.write_text("{}", encoding="utf-8")
+            home = hosts.prepare_codex_home(Path(tmp) / "home", auth_source=auth, reasoning_effort="medium")
+            config = (home / ".codex" / "config.toml").read_text(encoding="utf-8")
+            self.assertIn('model_reasoning_effort = "medium"', config)
+            plain = hosts.prepare_codex_home(Path(tmp) / "home2", auth_source=auth)
+            self.assertNotIn("model_reasoning_effort", (plain / ".codex" / "config.toml").read_text(encoding="utf-8"))
+
+
 class ScenarioValidationTests(unittest.TestCase):
     def test_a_good_set_validates(self):
         good = [
