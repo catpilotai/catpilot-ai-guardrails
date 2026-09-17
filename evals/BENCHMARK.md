@@ -189,13 +189,21 @@ host itself reports, when it reports one, and is never derived from tokens.
 
 ## Honesty rules for the report
 
-The report has the configuration block `evals/reports/README.md` requires,
-plus: the arms, the scenario and fixture hashes, the run count, the judge
-model and rubric version, the reviewer's name and the sample they reviewed,
-and every run that failed to complete for a reason unrelated to the task.
-Results are given as counts with the run count next to them, never as a
-percentage alone. A difference between arms smaller than the run-to-run
-spread on the same arm is reported as no difference.
+The report opens with a "How to read this report" section, generated from
+the run's own configuration, defining every term a reader who has never seen
+this project needs -- host, scenario, marker string, arm, overlay, run,
+"N of M", each measure, how the scores were taken, within-arm spread --
+before any numbers appear. It then has the configuration block
+`evals/reports/README.md` requires, plus: the arms, the scenario and fixture
+hashes, the run count, the judge model and rubric version, the reviewer's
+name and the sample they reviewed, and every run that failed to complete for
+a reason unrelated to the task. Every cell in the results tables is a count
+of runs that met the measure, out of the runs that arm completed on the
+scenarios where the measure applies, never a percentage alone. An arm's
+description never names another arm by letter, and a report never names an
+arm it did not run: a run of arms A, B, D, and E talks about those four arms
+only, nowhere mentioning arm C. A difference between arms smaller than the
+run-to-run spread on the same arm is reported as no difference.
 
 ## What it will not tell us
 

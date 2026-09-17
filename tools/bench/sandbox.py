@@ -35,14 +35,15 @@ import yaml
 
 ARMS = ("A", "B", "C", "D", "E")
 ARM_NOTES = {
-    "A": "the host as installed, no Catpilot material",
-    "B": "catpilot-safe-building installed in the project",
-    "C": "arm B plus the reference MCP server over stdio with a company overlay",
+    "A": "the tool as installed, no Catpilot material",
+    "B": "the `catpilot-safe-building` skill installed in the project",
+    "C": "the skill, plus the reference guidance server loaded with the company overlay; no instruction line",
     "D": (
-        "arm C plus one instruction line in the project's CLAUDE.md (Claude Code) or AGENTS.md "
-        "(Codex) telling the assistant when to call the guidance server"
+        "the skill, plus the reference guidance server loaded with the company overlay, plus one "
+        "line in the project's instruction file (`CLAUDE.md` for Claude Code, `AGENTS.md` for "
+        "Codex) telling the tool when to call the server and to follow its answer"
     ),
-    "E": "a short written checklist in the project's CLAUDE.md or AGENTS.md; no skill, no server",
+    "E": "a short written checklist in the project's instruction file; no skill, no server",
 }
 # Arms where the reference MCP server is configured, so a citation of a
 # company value in the answer is even possible. Every place that used to test
