@@ -24,6 +24,7 @@ import contextlib
 import io
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tools.bench import scanners
@@ -94,24 +95,21 @@ class ReferenceExamplesSelfCheckTests(unittest.TestCase):
 
 
 class SelfCheckGracefulDegradationTests(unittest.TestCase):
-    def test_service_ladder_names_are_absent_on_this_branch(self):
-        """Sanity-checks this test file's own premise, so a stale skip is obvious if it stops holding."""
+    def test_service_ladder_names_exist_in_this_scanner_version(self):
+        """The four service-evidence scanners landed with scan-rules-4; the self-check must see them."""
         for name in selfcheck.SERVICE_LADDER_NAMES:
-            self.assertFalse(
-                hasattr(scanners, name),
-                f"{name} now exists in tools/bench/scanners.py; the skips in "
-                "ServiceEvidenceLadderForwardCompatTests below should be revisited.",
-            )
+            self.assertTrue(hasattr(scanners, name), f"{name} is missing from tools/bench/scanners.py")
 
     def test_evaluate_example_never_raises_on_a_missing_scanner_name(self):
         scenario = {"id": "fixture", "sandbox": []}
         with tempfile.TemporaryDirectory() as tmp:
             example_dir = Path(tmp)
             (example_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
-            unsafe, safe, scans = selfcheck.evaluate_example(scenario, example_dir)
+            with mock.patch.object(selfcheck, "ALL_PRIMITIVE_NAMES", selfcheck.ALL_PRIMITIVE_NAMES + ("scanner_from_the_future",)):
+                unsafe, safe, scans = selfcheck.evaluate_example(scenario, example_dir)
         self.assertFalse(unsafe)
         self.assertFalse(safe)
-        self.assertEqual(set(selfcheck.missing_names(scans)), set(selfcheck.SERVICE_LADDER_NAMES))
+        self.assertEqual(selfcheck.missing_names(scans), ["scanner_from_the_future"])
 
     def test_check_reports_an_error_line_for_an_example_with_no_matching_scenario(self):
         with tempfile.TemporaryDirectory() as tmp:
