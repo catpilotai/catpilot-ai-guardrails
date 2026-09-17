@@ -191,12 +191,12 @@ class OverlayMatchingTests(unittest.TestCase):
         self.assertIn("generic defaults cannot approve hosting", decision["note"])
 
     def test_named_hosting_off_the_approved_list_cites_the_list(self):
-        out = mcp_tools.check_plan("A dashboard for the sales team.", Fixtures.guidance, Fixtures.approved, hosting="a shared workstation in the lab")
+        out = mcp_tools.check_plan("A dashboard for the sales team.", Fixtures.guidance, Fixtures.approved, hosting="a shared machine in the lab")
         risk = self.hosting_risk(out)
         self.assertEqual(out["labels"]["hosting"], "unrecognized")
         self.assertEqual(risk["overlay_list"], "hosting.approved")
         self.assertIn("Internal App Platform (company sign-in)", risk["rule"])
-        self.assertEqual(risk["evidence"], ["shared", "workstation", "lab"])
+        self.assertEqual(risk["evidence"], ["shared", "machine", "lab"])
         # A weak synonym alone does not fire; with one of the item's own words it does and names the item.
         out = mcp_tools.check_plan("A dashboard for the sales team.", Fixtures.guidance, Fixtures.approved, hosting="my personal Replit account")
         self.assertEqual(self.hosting_risk(out)["rule"], "Personal cloud accounts")
@@ -422,7 +422,7 @@ class CheckPlanDecisionTests(unittest.TestCase):
         self.assertEqual((risk["basis"], risk["severity"], risk["overlay_list"]), ("decision", "high", "hosting.not_approved"))
 
     def test_hosting_off_both_lists_needs_review_and_notes_the_approved_list(self):
-        out = self.plan(hosting="a shared workstation in the lab", policy_state=self.approved)
+        out = self.plan(hosting="a shared machine in the lab", policy_state=self.approved)
         d = self.decision(out, "hosting")
         self.assertEqual((d["outcome"], d["rule"]), ("requires_review", "hosting must be on the company's approved list"))
         self.assertIn("Internal App Platform (company sign-in)", d["note"])
@@ -457,6 +457,65 @@ class CheckPlanDecisionTests(unittest.TestCase):
             with self.subTest(value=value):
                 d = self.decision(self.plan(services=[value], policy_state=self.approved), "services")
                 self.assertEqual(d["outcome"], "permitted")
+
+    # ---------------------------------------------------------------- hosting: not deployed
+
+    def test_not_deployed_hosting_is_permitted_with_an_internal_audience(self):
+        """A hosting value that says the thing is never deployed anywhere is permitted, not
+        `requires_review` for missing the approved list -- there is nothing to approve."""
+        for value in (
+            "local existing workspace; no deployment",
+            "not deployed",
+            "developer-controlled local execution; no new hosting",
+        ):
+            with self.subTest(value=value):
+                out = self.plan(hosting=value, audience="internal staff", policy_state=self.approved)
+                d = self.decision(out, "hosting")
+                self.assertEqual((d["outcome"], d["rule"], d["source"]),
+                                  ("permitted", "not deployed; hosting is reviewed when the thing is published for others", "generic default"))
+                self.assertEqual(out["labels"]["hosting"], "not_deployed")
+                self.assertEqual(out["risks"], [])
+
+    def test_laptop_only_hosting_is_requires_review_with_an_internal_audience(self):
+        """Unlike the plain not-deployed cues, a machine-only cue ("my laptop") is a machine
+        other people depend on once the audience is not the builder alone -- not the old
+        `prohibited` from matching "laptop" against the whole not-approved list."""
+        out = self.plan(hosting="runs on my laptop only", audience="internal staff", policy_state=self.approved)
+        d = self.decision(out, "hosting")
+        self.assertEqual((d["outcome"], d["rule"], d["source"]),
+                          ("requires_review", "a machine other people depend on is not managed hosting", "generic default"))
+        self.assertEqual(out["labels"]["hosting"], "not_deployed")
+        risk = next(r for r in out["risks"] if r["component"] == "hosting-and-where-it-runs")
+        self.assertEqual(risk["basis"], "decision")
+
+    def test_laptop_only_hosting_depends_on_who_else_is_the_audience(self):
+        out = self.plan(hosting="runs on my laptop only", audience="just me", policy_state=self.approved)
+        self.assertEqual(self.decision(out, "hosting")["outcome"], "permitted")
+        self.assertEqual(out["labels"]["hosting"], "not_deployed")
+        out = self.plan(hosting="runs on my laptop only", audience="the whole company", policy_state=self.approved)
+        self.assertEqual(self.decision(out, "hosting")["outcome"], "requires_review")
+
+    def test_not_deployed_hosting_stays_permitted_for_an_external_audience_but_the_plan_does_not(self):
+        """A script that never leaves the builder's machine is not hosting even when its output
+        is for others; the audience decision, not the hosting decision, is what needs review."""
+        out = self.plan(hosting="not deployed", audience="customers", policy_state=self.approved)
+        d = self.decision(out, "hosting")
+        self.assertEqual(d["outcome"], "permitted")
+        self.assertEqual(out["labels"]["hosting"], "not_deployed")
+        self.assertEqual(out["outcome"], "requires_review")
+        self.assertTrue(out["ask_a_human"])
+
+    def test_not_deployed_shortcut_skipped_when_an_approved_entry_is_also_named(self):
+        out = self.plan(hosting="local Internal App Platform", policy_state=self.approved)
+        self.assertNotEqual(out["labels"]["hosting"], "not_deployed")
+        d = self.decision(out, "hosting")
+        self.assertEqual((d["outcome"], d["rule"]), ("requires_review", "mixed mention: an approved item is named together with something else"))
+
+    def test_not_deployed_shortcut_skipped_for_a_free_tier_on_a_laptop(self):
+        out = self.plan(hosting="free tier on my laptop", policy_state=self.approved)
+        self.assertNotEqual(out["labels"]["hosting"], "not_deployed")
+        d = self.decision(out, "hosting")
+        self.assertEqual((d["outcome"], d["rule"]), ("prohibited", "Free-tier hosting"))
 
     # ---------------------------------------------------------------- audience
 
@@ -716,3 +775,21 @@ class CheckPlanDecisionTests(unittest.TestCase):
         self.assertFalse(out["ask_a_human"])
         self.assertEqual(out["risks"], [])
         self.assertTrue(all(d["outcome"] == "permitted" for d in out["decisions"]))
+
+    def test_fully_benign_local_plan_is_permitted_with_no_hosting_question(self):
+        """A never-deployed local tool for an internal audience: permitted overall, and the
+        hosting question is not left in the checklist since hosting has already been answered."""
+        out = self.plan(
+            "A small internal tool for the ops team that never leaves my machine.",
+            audience="our ops team",
+            data_classes=["synthetic patient records"],
+            hosting="not deployed",
+            services=["the company LLM gateway"],
+            write_access=False,
+            policy_state=self.approved,
+        )
+        self.assertEqual(out["outcome"], "permitted")
+        self.assertFalse(out["ask_a_human"])
+        self.assertEqual(out["risks"], [])
+        self.assertEqual(out["labels"]["hosting"], "not_deployed")
+        self.assertNotIn(self.guidance["components"]["hosting-and-where-it-runs"]["ask"][0], out["checklist"])

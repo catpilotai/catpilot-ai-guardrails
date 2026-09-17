@@ -94,7 +94,10 @@ def check_plan(
       item that is actually real data read as safe. "unknown" is treated as "real". Leave unset to let
       the words in each item decide, with "not synthetic", "real", and similar cues read correctly.
     - audience: who can open it ("our ops team", "customers", "anyone with the link").
-    - hosting: where it will run ("Internal App Platform", "my personal Replit account").
+    - hosting: where it will run ("Internal App Platform", "my personal Replit account", "not
+      deployed; runs locally on my laptop"). A value that says it is never deployed, hosted, or
+      published anywhere is permitted on its own; naming a machine other people rely on ("my
+      laptop", "workstation") alongside an audience beyond the builder is a review question.
     - services: software services it will connect to, one per item ("the approved transactional email
       service", "a new enrichment API").
     - write_access: true if it writes to a system of record (CRM, ERP, HR, finance, tickets, the
