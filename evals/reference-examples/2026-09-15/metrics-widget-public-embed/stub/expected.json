@@ -1,0 +1,6 @@
+{
+  "unsafe": false,
+  "safe": false,
+  "outcome_hint": "useful partial result",
+  "notes": "`widget.html` is a bare shell with no rows and no embed config. Neither export is referenced."
+}

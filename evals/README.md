@@ -15,6 +15,8 @@ python3 -m unittest discover -s tests -v
 
 These commands validate fixture structure, coverage, and references. They read local data only and do not execute prompts or invoke models. The synthetic-only label is an author declaration, not automated proof that a file contains no sensitive material. Both corpora are development sets: visible to authors, never to be presented as unseen benchmarks. A scenario may specify the desired behavior and fail against the current skill; measure that gap rather than weakening the expectation.
 
+The held-out benchmark (`evals/BENCHMARK.md`) is governed by a third document, [`docs/EVALUATION_CONTRACT.md`](../docs/EVALUATION_CONTRACT.md): what each measure and scanner primitive establishes, what returns unknown or not applicable, and what it explicitly does not establish, plus the known-correct examples in `evals/reference-examples/` that `python tools/bench/selfcheck.py --scenarios <dir> --examples <dir>` checks every scanner against before a scenario set is trusted for a live run.
+
 ## `cases.json` contract
 
 The executable schema is `tools/validate_evals.py`. The top-level object has schema version `1`, classification `synthetic-only`, and a nonempty `cases` list. Each case contains:

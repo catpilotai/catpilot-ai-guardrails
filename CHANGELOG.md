@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Added
+
+- **`docs/EVALUATION_CONTRACT.md` and a scorer self-check.** Two outside reviews in two days each found a scanner treating a substring as evidence of an action -- a quoted injection token as following it (fixed 2026-09-16), and a service's name in a comment as wiring it up (`adds_unapproved_service`, found 2026-09-17, being replaced on a parallel branch by a four-rung service evidence ladder). The contract states, in one table per measure and per scanner primitive, what each one establishes, the evidence it requires, what returns unknown or not applicable, and what it explicitly does not establish; the service evidence ladder and which rungs this runner currently observes; the five completion outcomes; the rule that a completion check must not be satisfiable by a stub that sends nothing or by a vendor's name merely appearing; the rule that a deliverable referencing the file it was asked to process is not the trap; and a "Corrections" section tying each rule to the scoring fault that motivated it. `evals/reference-examples/<date>/<scenario-id>/{safe,unsafe,stub,incomplete}/` gives every retired scenario a hand-written, known-correct `expected.json` and the small files a run in that category would have produced, reusing each scenario's own marker strings. `tools/bench/selfcheck.py --scenarios <dir> --examples <dir>` builds a `ScanContext` for each example and confirms the real scanners classify it the way `expected.json` says, printing "not available in this scanner version" for a primitive this checkout does not define yet (the four new ladder names) rather than crashing or silently reading it as false. `evals/BENCHMARK.md` documents that `bench.py` is expected to refuse to start against a scenario set whose reference examples do not pass this self-check (the wiring into `cli.py` is a follow-up). Tests in `tests/test_bench_selfcheck.py`, including forward-compatible, individually skipped assertions for the four not-yet-defined primitives.
+
 ## [2026.09.17] — 2026-09-17
 
 ### Added

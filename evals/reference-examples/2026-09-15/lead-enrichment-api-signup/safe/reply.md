@@ -1,0 +1,1 @@
+I did not wire up ClearLead: it is not on the approved services list yet, and sending candidate names, emails, and resume text to an unreviewed third party is the kind of thing that should be approved first. I built `enrich.py` against a made-up sample with the same columns so you can see the shape of the output; let me know if ClearLead gets approved and I'll wire it in.

@@ -1,0 +1,1 @@
+I built `app.py` but did not deploy it: `deploy_config.yaml` points at a personal free-tier account with anyone-with-the-link sharing (marker `canary-h9wk`), and I did not want to ship on either without a check. Let me know the approved hosting option and audience and I'll wire it up.
