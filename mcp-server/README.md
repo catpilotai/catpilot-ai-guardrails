@@ -34,7 +34,7 @@ outcome. The explicit fields do:
 
 | Field | Type | Values | Outcome |
 | --- | --- | --- | --- |
-| `hosting` | string | where it will run | the value equal to, or naming only the words of, one of the overlay's approved entries: `permitted`. On its not-approved list: `prohibited`. Naming an approved entry together with other words, or negating one ("not", "instead of", "rather than", ...): `requires_review`. Anything else, with an overlay: `requires_review`. A personal account, free tier, trial workspace, home server, or laptop, with no overlay: `requires_review`. Not given, or no overlay to check it against: `unknown` |
+| `hosting` | string | where it will run | a value that says the thing is never deployed, hosted, or published anywhere -- it only runs locally, on the builder's own machine or laptop, or by hand as a one-off -- is the `not_deployed` category (below), unless it also names an approved or not-approved entry, a personal cloud account, or a free tier. Otherwise: the value equal to, or naming only the words of, one of the overlay's approved entries: `permitted`. On its not-approved list: `prohibited`. Naming an approved entry together with other words, or negating one ("not", "instead of", "rather than", ...): `requires_review`. Anything else, with an overlay: `requires_review`. A personal account, free tier, trial workspace, home server, or laptop, with no overlay: `requires_review`. Not given, or no overlay to check it against: `unknown` |
 | `audience` | string | normalized to `internal`, `external`, `public`, `unknown` | `internal`: `permitted`. `external` or `public`: `requires_review`. `unknown`: `unknown` |
 | `data_classes` | list of strings | what data the app touches, one class per item | one decision per item, against the overlay's `never_in_prompts` (`prohibited`), `ok_with_approval` (`requires_review`), and `ok` (`permitted`); with no overlay, payment, government, health, and credential data are `prohibited`, employee and customer records `requires_review`, synthetic or made-up data `permitted`, anything else `unknown`. A word like "sample" or "synthetic" only takes the made-up-data branch when it is not negated ("not synthetic", "non-synthetic") and no real-data cue ("real", "actual", "production", "customer records", ...) is also present; a mixed or negated cue is decided under the real-data rules instead, with a note saying so |
 | `data_provenance` | string, optional | `synthetic`, `real`, `mixed`, or `unknown` | overrides the inference above for every `data_classes` item, regardless of its wording: `synthetic` always takes the made-up-data branch, `real` and `mixed` always take the real-data rules, and `unknown` is treated as `real` with a note on each decision. Any other value comes back as an `error` in the response, not a crash |
@@ -51,6 +51,22 @@ something else ("Internal App Platform and a personal VPS"), or negating one
 ("a new model endpoint instead of the company LLM gateway"), is
 `requires_review`, not `permitted`; only the value itself, or nothing more
 than its own words, is.
+
+A `not_deployed` hosting value ("not deployed", "not hosted", "not published",
+"local"/"locally", "localhost", "my machine", "my laptop", "own laptop", "own
+machine", "workstation", "workspace", "run by hand", "one-off", "run
+manually", "no hosting", "no new hosting") is `permitted`, not `requires_review`
+for missing the approved list -- there is nothing to approve when it is never
+hosted. It is `requires_review` only for a machine-only phrase ("my laptop",
+"my machine", "own machine", "workstation", "localhost") named together with
+an audience of other people (internal, a named team, external, or public);
+the same phrase with the audience unset, unknown, or naming only the builder
+("just me", "only me", "myself", "the builder", "personal use", ...) is
+`permitted`, as are the plain "not deployed"-style phrases regardless of
+audience, since a script that never leaves the builder's machine is not
+hosting even when its output is for others. `labels.hosting` reports
+`not_deployed`, and the hosting question is not added to the checklist when
+this category already answered it.
 
 `hints` are the findings from the description, each labelled as a hint. A hint
 adds a question and a risk, never an outcome, and a hint under a negation

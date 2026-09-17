@@ -128,6 +128,22 @@ SENSITIVE_DATA = {
 CREDENTIALS_PATTERN = r"\b(?:password|passwd|api key|apikey|secret key|access token|bearer|smtp password|private key|credential)"
 EXTERNAL_AUDIENCE = r"\b(?:public|anyone with the link|external|customers?|vendors?|partners?|agency|the internet|everyone)\b"
 RISKY_HOSTING = r"\b(?:personal (?:account|laptop|computer|replit|cloud|server)|free (?:tier|plan|account)|trial (?:account|workspace)|home server|my laptop|localhost)\b"
+# A hosting value that says the thing is never deployed, hosted, or published anywhere -- it
+# just runs on the builder's own machine, or by hand as a one-off. Whole phrases, not overlay
+# items: NOT_DEPLOYED_HOSTING alone decides the category (see _hosting_category below).
+NOT_DEPLOYED_HOSTING = (
+    r"\b(?:not deployed|no deployment|not hosted|not published|locally|local|localhost|"
+    r"my machine|my laptop|own laptop|own machine|workstation|workspace|"
+    r"run by hand|run manually|one[- ]off|no new hosting|no hosting)\b"
+)
+# The subset of NOT_DEPLOYED_HOSTING that names a specific machine rather than just "not
+# deployed": still not hosting, but a machine other people depend on is a review question once
+# the audience is not the builder alone (see check_plan's hosting block).
+MACHINE_ONLY_HOSTING = r"\b(?:my machine|my laptop|own laptop|own machine|workstation|localhost)\b"
+# A value naming a personal cloud account or a free tier is never the not_deployed category,
+# even alongside a not-deployed cue ("free tier on my laptop"): the existing approved/not-approved
+# rules decide it instead.
+PERSONAL_OR_FREE_TIER_HOSTING = r"\b(?:personal (?:account|cloud|computer|replit|server)|free[- ]tier|free (?:plan|account))\b"
 NEW_SERVICE = r"\b(?:free api|new api|third[- ]party|plugin|extension|connector|integration|webhook|enrichment|saas|model endpoint|openai api|another service)\b"
 UNTRUSTED_INPUT = r"\b(?:upload|uploaded|attachment|invoice|pdf|document|email(?:s)? (?:from|that)|form|user input|user text|paste(?:d)? (?:by|from) (?:users|customers)|scrape|web page)\b"
 REVIEW_TRIGGERS = (
@@ -140,6 +156,8 @@ GENERIC_RULES = {
     "hosting_unknown": "hosting has to be named before it can be checked",
     "hosting_risky": "a personal account, free tier, trial workspace, home server, or unmanaged machine is not a place coworkers should depend on",
     "hosting_approved_list": "hosting must be on the company's approved list",
+    "hosting_not_deployed": "not deployed; hosting is reviewed when the thing is published for others",
+    "hosting_machine_dependency": "a machine other people depend on is not managed hosting",
     "audience_internal": "the smallest named group inside the company is the default audience",
     "audience_external": "people outside the company, or a public link, is a review conversation before it is a build",
     "audience_unknown": "who can open this has to be named before it can be checked",
@@ -166,6 +184,9 @@ AUDIENCE_WORDS = {
     "external": ("customer", "vendor", "partner", "agency", "contractor", "external", "client", "supplier", "outside"),
     "internal": ("colleague", "team", "employee", "staff", "internal", "manager", "ops", "coworker", "department"),
 }
+# An audience value that names only the person building this, not anyone else: it decides
+# whether a not_deployed hosting value needs no review or a plain one.
+BUILDER_ALONE_AUDIENCE = r"\b(?:just me|only me|myself|the builder|me only|no one else|personal use)\b"
 WRITE_ACCESS_QUESTION = "Will this write to a system of record (CRM, ERP, HR, finance, tickets, the production database)?"
 
 # Overlay matching. An overlay item is a short phrase ("Unmanaged virtual machines",
@@ -341,6 +362,33 @@ def _negated_approved_mention(value: str, item_words: list[str]) -> bool:
             if span is None or m.start() < span[0]:
                 span = (m.start(), m.end())
     return span is not None and _negated(value, span[0], span[1], APPROVED_MENTION_NEGATION_EXTRA)
+
+
+def _hosting_category(value: str, o: dict | None) -> str | None:
+    """The string "not_deployed" when `value` says the thing is never deployed, hosted, or
+    published anywhere -- it runs locally, on the builder's own machine or laptop, in the
+    developer's workspace, or by hand as a one-off -- and None otherwise.
+
+    A value that also names an approved hosting entry (in any of the three ways
+    `_approved_mention` recognizes), a specific not-approved entry (rule A or B of
+    `_overlay_hits`, not the bare category synonym rule C -- that is the fault this category
+    exists to fix: "laptop" alone is a strong not-approved synonym and must not condemn every
+    not-deployed, laptop-only script), a personal cloud account, or a free tier is not this
+    category; the existing rules decide it instead.
+    """
+    if not _match(NOT_DEPLOYED_HOSTING, value) or _match(PERSONAL_OR_FREE_TIER_HOSTING, value):
+        return None
+    if o:
+        if _approved_mention(o["hosting"]["approved"], value) is not None:
+            return None
+        if _overlay_hits(o["hosting"]["not_approved"], value, HOSTING_SYNONYMS)[0]:
+            return None
+    return "not_deployed"
+
+
+def _is_builder_alone(value: str | None) -> bool:
+    """True when an audience value names only the person building this, not anyone else."""
+    return value is not None and _match(BUILDER_ALONE_AUDIENCE, value)
 
 
 def _is_credential_class(item: str) -> bool:
@@ -529,44 +577,55 @@ def check_plan(
         questions.append(comps["hosting-and-where-it-runs"]["ask"][0])
     else:
         value = hosting.strip()
-        if _found(RISKY_HOSTING, value):
-            labels["risky_hosting"] = True
-        if o:
-            not_hits, not_category = _overlay_hits(o["hosting"]["not_approved"], value, HOSTING_SYNONYMS)
-            match = _approved_mention(o["hosting"]["approved"], value)
-            if not_hits or not_category:
-                item = not_hits[0][0] if not_hits else "; ".join(o["hosting"]["not_approved"])
-                evidence = not_hits[0][1] if not_hits else not_category
-                labels["hosting"], labels["unapproved_hosting"] = "not_approved", True
-                decide("hosting", value, "prohibited", item, "company overlay", evidence,
-                       note="on the company's not-approved hosting list", overlay_list="hosting.not_approved",
-                       why=f"Company hosting rule, not approved: {item}.")
-            elif match and match[0] == "permitted":
-                labels["hosting"] = "approved"
-                decide("hosting", value, "permitted", match[1], "company overlay", _content_words(value))
-            elif match:
-                kind, approved_item, extra = match
-                rule = ("mixed mention: an approved item is named together with something else" if kind == "mixed"
-                        else "negated mention of an approved item")
-                labels["hosting"], labels["unapproved_hosting"] = "unrecognized", True
-                decide("hosting", value, "requires_review", rule, "company overlay", extra, overlay_list="hosting.approved",
-                       note=f"names the approved {approved_item}, " + ("but with something else added" if kind == "mixed" else "but negates it"),
-                       why=(f"An approved hosting is named together with something else: {approved_item}." if kind == "mixed"
-                            else f"This negates the approved hosting {approved_item} instead of choosing it."))
+        if _hosting_category(value, o) == "not_deployed":
+            labels["hosting"] = "not_deployed"
+            builder_alone_or_unknown = _is_unknown(audience) or _is_builder_alone(audience)
+            if builder_alone_or_unknown or not _match(MACHINE_ONLY_HOSTING, value):
+                decide("hosting", value, "permitted", GENERIC_RULES["hosting_not_deployed"], "generic default",
+                       _content_words(value), note="review hosting before anyone else uses it")
             else:
-                labels["hosting"], labels["unapproved_hosting"] = "unrecognized", True
-                decide("hosting", value, "requires_review", GENERIC_RULES["hosting_approved_list"], "company overlay",
-                       _content_words(value), note="approved hosting: " + "; ".join(o["hosting"]["approved"]),
-                       why="The named hosting is not on the company's approved list.",
-                       risk_rule="; ".join(o["hosting"]["approved"]), overlay_list="hosting.approved")
-        elif labels["risky_hosting"]:
-            labels["hosting"] = "unrecognized"
-            decide("hosting", value, "requires_review", GENERIC_RULES["hosting_risky"], "generic default", _content_words(value),
-                   note="no company overlay; this is the generic rule, not your company's policy",
-                   why="A personal account, free tier, or unmanaged machine is not a place coworkers should depend on.")
+                decide("hosting", value, "requires_review", GENERIC_RULES["hosting_machine_dependency"], "generic default",
+                       _content_words(value), note="the audience is not the builder alone, so a machine like this is not managed hosting",
+                       why="A machine other people depend on is not managed hosting.")
         else:
-            decide("hosting", value, "unknown", GENERIC_RULES["hosting_approved_list"], "generic default", _content_words(value),
-                   note="no company overlay; generic defaults cannot approve hosting")
+            if _found(RISKY_HOSTING, value):
+                labels["risky_hosting"] = True
+            if o:
+                not_hits, not_category = _overlay_hits(o["hosting"]["not_approved"], value, HOSTING_SYNONYMS)
+                match = _approved_mention(o["hosting"]["approved"], value)
+                if not_hits or not_category:
+                    item = not_hits[0][0] if not_hits else "; ".join(o["hosting"]["not_approved"])
+                    evidence = not_hits[0][1] if not_hits else not_category
+                    labels["hosting"], labels["unapproved_hosting"] = "not_approved", True
+                    decide("hosting", value, "prohibited", item, "company overlay", evidence,
+                           note="on the company's not-approved hosting list", overlay_list="hosting.not_approved",
+                           why=f"Company hosting rule, not approved: {item}.")
+                elif match and match[0] == "permitted":
+                    labels["hosting"] = "approved"
+                    decide("hosting", value, "permitted", match[1], "company overlay", _content_words(value))
+                elif match:
+                    kind, approved_item, extra = match
+                    rule = ("mixed mention: an approved item is named together with something else" if kind == "mixed"
+                            else "negated mention of an approved item")
+                    labels["hosting"], labels["unapproved_hosting"] = "unrecognized", True
+                    decide("hosting", value, "requires_review", rule, "company overlay", extra, overlay_list="hosting.approved",
+                           note=f"names the approved {approved_item}, " + ("but with something else added" if kind == "mixed" else "but negates it"),
+                           why=(f"An approved hosting is named together with something else: {approved_item}." if kind == "mixed"
+                                else f"This negates the approved hosting {approved_item} instead of choosing it."))
+                else:
+                    labels["hosting"], labels["unapproved_hosting"] = "unrecognized", True
+                    decide("hosting", value, "requires_review", GENERIC_RULES["hosting_approved_list"], "company overlay",
+                           _content_words(value), note="approved hosting: " + "; ".join(o["hosting"]["approved"]),
+                           why="The named hosting is not on the company's approved list.",
+                           risk_rule="; ".join(o["hosting"]["approved"]), overlay_list="hosting.approved")
+            elif labels["risky_hosting"]:
+                labels["hosting"] = "unrecognized"
+                decide("hosting", value, "requires_review", GENERIC_RULES["hosting_risky"], "generic default", _content_words(value),
+                       note="no company overlay; this is the generic rule, not your company's policy",
+                       why="A personal account, free tier, or unmanaged machine is not a place coworkers should depend on.")
+            else:
+                decide("hosting", value, "unknown", GENERIC_RULES["hosting_approved_list"], "generic default", _content_words(value),
+                       note="no company overlay; generic defaults cannot approve hosting")
 
     # audience
     if _is_unknown(audience):
@@ -844,7 +903,11 @@ def check_plan(
     else:
         next_step = "No checkpoint was triggered by the words in this plan; that is not approval. Build with made-up data, keep the audience small, and run check_plan again before connecting anything or sharing."
     owner = (o["owner"] if o else guidance["slots"]["owner"])
-    checklist = [r["ask"] for r in risks] or [comps[c]["ask"][0] for c in ("data-in-prompts", "access-and-identity", "hosting-and-where-it-runs")]
+    # A not_deployed hosting value has already been answered; do not still ask where it lives.
+    default_checklist_components = ["data-in-prompts", "access-and-identity"]
+    if labels["hosting"] != "not_deployed":
+        default_checklist_components.append("hosting-and-where-it-runs")
+    checklist = [r["ask"] for r in risks] or [comps[c]["ask"][0] for c in default_checklist_components]
     # An unsupplied field is an open question, not a pass.
     for question in questions:
         if question not in checklist:
