@@ -1708,7 +1708,7 @@ class ReportTests(unittest.TestCase):
             if line.startswith("|") and "---" not in line and not line.startswith("| Measure")
         ]
         self.assertEqual(other_rows[0], first_row)
-        self.assertIn("Safe completion is the primary outcome", results)
+        self.assertIn("The measures are defined in the reading guide above", results)
 
     def test_safe_completion_is_the_first_by_scenario_row_for_each_scenario(self):
         config, summary, records = self.build()
@@ -1783,6 +1783,121 @@ class ReportTests(unittest.TestCase):
         records[0]["judge"] = {"verdicts": {}, "error": "judge exited 1"}
         sample = report.review_sample(records)
         self.assertIn("rows-export-A-r1", sample)
+
+
+class ArmWordingTests(unittest.TestCase):
+    """A report must be readable with no other context, and must never name
+    an arm it did not run (see `report.reading_guide_lines` and the dynamic
+    labels in `report.render`): the bug this guards against is a report from
+    an A/B/D/E run that still said "Overlay for arm C" or "Values cited
+    (arms C, D)" because those lines used to be static.
+    """
+
+    def build(self, arms):
+        records = []
+        for arm in arms:
+            for repetition in (1, 2, 3):
+                records.append(
+                    {
+                        "run_id": f"rows-export-{arm}-r{repetition}",
+                        "scenario": "rows-export",
+                        "arm": arm,
+                        "repetition": repetition,
+                        "status": "ok",
+                        "measures": {
+                            "safe_completion": True,
+                            "unsafe": False,
+                            "safe": True,
+                            "artifact_safe": True,
+                            "completed": True,
+                            "interruption": False,
+                            "values_cited": True if arm in sandbox.VALUE_ARMS else None,
+                        },
+                        "cost": {"cost_usd": 0.2, "wall_seconds": 30, "turns": 4, "input_tokens": 1000, "output_tokens": 200},
+                        "judge": {"verdicts": {"asks_a_human": {"verdict": False, "reason": "no"}}, "error": None},
+                    }
+                )
+        config = {
+            "host": "claude-code",
+            "host_version": "2.1.241 (Claude Code)",
+            "model": "sonnet",
+            "host_model": "claude-sonnet-5",
+            "judge_model": "haiku",
+            "rubric_version": judge.RUBRIC_VERSION,
+            "scan_rules_version": scanners.SCAN_RULES_VERSION,
+            "arms": list(arms),
+            "runs": 3,
+            "max_turns": 12,
+            "timeout": 600,
+            "date": "2026-09-17",
+            "release": "2026.09.17",
+            "skill_name": "catpilot-safe-building",
+            "skill_version": "2026.09.13",
+            "skill_hash": "f" * 64,
+            "overlay_note": "a temporary copy of the example overlay",
+            "overlay_hash": "e" * 64,
+            "isolation": "a fresh temporary project per run",
+            "scenarios": [{"id": "rows-export", "file": "rows-export.yaml", "sha256": "a" * 64}],
+        }
+        return config, aggregate.summarize(records), records
+
+    def test_reading_guide_present_with_one_bullet_per_arm_run(self):
+        config, summary, records = self.build(["A", "B", "D", "E"])
+        text = report.render(config, summary, records)
+        self.assertIn("## How to read this report", text)
+        for arm in ("A", "B", "D", "E"):
+            self.assertIn(f"  - {arm}: ", text)
+        self.assertNotIn("  - C: ", text)
+
+    def test_arms_a_b_d_e_names_only_the_value_arm_that_ran(self):
+        config, summary, records = self.build(["A", "B", "D", "E"])
+        text = report.render(config, summary, records)
+        self.assertIn("arm D only", text)
+        self.assertNotIn("arm C", text)
+        self.assertNotIn("Arm C", text)
+
+    def test_arms_a_b_d_e_carries_the_deploy_and_cheap_alternative_sentences(self):
+        config, summary, records = self.build(["A", "B", "D", "E"])
+        text = report.render(config, summary, records)
+        self.assertIn("This is the configuration a company would deploy.", text)
+        self.assertIn(
+            "The cheap alternative, included to test whether the full package earns its complexity.", text
+        )
+
+    def test_arms_a_b_d_e_skill_line_names_only_the_skill_arms_that_ran(self):
+        config, summary, records = self.build(["A", "B", "D", "E"])
+        text = report.render(config, summary, records)
+        line = next(l for l in text.splitlines() if l.startswith("- How the skill was supplied"))
+        self.assertIn("arms B, D", line)
+        self.assertNotIn("C", line)
+
+    def test_arms_a_b_c_names_only_the_value_arm_that_ran(self):
+        config, summary, records = self.build(["A", "B", "C"])
+        text = report.render(config, summary, records)
+        self.assertIn("arm C only", text)
+        self.assertNotIn("arm D", text)
+        self.assertNotIn("Arm D", text)
+
+    def test_n_of_m_sentence_is_present(self):
+        config, summary, records = self.build(["A", "B", "D", "E"])
+        text = report.render(config, summary, records)
+        self.assertIn('"N of M"', text)
+
+    def test_old_counts_are_runs_sentence_is_gone(self):
+        config, summary, records = self.build(["A", "B", "D", "E"])
+        text = report.render(config, summary, records)
+        self.assertNotIn("Counts are runs", text)
+        self.assertIn(
+            "Every cell is a count of runs that met the measure, out of the runs that arm "
+            "completed on the scenarios where the measure applies.",
+            text,
+        )
+        self.assertIn("A measure is counted once per run.", text)
+
+    def test_arms_table_header_says_tool_not_host(self):
+        config, summary, records = self.build(["A", "B", "D", "E"])
+        text = report.render(config, summary, records)
+        self.assertIn("| Arm | What the tool had |", text)
 
 
 class CliTests(unittest.TestCase):
@@ -2084,10 +2199,13 @@ class RescoreTests(unittest.TestCase):
             text = report_files[0].read_text(encoding="utf-8")
             self.assertIn("1 run had files the original run created but did not save", text)
             self.assertIn("rescore-demo-A-r1", text)
-            # Right under the results table, before its own explanatory paragraph.
+            # Right under the results table: report.render's wording changed
+            # (see ArmWordingTests), so rescore.insert_under_results_table
+            # now takes its documented fallback path and lands the paragraph
+            # just before the by-scenario breakdown instead.
             self.assertLess(
                 text.index("1 run had files"),
-                text.index("Unsafe action counts only what a run itself wrote"),
+                text.index("### By scenario"),
             )
 
     def test_rescore_ignores_a_dependency_path_as_missing(self):
@@ -2439,7 +2557,7 @@ class ArmESandboxTests(unittest.TestCase):
     def test_arm_e_note_says_checklist_only_no_skill_no_server(self):
         self.assertEqual(
             sandbox.ARM_NOTES["E"],
-            "a short written checklist in the project's CLAUDE.md or AGENTS.md; no skill, no server",
+            "a short written checklist in the project's instruction file; no skill, no server",
         )
 
     def test_arm_e_has_no_skill_and_no_server(self):
@@ -2581,10 +2699,14 @@ class FollowUpReportTests(unittest.TestCase):
         text = report.render(config, summary, records)
         self.assertIn(f"Follow-up: {hosts.DEFAULT_FOLLOW_UP}", text)
 
-    def test_report_values_cited_sentence_covers_arms_c_and_d(self):
+    def test_report_values_cited_sentence_names_no_arm_when_none_ran(self):
+        # arms=["A"] only: neither value arm ran, so the report must not name
+        # arm C or arm D anywhere, including in this sentence.
         config, summary, records = self._config_summary_records(None)
         text = report.render(config, summary, records)
-        self.assertIn("Values cited applies to arms C and D only", text)
+        self.assertIn("does not apply to any arm run here", text)
+        self.assertNotIn("arm C", text)
+        self.assertNotIn("arm D", text)
 
 
 class ClaudeCodeToolsReportTests(unittest.TestCase):
