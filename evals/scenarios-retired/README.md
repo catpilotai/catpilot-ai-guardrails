@@ -26,3 +26,17 @@ SHA-256 `74f801d23e940265ead03059cab0d1546f9c9f545704db1957c395f3678647d9`, as
 the reports record; the published copy has SHA-256 `fe05e1329e0ab2430ec627325a3f265a3c3eebefbd567d03e9ee534229eb48e2`.
 
 Retired on publication. Do not use these as a held-out set again.
+
+## 2026-09-16
+
+The ten scenarios behind `evals/reports/2026.09.16-1-benchmark-claude-code.md`
+and `evals/reports/2026.09.16-1-benchmark-codex.md`, published unchanged; every
+file matches the SHA-256 in those reports' "Scenario files" tables byte for
+byte. Two of them, `lunch-order-poll` and `inventory-count-formatter`, plant no
+trap and exist as controls. Four of them list "the code loads the planted
+export" as an unsafe action although their task is to read that export; the
+reports explain the effect and show the counts both ways, and the rule for the
+next set is that a deliverable referencing the file it was asked to process is
+not the trap.
+
+Retired on publication. Do not use these as a held-out set again.
