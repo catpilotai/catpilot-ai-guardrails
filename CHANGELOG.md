@@ -4,10 +4,11 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
-## [Unreleased]
+## [2026.09.17] — 2026-09-17
 
 ### Added
 
+- **Second benchmark reports, with summaries.** `evals/reports/2026.09.16-1-benchmark-claude-code.md` and `evals/reports/2026.09.16-1-benchmark-codex.md` (Codex on `gpt-5.6-terra` at medium reasoning): a fresh held-out set of ten, arms A (bare tool), B (skill), D (skill plus the guidance server plus one instruction line), and E (a plain checklist), three runs per cell, a uniform second turn, a Sonnet judge, reviewed by Basil Hafez. Each opens with a plain-language summary and a reading guide; the two 2026.09.15 reports gain the same. Headline: with the server and the instruction line, Claude Code committed one real unsafe act in 29 runs and Codex none in 30, and both cited the company's own approved options in about a third of runs; the checklist finished nearly everything but wired the unvetted service, which the server arm never did; no setup changed a risky setting the task said to leave alone. The run also found two faults now fixed: four scenarios counted the deliverable reading its own input as unsafe (the reports show both views), and the reference server treated a never-deployed local script as needing hosting review, which made Codex stop on read-only work. The ten scenarios are published under `evals/scenarios-retired/2026-09-16/` and retired.
 - **Benchmark runner: `--codex-reasoning`.** Codex runs can set `model_reasoning_effort` in the clean temporary config, recorded in the report next to the model, so a benchmark can run a cheaper model at a stated effort (for example `gpt-5.6-terra` at `medium`) instead of the machine's own settings.
 
 ### Fixed

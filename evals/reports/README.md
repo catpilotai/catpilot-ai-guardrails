@@ -19,10 +19,12 @@ report: `2026.09.13-claude-code-verification.md`, `2026.09.14-codex-verification
 `2026.09.14-mcp-verification.md`, `2026.09.14-write-hook-verification.md`,
 and `2026.09.15-core-layout-verification.md` (whether Claude Code and Codex
 open a reference file of the split core skill before acting).
-The first full benchmark reports are published: `2026.09.15-benchmark-claude-code.md`
-(ten held-out scenarios, three arms, three runs per cell, rescored under
-`scan-rules-2`) and `2026.09.15-benchmark-codex.md` (same design, Codex as
-the host). The safe-building scenarios in `../scenarios/` are a development
+Four full benchmark reports are published, each opening with a plain-language
+summary: `2026.09.15-benchmark-claude-code.md` and `2026.09.15-benchmark-codex.md`
+(ten held-out scenarios, arms A, B, C, single turn, rescored under `scan-rules-2`),
+and `2026.09.16-1-benchmark-claude-code.md` and `2026.09.16-1-benchmark-codex.md`
+(a fresh set of ten, arms A, B, D, E, two turns per run, Sonnet judge). The scenario
+files behind each pair are published in `../scenarios-retired/` once retired. The safe-building scenarios in `../scenarios/` are a development
 set: visible to authors, never a held-out benchmark.
 
 A report is only as honest as its configuration block. Every report must
