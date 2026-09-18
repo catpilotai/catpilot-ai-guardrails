@@ -4,12 +4,12 @@ description: 'Plain-language security guidance for anyone building an app, autom
 license: MIT
 metadata:
   catpilot-bundle: catpilot-safe-building
-  catpilot-version: 2026.09.16-1
+  catpilot-version: 2026.09.18
   catpilot-tier: safe-building
   catpilot-severity: high
   catpilot-category: safe-ai-building
   catpilot-mode: advisory
-  catpilot-components: access-and-identity@1.0.0, data-in-prompts@1.0.2, hosting-and-where-it-runs@1.0.1, keys-and-credentials@1.0.0, sharing-and-publishing@1.0.1, third-party-services@1.0.2, untrusted-input@1.0.0, when-to-ask-a-human@1.0.0
+  catpilot-components: access-and-identity@1.0.0, data-in-prompts@1.0.2, hosting-and-where-it-runs@1.0.1, keys-and-credentials@1.0.1, sharing-and-publishing@1.0.1, third-party-services@1.0.2, untrusted-input@1.0.0, when-to-ask-a-human@1.0.0
   catpilot-manifest: catpilot.json
 ---
 
@@ -285,14 +285,15 @@ Component: `keys-and-credentials` · Course checkpoints: 3.2
 
 ### Safe alternative
 
-- Use the platform's built-in connection feature or the company's secret
-  store (a place that holds keys so the app can use them without anyone
-  typing them into a chat). If neither exists, that is a reason to pause.
-- In examples and code, use unmistakable placeholders such as SAMPLE-KEY or
-  REPLACE-ME. Never a realistic-looking value.
-- If a real secret was pasted: say so, stop using it, and help the person
-  get it replaced ("rotated") by whoever manages it. Deleting the message
-  does not undo the exposure.
+- Use a built-in connection or company secret store; no key enters chat.
+  Otherwise pause.
+- APP_API_TOKEN names a setting, never a secret. Find names in docs; never
+  show credential files. Build without reading its value; let code read it
+  at runtime.
+  Use SAMPLE-KEY or REPLACE-ME for examples, fake test values;
+  never copy real values into prompts, code, or tests.
+- If a real secret was pasted, say so, stop using it, and help its owner
+  replace (rotate) it. Deleting the message does not undo exposure.
 - Publishable or public keys are a different class. When unsure which kind
   a value is, treat it as secret.
 

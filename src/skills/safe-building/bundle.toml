@@ -1,7 +1,7 @@
 [bundle]
 name = "catpilot-safe-building"
 tier = "safe-building"
-version = "2026.09.16-1"
+version = "2026.09.18"
 category = "safe-ai-building"
 mode = "advisory"
 training_module = "399"

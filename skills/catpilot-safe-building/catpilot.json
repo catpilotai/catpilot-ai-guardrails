@@ -57,7 +57,7 @@
         "id": "keys-and-credentials",
         "severity": "high",
         "title": "Keys and credentials",
-        "version": "1.0.0"
+        "version": "1.0.1"
       },
       {
         "category": "safe-ai-building",
@@ -91,7 +91,7 @@
     "layout": "single",
     "name": "catpilot-safe-building",
     "tier": "safe-building",
-    "version": "2026.09.16-1"
+    "version": "2026.09.18"
   },
   "category": "safe-ai-building",
   "control_mappings": {

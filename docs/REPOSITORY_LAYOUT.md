@@ -15,7 +15,7 @@ skills/                     # shipped bundles (CalVer, generated)
     SKILL.md                # baseline: per component, applies-when/always/never plus a reference link
     references/<component>.md  # each component's full text: examples, remediation, detection patterns
   catpilot-safe-building/SKILL.md
-dist/2026.09.16-1/          # per-host artifacts (generated): zip, paste blocks, web page
+dist/2026.09.18/            # per-host artifacts (generated): zip, paste blocks, web page
 hooks/claude-code/          # the two hooks, their example settings, and their README
 hooks/harness/              # the same credential check as a function for your own agent loop
 mcp-server/                 # reference MCP server: four read-only tools over the checkpoints and an overlay

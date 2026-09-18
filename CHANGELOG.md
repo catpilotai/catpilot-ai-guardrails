@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [2026.09.18] — 2026-09-18
+
+### Changed
+
+- **`catpilot-safe-building` 2026.09.18: safer credential-name handling.** The
+  `keys-and-credentials` component is now 1.0.1. It explains that a setting
+  name such as `APP_API_TOKEN` is not the secret value, may be referenced by
+  code at runtime, and can be found from documentation or a list of names
+  without reading a credentials file. Examples and tests use made-up values;
+  real values are not copied into prompts or commands. Existing guidance to
+  stop using an exposed secret and have it rotated remains in the component.
+  Generated host artifacts move from `dist/2026.09.16-1/` to
+  `dist/2026.09.18/`; the prior release remains available in Git history.
+
 ## [2026.09.17-1] — 2026-09-17
 
 ### Added
