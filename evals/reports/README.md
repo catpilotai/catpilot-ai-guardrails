@@ -13,19 +13,23 @@ writes that file under its own `--out` directory, never into this repository; a
 benchmark report arrives here only when a person copies it in, with the
 `Reviewed by:` line filled in.
 
-What exists so far is verification notes and smoke observations, not a
-report: `2026.09.13-claude-code-verification.md`, `2026.09.14-codex-verification.md`,
+Verification notes and smoke observations are distinct from benchmark reports: `2026.09.13-claude-code-verification.md`, `2026.09.14-codex-verification.md`,
 `2026.09.14-codex-smoke.md` (two scenarios, one run each, heuristic scores),
 `2026.09.14-mcp-verification.md`, `2026.09.14-write-hook-verification.md`,
 and `2026.09.15-core-layout-verification.md` (whether Claude Code and Codex
 open a reference file of the split core skill before acting).
-Four full benchmark reports are published, each opening with a plain-language
-summary: `2026.09.15-benchmark-claude-code.md` and `2026.09.15-benchmark-codex.md`
-(ten held-out scenarios, arms A, B, C, single turn, rescored under `scan-rules-2`),
+Four historical benchmark reports are published, each opening with the dated completion note while preserving its previously published text: `2026.09.15-benchmark-claude-code.md` and `2026.09.15-benchmark-codex.md`
+(ten held-out scenarios; A, no guidance; B, skill installed; C, skill plus company server without an instruction; single turn, with historical rescoring corrections),
 and `2026.09.16-1-benchmark-claude-code.md` and `2026.09.16-1-benchmark-codex.md`
-(a fresh set of ten, arms A, B, D, E, two turns per run, Sonnet judge). The scenario
+(a fresh set of ten; A, no guidance; B, skill installed; D, skill plus company rules through the server; E, generic checklist; two turns per run, Sonnet judge). The scenario
 files behind each pair are published in `../scenarios-retired/` once retired. The safe-building scenarios in `../scenarios/` are a development
 set: visible to authors, never a held-out benchmark.
+
+**Historical completion limitation.** All completion counts in these four reports, including the correction tables, use file-presence/content checks as a textual proxy. They do not verify functional completion of the generated app or script. Current scorer fixes, executable completion checks, and reference-gate improvements do not automatically validate or rescore archived results. Original tables are retained for audit history; withdrawn within-arm-spread verdicts do not establish a difference or equivalence. See the [current evaluation contract](../../docs/EVALUATION_CONTRACT.md).
+
+**Dated clarifications, 2026-09-18.** Each report retains its original 2026-09-17 note and adds a correction: a scanner version alone cannot establish program execution; functional completion requires recorded verifier evidence. The two 2026.09.16-1 reports also note that D, skill plus company rules through the server and an explicit consultation instruction, changes both company context and activation/consultation instructions relative to B-installed, skill installed. Those studies had no B-activated, skill installed and explicitly activated, control. Their difference cannot be attributed to company rules alone.
+
+New reports show functionality, generic safety evidence, and company-policy adherence beside combined safe completion. The standard conditions include A, no guidance; B-installed, skill installed; B-activated, skill installed and explicitly activated; and D, skill explicitly activated with company rules through the server. The deployment-default question remains B-installed versus A; the company-rules workflow question is D versus B-activated. Each temptation level stays separate. The [next experiment plan](../../docs/EXPERIMENT_PLAN.md) requires human independence and voice review before scorer access.
 
 A report is only as honest as its configuration block. Every report must
 state the host and version, the model, the injection method (installed skill

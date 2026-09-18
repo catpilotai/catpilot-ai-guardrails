@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Added
+
+- **Functional completion verification.** Execute scenario checks in digest-pinned, network-disabled containers with bounded resources. Known safe, unsafe, stub, incomplete, and alternate implementations pass through the mandatory reference gate; the public functional demonstrations also run in CI.
+- **Company checklist comparison.** F, company checklist, supplies the same reviewed company facts as D, skill plus company rules through the server. A, no guidance; B-installed, skill installed; B-activated, skill installed and explicitly activated; C, skill plus company server without an instruction; D, skill plus company rules through the server; E, generic checklist; and F, company checklist remain supported comparisons, with each comparison's question stated in the design.
+- **Scenario design gates.** Record temptation level, human voice review, and which conditions receive each company-policy fact. Report each temptation level separately, keep withheld-policy mismatches separate from unsafe acts, require at least three repetitions, and show per-pass totals.
+- **Preregistered confirmation plan.** Require fresh tasks authored or reviewed by a human outside both agent workflows, with a non-engineer voice review completed before the scorer sees the tasks. Freeze accepted input/output behavior and references before candidates run, and leave outstanding human sign-offs unfilled. Scenarios that appeared in a published report are retired and never re-run in any comparison; runs on revised versions of retired tasks are not benchmark results and are not published or archived in this repository.
+
+### Changed
+
+- **One primary result per temptation level.** Lead with safe completion and show functional completion, generic safety evidence, and company-policy adherence separately beside it, followed by unsafe actions, policy mismatches, unnecessary stops, and cost. Retain detailed evidence, unknown states, and outcome labels for review; do not pool temptation levels or treat an unresolved check as a safety pass.
+- **Explicit installation and activation conditions.** The standard comparison includes A, no guidance; B-installed, skill installed; B-activated, skill installed and explicitly activated; and D, skill explicitly activated with company rules through the server. B-installed versus A remains the deployment-default question; only D versus B-activated isolates the added company-rules workflow.
+- **Publication and release scope.** Keep the engineer-facing README and its report links while qualifying historical findings. Preserve the four published report bodies and the requested 2026-09-17 note; append dated clarification that scanner versions do not prove functional execution, and identify the activation/company-context confound in both 2026.09.16-1 reports. Credential source wording and its release bump are removed from this benchmark change and handled in a separate 2026.09.18 release PR with regenerated outputs; no patch artifact is created.
+
+### Fixed
+
+- **Credential and service evidence, scan-rules-6 through scan-rules-8.** Distinguish attempted, denied, executed, and persisted credential events; resolve environment-name aliases; analyze complete saved source alongside intermediate edits; recognize context-manager requests, fixed-authority URL formats, and Request wrappers. Unsupported or dynamic destinations remain unknown. Preserve historical source evidence and scores when deriving corrections.
+- **Functional safety evidence.** Named behavioral cases establish the safe path without exact source-line matches; missing completion or safety evidence stays unverified. A disabled stub, a vendor-name mention, or merely referencing the requested input never establishes completion.
+- **MCP planning calibration.** Separate credential identifiers from values, recognize explicit empty-service declarations, distinguish missing and unrecognized data classes, and distinguish network connections from external audiences. Keep the server regression tests.
+- **Comparison execution and reporting.** Preserve common tasks, permissions, follow-up, model settings, frozen company facts, rotating condition order, and harmless controls. Apply requested Codex reasoning settings to live runs. Keep unnecessary-stop evidence separate from host permission pauses and retain unknown judge evidence.
+
 ## [2026.09.17-1] — 2026-09-17
 
 ### Added

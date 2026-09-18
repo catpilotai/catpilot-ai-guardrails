@@ -375,7 +375,7 @@ class CheckPlanDecisionTests(unittest.TestCase):
 
     def test_outcome_is_the_worst_across_decisions(self):
         self.assertEqual(self.plan().get("outcome"), "unknown")
-        self.assertEqual(self.plan(audience="our team", hosting="Internal App Platform", data_classes=["made-up records"], services=[], write_access=False, policy_state=self.approved)["outcome"], "unknown")
+        self.assertEqual(self.plan(audience="our team", hosting="Internal App Platform", data_classes=["made-up records"], services=[], write_access=False, policy_state=self.approved)["outcome"], "permitted")
         self.assertEqual(self.plan(audience="customers", hosting="Internal App Platform", write_access=False, policy_state=self.approved)["outcome"], "requires_review")
         self.assertEqual(self.plan(audience="our team", hosting="Internal App Platform", data_classes=["cardholder data"], write_access=False, policy_state=self.approved)["outcome"], "prohibited")
         permitted = self.plan(audience="our team", hosting="Internal App Platform", data_classes=["made-up records with example.com addresses"], services=["the company LLM gateway"], write_access=False, policy_state=self.approved)
@@ -552,6 +552,62 @@ class CheckPlanDecisionTests(unittest.TestCase):
         d = self.decision(self.plan(audience="the ops team", policy_state=self.approved), "audience")
         self.assertEqual((d["outcome"], d["rule"]), ("permitted", "Company sign-in, smallest named group that needs access"))
 
+    def test_local_only_external_connection_phrase_is_not_an_external_audience_hint(self):
+        """Regression for the exact route transcript wording: a negated network connection is not a person."""
+        out = self.plan(
+            "Create a local Python script for a single internal builder. It reads the existing local "
+            "route_points.json, sums distance_km values, rounds to one decimal, and prints exactly one "
+            "JSON object. It does not deploy, share output, use credentials, contact any service, or make "
+            "any external connection.",
+            data_classes=["non-personal local operational route distance measurements"],
+            data_provenance="real",
+            audience="one internal company builder",
+            hosting="not deployed; runs locally",
+            services=[],
+            credential_references=[],
+            write_access=False,
+            policy_state=self.approved,
+        )
+        self.assertEqual(self.decision(out, "audience")["outcome"], "permitted")
+        self.assertEqual(self.decision(out, "data_classes")["outcome"], "unknown")
+        self.assertFalse(out["labels"]["external_audience"])
+        self.assertFalse(out["labels"]["review_trigger"])
+        self.assertFalse(out["ask_a_human"])
+        self.assertNotIn("access-and-identity", [risk["component"] for risk in out["risks"]])
+
+    def test_real_external_audience_phrase_still_sets_review(self):
+        out = self.plan(
+            "Share the local report with external partners.",
+            audience="one internal company builder",
+            data_classes=["made-up records"],
+            data_provenance="synthetic",
+            hosting="not deployed",
+            services=[],
+            write_access=False,
+            policy_state=self.approved,
+        )
+        self.assertTrue(out["labels"]["external_audience"])
+        self.assertTrue(out["labels"]["review_trigger"])
+        self.assertTrue(out["ask_a_human"])
+        self.assertIn("access-and-identity", [risk["component"] for risk in out["risks"]])
+
+    def test_external_network_product_people_remain_an_audience_hint(self):
+        for phrase in ("external API developers", "external service users", "external service providers"):
+            with self.subTest(phrase=phrase):
+                out = self.plan(
+                    f"Share the report with {phrase}.",
+                    audience="one internal company builder",
+                    data_classes=["made-up records"],
+                    data_provenance="synthetic",
+                    hosting="not deployed",
+                    services=[],
+                    write_access=False,
+                    policy_state=self.approved,
+                )
+                self.assertTrue(out["labels"]["external_audience"])
+                self.assertTrue(out["ask_a_human"])
+                self.assertIn("access-and-identity", [risk["component"] for risk in out["risks"]])
+
     # ---------------------------------------------------------------- data classes
 
     def test_data_classes_against_the_overlay(self):
@@ -567,7 +623,18 @@ class CheckPlanDecisionTests(unittest.TestCase):
                 self.assertEqual((d["outcome"], d["rule"], d["source"]), (outcome, rule, "company overlay"))
         unmatched = self.decision(self.plan(data_classes=["seating-chart preferences"], policy_state=self.approved), "data_classes")
         self.assertEqual(unmatched["outcome"], "unknown")
+        self.assertEqual(unmatched["rule"], "this data class is not covered by the available policy; ask the data owner")
         self.assertEqual(unmatched["note"], "not in the company's data classes; ask the owner")
+
+    def test_unmatched_supplied_class_is_not_described_as_missing(self):
+        """A supplied but unlisted class stays conservatively unknown with an accurate explanation."""
+        unmatched = self.decision(
+            self.plan(data_classes=["local route distance values"], data_provenance="real", policy_state=self.approved),
+            "data_classes",
+        )
+        self.assertEqual(unmatched["outcome"], "unknown")
+        self.assertEqual(unmatched["rule"], "this data class is not covered by the available policy; ask the data owner")
+        self.assertNotIn("no data classes were named", unmatched["rule"])
 
     def test_credential_data_class_belongs_to_keys_and_credentials(self):
         out = self.plan(data_classes=["an API key for the email service"], policy_state=self.approved)
@@ -647,6 +714,39 @@ class CheckPlanDecisionTests(unittest.TestCase):
         self.assertEqual(d["note"], "provenance unknown; treated as real")
         self.assertEqual(out["labels"]["data_provenance"], "unknown")
 
+    def test_identifier_only_credential_reference_is_safe_but_unknown_credential_material_is_not(self):
+        safe = self.plan(
+            data_classes=["made-up records"], data_provenance="synthetic", audience="our team", hosting="not deployed", services=["none"],
+            write_access=False,
+            credential_references=[{"name": "CHECKIN_RELAY_TOKEN", "value_in_model_context": False, "value_in_generated_artifacts": False}],
+            policy_state=self.approved,
+        )
+        reference = self.decision(safe, "credential_references", "CHECKIN_RELAY_TOKEN")
+        self.assertEqual(reference["outcome"], "permitted")
+        self.assertEqual(self.decision(safe, "services")["outcome"], "permitted")
+        self.assertEqual(safe["outcome"], "permitted")
+        real = self.plan(
+            data_classes=["an unknown access token value"], data_provenance="unknown",
+            policy_state=self.approved,
+        )
+        self.assertEqual(self.decision(real, "data_classes")["outcome"], "prohibited")
+        self.assertIn("keys-and-credentials", [risk["component"] for risk in real["risks"]])
+
+    def test_credential_references_reject_values_and_non_identifier_metadata(self):
+        for references in (
+            [{"name": "CHECKIN_RELAY_TOKEN", "value_in_model_context": False}],
+            [{"name": "CHECKIN_RELAY_TOKEN", "value": "not-allowed"}],
+            [{"name": "checkin_relay_token"}],
+            [{"name": "CHECKIN_RELAY_TOKEN", "value_in_model_context": "false", "value_in_generated_artifacts": False}],
+        ):
+            with self.subTest(references=references):
+                self.assertEqual(self.plan(credential_references=references)["error"], "invalid-input")
+        exposed = self.plan(credential_references=[{
+            "name": "CHECKIN_RELAY_TOKEN", "value_in_model_context": True,
+            "value_in_generated_artifacts": False,
+        }])
+        self.assertEqual(self.decision(exposed, "credential_references")["outcome"], "prohibited")
+
     def test_invalid_data_provenance_is_an_error_not_a_crash(self):
         out = self.plan(data_classes=["health records"], data_provenance="maybe", policy_state=self.approved)
         self.assertEqual(out["error"], "invalid-input")
@@ -666,6 +766,14 @@ class CheckPlanDecisionTests(unittest.TestCase):
         self.assertEqual((d["outcome"], d["rule"], d["source"]), ("requires_review", "Browser extensions", "company overlay"))
         d = self.decision(self.plan(services=["Widgetron"], policy_state=self.approved), "services")
         self.assertEqual((d["outcome"], d["rule"], d["source"]), ("requires_review", "any new software service needs review", "generic default"))
+
+    def test_explicit_empty_services_are_permitted_without_matching_service_names(self):
+        for services in ([], ["none"], [" No Services "], ["n/a"]):
+            with self.subTest(services=services):
+                d = self.decision(self.plan(services=services, policy_state=self.approved), "services")
+                self.assertEqual((d["value"], d["outcome"]), ([], "permitted"))
+        d = self.decision(self.plan(services=["NoneCloud"], policy_state=self.approved), "services")
+        self.assertEqual((d["value"], d["outcome"]), ("NoneCloud", "requires_review"))
 
     def test_every_named_service_needs_review_without_an_overlay(self):
         out = self.plan(services=["the approved transactional email service", "Widgetron"])

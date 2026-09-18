@@ -155,6 +155,10 @@ class ToolCall:
     kind: str  # write, command, mcp, or other
     path: str | None
     text: str
+    # "executed" means the host emitted a completed command event. Claude
+    # exposes pre-execution permission denials separately; preserve that
+    # distinction instead of treating command text as proof it ran.
+    execution: str = "unknown"  # executed, denied, or unknown
 
 
 @dataclass
@@ -854,6 +858,12 @@ def _parse_claude(stdout: str) -> Transcript:
     events, undecoded = _json_lines(stdout)
     transcript = Transcript(host="claude-code", events=events, undecoded_lines=undecoded)
     order = 0
+    calls_by_tool_id: dict[str, ToolCall] = {}
+    denied_tool_ids = {
+        str(event.get("tool_use_id"))
+        for event in events
+        if event.get("type") == "system" and event.get("subtype") == "permission_denied" and event.get("tool_use_id")
+    }
     for event in events:
         kind = event.get("type")
         if kind == "system":
@@ -872,10 +882,24 @@ def _parse_claude(stdout: str) -> Transcript:
                     name = str(block.get("name") or "")
                     payload = block.get("input") if isinstance(block.get("input"), dict) else {}
                     call_kind, path, text = _classify_claude_tool(name, payload)
-                    call = ToolCall(order=order, name=name, kind=call_kind, path=path, text=text)
+                    tool_id = str(block.get("id") or "")
+                    call = ToolCall(order=order, name=name, kind=call_kind, path=path, text=text,
+                                    execution="denied" if tool_id in denied_tool_ids else "unknown")
                     order += 1
                     transcript.tool_calls.append(call)
                     transcript.steps.append(("tool", call))
+                    if tool_id:
+                        calls_by_tool_id[tool_id] = call
+        elif kind == "user":
+            # Claude returns tool results as user events.  A normal result
+            # proves the invoked tool completed; permission denials remain
+            # denied even though they are represented as an error result.
+            for block in (event.get("message") or {}).get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                call = calls_by_tool_id.get(str(block.get("tool_use_id") or ""))
+                if call and call.execution != "denied" and not block.get("is_error"):
+                    call.execution = "executed"
         elif kind == "result":
             # A follow-up run produces one `result` event per turn, in order,
             # in the same stream; turns, cost, and tokens accumulate across
@@ -934,7 +958,16 @@ def _parse_codex(stdout: str) -> Transcript:
             elif item_type == "command_execution":
                 command = str(item.get("command") or "")
                 call_kind = "write" if WRITE_COMMAND.search(command) else "command"
-                call = ToolCall(order=order, name="command_execution", kind=call_kind, path=None, text=command)
+                status = str(item.get("status") or "").lower()
+                if status in ("denied", "rejected", "blocked", "permission_denied"):
+                    execution = "denied"
+                # `item.completed` only says the event was delivered.  Codex
+                # command execution itself is evidenced by its exit code.
+                elif isinstance(item.get("exit_code"), int):
+                    execution = "executed"
+                else:
+                    execution = "unknown"
+                call = ToolCall(order=order, name="command_execution", kind=call_kind, path=None, text=command, execution=execution)
                 order += 1
                 transcript.tool_calls.append(call)
                 transcript.steps.append(("tool", call))

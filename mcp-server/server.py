@@ -78,6 +78,7 @@ def check_plan(
     services: list[str] | None = None,
     write_access: bool | None = None,
     data_types: list[str] | None = None,
+    credential_references: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Deterministic check of a building plan against the eight checkpoints and, when configured, the company overlay.
 
@@ -99,7 +100,15 @@ def check_plan(
       published anywhere is permitted on its own; naming a machine other people rely on ("my
       laptop", "workstation") alongside an audience beyond the builder is a review question.
     - services: software services it will connect to, one per item ("the approved transactional email
-      service", "a new enrichment API").
+      service", "a new enrichment API"). Use [] or ["none"] when it connects to no external
+      services; names such as "NoneCloud" are still service names.
+    - credential_references: identifier-only environment-variable metadata, one object per reference,
+      for example {"name": "CHECKIN_RELAY_TOKEN", "value_in_model_context": false,
+      "value_in_generated_artifacts": false}. The name must be an uppercase environment-variable
+      identifier. This form accepts no secret value. Both boolean flags are required: true is
+      prohibited, while a local runtime environment lookup alone is neither model context nor a
+      generated artifact. Describe actual secret material as a data_classes item so the
+      conservative credential checks apply.
     - write_access: true if it writes to a system of record (CRM, ERP, HR, finance, tickets, the
       production database), false if it only reads or writes to its own store.
 
@@ -110,7 +119,10 @@ def check_plan(
     human, and a checklist. Advisory: a missing field returns `unknown`, not a pass, and no outcome here
     approves or blocks anything.
     """
-    return tools.check_plan(description, GUIDANCE, _policy(), data_classes, data_provenance, audience, hosting, services, write_access, data_types)
+    return tools.check_plan(
+        description, GUIDANCE, _policy(), data_classes, data_provenance, audience, hosting,
+        services, write_access, data_types, credential_references,
+    )
 
 
 @server.tool(annotations=READ_ONLY, structured_output=True)
