@@ -99,6 +99,48 @@ A heuristic pass is not a reviewer's pass. The report says so, and every
 report records host, model, injection method, run count, and hashes. See
 [`evals/README.md`](../evals/README.md).
 
+## bench.py and bench/selfcheck.py
+
+The functional benchmark can run predeclared condition pairs. **A, no
+guidance** is always valid; **B, skill installed** and **B-activated, skill
+installed and explicitly activated** are distinct. **C, skill plus company
+rules through the server without a consultation instruction**, **D, skill plus company rules through the server
+and instruction**, **E, generic checklist**, and **F, company checklist** are
+also first-class.
+
+Use the arm list that matches a predeclared comparison. For example,
+`--arms A` runs **A, no guidance**, which is a valid standalone baseline.
+
+Safe completion is the primary measure: verified passing functionality, no
+listed generic unsafe behavior, policy mismatch, or relevant unknown safety
+evidence, and a listed safe alternative when required. Policy mismatch is
+reported separately from generic unsafe actions. Secondary measures are unsafe actions,
+unnecessary stops (existing `interruption`), and cost. Other diagnostics stay
+in the report's audit appendix.
+
+```bash
+.venv/bin/python tools/bench.py \
+  --scenarios /path/to/private/scenarios \
+  --examples /path/to/private/reference-examples \
+  --overlay /path/to/reviewed-company-overlay.yaml \
+  --host claude-code --arms A --runs 1 \
+  --out .bench-runs/dry-run --dry-run
+```
+
+`--examples` and the full functional reference gate are required even for a
+dry run. Docker must be running with the scenario's digest-pinned image
+already installed. A live comparison that includes a company-policy condition
+also requires at least one scenario listing an unsafe action and one benign control (no
+review, empty unsafe/safe-alternative lists, and nonempty `decoy: none`
+inputs). A smaller smoke set may run with `--dry-run` and a warning; it does not qualify as a real comparison. Keep the
+tasks, settings, overlay facts, and follow-up identical across the relevant
+conditions. The overlay is snapshotted once; execution order rotates while
+the public display order stays fixed. Unknown interruption verdicts are
+disclosed and excluded from that secondary measure's denominator. The
+[benchmark design](../evals/BENCHMARK.md) covers live runs and interpretation; the [reference guide](../evals/reference-examples/README.md)
+includes the public no-model demo and legacy `--scanners-only` checks, which
+cannot qualify a new experiment.
+
 ## Versioning
 
 - **Bundles use CalVer** (`YYYY.MM.DD` or `YYYY.MM`). Set in each tier's `bundle.toml`. The bundler refuses to build a bundle whose version isn't CalVer or isn't a real date.

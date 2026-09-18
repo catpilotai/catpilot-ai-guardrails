@@ -49,7 +49,7 @@ class ServerContractTests(unittest.IsolatedAsyncioTestCase):
                     # The fields a model has to pass are on the tool's schema, and they decide the outcome.
                     check_plan = next(t for t in listing.tools if t.name == "check_plan")
                     properties = check_plan.input_schema["properties"]
-                    for field in ("description", "data_classes", "data_provenance", "audience", "hosting", "services", "write_access", "data_types"):
+                    for field in ("description", "data_classes", "data_provenance", "audience", "hosting", "services", "write_access", "data_types", "credential_references"):
                         self.assertIn(field, properties)
                     result = await client.call_tool("check_plan", {
                         "description": "An internal dashboard. No external users or public links.",
@@ -60,6 +60,15 @@ class ServerContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result.structured_content["outcome"], "permitted")
                     self.assertEqual(result.structured_content["risks"], [])
                     self.assertFalse(result.structured_content["ask_a_human"])
+                    result = await client.call_tool("check_plan", {
+                        "description": "A local helper that names an environment variable without reading its value.",
+                        "audience": "our team", "hosting": "not deployed", "data_classes": ["made-up records"],
+                        "data_provenance": "synthetic", "services": ["none"], "write_access": False,
+                        "credential_references": [{"name": "CHECKIN_RELAY_TOKEN", "value_in_model_context": False, "value_in_generated_artifacts": False}],
+                    })
+                    self.assertEqual(result.structured_content["outcome"], "permitted")
+                    reference = next(d for d in result.structured_content["decisions"] if d["field"] == "credential_references")
+                    self.assertEqual(reference["outcome"], "permitted")
                     result = await client.call_tool("check_plan", {"description": "A dashboard.", "hosting": "my personal Replit account", "write_access": True})
                     self.assertEqual(result.structured_content["outcome"], "prohibited")
                     hosting = next(d for d in result.structured_content["decisions"] if d["field"] == "hosting")

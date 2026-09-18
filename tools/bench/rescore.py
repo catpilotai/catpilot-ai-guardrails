@@ -53,7 +53,7 @@ from tools.bench import report as report_lib  # noqa: E402
 from tools.bench import rescore_completion  # noqa: E402
 from tools.bench import scanners as scanner_lib  # noqa: E402
 from tools.bench import scenarios as scenario_lib  # noqa: E402
-from tools.bench.cli import check_out_dir  # noqa: E402
+from tools.bench.cli import check_out_dir, FILES_ARCHIVE_VERSION, MAX_SAVED_FILE_CHARS  # noqa: E402
 
 NOT_JUDGED = {
     "model": None,
@@ -139,23 +139,22 @@ def rebuild_context(scenario: dict, record: dict, run_dir: Path, files_json: dic
 
 
 def missing_files(record: dict, files_json: dict) -> list[str]:
-    """Paths `run.json` says the run created or changed that files.json never saved.
+    """Created/changed paths whose complete archived source is unavailable.
 
-    The saved-files budget (`cli.save_files`) can skip a file entirely rather
-    than truncate it, most often because a run's own dependency directory
-    (`.venv`, `node_modules`, ...) crowded it out; a run's `files_omitted`
-    already names those when the run is new enough to carry it, and an older
-    saved run is covered the same way, by diffing what `run.json` declares
-    against what `files.json` actually has. A scan sees a decoy path missing
-    like this fall back to the transcript's write texts instead (see
-    `scanners.loads_decoy_export_at_runtime`), which is why this is reported
-    rather than silently accepted.
+    Explicit omission, unreadable, and truncation metadata takes precedence
+    over the presence of a saved prefix. Pre-versioned archives could truncate
+    the last file silently when the text budget was exhausted; a saturated
+    legacy archive is therefore conservatively treated as incomplete.
     """
-    declared = list((record.get("files") or {}).get("created") or [])
-    declared += list((record.get("files") or {}).get("changed") or [])
-    declared += list(record.get("files_omitted") or [])
+    declared = set((record.get("files") or {}).get("created") or [])
+    declared.update((record.get("files") or {}).get("changed") or [])
     saved = {key.split(":", 1)[1] for key in files_json if ":" in key}
-    return sorted({path for path in declared if path not in saved and not _is_dependency_path(path)})
+    incomplete = declared - saved
+    for field in ("files_omitted", "files_unreadable", "files_truncated"):
+        incomplete.update(record.get(field) or [])
+    if record.get("files_archive_version") != FILES_ARCHIVE_VERSION and sum(len(text) for text in files_json.values()) >= MAX_SAVED_FILE_CHARS:
+        incomplete.update(saved)
+    return sorted(path for path in incomplete if not _is_dependency_path(path))
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +218,11 @@ def rescore_run(record: dict, scenario: dict, run_dir: Path, *, rejudge: bool, j
 
     artifact = scanner_lib.artifact_safety(ctx)
     permission_request = scanner_lib.permission_request(ctx)
-    completion = record.get("completion") or {}
+    # Never upgrade an archived filename/substring result to functional proof.
+    # Rescoring does not execute saved candidate programs.
+    completion = dict(record.get("completion") or {})
+    if not completion.get("verification_version"):
+        completion.update(verified=False, reason="historical textual proxy; no functional evidence saved")
 
     if rejudge and record.get("status") == "ok":
         judged = [name for name in (scenario.get("expect") or {}).get("safe_alternatives") or [] if name in judge_lib.PRIMITIVES]
@@ -249,8 +252,11 @@ def rescore_run(record: dict, scenario: dict, run_dir: Path, *, rejudge: bool, j
     new_record["artifact"] = artifact
     new_record["judge"] = saved_judge
     new_record["service_evidence"] = scanner_lib.service_evidence(ctx)
+    new_record["secret_event_evidence"] = scanner_lib.secret_event_evidence(ctx)
+    new_record["completion"] = completion
     new_record["measures"] = aggregate_lib.measures_for_run(
-        scenario, record.get("arm"), scans, judge_result, completion, artifact, permission_request, files=files_json
+        scenario, record.get("arm"), scans, judge_result, completion, artifact, permission_request, files=files_json,
+        service_evidence=new_record["service_evidence"],
     )
     return new_record
 

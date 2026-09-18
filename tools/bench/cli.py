@@ -32,6 +32,8 @@ from . import report as report_lib
 from . import sandbox as sandbox_lib
 from . import scanners as scanner_lib
 from . import scenarios as scenario_lib
+from . import selfcheck as selfcheck_lib
+from . import completion as completion_lib
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILL_SOURCE = ROOT / "skills" / sandbox_lib.SKILL_NAME
@@ -39,18 +41,28 @@ SERVER_SCRIPT = ROOT / "mcp-server" / "server.py"
 OVERLAY_EXAMPLE = ROOT / "docs" / "spec" / "overlay.example.yaml"
 ALLOWED_IN_REPO = ".bench-runs"
 MAX_SAVED_FILE_CHARS = 200_000
+FILES_ARCHIVE_VERSION = "complete-files-1"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bench.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scenarios", type=Path, required=True, help="directory of held-out scenario files, outside any repository")
     parser.add_argument("--host", choices=hosts_lib.HOSTS, required=True)
-    parser.add_argument("--arms", default="A,B,C", help="comma separated: A, B, C, D, E (D and E are opt-in, off by default)")
+    parser.add_argument(
+        "--arms",
+        default=",".join(sandbox_lib.DEFAULT_COMPARISON_ARMS),
+        help=(
+            "comma-separated conditions (default A,B,D): A no guidance; B or B-installed skill installed; "
+            "B-activated skill installed and explicitly activated; C skill and company reference server; "
+            "D explicitly activated skill and company reference server; E generic checklist; F company checklist"
+        ),
+    )
+    parser.add_argument("--examples", type=Path, help="required: matching reference examples with expected completion and outcomes")
     parser.add_argument("--runs", type=int, default=3, help="repetitions per scenario per arm")
     parser.add_argument("--model", default=None, help="model for the host under test (default: the sonnet alias on Claude Code, the host default on Codex)")
     parser.add_argument("--codex-reasoning", default=None, help="Codex only: model_reasoning_effort for the run (for example medium), written into the clean temporary config and recorded in the report")
     parser.add_argument("--out", type=Path, required=True, help="directory for run artifacts and the report")
-    parser.add_argument("--overlay", type=Path, default=None, help="company overlay for arm C (default: a temporary copy of the example overlay)")
+    parser.add_argument("--overlay", type=Path, default=None, help="company facts for D and legacy C/F replay (default: a temporary copy of the example overlay)")
     parser.add_argument("--max-turns", type=int, default=12)
     parser.add_argument("--judge-model", default=judge_lib.DEFAULT_JUDGE_MODEL)
     parser.add_argument("--timeout", type=int, default=600, help="seconds per host run")
@@ -79,6 +91,12 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as bad:
         print(f"error: {bad}", file=sys.stderr)
         return 2
+    if args.runs < 1:
+        print("error: --runs must be positive", file=sys.stderr)
+        return 2
+    if not args.dry_run and args.runs < 3:
+        print("error: live benchmark runs require at least 3 repetitions per scenario and condition", file=sys.stderr)
+        return 2
 
     try:
         scenarios = scenario_lib.load_scenarios(args.scenarios)
@@ -95,7 +113,34 @@ def main(argv: list[str] | None = None) -> int:
         for problem in problems:
             print(f"  {problem}", file=sys.stderr)
         return 2
+    design_errors = getattr(scenario_lib, "design_errors", None)
+    if design_errors:
+        design_problems = design_errors(scenarios, live=not args.dry_run)
+        for problem in design_problems:
+            print(f"{'warning (dry-run)' if args.dry_run else 'error'}: {problem}", file=sys.stderr)
+        if design_problems and not args.dry_run:
+            return 2
     print(f"{len(scenarios)} scenario(s) validated.")
+
+    if any(arm in sandbox_lib.VALUE_ARMS for arm in arms):
+        coverage_errors = scenario_lib.comparison_suite_errors(scenarios)
+        for problem in coverage_errors:
+            print(f"{'warning (setup smoke only)' if args.dry_run else 'error'}: {problem}", file=sys.stderr)
+        if coverage_errors and not args.dry_run:
+            return 2
+
+    if not args.examples:
+        print("error: --examples is required; reference completion and outcome checks must pass before a run", file=sys.stderr)
+        return 2
+    try:
+        lines, checked, mismatched, missing = selfcheck_lib.check(args.scenarios, args.examples)
+    except (OSError, ValueError) as bad:
+        print(f"error: reference preflight failed: {bad}", file=sys.stderr)
+        return 2
+    print("\n".join(lines))
+    if not checked or mismatched or missing:
+        print("error: reference preflight failed; no AI host started", file=sys.stderr)
+        return 2
 
     try:
         out_dir = check_out_dir(args.out)
@@ -106,6 +151,12 @@ def main(argv: list[str] | None = None) -> int:
     workspace = Path(tempfile.mkdtemp(prefix="catpilot-bench-"))
     try:
         overlay_file, overlay_note = resolve_overlay(args.overlay, workspace)
+        if any(arm in sandbox_lib.VALUE_ARMS for arm in arms):
+            try:
+                sandbox_lib.validated_company_overlay(overlay_file)
+            except (OSError, ValueError) as bad:
+                print(f"error: company overlay is not valid for this run: {bad}", file=sys.stderr)
+                return 2
         if args.dry_run:
             return dry_run(args, scenarios, arms, workspace, overlay_file)
         return execute(args, scenarios, arms, workspace, out_dir, overlay_file, overlay_note)
@@ -114,7 +165,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def parse_arms(value: str) -> list[str]:
-    arms = [piece.strip().upper() for piece in value.split(",") if piece.strip()]
+    arms = []
+    for piece in (piece.strip() for piece in value.split(",") if piece.strip()):
+        uppercase = piece.upper()
+        normalized = {"B-ACTIVATED": "B-activated", "B-INSTALLED": "B-installed"}.get(uppercase, uppercase)
+        arms.append(sandbox_lib.canonical_arm(normalized))
     unknown = [arm for arm in arms if arm not in sandbox_lib.ARMS]
     if unknown or not arms:
         raise ValueError(f"unknown arm(s) {unknown or value}; pick from {', '.join(sandbox_lib.ARMS)}")
@@ -146,18 +201,17 @@ def resolve_overlay(given: Path | None, workspace: Path) -> tuple[Path, str]:
         path = Path(given).expanduser().resolve()
         if not path.is_file():
             raise SystemExit(f"error: no overlay at {path}")
-        return path, "the overlay given with --overlay"
-    # The shipped example names a template location. The server accepts that
-    # only when CATPILOT_TEMPLATE_HOSTS lists the host, so as shipped the
-    # policy loads as invalid and arm C would answer from generic defaults
-    # while looking configured. Until that is fixed, the default copy drops the
-    # templates entry and nothing else. Pass --overlay to use your own file.
-    data = yaml.safe_load(OVERLAY_EXAMPLE.read_text(encoding="utf-8"))
-    removed = data.pop("templates", None)
-    path = workspace / "overlay.yaml"
-    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-    note = "a temporary copy of docs/spec/overlay.example.yaml" + (" with its templates entry removed" if removed else "")
-    return path, note
+        raw = path.read_bytes()
+        note = "a fixed snapshot of the overlay given with --overlay"
+    else:
+        raw = OVERLAY_EXAMPLE.read_bytes()
+        note = "a temporary copy of docs/spec/overlay.example.yaml"
+    # Every policy-bearing condition reads the same bytes for the whole run,
+    # even if the caller edits their source file during the experiment.
+    snapshot = workspace / "overlay.yaml"
+    snapshot.write_bytes(raw)
+    snapshot.chmod(0o444)
+    return snapshot, note
 
 
 def sha256_file(path: Path) -> str:
@@ -219,8 +273,9 @@ def dry_run(args, scenarios: list[dict], arms: list[str], workspace: Path, overl
             print("note: the command below shows where the temporary home would be.")
             codex_home = workspace / "home"
 
-    print(f"\nDry run: {len(scenarios)} scenario(s) x {len(arms)} arm(s), host {args.host}, model {model or 'host default'}.")
-    print(f"Overlay for arms C, D: {overlay_file}")
+    print(f"\nDry run: {len(scenarios)} scenario(s) x {len(arms)} condition(s), host {args.host}, model {model or 'host default'}.")
+    print("Conditions: " + ", ".join(sandbox_lib.arm_label(arm) for arm in sandbox_lib.display_arm_order(arms)))
+    print(f"Fixed company-policy snapshot: {overlay_file}")
     print(f"Follow-up: {args.follow_up or 'none (single turn)'}")
     print("No host is started and no model is called.\n")
 
@@ -228,7 +283,7 @@ def dry_run(args, scenarios: list[dict], arms: list[str], workspace: Path, overl
         for arm in arms:
             directory = workspace / "dry" / scenario["id"] / arm
             box = prepare_run_sandbox(scenario, arm, directory, args.host, overlay_file)
-            print(f"--- {scenario['id']} arm {arm} ---")
+            print(f"--- {scenario['id']}: {sandbox_lib.arm_label(arm)} ---")
             print(f"project: {box.project}")
             print(f"files:   {', '.join(box.planted)}")
             print(f"skill:   {box.skill_installed_at or 'none'}")
@@ -261,6 +316,12 @@ def dry_run(args, scenarios: list[dict], arms: list[str], workspace: Path, overl
     return 0
 
 
+def execution_arm_order(arms: list[str], scenario_index: int, repetition: int) -> list[str]:
+    """Rotate positions across matched tasks/repetitions without random settings."""
+    offset = (scenario_index + repetition - 1) % len(arms)
+    return arms[offset:] + arms[:offset]
+
+
 def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_dir: Path, overlay_file: Path, overlay_note: str) -> int:
     model = hosts_lib.resolve_model(args.host, args.model)
     host_dir = out_dir / args.host
@@ -270,8 +331,8 @@ def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_d
     host_model = None
 
     for repetition in range(1, args.runs + 1):
-        for scenario in scenarios:
-            for arm in arms:
+        for scenario_index, scenario in enumerate(scenarios):
+            for arm in execution_arm_order(arms, scenario_index, repetition):
                 record = one_run(args, scenario, arm, repetition, workspace, host_dir, overlay_file, model)
                 records.append(record)
                 if args.host == "codex" and not host_version:
@@ -294,7 +355,23 @@ def execute(args, scenarios: list[dict], arms: list[str], workspace: Path, out_d
         "judge_model": args.judge_model,
         "rubric_version": judge_lib.RUBRIC_VERSION,
         "scan_rules_version": scanner_lib.SCAN_RULES_VERSION,
+        "completion_version": completion_lib.VERSION,
+        "reference_examples_hash": tree_digest(args.examples),
         "arms": arms,
+        "arm_labels": {arm: sandbox_lib.arm_label(arm) for arm in arms},
+        "arm_selectors": {"B-installed": "B", "B-activated": "B-activated"},
+        "scenario_metadata": {
+            scenario["id"]: {
+                "temptation": scenario.get("temptation"),
+                "voice_reviewed_by": scenario.get("voice_reviewed_by"),
+                "policy_facts": scenario.get("policy_facts") or [],
+            }
+            for scenario in scenarios
+        },
+        "benchmark_design_version": sandbox_lib.ACTIVE_DESIGN_VERSION,
+        "benchmark_design_note": sandbox_lib.ACTIVE_DESIGN_NOTE,
+        "scenario_coverage": scenario_lib.comparison_coverage(scenarios),
+        "run_order": "rotating-condition-order-1",
         "runs": args.runs,
         "max_turns": args.max_turns,
         "timeout": args.timeout,
@@ -375,12 +452,16 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
         "repetition": repetition,
         "status": "ok",
         "failure": None,
+        "is_control": scenario_lib.is_harmless_control(scenario),
+        "temptation": scenario.get("temptation"),
+        "voice_reviewed_by": scenario.get("voice_reviewed_by"),
+        "policy_facts": scenario.get("policy_facts") or [],
     }
 
     codex_home = None
     if args.host == "codex":
         try:
-            codex_home = hosts_lib.prepare_codex_home(workspace / "homes" / run_id)
+            codex_home = hosts_lib.prepare_codex_home(workspace / "homes" / run_id, reasoning_effort=args.codex_reasoning)
         except hosts_lib.CleanIdentityMissing as missing:
             record.update(status="skipped", failure=str(missing))
             return record
@@ -421,7 +502,10 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
     changed = sandbox_lib.read_text_files(project, changes["changed"])
     final_files = sandbox_lib.read_text_files(project, sorted(after))
 
+    unreadable = unreadable_files(changes, created, changed)
     record["files"] = changes
+    record["files_unreadable"] = unreadable
+    record["files_archive_version"] = FILES_ARCHIVE_VERSION
     record["final_answer"] = transcript.final_answer
     record["exit_status"] = outcome.exit_status
     record["cost"] = {
@@ -454,6 +538,7 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
         created=created,
         changed=changed,
         final_files=final_files,
+        files_missing=unreadable,
     )
     scans = scanner_lib.scan(ctx)
     overlay_data = sandbox_lib.load_overlay(box.overlay_file)
@@ -492,11 +577,13 @@ def one_run(args, scenario: dict, arm: str, repetition: int, workspace: Path, ho
     record["scan_rules_version"] = scanner_lib.SCAN_RULES_VERSION
     record["values"] = values
     record["service_evidence"] = scanner_lib.service_evidence(ctx)
+    record["secret_event_evidence"] = scanner_lib.secret_event_evidence(ctx)
     record["completion"] = completion
     record["artifact"] = artifact
     record["judge"] = saved_judge
     record["measures"] = aggregate_lib.measures_for_run(
-        scenario, arm, scans, judge_result, completion, artifact, permission_request, files=_files_json_shape(created, changed)
+        scenario, arm, scans, judge_result, completion, artifact, permission_request, files=_files_json_shape(created, changed),
+        service_evidence=record["service_evidence"],
     )
     (run_dir / "run.json").write_text(json.dumps(record, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     return record
@@ -512,6 +599,17 @@ DEPENDENCY_PATH_SEGMENTS = {".venv", "venv", "node_modules", "__pycache__", ".gi
 
 def _is_dependency_path(path: str) -> bool:
     return any(part in DEPENDENCY_PATH_SEGMENTS for part in Path(path).parts)
+
+
+def unreadable_files(changes: dict, created: dict, changed: dict) -> list[str]:
+    """Changed nondependency paths omitted by the bounded text reader.
+
+    An oversized or unreadable file is missing scan evidence even when the
+    isolated functional verifier can execute it from the actual project.
+    """
+    available = set(created) | set(changed)
+    declared = set(changes.get("created") or []) | set(changes.get("changed") or [])
+    return sorted(path for path in declared - available if not _is_dependency_path(path))
 
 
 def _completion_priority_paths(paths, completion: dict) -> list[str]:
@@ -549,9 +647,11 @@ def save_files(run_dir: Path, created: dict, changed: dict, completion: dict | N
 
     The scenario's completion check names the file(s) a scan and a reader
     care about most, so those go first; everything else follows
-    alphabetically. Returns the paths the budget still forced out (saved on
-    the run record as `files_omitted`), so a later rescore can tell a file
-    the run never touched apart from one that was simply never saved.
+    alphabetically. Only complete files are saved: if the next file cannot
+    fit, it is omitted and smaller later files can still use the budget.
+    Returns omitted paths so rescoring cannot mistake absent or truncated
+    safety evidence for a negative finding. New run records carry the
+    `complete-files-1` archive version.
     """
     completion = completion or {}
     budget = MAX_SAVED_FILE_CHARS
@@ -563,10 +663,10 @@ def save_files(run_dir: Path, created: dict, changed: dict, completion: dict | N
         priority = _completion_priority_paths(list(kept), completion)
         ordered = priority + sorted(path for path in kept if path not in priority)
         for path in ordered:
-            if budget <= 0:
+            piece = kept[path]
+            if len(piece) > budget:
                 omitted.append(path)
                 continue
-            piece = kept[path][:budget]
             budget -= len(piece)
             contents[f"{group}:{path}"] = piece
     (run_dir / "files.json").write_text(json.dumps(contents, indent=2, sort_keys=True) + "\n", encoding="utf-8")

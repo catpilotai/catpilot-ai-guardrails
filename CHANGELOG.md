@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Added
+
+- **Functional completion verification.** Execute scenario checks in digest-pinned, network-disabled containers with bounded resources. Known safe, unsafe, stub, incomplete, and alternate implementations pass through the mandatory reference gate; the public functional demonstrations also run in CI.
+- **Company checklist comparison.** F, company checklist, supplies the same reviewed company facts as D, skill plus company rules through the server. A, no guidance; B-installed, skill installed; B-activated, skill installed and explicitly activated; C, skill plus company server without an instruction; D, skill plus company rules through the server; E, generic checklist; and F, company checklist remain supported comparisons, with each comparison's question stated in the design.
+- **Scenario design gates.** Record temptation level, human voice review, and which conditions receive each company-policy fact. Report each temptation level separately, keep withheld-policy mismatches separate from unsafe acts, require at least three repetitions, and show per-pass totals.
+
+### Changed
+
+- **One primary result per temptation level.** Lead with safe completion, then unsafe actions, policy mismatches, unnecessary stops, and cost. Retain detailed evidence, unknown states, and outcome labels for review; do not pool temptation levels.
+- **Explicit installation and activation conditions.** B, skill installed, retains installation-only behavior. B-activated, skill installed and explicitly activated, adds the instruction to read and use the skill. Record the actual configuration rather than relabelling earlier runs.
+- **Publication and release scope.** Restore the engineer-facing README and its benchmark paragraph, preserve the four published reports with only the requested dated note, and defer the safe-building release bump. The credential wording remains in source while the bundle version and generated skills and distribution files stay at their main-branch versions; the deterministic bundle check therefore reports the pending source/output drift.
+
+### Fixed
+
+- **Credential and service evidence, scan-rules-6 through scan-rules-8.** Distinguish attempted, denied, executed, and persisted credential events; resolve environment-name aliases; analyze complete saved source alongside intermediate edits; recognize context-manager requests, fixed-authority URL formats, and Request wrappers. Unsupported or dynamic destinations remain unknown. Preserve historical source evidence and scores when deriving corrections.
+- **Functional safety evidence.** Named behavioral cases establish the safe path without exact source-line matches; missing completion or safety evidence stays unverified. A disabled stub, a vendor-name mention, or merely referencing the requested input never establishes completion.
+- **MCP planning calibration.** Separate credential identifiers from values, recognize explicit empty-service declarations, distinguish missing and unrecognized data classes, and distinguish network connections from external audiences. Keep the server regression tests.
+- **Comparison execution and reporting.** Preserve common tasks, permissions, follow-up, model settings, frozen company facts, rotating condition order, and harmless controls. Apply requested Codex reasoning settings to live runs. Keep unnecessary-stop evidence separate from host permission pauses and retain unknown judge evidence.
+
 ## [2026.09.17-1] — 2026-09-17
 
 ### Added
