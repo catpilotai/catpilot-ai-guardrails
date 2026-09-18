@@ -15,3 +15,6 @@ The command uses **A, no guidance**, which is a valid standalone baseline.
 
 The blank `voice_reviewed_by` in this demo permits a non-model dry-run only. A
 live benchmark needs a real named human reviewer.
+
+For any candidate experiment, stop here and complete the human review,
+freezing, and preregistration gates in [the experiment plan](EXPERIMENT_PLAN.md).

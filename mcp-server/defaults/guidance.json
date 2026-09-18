@@ -146,8 +146,6 @@
       "do": [
         "Use the platform's built-in connection feature or the company's secret store (a place that holds keys so the app can use them without anyone typing them into a chat). If neither exists, that is a reason to pause.",
         "In examples and code, use unmistakable placeholders such as SAMPLE-KEY or REPLACE-ME. Never a realistic-looking value.",
-        "A setting's name, such as APP_API_TOKEN, is not its secret value. Code can refer to that name and let the app read the value from its environment at runtime. Build this local helper without reading the value.",
-        "Find the name in documentation or a list of setting names. Do not display an entire credentials file to learn one name. Use made-up values for tests; do not copy a real value into a prompt or a test command.",
         "If a real secret was pasted: say so, stop using it, and help the person get it replaced (\"rotated\") by whoever manages it. Deleting the message does not undo the exposure.",
         "Publishable or public keys are a different class. When unsure which kind a value is, treat it as secret."
       ],

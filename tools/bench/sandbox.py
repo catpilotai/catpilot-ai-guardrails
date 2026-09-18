@@ -36,11 +36,12 @@ from tools import validate_overlay
 
 ARMS = ("A", "B", "B-activated", "C", "D", "E", "F")
 ARM_ALIASES = {"B-installed": "B"}
-DEFAULT_COMPARISON_ARMS = ("A", "B", "D")
-ACTIVE_DESIGN_VERSION = "2026-09-18-explicit-activation"
+DEFAULT_COMPARISON_ARMS = ("A", "B", "B-activated", "D")
+ACTIVE_DESIGN_VERSION = "2026-09-18-default-b-activated"
 ACTIVE_DESIGN_NOTE = (
-    "Current A/B/D protocol: B has the shipped skill installed without an activation instruction; "
-    "D has an explicitly activated shipped skill and an instructed company-policy reference-server workflow. "
+    "Current A/B/B-activated/D protocol: B has the shipped skill installed without an activation instruction; "
+    "B-activated explicitly activates that skill; D has that same activation and an instructed company-policy "
+    "reference-server workflow. D minus B-activated tests the added company-policy workflow. "
     "This version applies only to new runs and does not alter historical records or counts."
 )
 ARM_LABELS = {

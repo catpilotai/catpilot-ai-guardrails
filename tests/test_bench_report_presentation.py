@@ -67,7 +67,7 @@ class ReportPresentationTests(unittest.TestCase):
     def test_main_table_has_one_primary_measure_and_small_secondary_set(self):
         main, appendix = self.sections(*report_inputs())
         self.assertEqual(main.count("| **Safe completion (primary)** |"), 1)
-        for title in ("Unsafe action attempted", "Unnecessary stops (judged)", "Mean cost per run (USD)", "Mean wall time per run"):
+        for title in ("Verified functional completion", "No detected or unresolved generic unsafe action", "No detected or unresolved policy mismatch", "Unsafe action attempted", "Policy mismatch", "Unnecessary stops (judged)", "Mean cost per run (USD)", "Mean wall time per run"):
             self.assertIn(f"| {title} |", main)
         for audit_measure in ("Artifact safety", "Values cited", "Task finished", "Safe alternative taken"):
             self.assertNotIn(f"| {audit_measure}", main)
@@ -80,6 +80,14 @@ class ReportPresentationTests(unittest.TestCase):
         self.assertIn("| Measure | B-installed, skill installed | D, skill explicitly activated with company rules through the reference server |", main)
         self.assertIn("Comparison: D, skill explicitly activated with company rules through the reference server versus B-installed, skill installed", main)
         self.assertNotIn("A, no guidance", main)
+
+    def test_activated_skill_is_the_only_policy_workflow_comparator_for_d(self):
+        main, _ = self.sections(*report_inputs(("A", "B", "B-activated", "D")))
+        self.assertIn("the deployment-default installed skill, without an explicit activation instruction.", main)
+        self.assertIn("D, skill explicitly activated with company rules through the reference server versus B-activated, skill installed and explicitly activated", main)
+        self.assertIn("the added company-policy workflow; it is not a pure reference-server transport comparison.", main)
+        self.assertIn("D, skill explicitly activated with company rules through the reference server versus B-installed, skill installed", main)
+        self.assertIn("the combined explicit activation and company-policy workflow.", main)
 
     def test_nondefault_conditions_use_full_names(self):
         main, appendix = self.sections(*report_inputs(("C", "A", "B")))
@@ -179,6 +187,21 @@ class ReportPresentationTests(unittest.TestCase):
         self.assertIn("### Scenario policy-fact availability", text)
         self.assertIn("hosting: D, skill explicitly activated with company rules through the reference server", text)
         self.assertIn("`adds_unapproved_service`", text)
+
+    def test_missing_new_diagnostics_are_reported_unknown_not_as_failures(self):
+        config, summary, records = report_inputs(("A",))
+        text = report.render(config, summary, records)
+        self.assertIn("| Verified functional completion | unknown (1 unknown) |", text)
+        self.assertIn("| No detected or unresolved generic unsafe action | unknown (1 unknown) |", text)
+
+    def test_diagnostic_spread_keeps_per_pass_known_and_unknown_counts(self):
+        config, _, records = report_inputs(("A",))
+        records = [
+            {**run_record("A", 1), "measures": {**run_record("A", 1)["measures"], "functional_completion": True, "generic_safety": None, "policy_adherence": True}},
+            {**run_record("A", 2), "measures": {**run_record("A", 2)["measures"], "functional_completion": None, "generic_safety": True, "policy_adherence": None}},
+        ]
+        text = report.render(config, aggregate.summarize(records), records)
+        self.assertIn("| Verified functional completion | 1 of 1; 0 unknown, 0 of 0; 1 unknown |", text)
 
     def test_every_selectable_condition_uses_its_full_label_in_tables_and_guide(self):
         arms = ("A", "B", "B-activated", "C", "D", "E", "F")

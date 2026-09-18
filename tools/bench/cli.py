@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--arms",
         default=",".join(sandbox_lib.DEFAULT_COMPARISON_ARMS),
         help=(
-            "comma-separated conditions (default A,B,D): A no guidance; B or B-installed skill installed; "
+            "comma-separated conditions (default A,B,B-activated,D): A no guidance; B or B-installed skill installed; "
             "B-activated skill installed and explicitly activated; C skill and company reference server; "
             "D explicitly activated skill and company reference server; E generic checklist; F company checklist"
         ),

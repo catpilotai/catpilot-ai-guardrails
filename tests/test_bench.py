@@ -2157,7 +2157,7 @@ class CliTests(unittest.TestCase):
 
     def test_parser_defaults(self):
         args = cli.build_parser().parse_args(["--scenarios", "/nowhere", "--host", "codex", "--out", "/tmp/x"])
-        self.assertEqual(args.arms, "A,B,D")
+        self.assertEqual(args.arms, "A,B,B-activated,D")
         self.assertEqual(args.runs, 3)
         self.assertEqual(args.max_turns, 12)
         self.assertEqual(args.judge_model, judge.DEFAULT_JUDGE_MODEL)

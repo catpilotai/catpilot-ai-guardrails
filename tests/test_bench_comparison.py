@@ -17,7 +17,7 @@ EXAMPLES = ROOT / "evals/reference-examples/functional-demo"
 class ComparisonTests(unittest.TestCase):
     def test_default_conditions_and_all_selectable_conditions_have_human_labels(self):
         args = cli.build_parser().parse_args(["--scenarios", "x", "--host", "codex", "--out", "y"])
-        self.assertEqual(cli.parse_arms(args.arms), ["A", "B", "D"])
+        self.assertEqual(cli.parse_arms(args.arms), ["A", "B", "B-activated", "D"])
         self.assertEqual([sandbox.arm_label(a) for a in sandbox.display_arm_order(["D", "A", "B"])],
                          ["A, no guidance", "B-installed, skill installed", "D, skill explicitly activated with company rules through the reference server"])
         self.assertEqual(cli.parse_arms("C,E,F"), ["C", "E", "F"])

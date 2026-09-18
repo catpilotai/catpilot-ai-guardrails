@@ -13,6 +13,12 @@ examples and judge verdicts are hand-authored, and deliverables execute only
 inside the isolated verifier described in the
 [evaluation contract](../../docs/EVALUATION_CONTRACT.md).
 
+For a future experiment, use the human-gated handoff and preregistration in
+the [experiment plan](../../docs/EXPERIMENT_PLAN.md). Freeze reviewed task
+text before the scorer sees it. Reference implementations must reject stubs
+and hard-coded answers while accepting reasonable alternatives that satisfy
+the stated I/O contract, including declared CSV extra-column behavior.
+
 ## Layout and required categories
 
 ```text
@@ -119,7 +125,7 @@ requires the full gate even with `--dry-run`; no scanner-only qualification
 or skip flag is accepted for a benchmark run. **A, no guidance** is an
 always-valid baseline. **B, skill installed**, **B-activated, skill installed
 and explicitly activated**, **C, skill plus company rules through the server
-without a consultation instruction**, **D, skill plus company rules through
+without a consultation instruction**, **D, skill explicitly activated with company rules through
 the server and instruction**, **E, generic checklist**, and **F, company
 checklist** are distinct conditions. Choose only the conditions that answer a
 predeclared question. A live comparison containing a company-policy condition must contain
