@@ -64,7 +64,14 @@ class TargetTests(unittest.TestCase):
         """The condensed renderer keeps the first three safe alternatives per checkpoint, so the rules that matter most must sit there."""
         for name in ("chatgpt-project-instructions.md", "copilot-agent-instructions.md", "copilot-instructions.md", "AGENTS.md", "lovable-knowledge.md", "bolt-prompt.txt", "replit-instructions.md", "v0-instructions.md"):
             text = (self.release_dir / name).read_text()
-            for phrase in ("never both", "stands in for the real file", "stub that sends nothing"):
+            for phrase in (
+                "never both",
+                "stands in for the real file",
+                "stub that sends nothing",
+                "APP_API_TOKEN names a setting",
+                "Build without reading its value; let code read it at runtime.",
+                "replace (rotate) it",
+            ):
                 self.assertIn(phrase, text, f"{name} lost the rule: {phrase}")
 
     def test_paste_targets_fit_instruction_limits_and_carry_release(self):

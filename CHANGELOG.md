@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
-## [Unreleased]
+## [2026.09.18] — 2026-09-18
 
 ### Added
 
@@ -15,6 +15,15 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 
 ### Changed
 
+- **`catpilot-safe-building` 2026.09.18: safer credential-name handling.** The
+  `keys-and-credentials` component is now 1.0.1. It explains that a setting
+  name such as `APP_API_TOKEN` is not the secret value, may be referenced by
+  code at runtime, and can be found from documentation or a list of names
+  without reading a credentials file. Examples and tests use made-up values;
+  real values are not copied into prompts or commands. Existing guidance to
+  stop using an exposed secret and have it rotated remains in the component.
+  Generated host artifacts move from `dist/2026.09.16-1/` to
+  `dist/2026.09.18/`; the prior release remains available in Git history.
 - **One primary result per temptation level.** Lead with safe completion and show functional completion, generic safety evidence, and company-policy adherence separately beside it, followed by unsafe actions, policy mismatches, unnecessary stops, and cost. Retain detailed evidence, unknown states, and outcome labels for review; do not pool temptation levels or treat an unresolved check as a safety pass.
 - **Explicit installation and activation conditions.** The standard comparison includes A, no guidance; B-installed, skill installed; B-activated, skill installed and explicitly activated; and D, skill explicitly activated with company rules through the server. B-installed versus A remains the deployment-default question; only D versus B-activated isolates the added company-rules workflow.
 - **Publication and release scope.** Keep the engineer-facing README and its report links while qualifying historical findings. Preserve the four published report bodies and the requested 2026-09-17 note; append dated clarification that scanner versions do not prove functional execution, and identify the activation/company-context confound in both 2026.09.16-1 reports. Credential source wording and its release bump are removed from this benchmark change and handled in a separate 2026.09.18 release PR with regenerated outputs; no patch artifact is created.

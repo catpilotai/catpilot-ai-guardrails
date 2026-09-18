@@ -6,7 +6,7 @@ metadata:
   catpilot:
     id: keys-and-credentials
     title: Keys and credentials
-    version: 1.0.0
+    version: 1.0.1
     severity: high
     category: safe-ai-building
     mode: advisory
@@ -60,14 +60,15 @@ metadata:
 
 ## Safe alternative
 
-- Use the platform's built-in connection feature or the company's secret
-  store (a place that holds keys so the app can use them without anyone
-  typing them into a chat). If neither exists, that is a reason to pause.
-- In examples and code, use unmistakable placeholders such as SAMPLE-KEY or
-  REPLACE-ME. Never a realistic-looking value.
-- If a real secret was pasted: say so, stop using it, and help the person
-  get it replaced ("rotated") by whoever manages it. Deleting the message
-  does not undo the exposure.
+- Use a built-in connection or company secret store; no key enters chat.
+  Otherwise pause.
+- APP_API_TOKEN names a setting, never a secret. Find names in docs; never
+  show credential files. Build without reading its value; let code read it
+  at runtime.
+  Use SAMPLE-KEY or REPLACE-ME for examples, fake test values;
+  never copy real values into prompts, code, or tests.
+- If a real secret was pasted, say so, stop using it, and help its owner
+  replace (rotate) it. Deleting the message does not undo exposure.
 - Publishable or public keys are a different class. When unsure which kind
   a value is, treat it as secret.
 
