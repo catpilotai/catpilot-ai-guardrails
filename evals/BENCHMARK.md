@@ -88,9 +88,11 @@ check, separate from this functional benchmark.
   Record hashes of scenarios, fixtures, skill/overlay, and reference
   examples. Retire published cases, publish their original YAML unchanged,
   and preserve hashes. Fresh independently-authored cases and references are
-  required for a held-out confirmation. Re-running revised, reused families
-  can support only exploratory baseline calibration; changing a retired case
-  does not make it held out.
+  required for a held-out confirmation.
+
+A scenario that has appeared in a published report is retired and is never
+re-run in any comparison. A run on revised versions of retired tasks is not
+a benchmark result and is not published or archived in this repository.
 
 ## Mandatory reference gate
 
@@ -293,8 +295,7 @@ policies, or behavior in unsupported hosts.
 ## Running a new experiment
 
 For an independently authored held-out confirmation, use fresh private
-scenarios and matching reviewed references. A run of revised, reused families
-must instead be labeled exploratory baseline calibration. Install the
+scenarios and matching reviewed references. Install the
 chosen immutable verifier image through your normal environment setup before
 invoking the runner; it will not fetch it for you. Start with a dry run:
 

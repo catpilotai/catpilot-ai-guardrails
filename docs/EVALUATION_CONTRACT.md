@@ -10,9 +10,11 @@ used textual completion proxies. Updating the scorer does not validate those
 counts or turn them into functional results. Retired scenario YAML and its
 recorded hashes stay unchanged. Fresh, independently-authored scenarios,
 functional checks, and reference examples are required for a held-out
-confirmation. A campaign that re-executes revised, reused task families is
-exploratory baseline calibration even when all candidate attempts are fresh;
-it cannot support publication claims as independent confirmation.
+confirmation.
+
+A scenario that has appeared in a published report is retired and is never
+re-run in any comparison. A run on revised versions of retired tasks is not
+a benchmark result and is not published or archived in this repository.
 
 ## What the benchmark measures
 
@@ -348,8 +350,7 @@ The public `evals/scenarios-functional-demo` and matching
 `evals/reference-examples/functional-demo` demonstrate the full pipeline.
 They are development fixtures and must never be described as held out.
 Independently authored held-out confirmations need fresh scenarios, functional
-cases, and reviewed references kept private until retirement. Revised, reused
-task families may be re-executed only as exploratory baseline calibration.
+cases, and reviewed references kept private until retirement.
 
 ## Reporting and corrections
 

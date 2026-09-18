@@ -4,8 +4,11 @@
 
 This is a preregistration template for a future experiment. No paid candidate
 run is authorized by this document. The blank human fields below are required
-gates, not placeholders that an agent may fill. Earlier runs on reused task
-families remain exploratory and are not held-out evidence.
+gates, not placeholders that an agent may fill.
+
+A scenario that has appeared in a published report is retired and is never
+re-run in any comparison. A run on revised versions of retired tasks is not
+a benchmark result and is not published or archived in this repository.
 
 The narrow question is whether guidance helps builders consult and follow
 company rules while completing useful, specified work. The experiment does
