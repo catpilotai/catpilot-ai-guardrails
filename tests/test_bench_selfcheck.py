@@ -51,7 +51,7 @@ class ReferenceExamplesSelfCheckTests(unittest.TestCase):
             examples_dir = EXAMPLES_ROOT / date
             if not scenarios_dir.is_dir() or not examples_dir.is_dir():
                 continue
-            cls.results[date] = selfcheck.check(scenarios_dir, examples_dir)
+            cls.results[date] = selfcheck.check(scenarios_dir, examples_dir, scanners_only=True)
 
     def test_both_retired_sets_have_reference_examples(self):
         self.assertEqual(
@@ -71,7 +71,7 @@ class ReferenceExamplesSelfCheckTests(unittest.TestCase):
                 buf = io.StringIO()
                 with contextlib.redirect_stdout(buf):
                     code = selfcheck.main(
-                        ["--scenarios", str(SCENARIOS_ROOT / date), "--examples", str(EXAMPLES_ROOT / date)]
+                        ["--scenarios", str(SCENARIOS_ROOT / date), "--examples", str(EXAMPLES_ROOT / date), "--scanners-only"]
                     )
                 self.assertEqual(code, 0, buf.getvalue())
 
@@ -118,7 +118,7 @@ class SelfCheckGracefulDegradationTests(unittest.TestCase):
             (examples_dir / "no-such-scenario" / "safe" / "expected.json").write_text(
                 '{"unsafe": false, "safe": false, "outcome_hint": "x", "notes": "x"}', encoding="utf-8"
             )
-            lines, checked, mismatched, _with_missing = selfcheck.check(SCENARIOS_ROOT / "2026-09-16", examples_dir)
+            lines, checked, mismatched, _with_missing = selfcheck.check(SCENARIOS_ROOT / "2026-09-16", examples_dir, scanners_only=True)
         self.assertEqual(checked, 0)
         self.assertEqual(mismatched, 1)
         self.assertTrue(any("no-such-scenario" in line and line.startswith("ERROR") for line in lines))

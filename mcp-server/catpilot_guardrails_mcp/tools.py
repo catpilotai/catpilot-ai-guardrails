@@ -126,7 +126,15 @@ SENSITIVE_DATA = {
     "customer records": r"\b(?:customer (?:export|list|records|data|file)|crm export|user list|contact list|email list)",
 }
 CREDENTIALS_PATTERN = r"\b(?:password|passwd|api key|apikey|secret key|access token|bearer|smtp password|private key|credential)"
-EXTERNAL_AUDIENCE = r"\b(?:public|anyone with the link|external|customers?|vendors?|partners?|agency|the internet|everyone)\b"
+# ``external connection`` describes network activity, not an audience. Keep the bare
+# ``external`` audience cue for phrases such as "external partners". An intervening
+# network noun is excluded only when it is not followed by a people/role term, so
+# "external API developers" and "external service users" remain audience cues.
+EXTERNAL_AUDIENCE = (
+    r"\b(?:public|anyone with the link|external(?!\s+(?:connections?|services?|apis?|requests?|calls?)\b"
+    r"(?!\s+(?:developers?|users?|providers?|partners?|customers?|teams?|staff|people|engineers?|administrators?|admins?)\b))"
+    r"|customers?|vendors?|partners?|agency|the internet|everyone)\b"
+)
 RISKY_HOSTING = r"\b(?:personal (?:account|laptop|computer|replit|cloud|server)|free (?:tier|plan|account)|trial (?:account|workspace)|home server|my laptop|localhost)\b"
 # A hosting value that says the thing is never deployed, hosted, or published anywhere -- it
 # just runs on the builder's own machine, or by hand as a one-off. Whole phrases, not overlay
@@ -165,6 +173,7 @@ GENERIC_RULES = {
     "data_review": "employee and customer records need the data owner's agreement in writing first",
     "data_ok": "made-up records that keep the shape of the real data are the safe default",
     "data_missing": "no data classes were named; say what data the app will touch",
+    "data_unrecognized": "this data class is not covered by the available policy; ask the data owner",
     "service_review": "any new software service needs review",
     "service_missing": "no services were named; say what the app will connect to",
     "write_review": "writing to a system of record needs a human review before it goes live",
@@ -227,6 +236,8 @@ SYNTHETIC_NEGATION_EXTRA = ("isn't", "aren't", "rather than", "other than", "exc
 # real data, not a safe made-up example. Whole words only, so "surreal" or "realistic" do not count.
 REAL_DATA_CUE = r"\b(?:real|actual|live|production|genuine|customer records|employee records|export from)\b"
 DATA_PROVENANCE_VALUES = ("synthetic", "real", "mixed", "unknown")
+ENVIRONMENT_VARIABLE_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
+NO_SERVICE_SENTINELS = frozenset({"none", "no service", "no services", "n/a"})
 
 # A hosting or service value that names an approved item together with other words, or negates
 # one, is not a plain approval: "Internal App Platform and a personal VPS" and "a new model
@@ -490,6 +501,39 @@ def _data_class_provenance(item: str) -> tuple[bool, list[str], str | None]:
     return True, [synthetic_word], None
 
 
+def _credential_reference_error(references) -> dict | None:
+    """Validate identifier-only credential metadata without ever accepting a credential value.
+
+    This deliberately recognizes environment-variable names only.  Callers must use
+    ``data_classes`` for secret material or an unknown value; the existing conservative
+    data-class rules then apply.  The two flags make an identifier-only declaration
+    auditable, but this narrow form cannot describe reading or sending a value.
+    """
+    if references is None:
+        return None
+    if not isinstance(references, list):
+        return _error("invalid-input", "credential_references must be a list of identifier-only environment-variable references.")
+    allowed = {"name", "value_in_model_context", "value_in_generated_artifacts"}
+    for reference in references:
+        if not isinstance(reference, dict) or set(reference) - allowed:
+            return _error("invalid-input", "Each credential_references item may contain only name, value_in_model_context, and value_in_generated_artifacts.")
+        name = reference.get("name")
+        if not isinstance(name, str) or not ENVIRONMENT_VARIABLE_NAME.fullmatch(name):
+            return _error("invalid-input", "credential_references.name must be an uppercase environment-variable identifier (letters, digits, and underscores; 128 characters max).")
+        for flag in ("value_in_model_context", "value_in_generated_artifacts"):
+            if flag not in reference or type(reference[flag]) is not bool:
+                return _error("invalid-input", f"credential_references.{flag} must be a boolean.")
+    return None
+
+
+def _named_services(services: list[str] | None) -> list[str]:
+    """Normalize explicit no-service declarations without treating a service name as one."""
+    return [
+        value for value in (str(service).strip() for service in (services or []))
+        if value and " ".join(value.lower().split()) not in NO_SERVICE_SENTINELS
+    ]
+
+
 def check_plan(
     description: str,
     guidance: dict,
@@ -501,6 +545,7 @@ def check_plan(
     services: list[str] | None = None,
     write_access: bool | None = None,
     data_types: list[str] | None = None,
+    credential_references: list[dict] | None = None,
 ) -> dict:
     """Decide from the explicit fields; read the description only for hints.
 
@@ -511,13 +556,22 @@ def check_plan(
     for all of them, regardless of words like "sample" or "synthetic" in the text; "unknown" is
     treated as "real" and each data_classes decision carries a note saying so. Any other value
     is reported back as an error rather than raised.
+
+    `credential_references` is only for identifier metadata such as
+    ``{"name": "CHECKIN_RELAY_TOKEN", "value_in_model_context": false,
+    "value_in_generated_artifacts": false}``. It never accepts a secret value. The two
+    required flags say whether the value enters model context or generated artifacts;
+    either true is prohibited. A local runtime environment lookup alone is neither.
     """
     if not isinstance(description, str) or not description.strip():
         return _error("invalid-input", "description must be a nonempty string.")
     if data_provenance is not None and data_provenance not in DATA_PROVENANCE_VALUES:
         return _error("invalid-input", f"data_provenance must be one of {', '.join(DATA_PROVENANCE_VALUES)}, or omitted.", data_provenance=data_provenance)
+    credential_reference_error = _credential_reference_error(credential_references)
+    if credential_reference_error:
+        return credential_reference_error
     named_classes = [str(d).strip() for d in (list(data_classes or []) + list(data_types or [])) if str(d).strip()]
-    named_services = [str(s).strip() for s in (services or []) if str(s).strip()]
+    named_services = _named_services(services)
     comps = guidance["components"]
     o = policy.overlay if policy.approved else None
     risks: list[dict] = []
@@ -692,7 +746,7 @@ def check_plan(
             if hit:
                 decide("data_classes", item, "permitted", hit[0][0], "company overlay", _merge_evidence(provenance_evidence, hit[0][1]), component=component, note=provenance_note)
                 continue
-            decide("data_classes", item, "unknown", GENERIC_RULES["data_missing"], "company overlay", _merge_evidence(provenance_evidence), component=component,
+            decide("data_classes", item, "unknown", GENERIC_RULES["data_unrecognized"], "company overlay", _merge_evidence(provenance_evidence), component=component,
                    note=provenance_note or "not in the company's data classes; ask the owner")
             continue
         if _match(CREDENTIALS_PATTERN, item):
@@ -709,12 +763,33 @@ def check_plan(
                    "generic default", _merge_evidence(provenance_evidence, [item.lower()]), component=component,
                    why="Real data of this kind should not go into a prompt, upload, or test: " + generic + ".", note=provenance_note)
             continue
-        decide("data_classes", item, "unknown", GENERIC_RULES["data_missing"], "generic default", _merge_evidence(provenance_evidence), component=component,
+        decide("data_classes", item, "unknown", GENERIC_RULES["data_unrecognized"], "generic default", _merge_evidence(provenance_evidence), component=component,
                note=provenance_note or "not a class the generic defaults recognize; ask the data's owner")
+
+    # Identifier-only credential references are metadata, not credential material. Their
+    # names can safely appear in a plan without turning a local helper into a secret sink.
+    for reference in credential_references or []:
+        value_exposed = reference["value_in_model_context"] or reference["value_in_generated_artifacts"]
+        if value_exposed:
+            labels["credentials"] = True
+            exposed_places = [key for key in ("value_in_model_context", "value_in_generated_artifacts") if reference[key]]
+            decide("credential_references", reference["name"], "prohibited", GENERIC_RULES["data_prohibited"], "generic default",
+                   [reference["name"], *exposed_places], component="keys-and-credentials",
+                   why="A credential value would enter model context or a generated artifact; it must not be supplied to either.",
+                   note="reference metadata says the credential value would be exposed")
+        else:
+            decide("credential_references", reference["name"], "permitted",
+                   "identifier-only credential metadata does not include a credential value", "generic default",
+                   [reference["name"]], component="keys-and-credentials",
+                   note="the reference names an environment variable only; a local runtime lookup does not expose its value to the model or generated artifacts")
 
     # services
     if not named_services:
-        decide("services", "unknown", "unknown", GENERIC_RULES["service_missing"], "generic default", note="no services were given")
+        if services is None:
+            decide("services", "unknown", "unknown", GENERIC_RULES["service_missing"], "generic default", note="no services were given")
+        else:
+            decide("services", [], "permitted", "the plan connects to no external services", "generic default",
+                   note="an empty service list or an exact no-service declaration was supplied")
     for item in named_services:
         match = _approved_mention(o["services"]["approved"], item) if o else None
         # "starts_approved": nothing else follows "approved" besides one thing's own words, so a

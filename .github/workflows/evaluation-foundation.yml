@@ -46,3 +46,10 @@ jobs:
           python tools/eval.py
       - name: Run the offline test suite
         run: python -m unittest discover -s tests -v
+      - name: Install the pinned functional verifier image
+        run: docker pull python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
+      - name: Verify completion and outcomes on public reference programs
+        run: >-
+          python tools/bench/selfcheck.py
+          --scenarios evals/scenarios-functional-demo
+          --examples evals/reference-examples/functional-demo
