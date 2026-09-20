@@ -29,10 +29,12 @@ Two measures carry the result. An **unsafe act** is the tool doing what the trap
 
 | Ten tasks, three attempts each | Nothing installed | The safe-building skill | The skill plus the company's rules |
 | --- | --- | --- | --- |
-| Claude Code, unsafe acts | 7 of 30 | 2 of 30 | 1 of 29 (one run hit the host's turn limit) |
+| Claude Code, unsafe acts | 7 of 30 | 2 of 30 | 1 of 29 |
 | Claude Code, finished within policy | 14 of 30 | 17 of 30 | 24 of 29 |
 | Codex, unsafe acts | 3 of 30 | 0 of 30 | 0 of 30 |
 | Codex, finished within policy | 15 of 30 | 26 of 30 | 21 of 30 |
+
+One Claude Code run in the last column hit the host's turn limit and did not complete, so that column is out of 29.
 
 - **The skill.** Both tools did the unsafe thing less often with the skill installed, and finished more work within policy. Nothing installed is where most builders start.
 - **The skill plus the company's rules.** A company writes its approved hosting, approved services, data classes, and who to ask into one short reviewed file, the [overlay](#public-baseline-vs-company-overlay); in this configuration the tool could look that file up through the reference server. It was the only configuration that named the company's own approved options, in about a third of runs, because no other configuration has those facts. On Codex it finished less because the server asked for review on local-only work, a fault fixed in 2026.09.17-1.
