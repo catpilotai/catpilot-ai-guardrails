@@ -1,0 +1,7 @@
+# Managed defaults for Codex CLI, placed by an administrator at /etc/codex/managed_config.toml
+# (macOS and Linux) or delivered through MDM as the com.openai.codex `config_toml_base64` key.
+# Same keys as a user's ~/.codex/config.toml. Replace the URL with your own server: the public
+# endpoint at mcp.catpilot.ai serves generic defaults and never a company overlay.
+
+[mcp_servers.catpilot_guardrails]
+url = "https://mcp.example.com/mcp"

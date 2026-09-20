@@ -20,7 +20,7 @@ Installable via skills.sh into 50+ runtimes; verified only on the runtimes and d
 | --- | --- | --- | --- | --- | --- |
 | Claude Code 2.1.241 | yes: a project `.claude/skills/` install is listed in the session init; with the split core skill, Sonnet invoked it and read `references/cloud-cli-safety.md` before answering (2026-09-15), Haiku did not invoke it on the same prompt | yes: `list_approved` returned over stdio and through the hosted `http` endpoint | yes: the `Bash` credential hook and the `Write`/`Edit` private-key hook each denied the action; each control run without the hook performed it | 2026-09-15 | 2026.09.13 |
 | Cursor | not verified | not verified | not tested | | |
-| Codex CLI 0.154.0 | yes, with a caveat: a project `.agents/skills/` install; the host reads the skill on demand and emits no load event, so the signal is the model naming the skill and input usage rising from about 17k to over 90k tokens; with the split core skill it read the baseline and `references/cloud-cli-safety.md` (2026-09-15) | yes: `mcp_tool_call` completed over stdio and through the hosted endpoint | none | 2026-09-14 | 2026.09.13 |
+| Codex CLI 0.154.0 | yes, with a caveat: a project `.agents/skills/` install; the host reads the skill on demand and emits no load event, so the signal is the model naming the skill and input usage rising from about 17k to over 90k tokens; with the split core skill it read the baseline and `references/cloud-cli-safety.md` (2026-09-15); a user-level `~/.agents/skills/` install was named and read the same way (2026-09-20) | yes: `mcp_tool_call` completed over stdio and through the hosted endpoint | none | 2026-09-14 | 2026.09.13 |
 | Claude.ai (individual upload or organization provisioning) | not verified | custom connector to the hosted endpoint not yet verified | none, advisory only | | |
 | ChatGPT (project or GPT instructions) | n/a, pasted text; manual protocol in [`evals/HOST_VERIFICATION.md`](../evals/HOST_VERIFICATION.md), not yet run | custom connector to the hosted endpoint not yet verified | none | | |
 | Microsoft Copilot Studio | n/a, pasted text | not verified | none | | |
@@ -37,7 +37,7 @@ Two Claude Code `PreToolUse` hooks, each on one tool path. Neither ever returns 
 - [`hooks/claude-code/pretooluse-secrets.py`](../hooks/claude-code/pretooluse-secrets.py), on the `Bash` tool: denies a shell command that contains a literal credential (the secret-blocking patterns), with a plain-language reason that never echoes the value. The escape hatch for a false positive is to reference the value from an environment variable, or to run the command yourself; there is no bypass flag.
 - [`hooks/claude-code/pretooluse-write-private-key.py`](../hooks/claude-code/pretooluse-write-private-key.py), on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit`: denies content that adds a PEM private-key block. It does not scan shell commands, reads, prompts, or other tools.
 
-For your own agent loop, [`hooks/harness/secret_gate.py`](../hooks/harness/secret_gate.py) is the credential check as a plain function; see [For agent harnesses](#for-agent-harnesses).
+Both hooks can record each denial as one content-free JSON line when `CATPILOT_EVIDENCE_LOG` is set ([`hooks/README.md`](../hooks/README.md)); an organization deploys them through managed settings ([`DEPLOY_ORG.md`](DEPLOY_ORG.md)). For your own agent loop, [`hooks/harness/secret_gate.py`](../hooks/harness/secret_gate.py) is the credential check as a plain function; see [For agent harnesses](#for-agent-harnesses).
 
 ## The reference MCP server
 

@@ -15,8 +15,11 @@ only; no network, no logging.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----")
 MAX_INPUT = 1_048_576
@@ -26,6 +29,34 @@ REASON = (
     "material out of files the agent writes: reference it from a secret store or use an "
     "unmistakable placeholder such as SAMPLE-KEY. No key material is included in this message."
 )
+
+
+# Optional evidence log. When CATPILOT_EVIDENCE_LOG names a file, each deny appends one JSON
+# line: the time, the hook, the decision, and the credential type. Never the command, never
+# the matched text. Off unless the variable is set; a logging failure never changes the
+# decision, because this function swallows every error.
+EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
+HOOK_NAME = "pretooluse-write-private-key"
+
+
+def record_evidence(event: str, **fields) -> None:
+    path = os.environ.get(EVIDENCE_ENV, "").strip()
+    if not path:
+        return
+    try:
+        line = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "claude-code-hook", "hook": HOOK_NAME, "event": event}
+        line.update({k: v for k, v in fields.items() if v is not None})
+        target = Path(os.path.expanduser(path))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, sort_keys=True) + "\n")
+    except Exception:
+        return
+
+
+def session_id_of(event: object) -> str | None:
+    sid = event.get("session_id") if isinstance(event, dict) else None
+    return sid if isinstance(sid, str) and 0 < len(sid) <= 128 else None
 
 
 def added_text(tool_name: str, tool_input: object) -> list[str] | None:
@@ -57,6 +88,7 @@ def inspect_event(event: object) -> dict:
     if parts is None:
         return {}
     if any(PRIVATE_KEY.search(p) for p in parts):
+        record_evidence("deny", tool=str(event.get("tool_name")), label="private-key-block", session_id=session_id_of(event))
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -74,6 +106,7 @@ def main() -> int:
             raise ValueError("hook input too large")
         result = inspect_event(json.loads(payload))
     except (ValueError, TypeError, RecursionError):
+        record_evidence("input_error")
         print("Catpilot write check unavailable: invalid or oversized hook input. Review the write before retrying.", file=sys.stderr)
         return 2
     print(json.dumps(result))

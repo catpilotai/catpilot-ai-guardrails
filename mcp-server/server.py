@@ -4,7 +4,7 @@
 Read-only guidance lookups for safe AI-assisted building: the eight
 checkpoints of `catpilot-safe-building`, plus a company's approved values
 when an overlay is configured. Four tools, deterministic, no model calls,
-no network, no logging.
+no network, no logging unless CATPILOT_EVIDENCE_LOG names a local file (then one content-free line per call).
 
 Run from a checkout of catpilotai/catpilot-ai-guardrails:
 
@@ -26,14 +26,17 @@ were available; generic defaults are never the company's policy.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from catpilot_guardrails_mcp import content, policy, tools  # noqa: E402
+from catpilot_guardrails_mcp.content import CATEGORIES, TEMPLATE_KINDS, TOPICS  # noqa: E402
 from mcp.server import MCPServer  # noqa: E402
 from mcp.types import ToolAnnotations  # noqa: E402
 
@@ -52,6 +55,41 @@ server = MCPServer(
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
 
+# Optional evidence log. When CATPILOT_EVIDENCE_LOG names a file, every tool call appends one JSON
+# line: the time, the release, the tool, the enumerated argument (topic, category, kind), and for
+# check_plan the outcome, whether it asked for a human, and the names of the fields the caller
+# supplied. Never the description, the data classes, or any other free text. Off unless the
+# variable is set; the public endpoint does not set it. A logging failure never changes an answer.
+EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
+
+
+def _evidence(tool: str, result: dict[str, Any], **fields: Any) -> None:
+    path = os.environ.get(EVIDENCE_ENV, "").strip()
+    if not path:
+        return
+    try:
+        line: dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "source": "mcp-server",
+            "release": GUIDANCE["release"],
+            "tool": tool,
+            "error": result.get("error"),
+            "policy_status": result.get("policy_status"),
+            "unknown_policy": result.get("unknown_policy"),
+        }
+        line.update({k: v for k, v in fields.items() if v is not None})
+        target = Path(os.path.expanduser(path))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, sort_keys=True) + "\n")
+    except Exception:
+        return
+
+
+def _enumerated(value: str, allowed) -> str:
+    return value if value in allowed else "invalid"
+
+
 def _policy() -> policy.PolicyState:
     hosts = {h.strip() for h in os.environ.get("CATPILOT_TEMPLATE_HOSTS", "").split(",") if h.strip()}
     return policy.load_policy(os.environ.get("CATPILOT_OVERLAY_FILE"), hosts)
@@ -65,7 +103,9 @@ def get_guidance(topic: str) -> dict[str, Any]:
     Returns what to ask, how to name the risk, the safe alternative, when to stop and ask a human,
     and the relevant company values when a current approved overlay is configured.
     """
-    return tools.get_guidance(topic, GUIDANCE, _policy())
+    result = tools.get_guidance(topic, GUIDANCE, _policy())
+    _evidence("get_guidance", result, topic=_enumerated(topic, TOPICS))
+    return result
 
 
 @server.tool(annotations=READ_ONLY, structured_output=True)
@@ -119,10 +159,19 @@ def check_plan(
     human, and a checklist. Advisory: a missing field returns `unknown`, not a pass, and no outcome here
     approves or blocks anything.
     """
-    return tools.check_plan(
+    result = tools.check_plan(
         description, GUIDANCE, _policy(), data_classes, data_provenance, audience, hosting,
         services, write_access, data_types, credential_references,
     )
+    supplied = {
+        "data_classes": data_classes, "data_provenance": data_provenance, "audience": audience, "hosting": hosting,
+        "services": services, "write_access": write_access, "data_types": data_types, "credential_references": credential_references,
+    }
+    _evidence(
+        "check_plan", result, outcome=result.get("outcome"), ask_a_human=result.get("ask_a_human"),
+        fields=sorted(name for name, value in supplied.items() if value is not None),
+    )
+    return result
 
 
 @server.tool(annotations=READ_ONLY, structured_output=True)
@@ -133,7 +182,9 @@ def get_template(kind: str) -> dict[str, Any]:
     Returns a generic starting point and constraints, and the company's approved starting point as a
     reference when its overlay names one. Never downloads or executes anything.
     """
-    return tools.get_template(kind, TEMPLATES, GUIDANCE, _policy())
+    result = tools.get_template(kind, TEMPLATES, GUIDANCE, _policy())
+    _evidence("get_template", result, kind=_enumerated(kind, TEMPLATE_KINDS))
+    return result
 
 
 @server.tool(annotations=READ_ONLY, structured_output=True)
@@ -144,7 +195,9 @@ def list_approved(category: str) -> dict[str, Any]:
     false and the items are the company's. Otherwise unknown_policy is true and the items are generic defaults
     that must not be presented as the company's policy.
     """
-    return tools.list_approved(category, GUIDANCE, _policy())
+    result = tools.list_approved(category, GUIDANCE, _policy())
+    _evidence("list_approved", result, category=_enumerated(category, CATEGORIES))
+    return result
 
 
 DATA_STATEMENT = (

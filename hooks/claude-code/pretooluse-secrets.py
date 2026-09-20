@@ -28,6 +28,9 @@ Standard library only. Python 3.8+.
 from __future__ import annotations
 
 import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 import re
 import sys
 
@@ -104,6 +107,34 @@ PLACEHOLDER_VALUE = re.compile(
 MIN_CREDENTIAL_LENGTH = 6
 
 
+# Optional evidence log. When CATPILOT_EVIDENCE_LOG names a file, each deny appends one JSON
+# line: the time, the hook, the decision, and the credential type. Never the command, never
+# the matched text. Off unless the variable is set; a logging failure never changes the
+# decision, because this function swallows every error.
+EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
+HOOK_NAME = "pretooluse-secrets"
+
+
+def record_evidence(event: str, **fields) -> None:
+    path = os.environ.get(EVIDENCE_ENV, "").strip()
+    if not path:
+        return
+    try:
+        line = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "claude-code-hook", "hook": HOOK_NAME, "event": event}
+        line.update({k: v for k, v in fields.items() if v is not None})
+        target = Path(os.path.expanduser(path))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, sort_keys=True) + "\n")
+    except Exception:
+        return
+
+
+def session_id_of(event: object) -> str | None:
+    sid = event.get("session_id") if isinstance(event, dict) else None
+    return sid if isinstance(sid, str) and 0 < len(sid) <= 128 else None
+
+
 def _is_placeholder_value(value: str) -> bool:
     """True if a captured unquoted/JSON value is an env reference, a known placeholder, or too short to be real."""
     value = value.strip("'\"")
@@ -146,6 +177,7 @@ def decide(event: dict) -> dict:
     label = find_credential(command)
     if label is None:
         return {}
+    record_evidence("deny", tool="Bash", label=label, session_id=session_id_of(event))
     reason = (
         f"Catpilot secret check: this command appears to contain a literal credential ({label}). "
         "Keep the value out of the command: reference it from an environment variable or a secret "
@@ -168,6 +200,7 @@ def main() -> int:
             raise ValueError("hook input too large")
         result = decide(json.loads(payload))
     except (ValueError, TypeError, RecursionError):
+        record_evidence("input_error")
         print(
             "Catpilot secret check could not read the hook input, so the command was not allowed. "
             "Review the command and retry.",

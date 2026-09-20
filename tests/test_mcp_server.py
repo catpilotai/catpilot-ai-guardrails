@@ -92,6 +92,34 @@ class ServerContractTests(unittest.IsolatedAsyncioTestCase):
                 result = await client.call_tool("get_guidance", {"topic": "nope"})
                 self.assertEqual(result.structured_content["error"], "unknown-topic")
 
+    async def test_evidence_log_records_calls_without_free_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "evidence.jsonl"
+            env = {"CATPILOT_EVIDENCE_LOG": str(log)}
+            marker = "MARKER-DESCRIPTION-TEXT-9f2c"
+            async with await self._session(env) as (read, write):
+                async with ClientSession(read, write, read_timeout_seconds=20) as client:
+                    await client.initialize()
+                    await client.call_tool("list_approved", {"category": "hosting"})
+                    await client.call_tool("get_guidance", {"topic": "not-a-topic"})
+                    await client.call_tool("check_plan", {"description": f"A tool that reads {marker}", "audience": "customers", "data_classes": ["customer names"]})
+            lines = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual([entry["tool"] for entry in lines], ["list_approved", "get_guidance", "check_plan"])
+            self.assertEqual(lines[0]["category"], "hosting")
+            self.assertTrue(lines[0]["unknown_policy"])
+            self.assertEqual(lines[1]["topic"], "invalid")
+            self.assertEqual(lines[1]["error"], "unknown-topic")
+            self.assertEqual(lines[2]["fields"], ["audience", "data_classes"])
+            self.assertIn(lines[2]["outcome"], ("permitted", "requires_review", "prohibited", "unknown"))
+            self.assertIn("ask_a_human", lines[2])
+            raw = log.read_text()
+            self.assertNotIn(marker, raw)
+            self.assertNotIn("customer names", raw)
+            self.assertNotIn("customers", raw)
+            for entry in lines:
+                self.assertEqual(entry["source"], "mcp-server")
+                self.assertTrue(entry["release"])
+
 
 if __name__ == "__main__":
     unittest.main()
