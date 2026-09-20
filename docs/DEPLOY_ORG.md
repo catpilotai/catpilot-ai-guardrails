@@ -140,12 +140,12 @@ What a pilot report reads from it: denials per hook per day (the hooks were in f
 | Claude Code, managed skills directory | verified on 2.1.241: both skills listed in a session with no user or project skill installed ([note](../evals/reports/2026.09.20-org-deployment-verification.md)) | 2026-09-20 | Basil placed the files; Catpilot ran the session |
 | Claude Code, server through `managedMcpServers` | did not load on 2.1.241 from the managed settings file; `managed-mcp.json` not yet exercised; the repository `.mcp.json` route is verified in the tested-runtimes table | 2026-09-20 | Catpilot |
 | Claude.ai, organization skills | not yet verified; needs a Team or Enterprise owner | | |
-| Claude.ai, individual upload under Customize → Skills | not yet verified | | |
+| Claude.ai, individual upload under Customize → Skills | verified on a Claude Pro account: the reply to the shared-password scenario read the skill file and coached as the skill specifies ([note](../evals/reports/2026.09.20-org-deployment-verification.md)) | 2026-09-20 | Basil ran it; Catpilot recorded |
 | Codex CLI, user-level `~/.agents/skills` and `mcp_servers` in `config.toml` | verified in a temporary home on 0.154.0: the skill was named and read, `list_approved` completed through the hosted endpoint ([note](../evals/reports/2026.09.20-org-deployment-verification.md)) | 2026-09-20 | Catpilot |
 | Codex CLI, `/etc/codex` managed defaults and skills | verified on 0.154.0 in a temporary home with no user-level skills or server config: both skills listed from `/etc/codex/skills`, `list_approved` completed through the server named in `/etc/codex/managed_config.toml` ([note](../evals/reports/2026.09.20-org-deployment-verification.md)) | 2026-09-20 | Basil placed the files; Catpilot ran the session |
 | ChatGPT, workspace plugin | not yet verified; no manifest shipped | | |
 | ChatGPT, shared GPT | not yet verified; needs a Business, Enterprise, or Edu workspace | | |
-| ChatGPT, GPT or Project instructions on an individual plan | not yet verified; protocol written | | |
+| ChatGPT, GPT or Project instructions on an individual plan | partial, on a ChatGPT Pro account: the pasted block was acknowledged in a chat; the scenario has not been run yet ([note](../evals/reports/2026.09.20-org-deployment-verification.md)) | 2026-09-20 | Basil ran it; Catpilot recorded |
 | Evidence log, hooks and server | unit and stdio contract tests in `tests/` | 2026-09-20 | Catpilot |
 
 A row moves to "verified" when a person has run the steps on a real machine and recorded the transcript or screenshot under `evals/reports/`, the same standard as the tested-runtimes table.
