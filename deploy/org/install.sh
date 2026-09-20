@@ -3,13 +3,14 @@
 # the admin-managed locations that Claude Code and Codex CLI read above every user setting.
 # Run as an administrator (sudo) from a checkout of this repository, on macOS or Linux.
 #
-#   sudo deploy/org/install.sh --server-url https://mcp.example.com/mcp [--skills safe-building,security-core]
+#   sudo deploy/org/install.sh --server-url https://mcp.example.com/mcp [--skills safe-building,security-core] [--managed-mcp-json]
 #
 # What it does, and nothing else:
 #   Claude Code  hooks copied to <managed dir>/catpilot-guardrails/hooks/, managed-settings.json written
 #                from deploy/org/claude-code/managed-settings.json with the server URL substituted (only
 #                when no managed-settings.json exists; otherwise it prints the JSON for you to merge),
-#                skills copied to <managed dir>/.claude/skills/<name>/
+#                skills copied to <managed dir>/.claude/skills/<name>/; with --managed-mcp-json, the fixed-set
+#                managed-mcp.json is written too (then only the servers it lists load in CLI sessions)
 #   Codex CLI    /etc/codex/managed_config.toml written from deploy/org/codex/managed_config.toml (only
 #                when absent; otherwise printed for you to merge), skills copied to /etc/codex/skills/<name>/
 # It does not touch user settings, does not restart anything, and does not send anything anywhere.
@@ -18,10 +19,12 @@ set -euo pipefail
 
 SERVER_URL=""
 SKILLS="safe-building,security-core"
+MANAGED_MCP_JSON=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --server-url) SERVER_URL="$2"; shift 2 ;;
     --skills) SKILLS="$2"; shift 2 ;;
+    --managed-mcp-json) MANAGED_MCP_JSON=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -56,6 +59,14 @@ else
   printf '%s\n' "$SETTINGS_JSON" > "$CC_DIR/managed-settings.json"; chmod 644 "$CC_DIR/managed-settings.json"; echo "policy  $CC_DIR/managed-settings.json"
 fi
 install_skill "$CC_DIR/.claude/skills"
+if [ "$MANAGED_MCP_JSON" -eq 1 ]; then
+  MCP_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/claude-code/managed-mcp.json")"
+  if [ -e "$CC_DIR/managed-mcp.json" ]; then
+    echo "exists  $CC_DIR/managed-mcp.json (not overwritten); merge this into it:"; echo "$MCP_JSON"
+  else
+    printf '%s\n' "$MCP_JSON" > "$CC_DIR/managed-mcp.json"; chmod 644 "$CC_DIR/managed-mcp.json"; echo "policy  $CC_DIR/managed-mcp.json"
+  fi
+fi
 
 # Codex CLI: managed defaults, skills
 mkdir -p "$CODEX_DIR"

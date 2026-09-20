@@ -30,6 +30,8 @@ remove_if_ours() {  # $1 = installed file, $2 = expected content
 }
 SETTINGS_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" -e "s#/Library/Application Support/ClaudeCode#$CC_DIR#g" "$REPO/deploy/org/claude-code/managed-settings.json")"
 remove_if_ours "$CC_DIR/managed-settings.json" "$SETTINGS_JSON"
+MCP_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/claude-code/managed-mcp.json")"
+remove_if_ours "$CC_DIR/managed-mcp.json" "$MCP_JSON"
 CODEX_TOML="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/codex/managed_config.toml")"
 remove_if_ours "$CODEX_DIR/managed_config.toml" "$CODEX_TOML"
 for d in "$CC_DIR/catpilot-guardrails" "$CC_DIR/.claude/skills/catpilot-safe-building" "$CC_DIR/.claude/skills/catpilot-security-core" "$CODEX_DIR/skills/catpilot-safe-building" "$CODEX_DIR/skills/catpilot-security-core"; do
