@@ -25,3 +25,7 @@ cp -r catpilot-ai-guardrails/skills/catpilot-safe-building ~/.claude/skills/
 ```
 
 Installation makes the instructions available to a host; it does not prove they were loaded, followed, or enforced. See the tested-runtimes table in `docs/REFERENCE.md`. Organization-wide deployment (managed settings, admin skill directories, workspace plugins): `docs/DEPLOY_ORG.md`.
+
+## Claude Code plugin
+
+The repository is also a Claude Code plugin (`.claude-plugin/plugin.json`, skills only): `/plugin marketplace add catpilotai/catpilot-ai-guardrails`, then `/plugin install catpilot-guardrails@catpilot`. The skills are then invoked as `/catpilot-guardrails:catpilot-safe-building` and `/catpilot-guardrails:catpilot-security-core`. The hooks and the reference server are not in the plugin; `hooks/README.md` and `mcp-server/README.md` cover those, and `docs/DEPLOY_ORG.md` covers enabling the plugin for an organization through managed settings.

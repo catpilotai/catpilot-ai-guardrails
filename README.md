@@ -50,6 +50,8 @@ npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-security-core
 
 Installation makes the instructions available to a compatible host; it does **not** prove they were loaded, followed, or enforced. Confirm the installed version, then try a safe and an unsafe task in an isolated environment. The [skills.sh CLI](https://skills.sh) (`vercel-labs/skills`) places the files for the hosts it supports; what Catpilot has actually observed on each host is in the [tested runtimes](docs/REFERENCE.md#tested-runtimes). Global installs, a specific agent, manual copies, and Hermes Agent: [`docs/INSTALL.md`](docs/INSTALL.md).
 
+As a Claude Code plugin, skills only: `/plugin marketplace add catpilotai/catpilot-ai-guardrails`, then `/plugin install catpilot-guardrails@catpilot`. The same manifest lets a ChatGPT workspace administrator import the repository as a plugin.
+
 Rolling it out to a team or a whole company, with the files an administrator places and how to confirm they landed: [`docs/DEPLOY_ORG.md`](docs/DEPLOY_ORG.md).
 
 Building your own agent loop? The harness notes, the credential gate as a plain function, and the loop rules are in the [technical reference](docs/REFERENCE.md#for-agent-harnesses).
