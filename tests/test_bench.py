@@ -2786,8 +2786,8 @@ class ArmESandboxTests(unittest.TestCase):
         self.assertEqual(sandbox.CHECKLIST_INSTRUCTION, expected)
 
     def test_arm_e_note_says_checklist_only_no_skill_no_server(self):
-        self.assertIn("generic written checklist", sandbox.ARM_NOTES["E"])
-        self.assertIn("no skill or reference server", sandbox.ARM_NOTES["E"])
+        self.assertIn("fifteen-line summary of the skill", sandbox.ARM_NOTES["E"])
+        self.assertIn("no skill file and no reference server", sandbox.ARM_NOTES["E"])
 
     def test_arm_e_has_no_skill_and_no_server(self):
         with tempfile.TemporaryDirectory() as tmp:

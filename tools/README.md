@@ -105,7 +105,7 @@ The functional benchmark can run predeclared condition pairs. **A, no
 guidance** is always valid; **B, skill installed** and **B-activated, skill
 installed and explicitly activated** are distinct. **C, skill plus company
 rules through the server without a consultation instruction**, **D, skill explicitly activated with company rules through the server
-and instruction**, **E, generic checklist**, and **F, company checklist** are
+and instruction**, **E, skill summary checklist**, and **F, company checklist** are
 also first-class.
 
 Use the arm list that matches a predeclared comparison. For example,

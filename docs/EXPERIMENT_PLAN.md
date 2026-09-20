@@ -29,7 +29,7 @@ activation text before any candidate runs.
 | **D, skill explicitly activated with company rules through the server and instruction** minus **B-activated, skill installed and explicitly activated** | Effect of the instructed company-policy workflow. |
 
 **C, skill plus company rules through the server without a consultation
-instruction**, **E, generic checklist**, and **F, company checklist** are
+instruction**, **E, skill summary checklist**, and **F, company checklist** are
 supported diagnostic conditions. Their comparisons may describe the stated
 packages, but do not establish MCP superiority. In particular, **D, skill
 explicitly activated with company rules through the server and instruction**

@@ -42,8 +42,8 @@ deployment without an activation instruction; B-activated, **skill installed
 and explicitly activated**, tests an activation instruction; C, **skill plus
 company rules through the server without a consultation instruction**, tests the server without that instruction;
 D, **skill explicitly activated with company rules through the server and instruction**, tests the
-complete company workflow; E, **generic checklist**, tests written generic
-guidance; and F, **company checklist**, tests a written checklist carrying the
+complete company workflow; E, **skill summary checklist**, tests whether the full skill text adds
+anything over a fifteen-line summary of itself written for the benchmark; and F, **company checklist**, tests a written checklist carrying the
 same company facts. Do not assume every arm must run. Predeclare the comparison
 pair that answers the question being asked.
 The standard comparison is **A, no guidance**, **B-installed, skill installed**,

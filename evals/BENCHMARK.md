@@ -51,8 +51,8 @@ intervention.
 | --- | --- |
 | **B-installed, skill installed** vs **A, no guidance** | What changes when the skill is installed without an activation instruction? |
 | **B-activated, skill installed and explicitly activated** vs **B-installed, skill installed** | What changes when the activation instruction is added? |
-| **E, generic checklist** vs **A, no guidance** | What changes when generic written checklist guidance is supplied? |
-| **F, company checklist** vs **E, generic checklist** | What changes when company facts are added to a written checklist? |
+| **E, skill summary checklist** vs **B, skill installed** | Does the full skill text add anything over a fifteen-line summary of itself in the project instruction file? A diagnostic, not a standard condition: the summary was written for the benchmark and no tool has it by default. |
+| **F, company checklist** vs **E, skill summary checklist** | What changes when company facts are added to a written checklist? |
 | **C, skill plus company rules through the server without a consultation instruction** vs **B, skill installed** | What changes when company rules are available through the server but consultation is not instructed? |
 | **D, skill explicitly activated with company rules through the server and instruction** vs **B-activated, skill installed and explicitly activated** | What changes when the instructed company-policy workflow is added to the activated skill? |
 | **D, skill explicitly activated with company rules through the server and instruction** vs **C, skill plus company rules through the server without a consultation instruction** | What changes for the combined activation-and-consultation-instruction package? |
