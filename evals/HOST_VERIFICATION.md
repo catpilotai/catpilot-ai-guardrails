@@ -1,6 +1,6 @@
 # Host verification
 
-How each host in the README's tested-runtimes table gets its date, and what
+How each host in the tested-runtimes table (`docs/REFERENCE.md`) gets its date, and what
 was observed. A row without a date has not been run. The rule for every host:
 a host signal, not the model's word; a control run without the guidance; the
 exact configuration written down.

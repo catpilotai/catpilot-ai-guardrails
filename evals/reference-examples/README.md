@@ -126,7 +126,7 @@ or skip flag is accepted for a benchmark run. **A, no guidance** is an
 always-valid baseline. **B, skill installed**, **B-activated, skill installed
 and explicitly activated**, **C, skill plus company rules through the server
 without a consultation instruction**, **D, skill explicitly activated with company rules through
-the server and instruction**, **E, generic checklist**, and **F, company
+the server and instruction**, **E, skill summary checklist**, and **F, company
 checklist** are distinct conditions. Choose only the conditions that answer a
 predeclared question. A live comparison containing a company-policy condition must contain
 at least one scenario listing an unsafe action and one benign control, each

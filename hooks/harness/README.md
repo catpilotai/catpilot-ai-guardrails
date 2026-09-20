@@ -66,7 +66,7 @@ instead of silently treating it as an empty, always-allowed command.
   uncovered until you route it through a check and test it.
 
 Record both in your harness's own README, the way this repository's
-tested-runtimes table does. A gate nobody can point to in the code is not a
+tested-runtimes table in `docs/REFERENCE.md` does. A gate nobody can point to in the code is not a
 control.
 
 ## Retries, crons, and the loop itself

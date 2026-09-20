@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "comma-separated conditions (default A,B,B-activated,D): A no guidance; B or B-installed skill installed; "
             "B-activated skill installed and explicitly activated; C skill and company reference server; "
-            "D explicitly activated skill and company reference server; E generic checklist; F company checklist"
+            "D explicitly activated skill and company reference server; E skill summary checklist; F company checklist"
         ),
     )
     parser.add_argument("--examples", type=Path, help="required: matching reference examples with expected completion and outcomes")

@@ -24,4 +24,4 @@ cp -r catpilot-ai-guardrails/skills/catpilot-safe-building ~/.claude/skills/
 /skills install catpilotai/catpilot-ai-guardrails/catpilot-security-core
 ```
 
-Installation makes the instructions available to a host; it does not prove they were loaded, followed, or enforced. See the tested-runtimes table in the README.
+Installation makes the instructions available to a host; it does not prove they were loaded, followed, or enforced. See the tested-runtimes table in `docs/REFERENCE.md`.

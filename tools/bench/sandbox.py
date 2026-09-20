@@ -50,7 +50,7 @@ ARM_LABELS = {
     "B-activated": "B-activated, skill installed and explicitly activated",
     "C": "C, skill installed with company rules through the reference server",
     "D": "D, skill explicitly activated with company rules through the reference server",
-    "E": "E, generic checklist",
+    "E": "E, skill summary checklist",
     "F": "F, company checklist",
 }
 
@@ -89,7 +89,7 @@ ARM_NOTES = {
         "The `catpilot-safe-building` skill is installed and explicitly activated. The reference guidance server has "
         "the company overlay, and an instruction requires its company-policy check before relevant actions."
     ),
-    "E": "A short generic written checklist is in the project instruction file; no skill or reference server is supplied.",
+    "E": "A fifteen-line summary of the skill, written for the benchmark, is in the project instruction file; no skill file and no reference server is supplied.",
     "F": (
         "A written company checklist and the complete validated company overlay are in the project instruction file; "
         "no skill or reference server is supplied."

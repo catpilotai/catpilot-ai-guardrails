@@ -19,7 +19,7 @@ You found the community scratching post.
 | A checkpoint the safe-building skill gets wrong for non-engineers | PR the component under `src/skills/safe-building/<id>/SKILL.md`; keep the plain-language shape in the format spec §4 |
 | False positive in an existing rule, or in a hook | PR a fix and bump `metadata.catpilot.version`; for a hook, add the case to `tests/test_hook.py` or `tests/test_write_hook.py`, whichever one it is |
 | Add a control mapping (SOC 2, PCI-DSS, ISO 27001, NIST CSF, OWASP) | PR the component's frontmatter. Safe-building mappings are marked `mapping_review: pending`; a PR that reviews them should say what edition it checked against |
-| A host you verified (skill loads, hook blocks) | PR the README's tested-runtimes table with the host version, date, and what you observed; a verification note under `evals/reports/` is welcome |
+| A host you verified (skill loads, hook blocks) | PR the tested-runtimes table in `docs/REFERENCE.md` with the host version, date, and what you observed; a verification note under `evals/reports/` is welcome |
 | A new evaluation scenario | PR `evals/scenarios/<id>.yaml`; every `must`/`must_not` id has to exist in `tools/eval.py` |
 | Bundler / target / validator / CI bug | PR `tools/` or `.github/workflows/` |
 | Bug in the reference MCP server or the deployment scripts | PR `mcp-server/` or `deploy/`; anything security-related about the hosted endpoint goes to SECURITY.md, not an issue |

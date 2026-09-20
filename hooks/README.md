@@ -110,6 +110,6 @@ that path; a skill it loads is still advice.
 ## Other hosts
 
 Cursor has a hooks facility. The same check will be ported only after it is
-tested there, and the tested-runtimes table will say so. ChatGPT and
+tested there, and the tested-runtimes table in `docs/REFERENCE.md` will say so. ChatGPT and
 Claude.ai have no hook surface; the honest story on those hosts is coaching
 plus the platform's own admin controls.

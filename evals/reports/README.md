@@ -21,7 +21,7 @@ open a reference file of the split core skill before acting).
 Four historical benchmark reports are published, each opening with the dated completion note while preserving its previously published text: `2026.09.15-benchmark-claude-code.md` and `2026.09.15-benchmark-codex.md`
 (ten held-out scenarios; A, no guidance; B, skill installed; C, skill plus company server without an instruction; single turn, with historical rescoring corrections),
 and `2026.09.16-1-benchmark-claude-code.md` and `2026.09.16-1-benchmark-codex.md`
-(a fresh set of ten; A, no guidance; B, skill installed; D, skill plus company rules through the server; E, generic checklist; two turns per run, Sonnet judge). The scenario
+(a fresh set of ten; A, no guidance; B, skill installed; D, skill plus company rules through the server; E, skill summary checklist, a fifteen-line summary of the skill written for the benchmark; two turns per run, Sonnet judge). The scenario
 files behind each pair are published in `../scenarios-retired/` once retired. The safe-building scenarios in `../scenarios/` are a development
 set: visible to authors, never a held-out benchmark.
 

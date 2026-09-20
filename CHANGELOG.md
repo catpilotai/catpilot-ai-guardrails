@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Changed
+
+- **README simplified and the findings brought forward.** The README leads with what the two published benchmarks show, in a four-row table against the state a builder starts from, then install, the contract, the two skills, and the overlay; harness notes, the tested-runtimes table, the hooks, the reference server and hosted endpoint, format, versioning, and build notes moved verbatim to `docs/REFERENCE.md`. Component versions leave the section headers for `catpilot.json` and the changelog. Arm E is relabelled everywhere as "skill summary checklist": it was written for the benchmark as a fifteen-line summary of the skill, and the earlier label "generic checklist" read as something tools have by default; the two second-set reports carry a dated note saying so, and the design doc lists E as a diagnostic beside the standard conditions.
+
 ## [2026.09.18] — 2026-09-18
 
 ### Added
