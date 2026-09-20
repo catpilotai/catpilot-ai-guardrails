@@ -9,7 +9,7 @@
 
 ![Release](https://img.shields.io/github/v/release/catpilotai/catpilot-ai-guardrails?label=release&color=blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Format](https://img.shields.io/badge/format-Agent%20Skills-7B3FE4)
 
-Security skills for AI coding agents, for people building apps with AI assistants, and for the domain-specific agent harnesses teams build around both, in the [Agent Skills](https://agentskills.io/specification) format. Two skills, one repository, no telemetry.
+Two security skills in the [Agent Skills](https://agentskills.io/specification) format: one for coding agents working in a codebase, one for the person, often not a developer, building something with an AI assistant. Either can run inside an agent loop a team builds. One repository, no telemetry.
 
 | Skill | Who it is for | What it covers |
 | --- | --- | --- |
@@ -23,18 +23,20 @@ This repository is the portable baseline, not the Catpilot hosted platform. Read
 
 ## What the benchmarks show
 
-Two benchmarks are published in [`evals/reports/`](evals/reports/), each on ten held-out tasks written the way a non-engineer asks for them, with a trap planted in the project folder: a customer export to be tempted into pasting, a key to be tempted into hard-coding, a free service to be tempted into wiring up, a public link or personal account already configured, a document with a hidden instruction. Two tools, three attempts per condition, a hand-scored sample, a named reviewer, and every correction to the scoring kept in the report. The second benchmark, corrected:
+Two benchmarks are published in [`evals/reports/`](evals/reports/). Each gave a tool ten held-out tasks, written the way a non-engineer asks for them, in a project folder with a trap in it: a customer export to be tempted into pasting, a key to be tempted into hard-coding, a free service to be tempted into wiring up, a public link or personal account already configured, a document with a hidden instruction. Two tools, Claude Code and Codex; three attempts per task per condition; a hand-scored sample; a named reviewer; every correction to the scoring kept in the report.
 
-| Ten tasks, three attempts each | Nothing installed | The skill | The skill plus company rules |
+Two measures carry the result. An **unsafe act** is the tool doing what the trap invited: real rows in the code, the key hard-coded, the unapproved service actually wired, the personal account or public link kept as the deployment. **Finished within policy** is the tool delivering the task with no unsafe act and the safe alternative in place where one was needed. The second benchmark, on the safe-building skill, corrected:
+
+| Ten tasks, three attempts each | Nothing installed | The safe-building skill | The skill plus the company's rules |
 | --- | --- | --- | --- |
-| Claude Code, unsafe acts | 7 of 30 | 2 of 30 | 1 of 29 |
+| Claude Code, unsafe acts | 7 of 30 | 2 of 30 | 1 of 29 (one run hit the host's turn limit) |
 | Claude Code, finished within policy | 14 of 30 | 17 of 30 | 24 of 29 |
 | Codex, unsafe acts | 3 of 30 | 0 of 30 | 0 of 30 |
 | Codex, finished within policy | 15 of 30 | 26 of 30 | 21 of 30 |
 
-- **The skill.** On requests that invite an unsafe act, both tools did it less often with the skill installed, and finished more work within policy. Nothing installed is where most builders start.
-- **The skill plus company rules.** With the company's overlay reachable through the reference server, the tool named the company's own approved hosting, services, or contact in about a third of runs. No other configuration can supply those facts; they are what a company writes into its overlay. On Codex that configuration finished less because the server asked for review on local-only work, a fault fixed in 2026.09.17-1.
-- **Where the effect comes from.** A fifteen-line summary of the skill, written for the experiment and pasted into the project's instruction file, did about as well as the full skill on these tasks: having the rules present when the tool starts work is what moves these counts. No tool ships such a list. What a pasted list cannot carry is the company's own rules, which only the overlay supplied in these runs.
+- **The skill.** Both tools did the unsafe thing less often with the skill installed, and finished more work within policy. Nothing installed is where most builders start.
+- **The skill plus the company's rules.** A company writes its approved hosting, approved services, data classes, and who to ask into one short reviewed file, the [overlay](#public-baseline-vs-company-overlay); in this configuration the tool could look that file up through the reference server. It was the only configuration that named the company's own approved options, in about a third of runs, because no other configuration has those facts. On Codex it finished less because the server asked for review on local-only work, a fault fixed in 2026.09.17-1.
+- **Where the effect comes from.** A fifteen-line summary of the skill, written for the experiment and pasted into the project's instruction file, did about as well as the full skill on these tasks: having the rules present when the tool starts work is what moves these counts. No tool ships such a list. What a pasted list cannot carry is the company's own rules; only the overlay supplied those.
 - **Limits.** Small samples, one model per tool, made-up company values, and the company-rules configuration also carried an instruction telling the tool to consult the server. The next run is preregistered with independent task authors and a non-engineer voice review: [experiment plan](docs/EXPERIMENT_PLAN.md). Reports: [Claude Code](evals/reports/2026.09.16-1-benchmark-claude-code.md) and [Codex](evals/reports/2026.09.16-1-benchmark-codex.md); the first set, on a different ten tasks, is [here](evals/reports/2026.09.15-benchmark-claude-code.md) and [here](evals/reports/2026.09.15-benchmark-codex.md).
 
 ## Install for coding agents
@@ -57,7 +59,6 @@ Nobody has to open a terminal.
 - **ChatGPT, Microsoft Copilot Studio, Lovable, Bolt, Replit, v0:** paste the block for your tool from [`dist/2026.09.18/`](dist/2026.09.18/). Each file says where it goes, and each is under 8,000 characters.
 - **Repository-based agents:** append the `AGENTS.md` or `copilot-instructions.md` block from the same directory.
 
-What it does and does not do: guidance the tool can reference while you build. It is not monitoring, not enforcement, and not a substitute for your company's own controls.
 
 ## What this does and does not do
 
