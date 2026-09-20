@@ -6,6 +6,11 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 
 ## [Unreleased]
 
+### Added
+
+- **Organization rollout.** `docs/DEPLOY_ORG.md` covers central deployment for Claude Code (admin-managed settings file, MDM, managed skills directory, `managedMcpServers` or `managed-mcp.json`), Claude.ai organization skills, Codex CLI (`/etc/codex/managed_config.toml`, `/etc/codex/skills`, MDM keys), and ChatGPT workspaces (skills-only plugin with the *Installed* policy, marketplace import, shared GPT), with what each channel does not reach and a verification-status table that starts honest: nothing is marked verified until a person runs it. `deploy/org/` holds the managed settings and managed MCP examples, a Codex managed-config example, an `install.sh` that places them as root on one machine, and a read-only `verify.sh`.
+- **Evidence log.** Both Claude Code hooks and the reference server append one JSON line per event to the file named by `CATPILOT_EVIDENCE_LOG`: the decision or the tool call and its enumerated argument, never the command, content, description, or any free text. Off unless set; the public endpoint does not set it; a logging failure never changes a decision or an answer. Tests cover the fields, the redaction, and the unwritable-path case.
+
 ### Changed
 
 - **README simplified and the findings brought forward.** The README leads with what the two published benchmarks show, in a four-row table against the state a builder starts from, then install, the contract, the two skills, and the overlay; harness notes, the tested-runtimes table, the hooks, the reference server and hosted endpoint, format, versioning, and build notes moved verbatim to `docs/REFERENCE.md`. Component versions leave the section headers for `catpilot.json` and the changelog. Arm E is relabelled everywhere as "skill summary checklist": it was written for the benchmark as a fifteen-line summary of the skill, and the earlier label "generic checklist" read as something tools have by default; the two second-set reports carry a dated note saying so, and the design doc lists E as a diagnostic beside the standard conditions.

@@ -1,5 +1,7 @@
 # Deploying the reference MCP server
 
+For placing the skills, hooks, and server configuration on an organization's machines, see [`org/`](org/) and [`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md); this page is about hosting the server itself.
+
 Two scripts, both idempotent, both scoped to one hostname. They are what
 Catpilot uses for `mcp.catpilot.ai`, kept here so anyone can run the same
 thing on their own subscription and zone.

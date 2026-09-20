@@ -100,6 +100,18 @@ header line; it is written.
   nothing here protects the path. A hook that is not running is not a
   control.
 
+## Evidence log
+
+Set `CATPILOT_EVIDENCE_LOG` to a file path in the hook's environment (the
+managed-settings example in `deploy/org/` does it on the command line) and each
+deny appends one JSON line: the time, the hook, the decision, the credential
+type or `private-key-block`, the tool, and the session id. Never the command,
+the file path, or the content. Malformed input is recorded as `input_error`
+beside the fail-closed exit. Off unless the variable is set; a logging failure
+never changes the decision. It is a record that the hook was in force and what
+it denied, not a control: `docs/DEPLOY_ORG.md` says what a report can read from
+it and what it cannot.
+
 ## Inside your own harness
 
 The same check is available as a function for any Python loop you control:

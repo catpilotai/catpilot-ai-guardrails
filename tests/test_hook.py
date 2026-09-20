@@ -6,6 +6,8 @@ tested-runtimes table for host verification.
 """
 
 import json
+import os
+import tempfile
 import subprocess
 import sys
 import unittest
@@ -60,8 +62,10 @@ ALLOWED = {
 }
 
 
-def run_hook(payload: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(HOOK)], input=payload, capture_output=True, text=True, timeout=10)
+def run_hook(payload: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    full_env = {k: v for k, v in os.environ.items() if k != "CATPILOT_EVIDENCE_LOG"}
+    full_env.update(env or {})
+    return subprocess.run([sys.executable, str(HOOK)], input=payload, capture_output=True, text=True, timeout=10, env=full_env)
 
 
 def event(command: str, tool: str = "Bash") -> str:
@@ -120,6 +124,43 @@ class HookTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 2)
                 self.assertIn("not allowed", proc.stderr)
                 self.assertNotIn(payload, proc.stderr + proc.stdout)
+
+    def test_evidence_log_records_denials_without_the_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "nested" / "evidence.jsonl"
+            env = {"CATPILOT_EVIDENCE_LOG": str(log)}
+            payload = json.dumps({"session_id": "sess-123", "tool_name": "Bash", "tool_input": {"command": DENIED["aws example key"]}})
+            proc = run_hook(payload, env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+            lines = log.read_text().splitlines()
+            self.assertEqual(len(lines), 1)
+            entry = json.loads(lines[0])
+            self.assertEqual(entry["event"], "deny")
+            self.assertEqual(entry["hook"], "pretooluse-secrets")
+            self.assertEqual(entry["tool"], "Bash")
+            self.assertEqual(entry["session_id"], "sess-123")
+            self.assertIn("label", entry)
+            self.assertNotIn("AKIAIOSFODNN7EXAMPLE", lines[0])
+            self.assertNotIn("deploy.sh", lines[0])
+            # An allowed command leaves no line; a run without the variable writes nothing.
+            run_hook(event(ALLOWED["env reference"]), env)
+            self.assertEqual(len(log.read_text().splitlines()), 1)
+            run_hook(event(DENIED["aws example key"]))
+            self.assertEqual(len(log.read_text().splitlines()), 1)
+            # Malformed input is recorded as an input_error alongside the fail-closed exit.
+            proc = run_hook("not json", env)
+            self.assertEqual(proc.returncode, 2)
+            self.assertEqual(json.loads(log.read_text().splitlines()[-1])["event"], "input_error")
+
+    def test_evidence_log_failure_never_changes_the_decision(self):
+        # /dev/null is a file, so no directory can be created beneath it and the append fails.
+        env = {"CATPILOT_EVIDENCE_LOG": "/dev/null/evidence.jsonl"}
+        proc = run_hook(event(DENIED["aws example key"]), env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+        proc = run_hook(event(ALLOWED["env reference"]), env)
+        self.assertEqual(json.loads(proc.stdout), {})
 
     def test_settings_example_targets_bash_only(self):
         settings = json.loads((ROOT / "hooks" / "claude-code" / "settings.example.json").read_text())

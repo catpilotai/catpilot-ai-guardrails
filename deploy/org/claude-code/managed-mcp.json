@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "catpilot-guardrails": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp"
+    }
+  }
+}

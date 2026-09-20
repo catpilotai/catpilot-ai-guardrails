@@ -5,6 +5,8 @@ that a host ran it; see evals/reports/ for the recorded host verification.
 """
 
 import json
+import os
+import tempfile
 import subprocess
 import sys
 import unittest
@@ -16,8 +18,10 @@ HOOK = ROOT / "hooks" / "claude-code" / "pretooluse-write-private-key.py"
 KEY_BLOCK = "-----BEGIN RSA PRIVATE KEY-----\nSYNTHETIC-NOT-A-KEY\n-----END RSA PRIVATE KEY-----\n"
 
 
-def run_hook(payload: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(HOOK)], input=payload, capture_output=True, text=True, timeout=10)
+def run_hook(payload: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    full_env = {k: v for k, v in os.environ.items() if k != "CATPILOT_EVIDENCE_LOG"}
+    full_env.update(env or {})
+    return subprocess.run([sys.executable, str(HOOK)], input=payload, capture_output=True, text=True, timeout=10, env=full_env)
 
 
 def event(tool: str, tool_input: dict) -> str:
@@ -52,6 +56,23 @@ class WriteHookTests(unittest.TestCase):
         for header in ("-----BEGIN PRIVATE KEY-----", "-----BEGIN EC PRIVATE KEY-----", "-----BEGIN OPENSSH PRIVATE KEY-----", "-----BEGIN ENCRYPTED PRIVATE KEY-----", "-----BEGIN PGP PRIVATE KEY BLOCK-----"):
             with self.subTest(header=header):
                 self.assert_denied(run_hook(event("Write", {"file_path": "k", "content": header + "\nSYNTHETIC-NOT-A-KEY\n"})))
+
+    def test_evidence_log_records_denials_without_the_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "evidence.jsonl"
+            env = {"CATPILOT_EVIDENCE_LOG": str(log)}
+            proc = run_hook(event("Write", {"file_path": "key.pem", "content": KEY_BLOCK}), env)
+            self.assert_denied(proc)
+            lines = log.read_text().splitlines()
+            self.assertEqual(len(lines), 1)
+            entry = json.loads(lines[0])
+            self.assertEqual((entry["event"], entry["hook"], entry["tool"], entry["label"]), ("deny", "pretooluse-write-private-key", "Write", "private-key-block"))
+            self.assertNotIn("SYNTHETIC-NOT-A-KEY", lines[0])
+            self.assertNotIn("key.pem", lines[0])
+            self.assert_no_decision(run_hook(event("Write", {"file_path": "notes.txt", "content": "plain text"}), env))
+            self.assertEqual(len(log.read_text().splitlines()), 1)
+        # An unwritable log path changes nothing about the decision.
+        self.assert_denied(run_hook(event("Write", {"file_path": "key.pem", "content": KEY_BLOCK}), {"CATPILOT_EVIDENCE_LOG": "/dev/null/evidence.jsonl"}))
 
     def test_ordinary_writes_get_no_decision(self):
         for content in ("print('hello')\n", "PRIVATE_KEY_PATH = os.environ['PRIVATE_KEY_PATH']\n", "-----BEGIN CERTIFICATE-----\nnot a private key\n", "See the key in the secret store, never in this file.\n"):

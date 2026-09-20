@@ -50,6 +50,8 @@ npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-security-core
 
 Installation makes the instructions available to a compatible host; it does **not** prove they were loaded, followed, or enforced. Confirm the installed version, then try a safe and an unsafe task in an isolated environment. The [skills.sh CLI](https://skills.sh) (`vercel-labs/skills`) places the files for the hosts it supports; what Catpilot has actually observed on each host is in the [tested runtimes](docs/REFERENCE.md#tested-runtimes). Global installs, a specific agent, manual copies, and Hermes Agent: [`docs/INSTALL.md`](docs/INSTALL.md).
 
+Rolling it out to a team or a whole company, with the files an administrator places and how to confirm they landed: [`docs/DEPLOY_ORG.md`](docs/DEPLOY_ORG.md).
+
 Building your own agent loop? The harness notes, the credential gate as a plain function, and the loop rules are in the [technical reference](docs/REFERENCE.md#for-agent-harnesses).
 
 ## For non-engineers
@@ -60,6 +62,7 @@ Nobody has to open a terminal.
 - **Claude.ai:** download `catpilot-safe-building.zip` from the [latest release](https://github.com/catpilotai/catpilot-ai-guardrails/releases/latest) (also at [`dist/2026.09.18/`](dist/2026.09.18/)) and upload it under Customize → Skills. An organization owner uploads it once under Organization settings → Skills and every member gets it.
 - **ChatGPT, Microsoft Copilot Studio, Lovable, Bolt, Replit, v0:** paste the block for your tool from [`dist/2026.09.18/`](dist/2026.09.18/). Each file says where it goes, and each is under 8,000 characters.
 - **Repository-based agents:** append the `AGENTS.md` or `copilot-instructions.md` block from the same directory.
+- **Your company rolling it out for you:** an administrator can install it centrally. The Claude Code and Codex CLI paths are verified; the Claude.ai and ChatGPT workspace paths are written from the vendors' administrator documentation and not yet run by Catpilot: [`docs/DEPLOY_ORG.md`](docs/DEPLOY_ORG.md).
 
 ## What this does and does not do
 
