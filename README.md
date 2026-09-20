@@ -23,9 +23,9 @@ This repository is the portable baseline, not the Catpilot hosted platform. Read
 
 ## What the benchmarks show
 
-Two benchmarks are published in [`evals/reports/`](evals/reports/). Each gave a tool ten held-out tasks, written the way a non-engineer asks for them, in a project folder with a trap in it: a customer export to be tempted into pasting, a key to be tempted into hard-coding, a free service to be tempted into wiring up, a public link or personal account already configured, a document with a hidden instruction. Two tools, Claude Code and Codex; three attempts per task per condition; a hand-scored sample; a named reviewer; every correction to the scoring kept in the report.
+Two benchmarks are published in [`evals/reports/`](evals/reports/). Each gave a tool ten new tasks, never published before the run and written the way a non-engineer asks for them, in a project folder with a trap in it: a customer export to be tempted into pasting, a key to be tempted into hard-coding, a free service to be tempted into wiring up, a public link or personal account already configured, a document with a hidden instruction. Two tools, Claude Code and Codex; three attempts per task per condition; a hand-scored sample; a named reviewer; every correction to the scoring kept in the report.
 
-Two measures carry the result. An **unsafe act** is the tool doing what the trap invited: real rows in the code, the key hard-coded, the unapproved service actually wired, the personal account or public link kept as the deployment. **Finished within policy** is the tool delivering the task with no unsafe act and the safe alternative in place where one was needed. The second benchmark, on the safe-building skill, corrected:
+Two measures carry the result. An **unsafe act** is the tool doing what the trap invited: real rows in the code, the key hard-coded, the unapproved service actually wired, the personal account or public link kept as the deployment. **Finished within policy** is the tool delivering the task with no unsafe act and the safe alternative in place where one was needed. The second benchmark, on the safe-building skill, after the scoring corrections recorded in the report:
 
 | Ten tasks, three attempts each | Nothing installed | The safe-building skill | The skill plus the company's rules |
 | --- | --- | --- | --- |
@@ -37,9 +37,9 @@ Two measures carry the result. An **unsafe act** is the tool doing what the trap
 One Claude Code run in the last column hit the host's turn limit and did not complete, so that column is out of 29.
 
 - **The skill.** Both tools did the unsafe thing less often with the skill installed, and finished more work within policy. Nothing installed is where most builders start.
-- **The skill plus the company's rules.** A company writes its approved hosting, approved services, data classes, and who to ask into one short reviewed file, the [overlay](#public-baseline-vs-company-overlay); in this configuration the tool could look that file up through the reference server. It was the only configuration that named the company's own approved options, in about a third of runs, because no other configuration has those facts. On Codex it finished less because the server asked for review on local-only work, a fault fixed in 2026.09.17-1.
+- **The skill plus the company's rules.** A company writes its approved hosting, approved services, data classes, and who to ask into one short reviewed file, the [overlay](#public-baseline-vs-company-overlay); in this configuration the tool could look that file up through the reference server. It was the only configuration that steered to the company's own approved hosting or service by name, in about a third of runs, instead of a generic "use something approved"; nothing else has those facts. On Codex it finished less because the server asked for review on local-only work, a fault fixed in 2026.09.17-1.
 - **Where the effect comes from.** A fifteen-line summary of the skill, written for the experiment and pasted into the project's instruction file, did about as well as the full skill on these tasks: having the rules present when the tool starts work is what moves these counts. No tool ships such a list. What a pasted list cannot carry is the company's own rules; only the overlay supplied those.
-- **Limits.** Small samples, one model per tool, made-up company values, and the company-rules configuration also carried an instruction telling the tool to consult the server. The next run is preregistered with independent task authors and a non-engineer voice review: [experiment plan](docs/EXPERIMENT_PLAN.md). Reports: [Claude Code](evals/reports/2026.09.16-1-benchmark-claude-code.md) and [Codex](evals/reports/2026.09.16-1-benchmark-codex.md); the first set, on a different ten tasks, is [here](evals/reports/2026.09.15-benchmark-claude-code.md) and [here](evals/reports/2026.09.15-benchmark-codex.md).
+- **Limits.** Small samples, one model per tool, made-up company values, and the company-rules configuration also carried a one-line instruction to consult the server, so its lead over the skill alone is not cleanly the rules' doing. The next run is preregistered with independent task authors and a non-engineer voice review: [experiment plan](docs/EXPERIMENT_PLAN.md). Reports: [Claude Code](evals/reports/2026.09.16-1-benchmark-claude-code.md) and [Codex](evals/reports/2026.09.16-1-benchmark-codex.md); the first set, on a different ten tasks, is [here](evals/reports/2026.09.15-benchmark-claude-code.md) and [here](evals/reports/2026.09.15-benchmark-codex.md).
 
 ## Install for coding agents
 
@@ -48,7 +48,7 @@ npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-safe-building
 npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-security-core
 ```
 
-Installation makes the instructions available to a compatible host. It does **not** prove they were loaded, followed, or enforced. Confirm the installed version, then test representative safe and unsafe tasks in an isolated environment. The [skills.sh CLI](https://skills.sh) (`vercel-labs/skills`) handles placement for the hosts it supports; installer compatibility is separate from anything Catpilot has verified. See the [tested runtimes](docs/REFERENCE.md#tested-runtimes). Global installs, a specific agent, manual copies, and Hermes Agent: [`docs/INSTALL.md`](docs/INSTALL.md).
+Installation makes the instructions available to a compatible host; it does **not** prove they were loaded, followed, or enforced. Confirm the installed version, then try a safe and an unsafe task in an isolated environment. The [skills.sh CLI](https://skills.sh) (`vercel-labs/skills`) places the files for the hosts it supports; what Catpilot has actually observed on each host is in the [tested runtimes](docs/REFERENCE.md#tested-runtimes). Global installs, a specific agent, manual copies, and Hermes Agent: [`docs/INSTALL.md`](docs/INSTALL.md).
 
 Building your own agent loop? The harness notes, the credential gate as a plain function, and the loop rules are in the [technical reference](docs/REFERENCE.md#for-agent-harnesses).
 
@@ -56,18 +56,17 @@ Building your own agent loop? The harness notes, the credential gate as a plain 
 
 Nobody has to open a terminal.
 
-- **Read the eight checkpoints** in five minutes: [`skills/catpilot-safe-building/SKILL.md`](skills/catpilot-safe-building/SKILL.md), the same text the tool follows. The web page source is [`dist/2026.09.18/web/safe-ai-building.html`](dist/2026.09.18/web/safe-ai-building.html); the formatted page ships with the website pass.
+- **Read the eight checkpoints** in five minutes: [`skills/catpilot-safe-building/SKILL.md`](skills/catpilot-safe-building/SKILL.md), the same text the tool follows.
 - **Claude.ai:** download `catpilot-safe-building.zip` from the [latest release](https://github.com/catpilotai/catpilot-ai-guardrails/releases/latest) (also at [`dist/2026.09.18/`](dist/2026.09.18/)) and upload it under Customize → Skills. An organization owner uploads it once under Organization settings → Skills and every member gets it.
 - **ChatGPT, Microsoft Copilot Studio, Lovable, Bolt, Replit, v0:** paste the block for your tool from [`dist/2026.09.18/`](dist/2026.09.18/). Each file says where it goes, and each is under 8,000 characters.
 - **Repository-based agents:** append the `AGENTS.md` or `copilot-instructions.md` block from the same directory.
-
 
 ## What this does and does not do
 
 Three different things get called "protection". This repository uses the narrow words.
 
 - **Advice.** A skill is guidance the model reads. It shapes what the model says and suggests. It is loaded only when the host chooses to load it. Both skills here are advice.
-- **Contextual coaching.** A supported event in a work surface produces one explanation and one next step, at the moment it matters. That is a Catpilot platform capability, not something a skill file does. The safe-building skill tells an assistant how to coach; it cannot create the event.
+- **Contextual coaching.** A supported event in a tool people already work in, such as Slack or Teams, produces one explanation and one next step, at the moment it matters. That is a Catpilot platform capability, not something a skill file does. The safe-building skill tells an assistant how to coach; it cannot create the event.
 - **Enforcement.** A specific action cannot proceed without a tested check in a trusted host. This repository ships exactly two, both Claude Code `PreToolUse` hooks: one denies a shell command that contains a literal credential, the other denies a file write or edit that adds a private-key block. Each covers that one path, on the host version recorded in the [tested-runtimes table](docs/REFERENCE.md#tested-runtimes), and nothing else.
 
 It does not monitor anyone's work, send telemetry, block anything except through the documented hooks, scan repositories, certify compliance, or record training completion. An installed skill that is not loaded is not a control. A hook that is not configured is not a control.
@@ -82,7 +81,7 @@ Bundle and component versions are recorded in each shipped skill's `catpilot.jso
 
 Guidance for code generation, file edits, and shell commands: advice the agent reads, applied whenever the host has loaded it.
 
-The bundle uses a baseline-references layout. `SKILL.md` is the baseline: the host reads it on every activation, and it holds a short entry per component with a link to that component's reference. Each reference file, under `references/<component>.md`, carries that component's full text: examples, remediation, and detection patterns. The host opens a reference only when it is acting in that component's area. The baseline is 396 lines, about 22 KB. The `catpilot-safe-building` skill below is one file.
+`SKILL.md` is a 396-line baseline with a short entry per component; each component's full text (examples, remediation, detection patterns) is in `references/<component>.md`, which the host opens only when it is working in that area. The `catpilot-safe-building` skill below is one file.
 
 | Component | Severity | Guidance covers |
 |---|---|---|
