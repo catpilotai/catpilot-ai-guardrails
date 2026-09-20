@@ -62,7 +62,7 @@ Nobody has to open a terminal.
 - **Claude.ai:** download `catpilot-safe-building.zip` from the [latest release](https://github.com/catpilotai/catpilot-ai-guardrails/releases/latest) (also at [`dist/2026.09.18/`](dist/2026.09.18/)) and upload it under Customize → Skills. An organization owner uploads it once under Organization settings → Skills and every member gets it.
 - **ChatGPT, Microsoft Copilot Studio, Lovable, Bolt, Replit, v0:** paste the block for your tool from [`dist/2026.09.18/`](dist/2026.09.18/). Each file says where it goes, and each is under 8,000 characters.
 - **Repository-based agents:** append the `AGENTS.md` or `copilot-instructions.md` block from the same directory.
-- **Your company rolling it out for you:** an administrator can install it centrally for Claude Code, Claude.ai, Codex, and ChatGPT workspaces; [`docs/DEPLOY_ORG.md`](docs/DEPLOY_ORG.md).
+- **Your company rolling it out for you:** an administrator can install it centrally. The Claude Code and Codex CLI paths are verified; the Claude.ai and ChatGPT workspace paths are written from the vendors' administrator documentation and not yet run by Catpilot: [`docs/DEPLOY_ORG.md`](docs/DEPLOY_ORG.md).
 
 ## What this does and does not do
 
