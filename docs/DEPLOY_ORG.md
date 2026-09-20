@@ -145,7 +145,7 @@ What a pilot report reads from it: denials per hook per day (the hooks were in f
 | Codex CLI, `/etc/codex` managed defaults and skills | verified on 0.154.0 in a temporary home with no user-level skills or server config: both skills listed from `/etc/codex/skills`, `list_approved` completed through the server named in `/etc/codex/managed_config.toml` ([note](../evals/reports/2026.09.20-org-deployment-verification.md)) | 2026-09-20 | Basil placed the files; Catpilot ran the session |
 | ChatGPT, workspace plugin | not yet verified; no manifest shipped | | |
 | ChatGPT, shared GPT | not yet verified; needs a Business, Enterprise, or Edu workspace | | |
-| ChatGPT, GPT or Project instructions on an individual plan | partial, on a ChatGPT Pro account: the pasted block was acknowledged in a chat; the scenario has not been run yet ([note](../evals/reports/2026.09.20-org-deployment-verification.md)) | 2026-09-20 | Basil ran it; Catpilot recorded |
+| ChatGPT, the block as instructions on an individual plan | verified on a ChatGPT Pro account with the block pasted into the chat: the shared-password scenario was declined with the reason, company sign-in for the named group proposed, and a message to the IT/security owner drafted ([note](../evals/reports/2026.09.20-org-deployment-verification.md)); Project and GPT instructions carry the same text and were not separately run | 2026-09-20 | Basil ran it; Catpilot recorded |
 | Evidence log, hooks and server | unit and stdio contract tests in `tests/` | 2026-09-20 | Catpilot |
 
 A row moves to "verified" when a person has run the steps on a real machine and recorded the transcript or screenshot under `evals/reports/`, the same standard as the tested-runtimes table.
