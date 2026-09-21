@@ -6,6 +6,8 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 
 ## [Unreleased]
 
+## [2026.09.21] — 2026-09-21
+
 ### Added
 
 - **Demo.** `docs/DEMO.md` and `evals/demo/customer-lookup/`: one made-up task (a CRM export and a request for a lookup tool with example runs), one run with the skill and one without on the same model and flags, both session records, the with-skill run's program committed as written with a three-case functional check in `tests/test_demo_artifact.py`, and a leak check on marker tokens. Labeled an illustration, not a result.
@@ -16,6 +18,7 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 ### Changed
 
 - **README simplified and the findings brought forward.** The README leads with what the two published benchmarks show, in a four-row table against the state a builder starts from, then install, the contract, the two skills, and the overlay; harness notes, the tested-runtimes table, the hooks, the reference server and hosted endpoint, format, versioning, and build notes moved verbatim to `docs/REFERENCE.md`. Component versions leave the section headers for `catpilot.json` and the changelog. Arm E is relabelled everywhere as "skill summary checklist": it was written for the benchmark as a fifteen-line summary of the skill, and the earlier label "generic checklist" read as something tools have by default; the two second-set reports carry a dated note saying so, and the design doc lists E as a diagnostic beside the standard conditions.
+- **README findings section corrected on outside review.** "Finished within policy" is defined by what was checked (file contents; the programs were not run in the two published sets), unnecessary-stop rows were added per tool, the overlay and server claims are scoped to what was measured ("a pasted list can carry company rules too; in these runs only the overlay did"; "the server's added benefit remains to be established"), and the next run is described as a written plan that becomes a preregistration once its human gates are filled.
 
 ## [2026.09.18] — 2026-09-18
 
