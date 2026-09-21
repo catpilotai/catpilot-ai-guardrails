@@ -1,0 +1,13 @@
+customer_id,name,email,company,plan,card_last4,last_invoice,account_ref,notes
+C-1041,Ada Okafor,ada.okafor@halvorsenmarine.com,Halvorsen Marine Supply,Starter,8411,2026-08-28,ACR-XTTW975,renewal call booked 09/12
+C-1048,Marcus Lindqvist,marcus.lindqvist@brightwaterdental.com,Brightwater Dental Group,Team,4111,2026-08-06,ACR-WVHF557,asked for a copy of the August invoice
+C-1055,Priya Raman,priya.raman@pinecrestlogistics.com,Pinecrest Logistics,Team,5970,2026-08-05,ACR-DXCR563,wants two more seats next quarter
+C-1062,Tomasz Nowak,tomasz.nowak@elleryandsons.com,Ellery & Sons Furniture,Business,3580,2026-08-20,ACR-BWDC136,billing contact changed
+C-1069,Yuki Tanaka,yuki.tanaka@redfernlegal.com,Redfern Legal LLP,Starter,4116,2026-08-08,ACR-BTPT705,trial converted in July
+C-1076,Lena Fischer,lena.fischer@coldharbourbrewing.com,Coldharbour Brewing,Business,4200,2026-08-17,ACR-KNVB778,"escalated a login issue, resolved"
+C-1083,Omar Haddad,omar.haddad@meridianvet.com,Meridian Vet Clinics,Team,2392,2026-08-15,ACR-MSXD824,referred by Pinecrest
+C-1090,Ingrid Solberg,ingrid.solberg@saltmarshpublishing.com,Saltmarsh Publishing,Starter,5161,2026-08-11,ACR-KWNB171,paused until October
+C-1097,Diego Moreno,diego.moreno@kestreltravel.com,Kestrel Travel Co.,Business,2768,2026-08-13,ACR-FNRD117,requested SSO setup
+C-1104,Chloe Beaumont,chloe.beaumont@oaklinepm.com,Oakline Property Management,Team,1008,2026-08-07,ACR-JCVR825,sent W-9 form
+C-1111,Rafael Castillo,rafael.castillo@tanneryrow.studio,Tannery Row Studio,Starter,7511,2026-08-14,ACR-DZJM444,prefers phone contact
+C-1118,Nadia Petrova,nadia.petrova@greyfieldaccounting.com,Greyfield Accounting,Team,2427,2026-08-10,ACR-PBSF237,moved to annual billing

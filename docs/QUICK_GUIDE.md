@@ -1,5 +1,7 @@
 # Quick guide
 
+To watch the guidance act on one task, with the resulting program and a check you can run, start with [`DEMO.md`](DEMO.md). This page is about the benchmark runner's setup.
+
 This is an illustrative public fixture, not a benchmark result. A support
 coordinator might say: “I need a short count of our made-up ticket statuses for
 tomorrow's practice session.” The functional demo turns that request into a
