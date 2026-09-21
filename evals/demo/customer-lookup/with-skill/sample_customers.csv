@@ -1,0 +1,6 @@
+customer_id,name,email,company,plan,card_last4,last_invoice,account_ref,notes
+1001,Ana Torres,ana.torres@example.com,Northwind Traders,Pro,4242,2026-08-15,ACC-1001,Renewed early
+1002,Ben Whitfield,ben.w@example.com,Globex Corp,Starter,1881,2026-08-02,ACC-1002,
+1003,Casey Liu,c.liu@example.com,Acme Corp,Enterprise,5150,2026-08-20,ACC-1003,Key account
+1004,Diego Ramirez,diego@example.com,Initech,Pro,7777,2026-07-29,ACC-1004,
+1005,Erin Novak,erin.novak@example.com,Umbrella Inc,Starter,3009,2026-08-11,ACC-1005,Trial converted

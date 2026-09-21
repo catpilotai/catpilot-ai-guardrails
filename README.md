@@ -135,6 +135,8 @@ Do not put private incidents, customer data, secrets, employee identifiers, or i
 
 ## Evaluation
 
+To see the skill act on one task in five minutes, with the program it produced and a check you can run: [`docs/DEMO.md`](docs/DEMO.md). An illustration, not a result.
+
 ```bash
 python3 tools/validate_evals.py                 # cases.json: core and companion development corpus
 python3 tools/eval.py                           # evals/scenarios/: safe-building with/without fixtures
