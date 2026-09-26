@@ -6,6 +6,10 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 
 ## [Unreleased]
 
+### Changed
+
+- **No "fork this repo" advice.** The project-specific rules comments in `FULL_GUARDRAILS.md` and `copilot-instructions.md` said to fork this repository and add your rules there. A fork of a public repository is public, so they now say to add rules in your own copy and keep private company details out of public repositories.
+
 ## [2026.09.21] — 2026-09-21
 
 ### Added
