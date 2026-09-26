@@ -191,7 +191,7 @@
 
 ## 🎯 Project-Specific Rules
 
-<!-- Fork this repo and add your rules below -->
+<!-- Add your project's rules below. Keep private company details out of public repositories; a fork of this public repository is public too. -->
 
 ---
 

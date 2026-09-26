@@ -1173,7 +1173,8 @@ run: echo "::add-mask::$SECRET_VALUE"
 
 <!-- 
 This section is intentionally minimal in the generic repo.
-Fork this repo and add project-specific rules below if needed.
+Add your project's own rules below, in the copy of this file in your repository.
+Keep private company details out of public repositories: a fork of this public repository is public too.
 Example sections:
 - Teams Bot rules
 - Frontend/React rules  
