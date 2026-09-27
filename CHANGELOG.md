@@ -6,6 +6,10 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 
 ## [Unreleased]
 
+### Added
+
+- **Server factory for multi-organization hosts.** `mcp-server/server.py` builds its four tools with `create_server(policy_provider=None, evidence=None, instructions=None)`, and `build_http_app` accepts the server to serve. The defaults are the reference server as before: the overlay from `CATPILOT_OVERLAY_FILE`, re-read on every call, and the optional evidence file. A host serving several organizations passes a provider that picks each call's rules from the request, plus its own evidence sink. Tool names, descriptions, input schemas, and answers are unchanged; a test compares them against the reference server, and another serves two organizations from one app.
+
 ### Changed
 
 - **No "fork this repo" advice.** The project-specific rules comments in `FULL_GUARDRAILS.md` and `copilot-instructions.md` said to fork this repository and add your rules there. A fork of a public repository is public, so they now say to add rules in your own copy and keep private company details out of public repositories.

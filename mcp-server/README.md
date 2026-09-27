@@ -154,6 +154,28 @@ choose the policy file.
 Host configuration snippets are in `host-configs/`: a `.mcp.json` for Claude
 Code and a `config.toml` fragment for Codex. Replace the absolute paths.
 
+### Serving several organizations
+
+`server.py` builds its tools with `create_server()`. A host that serves more than
+one organization calls it with a `policy_provider`, which returns the policy
+state for each call from the call's context, and optionally its own `evidence`
+sink. The tools, their descriptions, and their answers are unchanged; only
+where the rules come from differs. The context's
+`ctx.request_context.request` is the HTTP request, so the provider can choose
+by path or header. Authenticating the caller and mapping it to an organization
+is the host's job.
+
+```python
+from server import build_http_app, create_server, policy
+
+def rules_for(ctx):
+    org = organization_for(ctx.request_context.request)  # your mapping
+    return policy.load_policy(overlay_path_for(org), allowed_template_hosts(org))
+
+app = build_http_app(stateless=True, allowed_hosts=["guardrails.example.com"],
+                     mcp_server=create_server(policy_provider=rules_for))
+```
+
 ## Hosted instance
 
 A hosted instance is live at `https://mcp.catpilot.ai/mcp` (streamable HTTP). It serves generic defaults only: no company overlay is loaded, and none ever will be on this public endpoint. Host config examples that point at it: `host-configs/claude-code.http.mcp.json` and `host-configs/codex.http.config.toml`. Deployment steps and the protections in front of it: [`deploy/README.md`](../deploy/README.md).
