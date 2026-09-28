@@ -13,6 +13,10 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 - **`check_plan`: a hosting place on neither company list no longer always stops a low-stakes plan for a human.** It correctly stayed `requires_review`, but it also set `ask_a_human`, even for a pilot built entirely on made-up data for an audience inside the company. Now, with only made-up data, an audience inside the company or just the builder, no write access, and nothing else in the plan needing review, `ask_a_human` is false and the hosting note says to keep building with made-up data and confirm the approved place before real data or more people, matching the existing guidance to build that way until someone confirms where the thing will live. Tests in `tests/test_mcp_tools.py`.
 - **`check_plan`: the assistant is now told to use `who_to_ask` by name.** In the pilot, `check_plan` already returned the company's named contact in `who_to_ask`, but the assistant told the person to reach "your security contact" instead of naming it. The server instructions and the `check_plan` tool description now say that when `ask_a_human` is true, the assistant should name `who_to_ask` to the person as given and offer to draft the message.
 
+### Verified
+
+- **ChatGPT and Claude.ai connectors.** On 2026-09-28, on Pro accounts, a Catpilot-hosted company endpoint that runs this server with a company overlay was added as a ChatGPT developer-mode MCP app and as a Claude.ai custom connector. ChatGPT called the tools for each of ten pilot prompts (`check_plan` for nine), but only in messages that mention the app; Claude.ai called the tools without a mention. `docs/ROADMAP.md`, `docs/REFERENCE.md`, and `evals/HOST_VERIFICATION.md` record the results. The public `mcp.catpilot.ai` was not added as a connector.
+
 ## [2026.09.27] — 2026-09-27
 
 ### Added

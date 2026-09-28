@@ -80,8 +80,10 @@ beyond that one call, and it does not test either host's own connector UI.
 
 Both show the http transport and one tool call reaching `mcp.catpilot.ai`
 end to end for that host's MCP client. Neither is a claim about what the
-model does with the result, and neither covers ChatGPT or Claude.ai, which
-remain not yet verified against this endpoint.
+model does with the result, and neither covers ChatGPT or Claude.ai. Those two
+were verified on 2026-09-28 against a Catpilot-hosted company endpoint that
+runs this server with a company overlay, not against this public endpoint:
+see the runtime table in [`../docs/REFERENCE.md`](../docs/REFERENCE.md).
 
 ## Your own harness
 
