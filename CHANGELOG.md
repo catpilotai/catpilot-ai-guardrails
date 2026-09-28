@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Changed
+
+- **`check_plan`: mentioning customers, vendors, partners, or an agency no longer overrides an internal audience.** `EXTERNAL_AUDIENCE` matched a word like "customer" anywhere in the description, so "a customer lookup tool" set `labels.external_audience` and `ask_a_human` even when the `audience` field named the ops team. Now, when the audience field says internal or the builder alone, those words count only after a sharing verb, right after "with," "for," or "to," or before a verb of access such as "customers can log in," and not when they only name whose data it is, as in "customer names"; without an audience field the mention still counts as before, and "teammate" now reads as an internal audience word. Tests in `tests/test_mcp_tools.py`.
+- **`check_plan`: an overlay no longer makes an unlisted sensitive data class less careful than having no overlay at all.** A data class on none of the company's lists answered `unknown` with no human, even for something like real HR records. Now an unlisted class that the generic rules recognize as credentials or sensitive real data (payment card, government identifiers, health, employee or HR records, customer records) gets the generic outcome, `prohibited` or `requires_review`, with source "generic default" and the note "not in the company's data classes; the generic rule applies"; a class the generic rules do not recognize still answers `unknown`, and a partial detail such as "last four digits of cards" now follows the generic card rule and comes back `prohibited` when the company does not list it. Tests in `tests/test_mcp_tools.py`.
+- **`check_plan`: a hosting place on neither company list no longer always stops a low-stakes plan for a human.** It correctly stayed `requires_review`, but it also set `ask_a_human`, even for a pilot built entirely on made-up data for an audience inside the company. Now, with only made-up data, an audience inside the company or just the builder, no write access, and nothing else in the plan needing review, `ask_a_human` is false and the hosting note says to keep building with made-up data and confirm the approved place before real data or more people, matching the existing guidance to build that way until someone confirms where the thing will live. Tests in `tests/test_mcp_tools.py`.
+- **`check_plan`: the assistant is now told to use `who_to_ask` by name.** In the pilot, `check_plan` already returned the company's named contact in `who_to_ask`, but the assistant told the person to reach "your security contact" instead of naming it. The server instructions and the `check_plan` tool description now say that when `ask_a_human` is true, the assistant should name `who_to_ask` to the person as given and offer to draft the message.
+
 ## [2026.09.27] — 2026-09-27
 
 ### Added

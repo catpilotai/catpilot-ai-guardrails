@@ -135,6 +135,23 @@ EXTERNAL_AUDIENCE = (
     r"(?!\s+(?:developers?|users?|providers?|partners?|customers?|teams?|staff|people|engineers?|administrators?|admins?)\b))"
     r"|customers?|vendors?|partners?|agency|the internet|everyone)\b"
 )
+# The people words in EXTERNAL_AUDIENCE also name whose data a tool handles ("look up customers", "a
+# customer follow-up dashboard", "partner invoices"). When the audience field already says who opens
+# the tool, such a word counts only in an access or sharing context: after a sharing verb or right
+# after "with", "for", or "to" ("share it with our partners", "a portal for customers"), or before a
+# verb of access ("customers can log in"). Used as a modifier ("customer names") it names the data.
+AUDIENCE_PEOPLE = r"(?:customers?|vendors?|partners?|agency)"
+AUDIENCE_ACCESS_BEFORE = re.compile(
+    r"(?:\b(?:share|shares|shared|sharing|send|sends|sent|give|gives|giving|grant|grants|invite|invites|let|lets|allow|allows|"
+    r"publish|publishes|published|show|shows|expose|exposes|open|opens|email|emails)\b(?:\s+\S+){0,4}"
+    r"|\b(?:with|for|to)(?:\s+(?:our|the|their|your|all|any|some|external|outside|every|each|a|an))*)\s*$",
+    re.IGNORECASE,
+)
+AUDIENCE_ACCESS_AFTER = re.compile(
+    r"^\s+(?:can|could|will|would|should|may|might|must|need to|want to|get to)\s+(?:\w+\s+){0,2}?"
+    r"(?:use|see|view|open|access|log|sign|download|edit|try|reach|read|visit|browse)\b",
+    re.IGNORECASE,
+)
 RISKY_HOSTING = r"\b(?:personal (?:account|laptop|computer|replit|cloud|server)|free (?:tier|plan|account)|trial (?:account|workspace)|home server|my laptop|localhost)\b"
 # A hosting value that says the thing is never deployed, hosted, or published anywhere -- it
 # just runs on the builder's own machine, or by hand as a one-off. Whole phrases, not overlay
@@ -191,7 +208,7 @@ GENERIC_DATA_OUTCOME = {
 AUDIENCE_WORDS = {
     "public": ("anyone", "public", "internet", "everyone", "world"),
     "external": ("customer", "vendor", "partner", "agency", "contractor", "external", "client", "supplier", "outside"),
-    "internal": ("colleague", "team", "employee", "staff", "internal", "manager", "ops", "coworker", "department"),
+    "internal": ("colleague", "team", "teammate", "employee", "staff", "internal", "manager", "ops", "coworker", "department"),
 }
 # An audience value that names only the person building this, not anyone else: it decides
 # whether a not_deployed hosting value needs no review or a plain one.
@@ -458,6 +475,25 @@ def _evidence_negated(text: str, words: list[str]) -> bool:
     return seen
 
 
+def _external_audience_hint(text: str, audience_decided: bool) -> str | None:
+    """The first mention of people outside the company that the text does not rule out, lowercased.
+
+    When the audience field already says the tool is for the company or the builder alone, a people
+    word such as "customer" counts only where it describes access or sharing, not where it names whose
+    data the tool handles (see AUDIENCE_PEOPLE).
+    """
+    for m in re.finditer(EXTERNAL_AUDIENCE, text, re.IGNORECASE):
+        if _negated(text, m.start(), m.end()):
+            continue
+        if audience_decided and re.fullmatch(AUDIENCE_PEOPLE, m.group(0), re.IGNORECASE):
+            before, after, _ = _clause(text, m.start(), m.end())
+            modifier = not m.group(0).lower().endswith("s") and re.match(r"^\s+[a-z]", after, re.IGNORECASE) is not None
+            if modifier or not (AUDIENCE_ACCESS_BEFORE.search(before) or AUDIENCE_ACCESS_AFTER.match(after)):
+                continue
+        return m.group(0).lower().strip()
+    return None
+
+
 def _audience_category(value: str) -> str:
     """internal, external, public, or unknown, ignoring words the value itself rules out."""
     for category in ("public", "external", "internal"):
@@ -707,6 +743,7 @@ def check_plan(
 
     # data classes
     approved_service_names: list[list[str]] = []
+    synthetic_items: list[bool] = []
     if not named_classes:
         decide("data_classes", "unknown", "unknown", GENERIC_RULES["data_missing"], "generic default", note="no data classes were given")
     for item in named_classes:
@@ -719,6 +756,7 @@ def check_plan(
             is_synthetic, provenance_evidence, provenance_note = False, [], "provenance unknown; treated as real"
         else:
             is_synthetic, provenance_evidence, provenance_note = _data_class_provenance(item)
+        synthetic_items.append(is_synthetic)
         if is_synthetic:
             ok_hits = _overlay_hits(o["data_classes"]["ok"], item)[0] if o else []
             if ok_hits:
@@ -746,14 +784,18 @@ def check_plan(
             if hit:
                 decide("data_classes", item, "permitted", hit[0][0], "company overlay", _merge_evidence(provenance_evidence, hit[0][1]), component=component, note=provenance_note)
                 continue
-            decide("data_classes", item, "unknown", GENERIC_RULES["data_unrecognized"], "company overlay", _merge_evidence(provenance_evidence), component=component,
-                   note=provenance_note or "not in the company's data classes; ask the owner")
-            continue
+            # On none of the company's lists: the generic rules below still apply to credentials and
+            # sensitive real data, so a company's rules are never weaker than having none.
+            if not (_match(CREDENTIALS_PATTERN, item) or any(_match(pattern, item) for pattern in SENSITIVE_DATA.values())):
+                decide("data_classes", item, "unknown", GENERIC_RULES["data_unrecognized"], "company overlay", _merge_evidence(provenance_evidence), component=component,
+                       note=provenance_note or "not in the company's data classes; ask the owner")
+                continue
+        unlisted_note = "; ".join(n for n in (provenance_note, "not in the company's data classes; the generic rule applies" if o else None) if n) or None
         if _match(CREDENTIALS_PATTERN, item):
             labels["credentials"] = True
             decide("data_classes", item, "prohibited", GENERIC_RULES["data_prohibited"], "generic default", _merge_evidence(provenance_evidence, [item.lower()]),
                    component="keys-and-credentials",
-                   why="A password, key, or token appears to be part of the plan; it must not be typed into a tool or generated code.", note=provenance_note)
+                   why="A password, key, or token appears to be part of the plan; it must not be typed into a tool or generated code.", note=unlisted_note)
             continue
         generic = next((label for label, pattern in SENSITIVE_DATA.items() if _match(pattern, item)), None)
         if generic:
@@ -761,7 +803,7 @@ def check_plan(
             labels["sensitive_data"].append(generic)
             decide("data_classes", item, outcome, GENERIC_RULES["data_prohibited"] if outcome == "prohibited" else GENERIC_RULES["data_review"],
                    "generic default", _merge_evidence(provenance_evidence, [item.lower()]), component=component,
-                   why="Real data of this kind should not go into a prompt, upload, or test: " + generic + ".", note=provenance_note)
+                   why="Real data of this kind should not go into a prompt, upload, or test: " + generic + ".", note=unlisted_note)
             continue
         decide("data_classes", item, "unknown", GENERIC_RULES["data_unrecognized"], "generic default", _merge_evidence(provenance_evidence), component=component,
                note=provenance_note or "not a class the generic defaults recognize; ask the data's owner")
@@ -876,7 +918,7 @@ def check_plan(
         add("keys-and-credentials", "high", "A password, key, or token appears to be part of the plan; it must not be typed into a tool or generated code.",
             rule="; ".join(credential_classes) or None, overlay_list="data_classes.never_in_prompts" if credential_classes else None, evidence=[found])
 
-    found = _hint(EXTERNAL_AUDIENCE, text)
+    found = _external_audience_hint(text, audience_decided=labels["audience"] == "internal" or _is_builder_alone(audience))
     if found:
         labels["external_audience"] = True
         hint("access-and-identity", found, "the description mentions people outside the company; a hint only, pass audience to decide")
@@ -967,6 +1009,20 @@ def check_plan(
     risks.sort(key=lambda r: (-SEVERITY_ORDER[r["severity"]], r["basis"] != "decision"))
     hint_asks_for_a_human = labels["external_audience"] or sensitive_hit
     ask_a_human = outcome in ("prohibited", "requires_review") or bool(hint_asks_for_a_human)
+    # A place that is on neither of the company's hosting lists is still a review question, but with only
+    # made-up data, people inside the company, and nothing written to a system of record it is one to
+    # settle before real data or more people, not one to stop for: the hosting guidance says to keep
+    # building with made-up data until someone confirms where the thing will live.
+    hosting_decision = next((d for d in decisions if d["field"] == "hosting"), None)
+    if (ask_a_human and o and hosting_decision and hosting_decision["outcome"] == "requires_review"
+            and hosting_decision["rule"] == GENERIC_RULES["hosting_approved_list"] and not labels["risky_hosting"]
+            and synthetic_items and all(synthetic_items)
+            and (labels["audience"] == "internal" or _is_builder_alone(audience)) and write_access is False
+            and not (hint_asks_for_a_human or labels["review_trigger"] or labels["new_service"])
+            and all(d["outcome"] in ("permitted", "unknown") for d in decisions if d is not hosting_decision)):
+        ask_a_human = False
+        hosting_decision["note"] += ("; with made-up data and people inside the company, keep building and confirm "
+                                     "the approved place before real data or more people")
     worst = None
     for d, component in zip(decisions, decision_components):
         if d["outcome"] in ("prohibited", "requires_review") and (worst is None or OUTCOME_ORDER[d["outcome"]] > OUTCOME_ORDER[worst[0]]):

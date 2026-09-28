@@ -52,6 +52,16 @@ something else ("Internal App Platform and a personal VPS"), or negating one
 `requires_review`, not `permitted`; only the value itself, or nothing more
 than its own words, is.
 
+An unlisted data class is not automatically `unknown`: when the generic rules
+recognize it as credentials or sensitive real data (payment card, government
+identifiers, health, employee or HR records, customer records), it gets the
+generic outcome instead, `prohibited` or `requires_review`, sourced as a
+`generic default` with a note that the generic rule applies, so an overlay is
+never less careful than having none. A class the generic rules do not
+recognize still answers `unknown`. One consequence: a partial detail such as
+"last four digits of cards" now follows the generic card rule and comes back
+`prohibited` when the company does not list it separately.
+
 A `not_deployed` hosting value ("not deployed", "not hosted", "not published",
 "local"/"locally", "localhost", "my machine", "my laptop", "own laptop", "own
 machine", "workstation", "workspace", "run by hand", "one-off", "run
@@ -68,6 +78,14 @@ hosting even when its output is for others. `labels.hosting` reports
 `not_deployed`, and the hosting question is not added to the checklist when
 this category already answered it.
 
+A hosting value on neither company list is still `requires_review`, but it no
+longer always asks a human: when every data class is made up, the audience is
+inside the company or just the builder, `write_access` is false, and nothing
+else in the plan needs review, `ask_a_human` is `false` and the decision's
+note says to keep building with made-up data and confirm the approved place
+before real data or more people. This matches the guidance to build with
+made-up data until someone confirms where a thing will live.
+
 `hints` are the findings from the description, each labelled as a hint. A hint
 adds a question and a risk, never an outcome, and a hint under a negation
 ("no external users", "synthetic records only", "instead of the real export",
@@ -75,6 +93,17 @@ adds a question and a risk, never an outcome, and a hint under a negation
 `ask_a_human` only for the three cases that were always review triggers: real
 sensitive data, credentials, and an external audience. Each risk carries
 `basis: "decision"` or `basis: "hint"` so a caller can tell the two apart.
+When `ask_a_human` is true, tell the person to contact `who_to_ask` by the
+name or address it gives, and offer to draft the message.
+
+A mention of customers, vendors, partners, or an agency is not always an
+audience hint: once the `audience` field says internal or names only the
+builder, those words count only where they describe access or sharing, such
+as after a sharing verb, right after "with", "for", or "to", or before a verb
+of access like "customers can log in", and not where they only name whose
+data it is, as in "customer names". Without an `audience` field the mention
+still counts as before, and "teammate" now reads as an internal audience
+word.
 
 Matching is deterministic keyword work, and it is not judgment: a clean result
 means no rule fired, not that the plan is safe. An overlay item fires when its
