@@ -1034,6 +1034,12 @@ def check_plan(
     else:
         next_step = "No checkpoint was triggered by the words in this plan; that is not approval. Build with made-up data, keep the audience small, and run check_plan again before connecting anything or sharing."
     owner = (o["owner"] if o else guidance["slots"]["owner"])
+    # When a human has to look before anything is built, the next step names who, ahead of the checkpoint's
+    # own advice: a review conversation outranks a data-hygiene tip. A prohibited plan keeps its fix first.
+    if ask_a_human and outcome != "prohibited":
+        draft = comps["when-to-ask-a-human"]["do"][0]
+        ask_first = f"Tell the person who to check with before going further: {owner.rstrip('.')}. {draft}"
+        next_step = ask_first if next_step == draft else f"{ask_first} Until they answer: {next_step}"
     # A not_deployed hosting value has already been answered; do not still ask where it lives.
     default_checklist_components = ["data-in-prompts", "access-and-identity"]
     if labels["hosting"] != "not_deployed":

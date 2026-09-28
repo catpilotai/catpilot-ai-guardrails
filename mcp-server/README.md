@@ -94,7 +94,10 @@ adds a question and a risk, never an outcome, and a hint under a negation
 sensitive data, credentials, and an external audience. Each risk carries
 `basis: "decision"` or `basis: "hint"` so a caller can tell the two apart.
 When `ask_a_human` is true, tell the person to contact `who_to_ask` by the
-name or address it gives, and offer to draft the message.
+name or address it gives, and offer to draft the message; `next_step` then
+starts with that contact, except for a prohibited plan, where it leads with the
+fix. Call `check_plan` before asking the person about a plan: a field left out
+comes back as an open question, not a reason to wait.
 
 A mention of customers, vendors, partners, or an agency is not always an
 audience hint: once the `audience` field says internal or names only the
