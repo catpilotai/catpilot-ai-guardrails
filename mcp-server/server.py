@@ -52,7 +52,9 @@ TEMPLATES = content.load_templates()
 INSTRUCTIONS = (
     "Read-only guidance lookups for safe AI-assisted building. Advisory: nothing here blocks an action. "
     "When an answer carries unknown_policy: true, no current approved company values were available; "
-    "say so to the person and do not present generic defaults as their company's policy."
+    "say so to the person and do not present generic defaults as their company's policy. "
+    "When check_plan says ask_a_human, tell the person to contact who_to_ask, by the name or address it gives, "
+    "and offer to draft the message."
 )
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
@@ -181,8 +183,9 @@ def create_server(
         `decisions` (one per field, each with the rule that decided it and whether that rule came from the
         company overlay or a generic default), `hints` from the description that are questions rather than
         findings, risks ranked by severity with a safer alternative each, one next step, whether to ask a
-        human, and a checklist. Advisory: a missing field returns `unknown`, not a pass, and no outcome here
-        approves or blocks anything.
+        human, who to ask, and a checklist. When `ask_a_human` is true, name `who_to_ask` to the person as
+        given (the company's contact when it publishes one) and offer to draft the message. Advisory: a
+        missing field returns `unknown`, not a pass, and no outcome here approves or blocks anything.
         """
         result = tools.check_plan(
             description, GUIDANCE, rules(ctx), data_classes, data_provenance, audience, hosting,

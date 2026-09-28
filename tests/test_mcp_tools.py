@@ -428,6 +428,25 @@ class CheckPlanDecisionTests(unittest.TestCase):
         self.assertIn("Internal App Platform (company sign-in)", d["note"])
         self.assertEqual(out["labels"]["hosting"], "unrecognized")
 
+    def test_a_made_up_data_pilot_on_an_unlisted_place_needs_no_human_yet(self):
+        """Pilot finding (2026-09-28): a pretend-data demo for two teammates behind company sign-in was sent to a
+        human because its host was not on the company's list. The hosting guidance says to keep building with
+        made-up data until someone confirms where the thing will live."""
+        pilot = dict(data_classes=["pretend vacation requests"], audience="two teammates in our pilot group",
+                     hosting="a demo site behind company sign-in", services=[], write_access=False, policy_state=self.approved)
+        out = self.plan("A pretend-data demo of the vacation tracker for two teammates.", **pilot)
+        d = self.decision(out, "hosting")
+        self.assertEqual((d["outcome"], d["rule"]), ("requires_review", "hosting must be on the company's approved list"))
+        self.assertIn("confirm the approved place before real data or more people", d["note"])
+        self.assertEqual(out["outcome"], "requires_review")
+        self.assertFalse(out["ask_a_human"])
+        # Real data, people outside the company, writes to a system of record, a new service, or a
+        # not-approved place still ask a human.
+        for change in ({"data_provenance": "real"}, {"audience": "our customers"}, {"write_access": True},
+                       {"services": ["a new enrichment API"]}, {"hosting": "a personal cloud account"}):
+            with self.subTest(change=change):
+                self.assertTrue(self.plan("A demo of the vacation tracker.", **{**pilot, **change})["ask_a_human"])
+
     def test_hosting_without_an_overlay(self):
         out = self.plan(hosting="my personal Replit account")
         d = self.decision(out, "hosting")
@@ -608,7 +627,53 @@ class CheckPlanDecisionTests(unittest.TestCase):
                 self.assertTrue(out["ask_a_human"])
                 self.assertIn("access-and-identity", [risk["component"] for risk in out["risks"]])
 
+    def test_customers_named_as_data_are_not_an_audience_once_the_audience_field_decides(self):
+        """Pilot finding (2026-09-28): "customer" in a description made every internal customer tool ask a human."""
+        fields = dict(audience="our ops team", data_classes=["made-up order rows"], data_provenance="synthetic",
+                      hosting="Internal App Platform", services=[], write_access=False, policy_state=self.approved)
+        for description in ("A tool to look up customers from last month's order history.",
+                            "A customer follow-up dashboard for the sales team.",
+                            "Summarize partner invoices for the finance team."):
+            with self.subTest(description=description):
+                out = self.plan(description, **fields)
+                self.assertFalse(out["labels"]["external_audience"])
+                self.assertFalse(out["ask_a_human"])
+                self.assertEqual(out["outcome"], "permitted")
+        # Where the words describe access or sharing, they still count, whatever the audience field says.
+        for description in ("Customers will log in to check their orders.", "Share the dashboard with our partners.",
+                            "Build a portal for customers.", "Let customers see their own orders.",
+                            "Send the report to the agency."):
+            with self.subTest(description=description):
+                out = self.plan(description, **fields)
+                self.assertTrue(out["labels"]["external_audience"])
+                self.assertTrue(out["ask_a_human"])
+        # Without an audience field, the description is the only signal, so the mention still counts.
+        self.assertTrue(self.plan("A tool to look up customers.", policy_state=self.approved)["labels"]["external_audience"])
+
+    def test_teammates_are_an_internal_audience(self):
+        self.assertEqual(self.decision(self.plan(audience="two teammates in our pilot group"), "audience")["value"], "internal")
+
     # ---------------------------------------------------------------- data classes
+
+    def test_real_sensitive_data_off_the_company_lists_follows_the_generic_rule(self):
+        """Pilot finding (2026-09-28): a company overlay that did not list a kind of real sensitive data
+        answered "unknown" with no human, less careful than the generic defaults."""
+        cases = {"salary bands for each employee": "requires_review", "patient insurance claims": "prohibited",
+                 "the CRM export": "requires_review"}
+        for value, outcome in cases.items():
+            with self.subTest(value=value):
+                out = self.plan(data_classes=[value], data_provenance="real", policy_state=self.approved)
+                d = self.decision(out, "data_classes", value)
+                self.assertEqual((d["outcome"], d["source"]), (outcome, "generic default"))
+                self.assertEqual(d["note"], "not in the company's data classes; the generic rule applies")
+                self.assertTrue(out["ask_a_human"])
+                self.assertEqual(out["outcome"], outcome)
+                # The same kind of data made up is still fine.
+                made_up = self.decision(self.plan(data_classes=[value], data_provenance="synthetic", policy_state=self.approved), "data_classes")
+                self.assertEqual(made_up["outcome"], "permitted")
+        # Data the generic rules do not recognize either stays a question for its owner.
+        d = self.decision(self.plan(data_classes=["seating-chart preferences"], data_provenance="real", policy_state=self.approved), "data_classes")
+        self.assertEqual((d["outcome"], d["source"]), ("unknown", "company overlay"))
 
     def test_data_classes_against_the_overlay(self):
         cases = {
