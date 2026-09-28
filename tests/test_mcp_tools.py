@@ -926,12 +926,29 @@ class CheckPlanDecisionTests(unittest.TestCase):
 
     def test_next_step_comes_from_the_worst_decision(self):
         out = self.plan("A small tool.", hosting="a personal cloud account", audience="our customers", policy_state=self.approved)
+        self.assertEqual(out["outcome"], "prohibited")
         self.assertEqual(out["next_step"], self.guidance["components"]["hosting-and-where-it-runs"]["do"][0])
         out = self.plan("A small tool.", audience="our customers", hosting="Internal App Platform", policy_state=self.approved)
-        self.assertEqual(out["next_step"], self.guidance["components"]["access-and-identity"]["do"][0])
+        self.assertTrue(out["next_step"].endswith("Until they answer: " + self.guidance["components"]["access-and-identity"]["do"][0]))
         out = self.plan("Real patient records will be searchable")
-        self.assertEqual(out["next_step"], out["risks"][0]["safer_alternative"])
+        self.assertTrue(out["next_step"].endswith("Until they answer: " + out["risks"][0]["safer_alternative"]))
         self.assertIn("not approval", self.plan("A timer for the team.")["next_step"])
+
+    def test_next_step_names_who_to_ask_before_the_checkpoint_advice(self):
+        """Salary bands next to each name in a directory: the sample-file tip used to lead, and assistants
+        answered it without naming the company's contact."""
+        draft = self.guidance["components"]["when-to-ask-a-human"]["do"][0]
+        sample = self.guidance["components"]["data-in-prompts"]["do"][0]
+        description = "Show each employee's salary band next to their name in the directory so managers can plan raises."
+        out = self.plan(description, data_classes=["employee salary bands"], data_provenance="real", policy_state=self.approved)
+        self.assertEqual(out["outcome"], "requires_review")
+        self.assertTrue(out["ask_a_human"])
+        self.assertEqual(out["next_step"], f"Tell the person who to check with before going further: {out['who_to_ask']}. {draft} Until they answer: {sample}")
+        out = self.plan(description, data_classes=["employee salary bands"], data_provenance="real")
+        self.assertTrue(out["next_step"].startswith("Tell the person who to check with before going further: " + self.guidance["slots"]["owner"] + ". "))
+        # A write to a system of record is itself the human checkpoint; its advice is not repeated.
+        out = self.plan("A small internal tool.", write_access=True, policy_state=self.approved)
+        self.assertEqual(out["next_step"], f"Tell the person who to check with before going further: {out['who_to_ask']}. {draft}")
 
     def test_fully_benign_plan_is_permitted_overall(self):
         """Internal audience, synthetic data, approved hosting, approved service, no write access: a clean pass."""

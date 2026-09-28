@@ -53,8 +53,10 @@ INSTRUCTIONS = (
     "Read-only guidance lookups for safe AI-assisted building. Advisory: nothing here blocks an action. "
     "When an answer carries unknown_policy: true, no current approved company values were available; "
     "say so to the person and do not present generic defaults as their company's policy. "
-    "When check_plan says ask_a_human, tell the person to contact who_to_ask, by the name or address it gives, "
-    "and offer to draft the message."
+    "Call check_plan before you ask the person about a plan, with what you already know: a field left out comes "
+    "back as an open question, so a missing answer is not a reason to wait. "
+    "When check_plan says ask_a_human, or whenever you suggest checking with someone, tell the person to contact "
+    "who_to_ask, by the name or address it gives, and offer to draft the message."
 )
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
@@ -149,6 +151,9 @@ def create_server(
     ) -> dict[str, Any]:
         """Deterministic check of a building plan against the eight checkpoints and, when configured, the company overlay.
 
+        Call it before you ask the person about the plan, with what you already know: a field left out comes
+        back as an open question in `checklist`, so a missing answer is not a reason to wait.
+
         The fields decide; the description is only read for hints, because free text names a risk as often to
         rule it out ("no external users", "synthetic records only") as to choose it. Pass every field you know:
 
@@ -182,8 +187,9 @@ def create_server(
         Returns `outcome` (permitted, requires_review, prohibited, or unknown, the worst across the fields),
         `decisions` (one per field, each with the rule that decided it and whether that rule came from the
         company overlay or a generic default), `hints` from the description that are questions rather than
-        findings, risks ranked by severity with a safer alternative each, one next step, whether to ask a
-        human, who to ask, and a checklist. When `ask_a_human` is true, name `who_to_ask` to the person as
+        findings, risks ranked by severity with a safer alternative each, one next step (it names who to
+        check with first when a human has to look and nothing is prohibited), whether to ask a human, who to
+        ask, and a checklist. When `ask_a_human` is true, name `who_to_ask` to the person as
         given (the company's contact when it publishes one) and offer to draft the message. Advisory: a
         missing field returns `unknown`, not a pass, and no outcome here approves or blocks anything.
         """

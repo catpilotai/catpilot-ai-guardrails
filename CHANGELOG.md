@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Changed
+
+- **`check_plan`: the next step names who to check with first.** When `ask_a_human` was true, `next_step` still came from the checkpoint of the worst decision. A plan to show real salary bands next to each name in an employee directory got "offer to make a sample file" as its next step, with the company's contact only in `who_to_ask`. Now, when `ask_a_human` is true and nothing is prohibited, `next_step` starts with `who_to_ask` and the request to draft, then gives the checkpoint's advice for the meantime. A prohibited plan still leads with its fix.
+- **The assistant is told to call `check_plan` before asking the person questions.** In the Claude.ai pilot, the same salary-band request got a question about who should see the bands and a promise to run the check after the answer; `check_plan` was never called for it. The instructions and the `check_plan` description now say to call it with what is already known, since a field left out comes back as an open question. The instructions also say to name `who_to_ask` whenever the assistant suggests checking with someone, not only when `ask_a_human` is set.
+
 ## [2026.09.28] — 2026-09-28
 
 ### Changed
