@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Verified
+
+- **ChatGPT and Claude.ai name the company's contact on a pay-data request.** On 2026-09-30, on Pro accounts, with a Catpilot-hosted company endpoint serving `2026.09.28-1`, a request to show real salary bands next to each name in an employee directory got answers that cited the data owner's written-agreement rule and named the overlay's contact: in Claude.ai with the uploaded skill turned off and again with it on, and in ChatGPT in a message that mentions the app. On 2026-09-28, before this release, Claude.ai made no call for the same request and ChatGPT's answer did not name the contact. One run each; the answers were observed and the tool-call log was not read. Details: `evals/reports/2026.09.30-hosted-connector-verification.md`.
+
 ## [2026.09.28-1] — 2026-09-28
 
 ### Changed
