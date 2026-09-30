@@ -82,8 +82,10 @@ Both show the http transport and one tool call reaching `mcp.catpilot.ai`
 end to end for that host's MCP client. Neither is a claim about what the
 model does with the result, and neither covers ChatGPT or Claude.ai. Those two
 were verified on 2026-09-28 against a Catpilot-hosted company endpoint that
-runs this server with a company overlay, not against this public endpoint:
-see the runtime table in [`../docs/REFERENCE.md`](../docs/REFERENCE.md).
+runs this server with a company overlay, not against this public endpoint, and
+rechecked on 2026-09-30 after `2026.09.28-1`: see the runtime table in
+[`../docs/REFERENCE.md`](../docs/REFERENCE.md) and
+[`reports/2026.09.30-hosted-connector-verification.md`](reports/2026.09.30-hosted-connector-verification.md).
 
 ## Your own harness
 
@@ -100,3 +102,4 @@ keeps that note next to the harness. See [`../hooks/harness/README.md`](../hooks
 - 2026-09-14, hosted endpoint (`mcp.catpilot.ai`), Codex CLI 0.154.0 over the `url` MCP server config: `mcp_tool_call` completed for `list_approved` (`category: "contacts"`), `policy_status: "none"`.
 - 2026-09-14, Claude Code 2.1.241, `Write` `PreToolUse` hook (`hooks/claude-code/pretooluse-write-private-key.py`) from project settings: a write of a synthetic private-key block was denied with the hook's reason and no file was created; the control run without the hook wrote the file. Note: [`evals/reports/2026.09.14-write-hook-verification.md`](reports/2026.09.14-write-hook-verification.md).
 - 2026-09-15, core skill split into a 396-line baseline plus nine reference files: Codex CLI 0.154.0 read the baseline and `references/cloud-cli-safety.md` on both builds; Claude Code 2.1.241 with Sonnet read the reference on the second build (after the read-first wording) and answered correctly, having answered wrongly from the baseline alone on the first build; Haiku did not invoke the skill on the natural prompt. Note: [`reports/2026.09.15-core-layout-verification.md`](reports/2026.09.15-core-layout-verification.md).
+- 2026-09-30, ChatGPT and Claude.ai (Pro) against a Catpilot-hosted company endpoint at `2026.09.28-1`: the salary-band request got answers that named the overlay's contact, in Claude.ai with the uploaded skill off and again with it on, and in ChatGPT in a message that mentions the app; answers observed, tool-call log not read. Note: [`reports/2026.09.30-hosted-connector-verification.md`](reports/2026.09.30-hosted-connector-verification.md).

@@ -16,8 +16,10 @@ benchmark report arrives here only when a person copies it in, with the
 Verification notes and smoke observations are distinct from benchmark reports: `2026.09.13-claude-code-verification.md`, `2026.09.14-codex-verification.md`,
 `2026.09.14-codex-smoke.md` (two scenarios, one run each, heuristic scores),
 `2026.09.14-mcp-verification.md`, `2026.09.14-write-hook-verification.md`,
-and `2026.09.15-core-layout-verification.md` (whether Claude Code and Codex
-open a reference file of the split core skill before acting).
+`2026.09.15-core-layout-verification.md` (whether Claude Code and Codex
+open a reference file of the split core skill before acting), and
+`2026.09.30-hosted-connector-verification.md` (ChatGPT and Claude.ai against
+a Catpilot-hosted company endpoint).
 Four historical benchmark reports are published, each opening with the dated completion note while preserving its previously published text: `2026.09.15-benchmark-claude-code.md` and `2026.09.15-benchmark-codex.md`
 (ten held-out scenarios; A, no guidance; B, skill installed; C, skill plus company server without an instruction; single turn, with historical rescoring corrections),
 and `2026.09.16-1-benchmark-claude-code.md` and `2026.09.16-1-benchmark-codex.md`
