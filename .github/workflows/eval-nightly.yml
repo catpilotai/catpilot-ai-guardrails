@@ -5,11 +5,13 @@ name: eval-nightly
 # early and records nothing. The report is printed to the job summary; a
 # human reviews it and commits it under evals/reports/ deliberately. It is
 # never committed automatically.
+#
+# Manual only. The daily schedule ran without the secret and reported success
+# while running nothing; restore a schedule once a dedicated, spend-capped key
+# is configured.
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 6 * * *"
 
 permissions:
   contents: read
@@ -48,7 +50,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          python tools/eval.py --host claude --binary "$(command -v claude)" --model claude-haiku-4-5-20251001 \
+          python tools/eval.py --host claude --binary "$(command -v claude)" --model claude-haiku-5-5 \
             --injection installed --runs 1 --max-calls 40 --report evals/reports/nightly.md --execute
       - name: Publish the report to the job summary
         if: steps.key.outputs.present == 'true'
