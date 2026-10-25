@@ -103,9 +103,12 @@ Certificates: Railway's documentation says it may not be able to issue a
 certificate for a domain behind Cloudflare's proxy, and until it has one,
 Railway presents its `*.up.railway.app` certificate, which the strict-SSL rule
 rejects (HTTP 526). Point the CNAME at the target Railway gives you as DNS
-only, add Railway's `_railway-verify` TXT record, wait until Railway shows the
-certificate as valid, then turn the proxy back on. Strict SSL then validates
-Railway's certificate for the hostname.
+only and wait five minutes, so resolvers drop Cloudflare's proxied answer.
+Only then add Railway's `_railway-verify` TXT record: verification starts
+Railway's first issuance attempt, and attempts that still reach the edge fail
+and count toward Let's Encrypt's per-hostname failure limit (about five an
+hour). Once Railway shows the certificate as valid, turn the proxy back on;
+strict SSL then validates Railway's certificate for the hostname.
 
 ## Verifying
 
