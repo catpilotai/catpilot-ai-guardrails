@@ -58,7 +58,7 @@ It serves generic defaults only. No company overlay is loaded, and none ever wil
 
 Data handling: it receives only the topic, plan text, template kind, or category a client sends, stores nothing, and logs no request content. Responses carry `Cache-Control: no-store`.
 
-In front of it: a per-client rate limit (60 requests per 10 seconds, then HTTP 429), a path allowlist, TLS end to end, and an origin that accepts connections only from the edge. What each protection does and how it was verified: [`deploy/README.md`](../deploy/README.md).
+In front of it: a per-client rate limit (60 requests per 10 seconds, then HTTP 429), a path allowlist, and TLS end to end. The origin answers MCP requests only under this hostname; it is not restricted to the edge's IP ranges, so a client that connects to the hosting provider directly bypasses the rate limit. What each protection does and how it was verified: [`deploy/README.md`](../deploy/README.md).
 
 Claude Code:
 

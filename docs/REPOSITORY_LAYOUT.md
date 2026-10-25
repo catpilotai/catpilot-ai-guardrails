@@ -19,7 +19,7 @@ dist/2026.09.18/            # per-host artifacts (generated): zip, paste blocks,
 hooks/claude-code/          # the two hooks, their example settings, and their README
 hooks/harness/              # the same credential check as a function for your own agent loop
 mcp-server/                 # reference MCP server: four read-only tools over the checkpoints and an overlay
-deploy/                     # Azure and Cloudflare scripts for the hosted reference server, and verify.sh
+deploy/                     # Azure and Cloudflare scripts for hosting the reference server, notes on Catpilot's instance, and verify.sh
 tools/
   bundle.py                 # deterministic bundler: --target all, --overlay, --check
   targets.py                # per-host renderers

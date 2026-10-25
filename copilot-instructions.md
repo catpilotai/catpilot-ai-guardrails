@@ -86,7 +86,7 @@
 
 ---
 
-## �️ PII & Test Data
+## 🧪 PII & Test Data
 
 - ❌ **NEVER** use real names, emails, phones, or credit cards in tests.
 - ❌ **NEVER** use real SSNs or PII in comments.
@@ -103,7 +103,7 @@
 - ✅ **ALWAYS** set `timeout=10` (or similar) on `requests` calls.
 
 ---
-## �🗄️ Database Safety
+## 🗄️ Database Safety
 
 - ❌ `DELETE FROM users;` / `UPDATE orders SET status = 'cancelled';` / `DROP TABLE` — no WHERE clause
 - ✅ Preview first: `SELECT COUNT(*) FROM users WHERE last_login < '2024-01-01';`

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Verify a hosted reference MCP server through its public hostname, and that the origin refuses direct requests.
-#   deploy/verify.sh mcp.catpilot.ai [<app>.azurecontainerapps.io]
+#   deploy/verify.sh mcp.catpilot.ai [<origin hostname, e.g. the hosting provider's own name for the app>]
 # Read-only apart from the final burst, which sends 80 requests to /health to show the rate limit answering 429.
 set -u
 HOST="${1:?public hostname, e.g. mcp.catpilot.ai}"
@@ -19,8 +19,8 @@ curl -sS -m 20 -o /dev/null -w 'HTTP %{http_code}\n' -X POST "https://$HOST/mcp"
 echo "== GET /admin (expect 403 from the edge firewall rule)"
 curl -sS -m 20 -o /dev/null -w 'HTTP %{http_code}\n' "https://$HOST/admin"
 if [ -n "$ORIGIN" ]; then
-  echo "== GET https://$ORIGIN/health directly (expect 403 from the Container Apps ingress restriction)"
-  curl -sS -m 20 -w '\nHTTP %{http_code}\n' "https://$ORIGIN/health" | head -c 200; echo
+  echo "== POST https://$ORIGIN/mcp initialize directly (expect a refusal: 403 from an ingress restricted to the edge, as on Azure, or 421 from the server's host allowlist)"
+  curl -sS -m 20 -o /dev/null -w 'HTTP %{http_code}\n' -X POST "https://$ORIGIN/mcp" "${JSON_HEADERS[@]}" -d "$INIT"
 fi
 echo "== burst: 80 parallel GET /health (expect mostly 200 and some 429 once the 10-second budget is spent)"
 codes=$(for i in $(seq 1 80); do curl -sS -m 10 -o /dev/null -w '%{http_code}\n' "https://$HOST/health" & done; wait)
