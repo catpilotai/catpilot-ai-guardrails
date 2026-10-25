@@ -189,7 +189,7 @@ const API_KEY = process.env.STRIPE_API_KEY;
 
 ---
 
-## �️ PII & Test Data Safety
+## 🧪 PII & Test Data Safety
 
 - **NEVER** use real names, addresses, phone numbers, or emails in code comments, test files, or examples.
 - **NEVER** use real credit card numbers (even for testing). Use provider-designated test numbers (e.g., Stripe `4242...`).
@@ -204,7 +204,7 @@ const API_KEY = process.env.STRIPE_API_KEY;
 
 ---
 
-## �📦 Dependency Rules
+## 📦 Dependency Rules
 
 - Check `npm audit` or `pip-audit` before adding new dependencies
 - Flag any package with known critical vulnerabilities
