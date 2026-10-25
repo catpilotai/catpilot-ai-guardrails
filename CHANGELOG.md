@@ -8,6 +8,7 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 
 ### Changed
 
+- **The hosted endpoint's documentation matches where it runs.** `mcp.catpilot.ai` moved from Azure Container Apps to Railway. `deploy/README.md` keeps the Azure scripts for anyone who wants them and describes Catpilot's instance, including the protection that changed: Railway cannot restrict ingress to Cloudflare's IP ranges, so the origin is protected by the server's host allowlist (HTTP 421 for MCP requests under any other host) rather than by an IP restriction. `docs/REFERENCE.md` no longer says the origin accepts connections only from the edge. `deploy/verify.sh` now checks the direct origin with an MCP request, which is refused on either platform.
 - **A `baseline` check runs on every pull request.** The other workflows run only when their paths change, so a pull request that edited only a workflow file, such as Dependabot's action bumps, got no checks at all. `baseline` runs `tests/test_workflows.py` (workflows parse, run read-only, and pin actions to commit SHAs) on every pull request and push to `main`, and gives branch protection a check it can always require.
 - **The with/without evaluation is manual only, on `claude-haiku-5-5`.** Its daily schedule ran without the `ANTHROPIC_API_KEY` secret, skipped every step, and reported success. It now runs on demand until a dedicated, spend-capped key is configured, and uses `claude-haiku-5-5` instead of `claude-haiku-4-5-20251001`.
 

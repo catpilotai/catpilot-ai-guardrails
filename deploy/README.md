@@ -2,9 +2,11 @@
 
 For placing the skills, hooks, and server configuration on an organization's machines, see [`org/`](org/) and [`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md); this page is about hosting the server itself.
 
-Two scripts, both idempotent, both scoped to one hostname. They are what
-Catpilot uses for `mcp.catpilot.ai`, kept here so anyone can run the same
-thing on their own subscription and zone.
+Two scripts, both idempotent, both scoped to one hostname, for running the
+server on Azure Container Apps behind Cloudflare. Catpilot used them for
+`mcp.catpilot.ai` until October 2026 and keeps them here so anyone can run the
+same thing on their own subscription and zone. Catpilot's instance now runs on
+Railway; see [Catpilot's instance](#catpilots-instance).
 
 | Script | What it does |
 | --- | --- |
@@ -71,9 +73,39 @@ the git short SHA and updates the app.
   `/`, and the ACME challenge path, HTTP 403 at the edge for everything else;
   a strict-SSL rule for the host once `--strict-ssl` runs, on top of Azure's
   managed certificate on the origin.
-- The origin (Azure Container Apps) accepts connections only from
+- On Azure, the origin (Container Apps) accepts connections only from
   Cloudflare's published IPv4 ranges. A direct request to the app's own
   hostname returns HTTP 403 "RBAC: access denied".
+- Wherever it runs, the server answers MCP requests only for the hostnames in
+  `CATPILOT_MCP_ALLOWED_HOSTS` (and their `https://` origins). A request to
+  `/mcp` under any other `Host` gets HTTP 421; `/health` and `/` answer under
+  any host.
+
+## Catpilot's instance
+
+`mcp.catpilot.ai` runs on Railway as a single service built from
+`mcp-server/Dockerfile` (placed at the root of the build context) at the
+release Catpilot pins, with the image's own start command and
+`CATPILOT_MCP_ALLOWED_HOSTS=mcp.catpilot.ai`. The Cloudflare side is the same
+host-scoped set `cloudflare/configure.py` creates: the rate limit, the path
+allowlist, and the strict-SSL rule.
+
+One protection differs. Railway cannot restrict ingress to Cloudflare's IP
+ranges. Railway's own hostname for the service still answers `/health` and
+`/`, and refuses MCP requests with HTTP 421 because of the host allowlist
+above. A client that connects to Railway directly with `Host: mcp.catpilot.ai`
+reaches the server without passing Cloudflare's rate limit or path allowlist.
+The endpoint stores nothing and holds no credentials, which is why that is
+acceptable here; a deployment that needs an edge-only origin should add an
+origin check (for example a header the edge sets) before relying on it.
+
+Certificates: Railway's documentation says it may not be able to issue a
+certificate for a domain behind Cloudflare's proxy, and until it has one,
+Railway presents its `*.up.railway.app` certificate, which the strict-SSL rule
+rejects (HTTP 526). Point the CNAME at the target Railway gives you as DNS
+only, add Railway's `_railway-verify` TXT record, wait until Railway shows the
+certificate as valid, then turn the proxy back on. Strict SSL then validates
+Railway's certificate for the hostname.
 
 ## Verifying
 
