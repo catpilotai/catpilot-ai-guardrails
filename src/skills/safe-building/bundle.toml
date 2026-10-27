@@ -58,6 +58,7 @@ enabled = [
   "chatgpt",
   "copilot",
   "agents-md",
+  "claude-md",
   "copilot-instructions",
   "lovable",
   "bolt",

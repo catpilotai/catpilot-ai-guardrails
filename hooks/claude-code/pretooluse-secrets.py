@@ -28,6 +28,8 @@ Standard library only. Python 3.8+.
 from __future__ import annotations
 
 import json
+import logging
+import logging.handlers
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -108,26 +110,59 @@ MIN_CREDENTIAL_LENGTH = 6
 
 
 # Optional evidence log. When CATPILOT_EVIDENCE_LOG names a file, each deny appends one JSON
-# line: the time, the hook, the decision, and the credential type. Never the command, never
-# the matched text. Off unless the variable is set; a logging failure never changes the
-# decision, because this function swallows every error.
+# line: the time, the hook, the decision, and the credential type. When CATPILOT_EVIDENCE_SYSLOG
+# is set (to "1", "true", or a host:port / socket path), the same content-free JSON line is
+# emitted to syslog. Never the command, never the matched text. Off unless set; a logging
+# failure never changes the decision, because this function swallows every error.
 EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
+SYSLOG_ENV = "CATPILOT_EVIDENCE_SYSLOG"
 HOOK_NAME = "pretooluse-secrets"
+
+
+def emit_syslog(payload_json: str, spec: str) -> None:
+    address: str | tuple[str, int] = ("localhost", 514)
+    if spec not in ("1", "true", "yes"):
+        if ":" in spec and not spec.startswith("/"):
+            host, port_s = spec.rsplit(":", 1)
+            address = (host, int(port_s))
+        else:
+            address = spec
+    elif sys.platform == "darwin" and Path("/var/run/syslog").exists():
+        address = "/var/run/syslog"
+    elif Path("/dev/log").exists():
+        address = "/dev/log"
+    handler = logging.handlers.SysLogHandler(address=address)
+    try:
+        record = logging.LogRecord(
+            name="catpilot-guardrails", level=logging.INFO, pathname="", lineno=0,
+            msg=f"catpilot-guardrails: {payload_json}", args=(), exc_info=None,
+        )
+        handler.emit(record)
+    finally:
+        handler.close()
 
 
 def record_evidence(event: str, **fields) -> None:
     path = os.environ.get(EVIDENCE_ENV, "").strip()
-    if not path:
+    syslog_spec = os.environ.get(SYSLOG_ENV, "").strip()
+    if not path and not syslog_spec:
         return
-    try:
-        line = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "claude-code-hook", "hook": HOOK_NAME, "event": event}
-        line.update({k: v for k, v in fields.items() if v is not None})
-        target = Path(os.path.expanduser(path))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, sort_keys=True) + "\n")
-    except Exception:
-        return
+    line = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "claude-code-hook", "hook": HOOK_NAME, "event": event}
+    line.update({k: v for k, v in fields.items() if v is not None})
+    serialized = json.dumps(line, sort_keys=True)
+    if path:
+        try:
+            target = Path(os.path.expanduser(path))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "a", encoding="utf-8") as fh:
+                fh.write(serialized + "\n")
+        except Exception:
+            pass
+    if syslog_spec:
+        try:
+            emit_syslog(serialized, syslog_spec)
+        except Exception:
+            pass
 
 
 def session_id_of(event: object) -> str | None:

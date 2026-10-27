@@ -8,6 +8,11 @@
             "type": "command",
             "command": "CATPILOT_EVIDENCE_LOG=\"$HOME/.catpilot-guardrails/evidence.jsonl\" python3 \"/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/pretooluse-secrets.py\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "CATPILOT_EVIDENCE_LOG=\"$HOME/.catpilot-guardrails/evidence.jsonl\" python3 \"/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/pretooluse-destructive-ops.py\"",
+            "timeout": 10
           }
         ]
       },

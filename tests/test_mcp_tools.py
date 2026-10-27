@@ -983,3 +983,53 @@ class CheckPlanDecisionTests(unittest.TestCase):
         self.assertEqual(out["risks"], [])
         self.assertEqual(out["labels"]["hosting"], "not_deployed")
         self.assertNotIn(self.guidance["components"]["hosting-and-where-it-runs"]["ask"][0], out["checklist"])
+
+    def test_escalation_draft_includes_mailto_and_intake_url_when_ask_a_human_is_true(self):
+        out = self.plan(
+            "Build an employee directory that shows real salary bands next to each name.",
+            data_classes=["employee salary bands"],
+            data_provenance="real",
+            policy_state=self.approved,
+        )
+        self.assertTrue(out["ask_a_human"])
+        draft = out["escalation_draft"]
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft["to"], "security-review@example.org")
+        self.assertIn("Security review request:", draft["subject"])
+        self.assertIn("employee salary bands", draft["body"])
+        self.assertTrue(draft["mailto_url"].startswith("mailto:security-review@example.org?subject="))
+        self.assertIsNone(draft["intake_url"])
+
+        # With intake_url in the overlay and allowed host:
+        with tempfile.TemporaryDirectory() as tmp:
+            ov = Path(tmp) / "overlay.yaml"
+            ov.write_text(
+                self.overlay_path.read_text(encoding="utf-8")
+                + 'intake_url: "https://intranet.example.org/security/intake"\n',
+                encoding="utf-8",
+            )
+            state = policy.load_policy(str(ov), {"intranet.example.org"}, now=TODAY)
+            self.assertTrue(state.approved)
+            out_with_intake = self.plan(
+                "Build an employee directory that shows real salary bands.",
+                data_classes=["employee salary bands"],
+                data_provenance="real",
+                policy_state=state,
+            )
+            self.assertEqual(
+                out_with_intake["escalation_draft"]["intake_url"],
+                "https://intranet.example.org/security/intake",
+            )
+
+        # When ask_a_human is False, escalation_draft is None:
+        benign = self.plan(
+            "A small internal tool for the ops team.",
+            audience="our ops team",
+            data_classes=["synthetic patient records"],
+            hosting="Internal App Platform",
+            services=["the company LLM gateway"],
+            write_access=False,
+            policy_state=self.approved,
+        )
+        self.assertFalse(benign["ask_a_human"])
+        self.assertIsNone(benign["escalation_draft"])

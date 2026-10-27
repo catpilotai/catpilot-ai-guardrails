@@ -4,7 +4,8 @@
 Read-only guidance lookups for safe AI-assisted building: the eight
 checkpoints of `catpilot-safe-building`, plus a company's approved values
 when an overlay is configured. Four tools, deterministic, no model calls,
-no network, no logging unless CATPILOT_EVIDENCE_LOG names a local file (then one content-free line per call).
+no network, no logging unless CATPILOT_EVIDENCE_LOG names a local file or
+CATPILOT_EVIDENCE_SYSLOG is set (then one content-free line per call).
 
 Run from a checkout of catpilotai/catpilot-ai-guardrails:
 
@@ -32,6 +33,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import logging.handlers
 import os
 import sys
 from datetime import datetime, timezone
@@ -69,32 +72,65 @@ EvidenceSink = Callable[[str, dict[str, Any], dict[str, Any], Context], None]
 # Optional evidence log. When CATPILOT_EVIDENCE_LOG names a file, every tool call appends one JSON
 # line: the time, the release, the tool, the enumerated argument (topic, category, kind), and for
 # check_plan the outcome, whether it asked for a human, and the names of the fields the caller
-# supplied. Never the description, the data classes, or any other free text. Off unless the
-# variable is set; the public endpoint does not set it. A logging failure never changes an answer.
+# supplied. When CATPILOT_EVIDENCE_SYSLOG is set, the same content-free JSON line is sent to syslog.
+# Never the description, the data classes, or any other free text. Off unless set; the public
+# endpoint does not set it. A logging failure never changes an answer.
 EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
+SYSLOG_ENV = "CATPILOT_EVIDENCE_SYSLOG"
+
+
+def _emit_syslog(payload_json: str, spec: str) -> None:
+    address: str | tuple[str, int] = ("localhost", 514)
+    if spec not in ("1", "true", "yes"):
+        if ":" in spec and not spec.startswith("/"):
+            host, port_s = spec.rsplit(":", 1)
+            address = (host, int(port_s))
+        else:
+            address = spec
+    elif sys.platform == "darwin" and Path("/var/run/syslog").exists():
+        address = "/var/run/syslog"
+    elif Path("/dev/log").exists():
+        address = "/dev/log"
+    handler = logging.handlers.SysLogHandler(address=address)
+    try:
+        record = logging.LogRecord(
+            name="catpilot-guardrails", level=logging.INFO, pathname="", lineno=0,
+            msg=f"catpilot-guardrails: {payload_json}", args=(), exc_info=None,
+        )
+        handler.emit(record)
+    finally:
+        handler.close()
 
 
 def _evidence(tool: str, result: dict[str, Any], fields: dict[str, Any], ctx: Context | None = None) -> None:
     path = os.environ.get(EVIDENCE_ENV, "").strip()
-    if not path:
+    syslog_spec = os.environ.get(SYSLOG_ENV, "").strip()
+    if not path and not syslog_spec:
         return
-    try:
-        line: dict[str, Any] = {
-            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "source": "mcp-server",
-            "release": GUIDANCE["release"],
-            "tool": tool,
-            "error": result.get("error"),
-            "policy_status": result.get("policy_status"),
-            "unknown_policy": result.get("unknown_policy"),
-        }
-        line.update({k: v for k, v in fields.items() if v is not None})
-        target = Path(os.path.expanduser(path))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, sort_keys=True) + "\n")
-    except Exception:
-        return
+    line: dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source": "mcp-server",
+        "release": GUIDANCE["release"],
+        "tool": tool,
+        "error": result.get("error"),
+        "policy_status": result.get("policy_status"),
+        "unknown_policy": result.get("unknown_policy"),
+    }
+    line.update({k: v for k, v in fields.items() if v is not None})
+    serialized = json.dumps(line, sort_keys=True)
+    if path:
+        try:
+            target = Path(os.path.expanduser(path))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "a", encoding="utf-8") as fh:
+                fh.write(serialized + "\n")
+        except Exception:
+            pass
+    if syslog_spec:
+        try:
+            _emit_syslog(serialized, syslog_spec)
+        except Exception:
+            pass
 
 
 def _enumerated(value: str, allowed) -> str:
@@ -189,7 +225,8 @@ def create_server(
         company overlay or a generic default), `hints` from the description that are questions rather than
         findings, risks ranked by severity with a safer alternative each, one next step (it names who to
         check with first when a human has to look and nothing is prohibited), whether to ask a human, who to
-        ask, and a checklist. When `ask_a_human` is true, name `who_to_ask` to the person as
+        ask, `escalation_draft` (pre-filled subject, body, and optional mailto_url / intake_url when
+        `ask_a_human` is true), and a checklist. When `ask_a_human` is true, name `who_to_ask` to the person as
         given (the company's contact when it publishes one) and offer to draft the message. Advisory: a
         missing field returns `unknown`, not a pass, and no outcome here approves or blocks anything.
         """

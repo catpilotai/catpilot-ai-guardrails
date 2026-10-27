@@ -10,6 +10,7 @@ anything, and pasting them is not evidence that a host loaded them.
 | File | Host | Where it goes |
 | --- | --- | --- |
 | `AGENTS.md` | Repository-based agents | Append the block to the project's AGENTS.md. |
+| `CLAUDE.md` | Claude Code | Append the block to the project's CLAUDE.md or ~/.claude/CLAUDE.md. |
 | `bolt-prompt.txt` | Bolt | Save as .bolt/prompt in the project. |
 | `catpilot-safe-building.zip` | Claude.ai (individual or organization) | Customize → Skills, or Organization settings → Skills. The zip holds one folder with SKILL.md and the `catpilot.json` manifest inside. |
 | `chatgpt-project-instructions.md` | ChatGPT | Project → Instructions, or a Custom GPT's Instructions. Under 8,000 characters. |

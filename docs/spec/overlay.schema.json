@@ -10,6 +10,7 @@
     "schema_version": {"const": 1},
     "organization": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Display name only. No internal identifiers, tenant IDs, or domains."},
     "owner": {"type": "string", "minLength": 3, "maxLength": 160, "description": "Where 'ask a human' points: a team mailbox, channel name, or role. One value."},
+    "intake_url": {"type": "string", "format": "uri", "maxLength": 500, "description": "Optional HTTPS intake form URL (Jira, ServiceNow, Slack workflow, etc.) for security review requests. No credentials, no query string, host on the validator's allowlist."},
     "reviewed_on": {"type": "string", "format": "date", "description": "Date a named reviewer accepted these values."},
     "expires_on": {"type": "string", "format": "date", "description": "After this date the values are treated as unknown; a private bundle cannot be built from an expired overlay."},
     "data_classes": {
