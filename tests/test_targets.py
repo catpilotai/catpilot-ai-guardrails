@@ -17,6 +17,7 @@ EXPECTED_FILES = {
     "copilot-agent-instructions.md",
     "copilot-declarative-agent.stub.json",
     "AGENTS.md",
+    "CLAUDE.md",
     "copilot-instructions.md",
     "lovable-knowledge.md",
     "bolt-prompt.txt",
@@ -62,7 +63,7 @@ class TargetTests(unittest.TestCase):
 
     def test_paste_targets_keep_the_critical_rules(self):
         """The condensed renderer keeps the first three safe alternatives per checkpoint, so the rules that matter most must sit there."""
-        for name in ("chatgpt-project-instructions.md", "copilot-agent-instructions.md", "copilot-instructions.md", "AGENTS.md", "lovable-knowledge.md", "bolt-prompt.txt", "replit-instructions.md", "v0-instructions.md"):
+        for name in ("chatgpt-project-instructions.md", "copilot-agent-instructions.md", "copilot-instructions.md", "AGENTS.md", "CLAUDE.md", "lovable-knowledge.md", "bolt-prompt.txt", "replit-instructions.md", "v0-instructions.md"):
             text = (self.release_dir / name).read_text()
             for phrase in (
                 "never both",
@@ -76,7 +77,7 @@ class TargetTests(unittest.TestCase):
 
     def test_paste_targets_fit_instruction_limits_and_carry_release(self):
         release = self.cfg["version"]
-        for name in ("chatgpt-project-instructions.md", "copilot-agent-instructions.md", "lovable-knowledge.md", "bolt-prompt.txt", "replit-instructions.md", "v0-instructions.md", "AGENTS.md", "copilot-instructions.md"):
+        for name in ("chatgpt-project-instructions.md", "copilot-agent-instructions.md", "lovable-knowledge.md", "bolt-prompt.txt", "replit-instructions.md", "v0-instructions.md", "AGENTS.md", "CLAUDE.md", "copilot-instructions.md"):
             text = (self.release_dir / name).read_text()
             self.assertIn(release, text.splitlines()[0], name)
             self.assertLessEqual(len(text), targets.PASTE_LIMIT, name)

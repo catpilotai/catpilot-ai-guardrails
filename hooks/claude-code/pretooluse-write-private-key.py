@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
-"""Claude Code PreToolUse hook: deny a file write or edit that adds a literal private-key block.
+"""Claude Code PreToolUse hook: deny a file write or edit that adds a literal credential or private-key block.
 
-Covers the Write, Edit, MultiEdit, and NotebookEdit tools only. It looks for a
-PEM private-key header in the content being added and returns a deny decision
-with a plain-language reason that never echoes the content. It never returns
-allow, so every other host rule still applies. Malformed or oversized input
-exits 2, which the host treats as a block.
+Covers the Write, Edit, MultiEdit, and NotebookEdit tools only. It checks the
+content being added against the literal credential patterns documented in the
+secret-blocking component of catpilot-security-core (including PEM private-key
+headers, API keys, tokens, database URLs with embedded passwords, and literal
+password/secret/token assignments) and returns a deny decision with a
+plain-language reason that never echoes the content. It never returns allow, so
+every other host rule still applies. Malformed or oversized input exits 2,
+which the host treats as a block.
 
 Not a general secret scanner: it does not inspect shell commands (see
 pretooluse-secrets.py), file reads, prompts, or other tools. Standard library
-only; no network, no logging.
+only; no network, no logging unless CATPILOT_EVIDENCE_LOG or
+CATPILOT_EVIDENCE_SYSLOG is set.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -24,34 +29,56 @@ from pathlib import Path
 PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----")
 MAX_INPUT = 1_048_576
 
-REASON = (
+PRIVATE_KEY_REASON = (
     "A literal private-key block was found in the content being written. Keep key "
     "material out of files the agent writes: reference it from a secret store or use an "
     "unmistakable placeholder such as SAMPLE-KEY. No key material is included in this message."
 )
 
 
+def _load_secrets_hook():
+    hook_path = Path(__file__).resolve().parent / "pretooluse-secrets.py"
+    spec = importlib.util.spec_from_file_location("catpilot_pretooluse_secrets", hook_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+_secrets = _load_secrets_hook()
+
+
 # Optional evidence log. When CATPILOT_EVIDENCE_LOG names a file, each deny appends one JSON
-# line: the time, the hook, the decision, and the credential type. Never the command, never
-# the matched text. Off unless the variable is set; a logging failure never changes the
-# decision, because this function swallows every error.
+# line: the time, the hook, the decision, and the credential type. When CATPILOT_EVIDENCE_SYSLOG
+# is set, the same content-free JSON line is emitted to syslog. Never the command, never
+# the matched text. Off unless set; a logging failure never changes the decision, because
+# this function swallows every error.
 EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
+SYSLOG_ENV = "CATPILOT_EVIDENCE_SYSLOG"
 HOOK_NAME = "pretooluse-write-private-key"
 
 
 def record_evidence(event: str, **fields) -> None:
     path = os.environ.get(EVIDENCE_ENV, "").strip()
-    if not path:
+    syslog_spec = os.environ.get(SYSLOG_ENV, "").strip()
+    if not path and not syslog_spec:
         return
-    try:
-        line = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "claude-code-hook", "hook": HOOK_NAME, "event": event}
-        line.update({k: v for k, v in fields.items() if v is not None})
-        target = Path(os.path.expanduser(path))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, sort_keys=True) + "\n")
-    except Exception:
-        return
+    line = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "claude-code-hook", "hook": HOOK_NAME, "event": event}
+    line.update({k: v for k, v in fields.items() if v is not None})
+    serialized = json.dumps(line, sort_keys=True)
+    if path:
+        try:
+            target = Path(os.path.expanduser(path))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "a", encoding="utf-8") as fh:
+                fh.write(serialized + "\n")
+        except Exception:
+            pass
+    if syslog_spec:
+        try:
+            _secrets.emit_syslog(serialized, syslog_spec)
+        except Exception:
+            pass
 
 
 def session_id_of(event: object) -> str | None:
@@ -81,19 +108,40 @@ def added_text(tool_name: str, tool_input: object) -> list[str] | None:
     return parts
 
 
+def find_write_credential(parts: list[str]) -> tuple[str, str] | None:
+    """Return (evidence_label, reason) for the first literal credential in parts, or None."""
+    for part in parts:
+        if PRIVATE_KEY.search(part):
+            return "private-key-block", PRIVATE_KEY_REASON
+        label = _secrets.find_credential(part)
+        if label is not None:
+            if label == "private key block":
+                return "private-key-block", PRIVATE_KEY_REASON
+            reason = (
+                f"Catpilot secret check: the content being written appears to contain a literal credential ({label}). "
+                "Keep secret values out of files the agent writes: read them from an environment variable or secret "
+                "store at runtime (for example process.env.STRIPE_API_KEY or os.environ['STRIPE_API_KEY']), or use "
+                "an unmistakable placeholder such as REPLACE_ME. The matched text is not included in this message."
+            )
+            return label, reason
+    return None
+
+
 def inspect_event(event: object) -> dict:
     if not isinstance(event, dict):
         raise ValueError("invalid hook event")
     parts = added_text(str(event.get("tool_name")), event.get("tool_input"))
     if parts is None:
         return {}
-    if any(PRIVATE_KEY.search(p) for p in parts):
-        record_evidence("deny", tool=str(event.get("tool_name")), label="private-key-block", session_id=session_id_of(event))
+    found = find_write_credential(parts)
+    if found is not None:
+        label, reason = found
+        record_evidence("deny", tool=str(event.get("tool_name")), label=label, session_id=session_id_of(event))
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": REASON,
+                "permissionDecisionReason": reason,
             }
         }
     return {}

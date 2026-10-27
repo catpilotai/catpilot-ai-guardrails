@@ -24,6 +24,7 @@ TARGET_NAMES = (
     "chatgpt",
     "copilot",
     "agents-md",
+    "claude-md",
     "copilot-instructions",
     "lovable",
     "bolt",
@@ -391,6 +392,8 @@ def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_
         files["copilot-declarative-agent.stub.json"] = (json.dumps(stub, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     if "agents-md" in enabled:
         files["AGENTS.md"] = (_md_header(name, release, "Append to the project's AGENTS.md") + _block(name, release, paste)).encode("utf-8")
+    if "claude-md" in enabled:
+        files["CLAUDE.md"] = (_md_header(name, release, "Append to the project's CLAUDE.md or ~/.claude/CLAUDE.md") + _block(name, release, paste)).encode("utf-8")
     if "copilot-instructions" in enabled:
         files["copilot-instructions.md"] = (_md_header(name, release, "Append to .github/copilot-instructions.md") + _block(name, release, paste)).encode("utf-8")
     if "lovable" in enabled:
@@ -424,6 +427,7 @@ def dist_readme(cfg: dict, release: str, names: list[str], *, name: str | None =
         "copilot-agent-instructions.md": ("Microsoft Copilot Studio", "Agent → Instructions. Under 8,000 characters."),
         "copilot-declarative-agent.stub.json": ("Microsoft 365 declarative agent", "Manifest stub with the same instructions. Validate against Microsoft's current schema, then publish through the tenant's agent catalog."),
         "AGENTS.md": ("Repository-based agents", "Append the block to the project's AGENTS.md."),
+        "CLAUDE.md": ("Claude Code", "Append the block to the project's CLAUDE.md or ~/.claude/CLAUDE.md."),
         "copilot-instructions.md": ("GitHub Copilot in a repository", "Append the block to .github/copilot-instructions.md."),
         "lovable-knowledge.md": ("Lovable", "Project → Settings → Knowledge."),
         "bolt-prompt.txt": ("Bolt", "Save as .bolt/prompt in the project."),

@@ -8,6 +8,7 @@ presented as the company's policy. Nothing here blocks an action.
 from __future__ import annotations
 
 import re
+from urllib.parse import quote
 
 from .content import CATEGORIES, TEMPLATE_KINDS, TOPICS
 from .policy import PolicyState
@@ -570,6 +571,52 @@ def _named_services(services: list[str] | None) -> list[str]:
     ]
 
 
+
+EMAIL_ADDRESS_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def _build_escalation_draft(
+    description: str,
+    owner: str,
+    decisions: list[dict],
+    risks: list[dict],
+    next_step: str,
+    overlay: dict | None,
+) -> dict:
+    clean_desc = " ".join(description.strip().split())
+    short_desc = clean_desc if len(clean_desc) <= 72 else clean_desc[:69].rstrip() + "..."
+    subject = f"Security review request: {short_desc}"
+    reasons: list[str] = []
+    for d in decisions:
+        if d["outcome"] in ("prohibited", "requires_review"):
+            reasons.append(f"{d['field']} ({d['value']}): {d['outcome']} — {d['rule']}")
+    if not reasons:
+        for r in risks:
+            reasons.append(f"{r['title']}: {r['why']}")
+    reason_line = "; ".join(reasons[:3]) if reasons else "Plan touches a review trigger."
+    safe_alt = risks[0]["safer_alternative"] if risks else next_step
+    body = (
+        f"Hi,\n\n"
+        f"I am building: {clean_desc}\n"
+        f"What needs review: {reason_line}\n"
+        f"In the meantime: {safe_alt}\n\n"
+        f"Could you confirm the approved path or next step?"
+    )
+    email_match = EMAIL_ADDRESS_RE.search(owner)
+    mailto_url = None
+    if email_match:
+        addr = email_match.group(0)
+        mailto_url = f"mailto:{addr}?subject={quote(subject)}&body={quote(body)}"
+    intake_url = overlay.get("intake_url") if overlay else None
+    return {
+        "to": owner,
+        "subject": subject,
+        "body": body,
+        "mailto_url": mailto_url,
+        "intake_url": intake_url,
+    }
+
+
 def check_plan(
     description: str,
     guidance: dict,
@@ -1049,6 +1096,10 @@ def check_plan(
     for question in questions:
         if question not in checklist:
             checklist.append(question)
+    escalation_draft = (
+        _build_escalation_draft(description, owner, decisions, risks, next_step, o)
+        if ask_a_human else None
+    )
     return {
         "outcome": outcome,
         "decisions": decisions,
@@ -1057,6 +1108,7 @@ def check_plan(
         "next_step": next_step,
         "ask_a_human": ask_a_human,
         "who_to_ask": owner,
+        "escalation_draft": escalation_draft,
         "checklist": checklist,
         "labels": labels,
         "method": (

@@ -94,5 +94,16 @@ class OverlayValidatorTests(unittest.TestCase):
         self.assertEqual(vo.main([str(EXAMPLE), "--allow-host", "intranet.example.org"]), 0)
 
 
+    def test_intake_url_validation_and_host_allowlist(self):
+        data = copy.deepcopy(self.data)
+        data["intake_url"] = "https://intranet.example.org/security/intake"
+        self.assertTrue(any("allowlist" in e for e in self.errors(data, hosts=set())))
+        self.assertEqual(self.errors(data, hosts=HOSTS), [])
+        for bad in ("http://intranet.example.org/intake", "https://intranet.example.org/intake?x=1", "javascript:alert(1)"):
+            data_bad = copy.deepcopy(self.data)
+            data_bad["intake_url"] = bad
+            self.assertTrue(self.errors(data_bad, hosts=HOSTS), bad)
+
+
 if __name__ == "__main__":
     unittest.main()

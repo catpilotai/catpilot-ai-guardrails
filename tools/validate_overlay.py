@@ -61,7 +61,7 @@ TOP_REQUIRED = (
     "identity",
     "review_triggers",
 )
-TOP_ALLOWED = TOP_REQUIRED + ("templates",)
+TOP_ALLOWED = TOP_REQUIRED + ("templates", "intake_url")
 
 
 class OverlayError(ValueError):
@@ -81,11 +81,11 @@ def _date(value: object, label: str) -> dt.date:
     raise OverlayError(f"{label}: expected a date (YYYY-MM-DD)")
 
 
-def _item(value: object, label: str) -> str:
+def _item(value: object, label: str, max_len: int = ITEM_MAX) -> str:
     if not isinstance(value, str) or not value.strip():
         raise OverlayError(f"{label}: expected a nonempty phrase")
-    if len(value) > ITEM_MAX:
-        raise OverlayError(f"{label}: longer than {ITEM_MAX} characters; overlay values are short phrases")
+    if len(value) > max_len:
+        raise OverlayError(f"{label}: longer than {max_len} characters; overlay values are short phrases")
     if any(ord(c) < 32 for c in value):
         raise OverlayError(f"{label}: control characters are not allowed")
     return value
@@ -136,6 +136,8 @@ def validate_structure(data: object) -> dict:
     if len(owner) < 3 or len(owner) > 160:
         raise OverlayError("owner: expected 3 to 160 characters")
     out["owner"] = owner
+    if "intake_url" in data and data["intake_url"] is not None:
+        out["intake_url"] = _item(data["intake_url"], "intake_url", max_len=500)
     out["reviewed_on"] = _date(data["reviewed_on"], "reviewed_on")
     out["expires_on"] = _date(data["expires_on"], "expires_on")
     if out["expires_on"] <= out["reviewed_on"]:
@@ -164,9 +166,7 @@ def validate_structure(data: object) -> dict:
             raise OverlayError(f"{label}.kind: expected a lowercase-hyphen identifier")
         normalized = {"kind": kind}
         if "location" in entry:
-            location = _item(entry["location"], f"{label}.location")
-            if len(location) > 500:
-                raise OverlayError(f"{label}.location: longer than 500 characters")
+            location = _item(entry["location"], f"{label}.location", max_len=500)
             normalized["location"] = location
         out["templates"].append(normalized)
     return out
@@ -183,47 +183,52 @@ def _walk_strings(node: object, path: str = "overlay"):
             yield from _walk_strings(v, f"{path}[{i}]")
 
 
+def _validate_https_url(location: str, label: str, allowed_hosts: set[str], errors: list[str]) -> None:
+    try:
+        parts = urlsplit(location)
+    except ValueError as exc:
+        raise OverlayError(f"{label}: could not parse as a URL ({exc})") from None
+    if parts.scheme != "https":
+        errors.append(f"{label}: must be an https URL, not {parts.scheme or 'a schemeless value'!r}")
+    elif not parts.hostname:
+        errors.append(f"{label}: must include a hostname")
+    elif parts.username or parts.password:
+        errors.append(f"{label}: must not carry credentials")
+    elif parts.query or parts.fragment:
+        errors.append(f"{label}: must not carry a query string or fragment")
+    elif parts.hostname not in allowed_hosts:
+        errors.append(f"{label}: host {parts.hostname!r} is not on the allowlist (pass --allow-host)")
+
+
 def validate_content(overlay: dict, allowed_hosts: set[str]) -> list[str]:
     """Return content errors: secrets, disallowed URLs, identifiers, narratives.
 
-    A template's location is validated directly (not by first finding something
-    URL-shaped in it with URL_RE), because a value that is not URL-shaped at all
-    is still not an https URL and must be rejected: `javascript:alert(1)` has no
-    `://`, so it never matches URL_RE, but it is not an https location either.
-    A location that fails to parse as a URL is a validator bug surface, not a
-    content error, so it raises OverlayError instead of being appended silently.
+    A template's location and optional intake_url are validated directly (not by
+    first finding something URL-shaped with URL_RE), because a value that is not
+    URL-shaped at all is still not an https URL and must be rejected.
     """
     errors: list[str] = []
     templates = overlay.get("templates", [])
-    template_location_paths = set()
+    allowed_url_paths = set()
     for i, template in enumerate(templates):
         location = template.get("location")
         if location is None:
             continue
         label = f"overlay.templates[{i}].location"
-        template_location_paths.add(label)
-        try:
-            parts = urlsplit(location)
-        except ValueError as exc:
-            raise OverlayError(f"{label}: could not parse as a URL ({exc})") from None
-        if parts.scheme != "https":
-            errors.append(f"{label}: must be an https URL, not {parts.scheme or 'a schemeless value'!r}")
-        elif not parts.hostname:
-            errors.append(f"{label}: must include a hostname")
-        elif parts.username or parts.password:
-            errors.append(f"{label}: must not carry credentials")
-        elif parts.query or parts.fragment:
-            errors.append(f"{label}: must not carry a query string or fragment")
-        elif parts.hostname not in allowed_hosts:
-            errors.append(f"{label}: host {parts.hostname!r} is not on the allowlist (pass --allow-host)")
+        allowed_url_paths.add(label)
+        _validate_https_url(location, label, allowed_hosts, errors)
+    if "intake_url" in overlay and overlay["intake_url"] is not None:
+        label = "overlay.intake_url"
+        allowed_url_paths.add(label)
+        _validate_https_url(overlay["intake_url"], label, allowed_hosts, errors)
     for path, text in _walk_strings(overlay):
         for pattern in SECRET_PATTERNS:
             if pattern.search(text):
                 errors.append(f"{path}: looks like a secret; overlays never contain credentials")
                 break
-        if path not in template_location_paths:
+        if path not in allowed_url_paths:
             for _ in URL_RE.findall(text):
-                errors.append(f"{path}: URLs are only allowed in templates[].location")
+                errors.append(f"{path}: URLs are only allowed in templates[].location and intake_url")
                 break
         if path != "overlay.owner" and EMAIL_RE.search(text):
             errors.append(f"{path}: email addresses are only allowed in owner")
@@ -271,7 +276,7 @@ def validate_overlay(data: object, allowed_hosts: set[str] | None = None, today:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("overlay", type=Path)
-    parser.add_argument("--allow-host", action="append", default=[], help="hostname allowed in templates[].location (repeatable)")
+    parser.add_argument("--allow-host", action="append", default=[], help="hostname allowed in templates[].location and intake_url (repeatable)")
     args = parser.parse_args(argv)
     try:
         data, _ = load_overlay_file(args.overlay)

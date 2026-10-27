@@ -17,6 +17,7 @@ check "$CC_DIR/managed-settings.json"; [ -e "$CC_DIR/managed-settings.json" ] &&
 [ -e "$CC_DIR/managed-mcp.json" ] && { echo "present  $CC_DIR/managed-mcp.json (fixed server set: only its servers load in CLI sessions)"; json_ok "$CC_DIR/managed-mcp.json"; } || echo "absent   $CC_DIR/managed-mcp.json (optional; the server may come from managedMcpServers or a repository .mcp.json)"
 check "$CC_DIR/catpilot-guardrails/hooks/pretooluse-secrets.py"
 check "$CC_DIR/catpilot-guardrails/hooks/pretooluse-write-private-key.py"
+check "$CC_DIR/catpilot-guardrails/hooks/pretooluse-destructive-ops.py"
 for s in "$CC_DIR"/.claude/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
 echo
 echo "Codex CLI"

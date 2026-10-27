@@ -8,6 +8,11 @@
             "type": "command",
             "command": "python3 /absolute/path/to/catpilot-ai-guardrails/hooks/claude-code/pretooluse-secrets.py",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 /absolute/path/to/catpilot-ai-guardrails/hooks/claude-code/pretooluse-destructive-ops.py",
+            "timeout": 10
           }
         ]
       },
