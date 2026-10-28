@@ -25,13 +25,17 @@ Three things from this repository fit a harness:
    - `network_gate.py` exposes outbound URL / SSRF protection
      (`gate_url_fetch`, `gate_url_tool_call`), blocking non-HTTP(S) schemes,
      cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`),
-     `localhost`, and hostnames resolving to private, loopback, link-local, or
-     reserved IP ranges.
+     `localhost`, numeric address forms such as `2130706433` and `127.1`, and
+     hostnames resolving to private, loopback, link-local, or reserved IP
+     ranges. It resolves the name once: a client that resolves again can get a
+     different answer (DNS rebinding), so connect to the checked address or use
+     an egress proxy where that matters.
    - `path_gate.py` exposes workspace path confinement (`gate_file_path`,
      `gate_path_tool_call`), resolving symlinks and `~`, blocking credential
      directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.config/gcloud`)
-     and `/etc/passwd` / `/etc/shadow`, and requiring targets to resolve inside
-     `allowed_dirs`.
+     and `/etc/passwd` / `/etc/shadow` without regard to letter case (macOS and
+     Windows file systems ignore it, so `~/.SSH` is `~/.ssh`), and requiring
+     targets to resolve inside `allowed_dirs`.
    Call them before executing a shell command, file read/write, or outbound HTTP
    fetch. This is enforcement on the paths you route through them.
 3. **Loop guardrails as reference text and skill bundle.**

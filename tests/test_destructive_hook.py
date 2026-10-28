@@ -82,6 +82,26 @@ DENIED = {
     "psql delete without where": 'psql "$DATABASE_URL" -c "DELETE FROM users;"',
     "mysql drop database": 'mysql -u admin -e "DROP DATABASE production"',
     "sqlite3 inline delete without where": 'sqlite3 app.db "DELETE FROM sessions"',
+    # A SQL client's statements arrive many ways; the hook reads the whole command line.
+    "psql combined short flags": "psql -tAc 'DROP TABLE users'",
+    "psql flag without a value before -c": "psql -q -c 'DROP TABLE users'",
+    "psql echo flag before -c": "psql -e -c 'TRUNCATE users'",
+    "mysql comments flag before -e": "mysql -c -e 'DROP DATABASE app'",
+    "psql heredoc drop": "psql \"$DATABASE_URL\" <<'SQL'\nDROP TABLE users;\nSQL",
+    "psql heredoc delete without where": "psql \"$DATABASE_URL\" <<'SQL'\nDELETE FROM sessions\nSQL",
+    "sql piped into psql": "echo 'DROP TABLE users;' | psql \"$DATABASE_URL\"",
+    "psql here-string": "psql \"$DATABASE_URL\" <<< 'TRUNCATE audit_logs'",
+    "sudo psql drop database": "sudo -u postgres psql -c 'DROP DATABASE app'",
+    # Container, cluster, and platform runners.
+    "docker compose exec psql": "docker compose exec db psql -U postgres -c 'DROP DATABASE app'",
+    "docker exec redis flushall": "docker exec -it cache redis-cli FLUSHALL",
+    "kubectl exec psql": "kubectl exec -it pod/db-0 -n data -- psql -c 'DROP SCHEMA public CASCADE'",
+    "railway run django flush": "railway run --service api python manage.py flush --noinput",
+    "compose exec shell running psql": "docker compose exec db sh -c \"psql -c 'DROP TABLE users'\"",
+    # Package runners with leading options.
+    "npm exec prisma reset": "npm exec -- prisma migrate reset --force",
+    "yarn cwd prisma push": "yarn --cwd api prisma db push --accept-data-loss",
+    "pnpm filter exec prisma reset": "pnpm --filter api exec prisma migrate reset --force",
 }
 
 ALLOWED = {
@@ -121,6 +141,14 @@ ALLOWED = {
     "psql select count": 'psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM users WHERE active = false;"',
     "psql delete with where": 'psql "$DATABASE_URL" -c "BEGIN; DELETE FROM sessions WHERE expires_at < NOW(); COMMIT;"',
     "redis-cli get key": "redis-cli GET session:123",
+    "psql heredoc delete with where on the next line": "psql \"$DATABASE_URL\" <<'SQL'\nDELETE FROM sessions\nWHERE expires_at < now();\nSQL",
+    "mysql TRUNCATE() numeric function": "mysql -e 'SELECT TRUNCATE(price, 2) FROM items'",
+    "grep for DROP TABLE without a SQL client": "grep -rn 'DROP TABLE' migrations/",
+    "docker compose exec migrate": "docker compose exec api python manage.py migrate",
+    "docker compose run tests": "docker compose run --rm api pytest",
+    "kubectl exec listing": "kubectl exec -it pod/web -- ls /app",
+    "npm exec prisma status": "npm exec -- prisma migrate status",
+    "yarn workspace build": "yarn workspace web build",
 }
 
 

@@ -59,6 +59,25 @@ class NetworkGateTests(unittest.TestCase):
             self.assertIsNotNone(reason)
             self.assertIn("failing closed", reason)
 
+    def test_blocks_numeric_ipv4_forms_without_dns(self):
+        for bad in (
+            "http://2130706433/",
+            "http://0x7f000001/",
+            "http://0177.0.0.1/",
+            "http://127.1/",
+            "http://0xa9fea9fe/latest/meta-data/",
+            "http://999999999999/",
+        ):
+            with self.subTest(url=bad):
+                self.assertIsNotNone(gate_url_fetch(bad, resolve_dns=False))
+        # The same numeric form of a public address is not blocked for being numeric.
+        self.assertIsNone(gate_url_fetch("http://1572395042/", resolve_dns=False))
+
+    def test_invalid_port_is_a_denial_not_an_exception(self):
+        reason = gate_url_fetch("http://example.com:99999/", resolve_dns=False)
+        self.assertIsNotNone(reason)
+        self.assertIn("port", reason)
+
     def test_allowed_hosts_restriction(self):
         self.assertIsNone(
             gate_url_fetch("https://api.example.com/v1", allowed_hosts={"api.example.com"}, resolve_dns=False)
@@ -110,6 +129,15 @@ class PathGateTests(unittest.TestCase):
     def test_blocks_credential_and_system_paths_even_if_home_allowed(self):
         home = Path.home().resolve()
         for cred in ("~/.ssh/id_rsa", "~/.aws/credentials", "~/.gnupg/secring.gpg", "/etc/passwd"):
+            with self.subTest(path=cred):
+                reason = gate_file_path(cred, allowed_dirs=[home, Path("/")])
+                self.assertIsNotNone(reason)
+                self.assertIn("Blocked file path", reason)
+
+    def test_credential_paths_match_without_regard_to_case(self):
+        # macOS and Windows file systems ignore case by default, so ~/.SSH opens ~/.ssh.
+        home = Path.home().resolve()
+        for cred in ("~/.SSH/config", "~/.Aws/credentials", "~/.Config/GH/hosts.yml", "/ETC/passwd"):
             with self.subTest(path=cred):
                 reason = gate_file_path(cred, allowed_dirs=[home, Path("/")])
                 self.assertIsNotNone(reason)

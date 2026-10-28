@@ -2,7 +2,8 @@ name: baseline
 
 # Runs on every pull request, whatever it changes, so branch protection always has a check to
 # require. The other workflows run only when their paths change; this one keeps edits to any
-# workflow (including Dependabot's action bumps) covered by tests/test_workflows.py.
+# workflow (including Dependabot's action bumps) covered by tests/test_workflows.py, and runs the
+# whole unit suite, so a change to deploy/, skills/, docs/ or the plugin manifest is tested too.
 
 on:
   pull_request:
@@ -28,3 +29,6 @@ jobs:
 
       - name: Workflows parse, run read-only, and pin actions to commit SHAs
         run: python -m unittest discover -s tests -p test_workflows.py -v
+
+      - name: Unit tests (hooks, harness gates, tools, MCP server, deploy scripts, manifests)
+        run: python -m unittest discover -s tests

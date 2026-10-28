@@ -155,10 +155,17 @@ then checks:
 - Database and cache resets: `prisma db push --accept-data-loss`, `prisma
   migrate reset --force`, `rails`/`rake` `db:drop`, `db:reset`,
   `db:schema:load`, and `db:structure:load`, Django `flush --noinput`,
-  `dropdb`, `redis-cli FLUSHALL`/`FLUSHDB`, and inline SQL passed to `psql`,
-  `mysql`, `mariadb`, `sqlite3`, or `sqlcmd` containing `DROP DATABASE`,
-  `DROP SCHEMA`, `DROP TABLE`, `TRUNCATE`, or an unscoped `DELETE FROM`
-  without a `WHERE` clause.
+  `dropdb`, `redis-cli FLUSHALL`/`FLUSHDB`, and a `psql`, `mysql`,
+  `mariadb`, `sqlite3`, or `sqlcmd` command whose command line contains
+  `DROP DATABASE`, `DROP SCHEMA`, `DROP TABLE`, `TRUNCATE`, or a `DELETE
+  FROM` with no `WHERE` clause. The whole command line is read, so SQL given
+  with `-c`/`-tAc`/`-e`/`-Q`, as an argument, in a heredoc or here-string, or
+  through a pipe is covered. The same checks apply through `docker`/`podman
+  exec`, `docker compose exec`/`run`, `kubectl exec --`, `railway run`, and
+  package runners (`npx`, `npm exec`, `yarn`, `pnpm`, `bundle exec`,
+  `poetry`/`uv`/`pipenv run`). SQL in a file (`psql -f`, `< file.sql`) is not
+  read, and a statement that mentions `DROP TABLE` inside a string literal is
+  refused like the real thing; a person runs it.
 - `chmod -R 777`, `dd` to a raw block device, credential or environment dumps
   piped to a network client, and `curl ... | sudo bash`.
 
