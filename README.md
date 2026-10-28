@@ -1,15 +1,45 @@
-# Catpilot Security Skills
+# Catpilot Guardrails
 
 <p align="left">
   <img src="assets/catpilot-logo.png" alt="Catpilot" width="100" style="vertical-align: middle;">
   <em>Paws before you push.</em>
 </p>
 
-**For the tool and for the person using it.**
+**Your company's AI rules, in every AI tool your people use.**
 
 ![Release](https://img.shields.io/github/v/release/catpilotai/catpilot-ai-guardrails?label=release&color=blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Format](https://img.shields.io/badge/format-Agent%20Skills-7B3FE4)
 
-Three security skills in the [Agent Skills](https://agentskills.io/specification) format: one for coding agents working in a codebase, one for the person, often not a developer, building something with an AI assistant, and one for the team building an agent loop of its own. One repository, no telemetry.
+Write your company's rules down once: the hosting and services it approves, which data may go into a prompt, the sign-in rule, what needs a review, and who to ask, with a named reviewer and an expiry date. Serve that file to Claude Code, Codex, Claude.ai, and ChatGPT through one small read-only server. When someone asks an assistant to build something, the assistant checks the plan against those rules before it writes code, names what the company approves instead of a generic "use something approved", and, when a person has to look, drafts the message to the right person.
+
+Underneath is an open security baseline: three skills the model reads, and Claude Code hooks that stop specific accidents (a hard-coded key, a partial cloud-config reset, a dropped table). MIT, no telemetry.
+
+## Company rules in 15 minutes
+
+```bash
+git clone https://github.com/catpilotai/catpilot-ai-guardrails && cd catpilot-ai-guardrails
+python3 -m venv .venv
+.venv/bin/python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.txt
+
+# 1. Your rules, kept outside any repository. Start from the fictional example and make it yours.
+mkdir -p ~/company-rules && cp docs/spec/overlay.example.yaml ~/company-rules/rules.yaml
+.venv/bin/python tools/validate_overlay.py ~/company-rules/rules.yaml
+
+# 2. Serve them to your tools over stdio (nothing listens on the network).
+claude mcp add -s user catpilot-guardrails -e CATPILOT_OVERLAY_FILE="$HOME/company-rules/rules.yaml" -- "$PWD/.venv/bin/python" "$PWD/mcp-server/server.py"
+codex mcp add --env CATPILOT_OVERLAY_FILE="$HOME/company-rules/rules.yaml" catpilot-guardrails -- "$PWD/.venv/bin/python" "$PWD/mcp-server/server.py"
+```
+
+Then, in a new Claude Code or Codex session in any project, ask: *"Before writing any code, check this plan with the catpilot-guardrails tools: a dashboard that shows customer names and email addresses to the whole company, hosted on my personal Vercel account."*
+
+In one observed run (Claude Code 2.1.312, `claude-haiku-5-5`, the example file, 2026-10-28) the assistant called `check_plan` and wrote no code. It answered that a personal cloud account is not approved hosting and Vercel would be a new service needing review; that real customer names and emails need the data owner's approval; that the allowed path is the company's approved hosting behind company sign-in, shared with a small named group, starting from made-up rows; and that `security-review@example.org` is who to ask, offering to draft the email. One run is an illustration, not a result: the [benchmarks](#what-the-benchmarks-show) are the evidence, with their limits.
+
+- **Make it yours.** Replace the example's values with your company's, have a named person review them, and set `reviewed_on` and `expires_on`. After `expires_on` the server reports the rules as expired and tells the assistant to treat them as unknown and ask the owner. Keep the file out of public repositories. Format and validator: [`docs/spec/OVERLAY.md`](docs/spec/OVERLAY.md).
+- **Claude.ai and ChatGPT** reach the server as a remote connector over HTTPS, so it has to be hosted behind your own gateway: [`mcp-server/README.md`](mcp-server/README.md). Catpilot Plus hosts it per company.
+- **The rules inform; they do not block.** The assistant reads them when it calls the server. The only enforcement here is the Claude Code hooks described in [what this does and does not do](#what-this-does-and-does-not-do).
+
+## The open baseline
+
+Three security skills in the [Agent Skills](https://agentskills.io/specification) format: one for coding agents working in a codebase, one for the person, often not a developer, building something with an AI assistant, and one for the team building an agent loop of its own.
 
 | Skill | Who it is for | What it covers |
 | --- | --- | --- |
@@ -39,7 +69,7 @@ Two measures carry the result. An **unsafe act** is the tool doing what the trap
 One Claude Code run in the last column hit the host's turn limit and did not complete, so that column is out of 29.
 
 - **The skill.** Both tools did the unsafe thing less often with the skill installed, and finished more work within policy. Nothing installed is where most builders start.
-- **The skill plus the company's rules.** A company writes its approved hosting, approved services, data classes, and who to ask into one short reviewed file, the [overlay](#public-baseline-vs-company-overlay); in this configuration the tool could look that file up through the reference server. It was the only configuration that steered to the company's own approved hosting or service by name, in about a third of runs, instead of a generic "use something approved"; no other configuration in these runs carried those facts. It is also where the guardrail itself cost work: on Codex the server asked for review on local-only scripts, and the tool stopped unnecessarily in 8 of 30 runs, a calibration fault fixed in 2026.09.17-1 and the reason that column finished less than the skill alone.
+- **The skill plus the company's rules.** A company writes its approved hosting, approved services, data classes, and who to ask into one short reviewed file, the [company rules](#public-baseline-vs-company-rules); in this configuration the tool could look that file up through the reference server. It was the only configuration that steered to the company's own approved hosting or service by name, in about a third of runs, instead of a generic "use something approved"; no other configuration in these runs carried those facts. It is also where the guardrail itself cost work: on Codex the server asked for review on local-only scripts, and the tool stopped unnecessarily in 8 of 30 runs, a calibration fault fixed in 2026.09.17-1 and the reason that column finished less than the skill alone.
 - **Where the effect comes from.** A fifteen-line summary of the skill, written for the experiment and pasted into the project's instruction file, did about as well as the full skill on these tasks: having the rules present when the tool starts work is what moves these counts. No tool ships such a list. A pasted list can carry a company's rules too; in these runs only the overlay did. The server can provide one centrally maintained, reviewed policy source across tools. The runner also supports a company-checklist comparison; the server's added benefit remains to be established.
 - **Limits.** Small samples, one model per tool, made-up company values, and the company-rules configuration also carried a one-line instruction to consult the server, so its lead over the skill alone is not cleanly the rules' doing. The next run's plan is written, with independent task authors and a non-engineer voice review as required gates; it becomes a preregistration when those people are named and its fields are filled: [experiment plan](docs/EXPERIMENT_PLAN.md). Reports: [Claude Code](evals/reports/2026.09.16-1-benchmark-claude-code.md) and [Codex](evals/reports/2026.09.16-1-benchmark-codex.md); the first set, on a different ten tasks, is [here](evals/reports/2026.09.15-benchmark-claude-code.md) and [here](evals/reports/2026.09.15-benchmark-codex.md).
 
@@ -73,9 +103,9 @@ Nobody has to open a terminal.
 
 Three different things get called "protection". This repository uses the narrow words.
 
-- **Advice.** A skill is guidance the model reads. It shapes what the model says and suggests. It is loaded only when the host chooses to load it. Both skills here are advice.
+- **Advice.** A skill is guidance the model reads. It shapes what the model says and suggests. It is loaded only when the host chooses to load it. All three skills here are advice, and so are the company rules the server returns.
 - **Contextual coaching.** A supported event in a tool people already work in, such as Slack or Teams, produces one explanation and one next step, at the moment it matters. That is a Catpilot platform capability, not something a skill file does. The safe-building skill tells an assistant how to coach; it cannot create the event.
-- **Enforcement.** A specific action cannot proceed without a tested check in a trusted host. This repository ships three, all Claude Code `PreToolUse` hooks: one denies a shell command that contains a literal credential, one denies a file write or edit that adds a literal credential or a private-key block, and one denies a high-blast-radius shell command (a partial cloud-config reset, an auto-approved infrastructure destroy, a recursive delete of root, home, or a credential directory, a force push to a protected branch). Each covers its one path, on the host version recorded in the [tested-runtimes table](docs/REFERENCE.md#tested-runtimes), and nothing else. They stop the accidental action an agent proposes, not a deliberately disguised one.
+- **Enforcement.** A specific action cannot proceed without a tested check in a trusted host. This repository ships three, all Claude Code `PreToolUse` hooks: one denies a shell command that contains a literal credential, one denies a file write or edit that adds a literal credential or a private-key block, and one denies a high-blast-radius shell command (a partial cloud-config reset, an auto-approved infrastructure destroy, a recursive delete of root, home, or a credential directory, a force push to a protected branch, a database or cache wipe). Each covers its one path, on the host version recorded in the [tested-runtimes table](docs/REFERENCE.md#tested-runtimes), and nothing else. They stop the accidental action an agent proposes, not a deliberately disguised one.
 
 It does not monitor anyone's work, send telemetry, block anything except through the documented hooks, scan repositories, certify compliance, or record training completion. An installed skill that is not loaded is not a control. A hook that is not configured is not a control.
 
@@ -124,17 +154,17 @@ Plain language for a person with a deadline: one question at a time, the risk in
 | **untrusted-input** | medium | 2.2, 4.2 | Treats documents, emails, and user text as data, never instructions; explains prompt injection in plain words; tests blank, wrong, and hostile entries. |
 | **when-to-ask-a-human** | medium | 1.4, 3.4 | Names the triggers for a security review and drafts the two-sentence message to send. |
 
-The bundle also carries generic values for the things a company would specify: approved hosting, approved services, data classes, the default identity rule, review triggers, and who to ask. An [organization overlay](docs/spec/OVERLAY.md) replaces them in a private build. Control references on this skill are marked `mapping_review: pending` until a mapping review confirms them; describe SOC 2 references as "where applicable".
+The bundle also carries generic values for the things a company would specify: approved hosting, approved services, data classes, the default identity rule, review triggers, and who to ask. A company-rules file (the [overlay format](docs/spec/OVERLAY.md)) replaces them in a private build. Control references on this skill are marked `mapping_review: pending` until a mapping review confirms them; describe SOC 2 references as "where applicable".
 
-## Public baseline vs company overlay
+## Public baseline vs company rules
 
 The open-source skills are static and inspectable. They do not call Catpilot services or send telemetry. Review any skill before installing it; your AI host's own data handling and permissions still apply.
 
-Everything company-specific lives in an **overlay**: a short, reviewed list of approved hosting, approved services, data classes, the identity rule, review triggers, and who to ask, with a reviewer date and an expiry date. The schema and validator are public; the values are private.
+Everything company-specific lives in one **company rules** file (the format is called an overlay): a short, reviewed list of approved hosting, approved services, data classes, the identity rule, review triggers, and who to ask, with a reviewer date and an expiry date. The schema and validator are public; the values are private.
 
 | Open source (this repository) | Catpilot Plus |
 | --- | --- |
-| Overlay schema and validator, local merge into a private bundle, generic defaults, the same eight checkpoints as a course for people | Authoring the overlay from the company's actual policies, named-reviewer approval, versioning, tenant-scoped serving to tools, per-person coaching in Slack and Teams, and the evidence trail that links a coached moment to a policy version |
+| The company-rules format (overlay schema) and validator, local merge into a private bundle, generic defaults, the same eight checkpoints as a course for people | Authoring the company rules from the company's actual policies, named-reviewer approval, versioning, tenant-scoped serving to tools, per-person coaching in Slack and Teams, and the evidence trail that links a coached moment to a policy version |
 | Three enforcement hooks, the same checks as harness gates plus outbound-URL and file-path gates, a content-free evidence log with optional syslog forwarding, `tools/evidence_summary.py` for a pilot readout, and an `escalation_draft` (with an optional `intake_url`) whenever `check_plan` asks for a human | Serving `check_plan` per company, so every `escalation_draft` carries the company's own contact and intake link |
 
 Do not put private incidents, customer data, secrets, employee identifiers, or internal policy excerpts into this public baseline or a public fork. The bundler refuses to build if an overlay-shaped file is inside the tree, and a private build must be written outside it. A fork of a public repository is not private storage. Never turn an unreviewed event or document into an authoritative company rule automatically.
