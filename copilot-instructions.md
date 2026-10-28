@@ -28,7 +28,7 @@
 ### ❌ BLOCKED Patterns
 
 - `az containerapp update --yaml <partial-config>` — overwrites ALL settings
-- `az containerapp update --set-env-vars ONLY_ONE=value` — deletes other env vars
+- `az containerapp update --replace-env-vars ONLY_ONE=value` — deletes other env vars (`--set-env-vars` merges and keeps them)
 - `aws lambda update-function-configuration --environment "Variables={ONLY_ONE=value}"` — overwrites without merge
 - `aws s3 rm s3://bucket --recursive` — no confirmation
 - `gcloud projects set-iam-policy PROJECT policy.json` — removes existing policies

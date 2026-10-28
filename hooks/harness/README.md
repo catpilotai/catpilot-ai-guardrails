@@ -55,6 +55,7 @@ Or from the command line, to try them:
 ```bash
 python hooks/harness/secret_gate.py 'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE'
 python hooks/harness/destructive_gate.py 'az containerapp update --name app --resource-group rg --yaml partial.yaml'
+# gate_destructive_command(command, cwd=...) reads the checked-out branch from cwd for a bare `git push --force`.
 ```
 
 The checks are the same files the Claude Code hooks run, loaded in place, so the

@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CATPILOT_EVIDENCE_LOG=\"$HOME/.catpilot-guardrails/evidence.jsonl\" python3 \"/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/pretooluse-write-private-key.py\"",
+            "command": "CATPILOT_EVIDENCE_LOG=\"$HOME/.catpilot-guardrails/evidence.jsonl\" python3 \"/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/pretooluse-write-secrets.py\"",
             "timeout": 10
           }
         ]

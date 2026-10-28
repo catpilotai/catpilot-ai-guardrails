@@ -3,28 +3,42 @@
 
 Scope, stated exactly:
   - Runs only for the Bash tool (the matcher in settings selects it).
-  - Scans the proposed command text for deterministic, high-confidence
-    destructive signatures documented in the cloud-cli-safety,
-    database-safety, and local-cli-safety components of catpilot-security-core:
+  - Splits the proposed command into simple commands the way a shell would
+    (pipes, ;, &&, ||, subshells), looks through sudo/env/time-style wrappers
+    and `bash -c "..."`, and checks each one against deterministic signatures
+    from the cloud-cli-safety, database-safety, and local-cli-safety components
+    of catpilot-security-core:
       * partial-resource replacements that wipe unspecified fields or env vars
         (az containerapp update --yaml / --replace-env-vars, aws lambda
-        update-function-configuration --environment, gcloud run services update
-        --set-env-vars, gcloud projects set-iam-policy)
-      * unconfirmed cloud / IaC / Kubernetes mass deletion (terraform apply/destroy
-        -auto-approve, kubectl delete namespace, kubectl delete pods --all,
-        aws s3 rb --force, aws s3 rm --recursive without --dryrun, gsutil rm -r,
-        gcloud app versions delete --all --quiet, gcloud run services delete --quiet)
-      * irreversible local filesystem or git history wipes (rm -rf against /, ~,
-        $HOME, or an unguarded variable; chmod -R 777; dd to /dev/sd* or /dev/nvme*
-        or /dev/disk*; git push --force/-f to main, master, production, staging,
-        develop, or release/*)
+        update-function-configuration --environment Variables={...}, gcloud run
+        services update --set-env-vars, gcloud projects set-iam-policy)
+      * unconfirmed cloud / IaC / Kubernetes mass deletion (terraform apply or
+        destroy with -auto-approve, kubectl delete of a namespace or with --all
+        unless --dry-run=client|server, aws s3 rb --force, aws s3 rm --recursive
+        without --dryrun, gsutil rm -r, gcloud app versions delete --all --quiet,
+        gcloud run services delete --quiet)
+      * irreversible local or history wipes: recursive rm of /, a top-level
+        system directory, the home directory, a credential directory
+        (~/.ssh, ~/.aws, ...), or a bare variable that would expand to one of
+        those when unset ("$TARGET", $TARGET/, ${TARGET}/*); chmod -R 777;
+        dd to a raw block device; a force push (--force, -f, --force-with-lease,
+        or a +refspec) or a deletion aimed at main, master, trunk, production,
+        prod, staging, develop, or release/*, including a bare `git push -f`
+        while the checked-out branch is one of those; git push --mirror
       * direct credential exfiltration pipes (cat ~/.ssh/... | curl, env | curl)
+        and pipe-to-shell with sudo
   - On a match, returns a PreToolUse "deny" decision with a plain-language
     reason and the safer alternative. Never echoes the command text.
   - On anything else, returns an empty decision so the host's own permission
     rules apply unchanged. It never returns "allow".
-  - Malformed or oversized input exits 2 (the host treats that as a blocking
-    error), so a broken hook fails closed rather than silently allowing.
+  - Fails closed: malformed or oversized input, or any unexpected error, exits 2
+    (the host treats that as a blocking error).
+
+What it is not: an adversarial control. It catches the accidental destructive
+command an agent proposes; a command deliberately obfuscated (eval, base64,
+variables holding the verb) can pass. Ordinary scoped work is not blocked:
+removing a subdirectory of your home, a build directory, or force-pushing a
+feature branch.
 
 Standard library only. Python 3.8+.
 """
@@ -34,24 +48,14 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 MAX_INPUT_BYTES = 1_048_576
 
-
-def _load_secrets_hook():
-    hook_path = Path(__file__).resolve().parent / "pretooluse-secrets.py"
-    spec = importlib.util.spec_from_file_location("catpilot_pretooluse_secrets", hook_path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-_secrets = _load_secrets_hook()
-
+# --- whole-command signatures (cloud and infrastructure CLIs) -------------------------------
 # (label, compiled_pattern, safe_alternative_note)
 DESTRUCTIVE_PATTERNS = [
     (
@@ -62,7 +66,7 @@ DESTRUCTIVE_PATTERNS = [
     (
         "aws lambda environment full-map replacement",
         re.compile(r"\baws\s+lambda\s+update-function-configuration\b.*?\s--environment\s+[\"']?Variables=\{", re.IGNORECASE | re.DOTALL),
-        "Query existing variables with `aws lambda get-function-configuration`, merge them in a JSON file, and pass the complete merged map.",
+        "Query existing variables with `aws lambda get-function-configuration`, merge them in a JSON file, and pass the complete merged map from that file.",
     ),
     (
         "gcloud projects set-iam-policy full-binding replacement",
@@ -81,16 +85,8 @@ DESTRUCTIVE_PATTERNS = [
     ),
     (
         "terraform auto-approve apply or destroy",
-        re.compile(r"\bterraform\s+(?:apply|destroy)\b.*?\s-auto-approve\b", re.IGNORECASE | re.DOTALL),
+        re.compile(r"\bterraform\s+(?:apply|destroy)\b.*?\s--?auto-approve\b(?!=false)", re.IGNORECASE | re.DOTALL),
         "Run `terraform plan -out=tfplan`, show the plan to the user, and apply the reviewed plan without `-auto-approve`.",
-    ),
-    (
-        "kubectl delete namespace or delete --all pods",
-        re.compile(
-            r"\bkubectl\s+delete\s+(?:(?:namespace|ns)\s+\S+|pods?\b.*?\s--all\b)(?!.*--dry-run)",
-            re.IGNORECASE | re.DOTALL,
-        ),
-        "Preview with `--dry-run=client` and get explicit user confirmation naming the target namespace.",
     ),
     (
         "aws s3 recursive delete or force bucket removal",
@@ -106,13 +102,6 @@ DESTRUCTIVE_PATTERNS = [
         "Inventory objects with `gsutil ls` and confirm with the user before deleting.",
     ),
     (
-        "rm -rf against root, home, or unguarded variable",
-        re.compile(
-            r"\brm\s+-(?:[a-zA-Z]*r[a-zA-Z]*f|[a-zA-Z]*f[a-zA-Z]*r)\s+(?:--\s+)?(?:/(?:\s|\*|$)|~(?:/|\s|$)|\$HOME(?:/|\s|$)|\"\$(?:HOME|\{HOME\})\"(?:/|\s|$)|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})",
-        ),
-        "Guard variable paths with `[[ -n \"$TARGET\" && \"$TARGET\" != \"/\" && \"$TARGET\" != \"$HOME\" ]]` and target a specific project subdirectory.",
-    ),
-    (
         "recursive chmod 777 or recursive chmod on credential directories",
         re.compile(
             r"\bchmod\s+-R\s+(?:777\b|[0-7]{3,4}\s+(?:~|\$HOME)(?:/\.(?:ssh|aws|openclaw|config/gcloud|kube|gnupg|docker))?\b)",
@@ -123,14 +112,6 @@ DESTRUCTIVE_PATTERNS = [
         "raw block-device overwrite via dd",
         re.compile(r"\bdd\b.*?\bof=/dev/(?:sd[a-z]|nvme\d+n\d+|disk\d+|rdisk\d+)\b", re.IGNORECASE | re.DOTALL),
         "Never write directly to raw block devices from an agent session.",
-    ),
-    (
-        "git force-push to a protected branch",
-        re.compile(
-            r"\bgit\s+push\b(?=.*(?:\s--force\b|\s-f\b|\s\+[A-Za-z0-9_./\-]+:(?:refs/heads/)?(?:main|master|production|staging|develop|release/\S+)))(?!.*--force-with-lease).*?\b(?:main|master|production|staging|develop|release/\S+)\b",
-            re.IGNORECASE,
-        ),
-        "Never force-push to `main`, `master`, `production`, `staging`, `develop`, or `release/*`; use a feature branch and `--force-with-lease`.",
     ),
     (
         "credential or environment exfiltration pipe to network client",
@@ -147,9 +128,226 @@ DESTRUCTIVE_PATTERNS = [
     ),
 ]
 
+# --- per-simple-command analysis (rm, git push, kubectl delete) ------------------------------
+RM_LABEL = "recursive rm of root, a system directory, home, a credential directory, or a bare variable"
+RM_NOTE = (
+    "Remove a specific subdirectory by name (for example `rm -rf ./build` or `rm -rf \"$BUILD_DIR/dist\"`), "
+    "never a bare variable, the home directory, a credential directory, or a system directory."
+)
+GIT_LABEL = "git force-push, mirror, or deletion aimed at a protected branch"
+GIT_NOTE = (
+    "Never force-push to or delete `main`, `master`, `trunk`, `production`, `prod`, `staging`, `develop`, or "
+    "`release/*`; push a feature branch (`--force-with-lease` is fine there) and merge through review."
+)
+KUBECTL_LABEL = "kubectl delete of a namespace or with --all"
+KUBECTL_NOTE = "Preview with `--dry-run=client` and get explicit user confirmation naming the target namespace and resources."
+
+PROTECTED_BRANCH = re.compile(r"^(?:main|master|trunk|production|prod|staging|develop|release/.+)$", re.IGNORECASE)
+HOME = r"(?:~|\$HOME|\$\{HOME\})"
+RM_DANGEROUS_TARGET = re.compile(
+    r"^(?:"
+    r"/+\*?"  # / and /*
+    r"|/+(?:bin|boot|dev|etc|home|lib|lib64|opt|private|proc|root|sbin|srv|sys|usr|var|Users|System|Library|Applications|Volumes)/*\*?"
+    rf"|{HOME}/*\*?"  # the home directory itself
+    rf"|{HOME}/+\.(?:ssh|aws|gnupg|kube|docker|openclaw|config(?:/gcloud)?)/*\*?"  # credential directories
+    r"|\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/*\*?"  # a bare variable: unset expands to / or ""
+    r")$"
+)
+WRAPPERS = {"sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time", "nice", "xargs", "caffeinate"}
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+KUBECTL_VALUE_FLAGS = {"-n", "--namespace", "-l", "--selector", "-f", "--filename", "-o", "--output", "--context",
+                       "--cluster", "--kubeconfig", "--field-selector", "--grace-period", "--timeout", "-k", "--kustomize",
+                       "-s", "--server", "--user", "--token", "--as"}
+SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", ")", "\n"}
+
+
+def _tokens(command: str) -> list[str]:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        return list(lexer)
+    except ValueError:
+        # Unbalanced quotes: fall back to whitespace splitting with quotes stripped.
+        return [t.strip("\"'") for t in command.replace(";", " ; ").replace("&&", " && ").replace("|", " | ").split()]
+
+
+def _simple_commands(command: str, depth: int = 0):
+    """Yield argv lists for each simple command, with wrappers removed and `sh -c` bodies expanded."""
+    current: list[str] = []
+    for token in _tokens(command) + [";"]:
+        if token in SEPARATORS or set(token) <= set(";&|()"):
+            if current:
+                yield from _unwrap(current, depth)
+            current = []
+        else:
+            current.append(token)
+
+
+def _unwrap(argv: list[str], depth: int):
+    while argv and ASSIGNMENT.match(argv[0]):
+        argv = argv[1:]
+    while argv and os.path.basename(argv[0].lstrip("`")) in WRAPPERS:
+        argv = argv[1:]
+        while argv and (argv[0].startswith("-") or ASSIGNMENT.match(argv[0])):
+            takes_value = argv[0] in ("-u", "-g", "-n", "-C")
+            argv = argv[2:] if takes_value else argv[1:]
+    if not argv:
+        return
+    name = os.path.basename(argv[0].lstrip("`"))
+    if name in SHELLS and depth < 3 and "-c" in argv[1:]:
+        index = argv.index("-c", 1)
+        if index + 1 < len(argv):
+            yield from _simple_commands(argv[index + 1], depth + 1)
+        return
+    yield [name] + argv[1:]
+
+
+def _rm_finding(args: list[str]) -> bool:
+    recursive, options_done, targets = False, False, []
+    for arg in args:
+        if not options_done and arg == "--":
+            options_done = True
+        elif not options_done and arg.startswith("--"):
+            recursive = recursive or arg == "--recursive"
+        elif not options_done and arg.startswith("-") and len(arg) > 1:
+            recursive = recursive or "r" in arg[1:].lower()
+        else:
+            targets.append(arg)
+    return recursive and any(RM_DANGEROUS_TARGET.match(t) for t in targets)
+
+
+def _git_dir(start: Path) -> Path | None:
+    for directory in [start, *start.parents]:
+        dot_git = directory / ".git"
+        if dot_git.is_dir():
+            return dot_git
+        if dot_git.is_file():
+            text = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+            if text.startswith("gitdir:"):
+                path = Path(text.split(":", 1)[1].strip())
+                return path if path.is_absolute() else (directory / path).resolve()
+    return None
+
+
+def current_branch(cwd: str) -> str | None:
+    """The checked-out branch for cwd, read from .git/HEAD; None when detached or not a repository."""
+    try:
+        git_dir = _git_dir(Path(cwd).expanduser().resolve())
+        if git_dir is None:
+            return None
+        head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+        return head[len("ref: refs/heads/"):] if head.startswith("ref: refs/heads/") else None
+    except OSError:
+        return None
+
+
+def _git_finding(args: list[str], cwd: str) -> bool:
+    index, repo = 0, cwd
+    while index < len(args) and args[index].startswith("-"):
+        if args[index] == "-C" and index + 1 < len(args):
+            repo = os.path.join(repo, os.path.expanduser(args[index + 1]))
+            index += 2
+        elif args[index] == "-c":
+            index += 2
+        else:
+            index += 1
+    if index >= len(args) or args[index] != "push":
+        return False
+    force = delete = mirror = False
+    positional: list[str] = []
+    for arg in args[index + 1:]:
+        if arg in ("--force", "--force-if-includes") or arg.startswith("--force-with-lease"):
+            force = True
+        elif arg == "--mirror":
+            mirror = True
+        elif arg in ("--delete", "-d"):
+            delete = True
+        elif arg.startswith("--"):
+            continue
+        elif arg.startswith("-") and len(arg) > 1:
+            force = force or "f" in arg[1:]
+            delete = delete or "d" in arg[1:]
+        else:
+            positional.append(arg)
+    if mirror:
+        return True
+    for spec in positional[1:]:
+        plus = spec.startswith("+")
+        spec = spec.lstrip("+")
+        source, _, destination = spec.partition(":") if ":" in spec else (spec, "", spec)
+        destination = destination[len("refs/heads/"):] if destination.startswith("refs/heads/") else destination
+        if destination == "HEAD":
+            destination = current_branch(repo) or ""
+        if not PROTECTED_BRANCH.match(destination):
+            continue
+        if delete or plus or force or (":" in spec and source == ""):
+            return True
+    if force and len(positional) <= 1:
+        branch = current_branch(repo)
+        return branch is None or bool(PROTECTED_BRANCH.match(branch))
+    return False
+
+
+def _kubectl_finding(args: list[str]) -> bool:
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        index += 2 if args[index] in KUBECTL_VALUE_FLAGS else 1
+    if index >= len(args) or args[index] != "delete":
+        return False
+    rest = args[index + 1:]
+    for position, arg in enumerate(rest):
+        if arg.startswith("--dry-run"):
+            mode = arg.split("=", 1)[1] if "=" in arg else (rest[position + 1] if position + 1 < len(rest) else "client")
+            if mode in ("client", "server"):
+                return False
+    positional, skip = [], False
+    for arg in rest:
+        if skip:
+            skip = False
+        elif arg in KUBECTL_VALUE_FLAGS:
+            skip = True
+        elif not arg.startswith("-"):
+            positional.append(arg)
+    kinds = positional[0].lower() if positional else ""
+    if kinds in ("namespace", "namespaces", "ns") or kinds.startswith(("namespace/", "namespaces/", "ns/")):
+        return True
+    return any(arg in ("--all", "--all-namespaces", "-A") for arg in rest)
+
+
+def find_destructive_op(command: str, cwd: str | None = None) -> tuple[str, str] | None:
+    """Return (label, remediation) for the first destructive command found, or None."""
+    if not command:
+        return None
+    for label, pattern, remediation in DESTRUCTIVE_PATTERNS:
+        if pattern.search(command):
+            return label, remediation
+    working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
+    for argv in _simple_commands(command):
+        name, args = argv[0], argv[1:]
+        if name == "rm" and _rm_finding(args):
+            return RM_LABEL, RM_NOTE
+        if name == "git" and _git_finding(args, working_dir):
+            return GIT_LABEL, GIT_NOTE
+        if name == "kubectl" and _kubectl_finding(args):
+            return KUBECTL_LABEL, KUBECTL_NOTE
+    return None
+
+
+# --- evidence (content-free) ---------------------------------------------------------------
 EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
 SYSLOG_ENV = "CATPILOT_EVIDENCE_SYSLOG"
 HOOK_NAME = "pretooluse-destructive-ops"
+
+
+def _emit_syslog(serialized: str, spec: str) -> None:
+    """Syslog through the sibling secrets hook, loaded only when syslog is configured."""
+    hook_path = Path(__file__).resolve().parent / "pretooluse-secrets.py"
+    loader_spec = importlib.util.spec_from_file_location("catpilot_pretooluse_secrets", hook_path)
+    module = importlib.util.module_from_spec(loader_spec)
+    loader_spec.loader.exec_module(module)
+    module.emit_syslog(serialized, spec)
 
 
 def record_evidence(event: str, **fields) -> None:
@@ -170,7 +368,7 @@ def record_evidence(event: str, **fields) -> None:
             pass
     if syslog_spec:
         try:
-            _secrets.emit_syslog(serialized, syslog_spec)
+            _emit_syslog(serialized, syslog_spec)
         except Exception:
             pass
 
@@ -178,16 +376,6 @@ def record_evidence(event: str, **fields) -> None:
 def session_id_of(event: object) -> str | None:
     sid = event.get("session_id") if isinstance(event, dict) else None
     return sid if isinstance(sid, str) and 0 < len(sid) <= 128 else None
-
-
-def find_destructive_op(command: str) -> tuple[str, str] | None:
-    """Return (label, remediation) for the first destructive command pattern matched, or None."""
-    if not command:
-        return None
-    for label, pattern, remediation in DESTRUCTIVE_PATTERNS:
-        if pattern.search(command):
-            return label, remediation
-    return None
 
 
 def decide(event: dict) -> dict:
@@ -201,7 +389,7 @@ def decide(event: dict) -> dict:
     command = tool_input.get("command", "")
     if not isinstance(command, str):
         raise ValueError("command must be a string")
-    found = find_destructive_op(command)
+    found = find_destructive_op(command, event.get("cwd"))
     if found is None:
         return {}
     label, remediation = found
@@ -225,7 +413,8 @@ def main() -> int:
         if len(payload) > MAX_INPUT_BYTES:
             raise ValueError("hook input too large")
         result = decide(json.loads(payload))
-    except (ValueError, TypeError, RecursionError):
+    except Exception:
+        # Any failure blocks: an ordinary non-zero exit would let the host run the command.
         record_evidence("input_error")
         print(
             "Catpilot destructive-operation check could not read the hook input, so the command was not allowed. "
