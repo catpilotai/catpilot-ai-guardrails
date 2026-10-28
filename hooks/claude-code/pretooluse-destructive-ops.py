@@ -25,6 +25,13 @@ Scope, stated exactly:
         or a +refspec) or a deletion aimed at main, master, trunk, production,
         prod, staging, develop, or release/*, including a bare `git push -f`
         while the checked-out branch is one of those; git push --mirror
+      * unconfirmed database or cache wipes: `prisma db push --accept-data-loss`,
+        `prisma migrate reset --force`, `rails`/`rake` `db:drop`/`db:reset`/
+        `db:schema:load`/`db:structure:load`, Django `flush --noinput`,
+        `dropdb`, `redis-cli FLUSHALL`/`FLUSHDB`, and inline SQL via `psql`/
+        `mysql`/`mariadb`/`sqlite3`/`sqlcmd` containing `DROP DATABASE`,
+        `DROP SCHEMA`, `DROP TABLE`, `TRUNCATE`, or an unscoped `DELETE FROM`
+        without a `WHERE` clause
       * direct credential exfiltration pipes (cat ~/.ssh/... | curl, env | curl)
         and pipe-to-shell with sudo
   - On a match, returns a PreToolUse "deny" decision with a plain-language
@@ -128,7 +135,7 @@ DESTRUCTIVE_PATTERNS = [
     ),
 ]
 
-# --- per-simple-command analysis (rm, git push, kubectl delete) ------------------------------
+# --- per-simple-command analysis (rm, git push, kubectl delete, db/migration) ---------------
 RM_LABEL = "recursive rm of root, a system directory, home, a credential directory, or a bare variable"
 RM_NOTE = (
     "Remove a specific subdirectory by name (for example `rm -rf ./build` or `rm -rf \"$BUILD_DIR/dist\"`), "
@@ -316,6 +323,121 @@ def _kubectl_finding(args: list[str]) -> bool:
     return any(arg in ("--all", "--all-namespaces", "-A") for arg in rest)
 
 
+SQL_CLIENTS = {"psql", "mysql", "mariadb", "sqlite3", "sqlcmd"}
+SQL_INLINE_FLAGS = {"-c", "--command", "-e", "--execute", "-Q", "-q", "-cmd"}
+SQL_DESTRUCTIVE_RE = re.compile(
+    r"\b(?:"
+    r"DROP\s+(?:DATABASE|SCHEMA|TABLE)\b"
+    r"|TRUNCATE\s+(?:TABLE\s+)?[A-Za-z0-9_.\"`\[\]]+"
+    r"|DELETE\s+FROM\s+[A-Za-z0-9_.\"`\[\]]+\s*(?:;|$)"
+    r")",
+    re.IGNORECASE,
+)
+RAILS_DESTRUCTIVE_TASKS = {"db:drop", "db:reset", "db:schema:load", "db:structure:load"}
+
+
+def _unwrap_runner(name: str, args: list[str]) -> tuple[str, list[str]]:
+    """Strip package/runtime runner prefixes (npx, bundle exec, poetry/uv run, python manage.py)."""
+    if name in ("npx", "bunx", "pnpx"):
+        idx = 0
+        while idx < len(args) and args[idx].startswith("-"):
+            idx += 2 if args[idx] in ("-p", "--package") else 1
+        if idx < len(args):
+            return os.path.basename(args[idx]), args[idx + 1:]
+    elif name in ("yarn", "pnpm") and args:
+        if args[0] in ("dlx", "exec") and len(args) > 1:
+            return os.path.basename(args[1]), args[2:]
+        return os.path.basename(args[0]), args[1:]
+    elif name == "bundle" and len(args) >= 2 and args[0] == "exec":
+        return os.path.basename(args[1]), args[2:]
+    elif name in ("poetry", "uv", "pipenv") and len(args) >= 2 and args[0] == "run":
+        return os.path.basename(args[1]), args[2:]
+    elif name in ("python", "python3") and args:
+        if args[0] == "-m" and len(args) >= 2:
+            return os.path.basename(args[1]), args[2:]
+        if os.path.basename(args[0]) in ("manage.py", "django-admin", "django-admin.py"):
+            return os.path.basename(args[0]), args[1:]
+    return name, args
+
+
+def _inline_sql_snippets(name: str, args: list[str]) -> list[str]:
+    snippets: list[str] = []
+    positional: list[str] = []
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg in SQL_INLINE_FLAGS and idx + 1 < len(args):
+            snippets.append(args[idx + 1])
+            idx += 2
+            continue
+        if arg.startswith(("--command=", "--execute=")):
+            snippets.append(arg.split("=", 1)[1])
+            idx += 1
+            continue
+        if name in ("psql", "mysql", "mariadb") and len(arg) > 2 and arg[:2] in ("-c", "-e"):
+            snippets.append(arg[2:])
+            idx += 1
+            continue
+        if arg.startswith("-"):
+            takes_val = arg in ("-h", "--host", "-p", "--port", "-U", "-u", "--user", "-d", "--dbname", "-D", "--database", "-S", "-f", "--file")
+            idx += 2 if takes_val else 1
+            continue
+        positional.append(arg)
+        idx += 1
+    if name == "sqlite3" and len(positional) >= 2:
+        snippets.extend(positional[1:])
+    return snippets
+
+
+def _db_finding(name: str, args: list[str]) -> tuple[str, str] | None:
+    name, args = _unwrap_runner(name, args)
+    if name in ("python", "python3") and args:
+        name, args = _unwrap_runner(name, args)
+    if name == "prisma":
+        if args[:2] == ["db", "push"] and "--accept-data-loss" in args[2:]:
+            return (
+                "prisma db push --accept-data-loss",
+                "Generate and review a migration with `prisma migrate dev --create-only`, then apply with `prisma migrate deploy` after taking a backup.",
+            )
+        if args[:2] == ["migrate", "reset"] and any(a in ("--force", "-f") for a in args[2:]):
+            return (
+                "prisma migrate reset --force",
+                "Never run `prisma migrate reset --force` from an agent session; inspect migration status with `prisma migrate status` and confirm with the user.",
+            )
+    if name in ("rails", "rake"):
+        for arg in args:
+            lowered = arg.lower()
+            if lowered in RAILS_DESTRUCTIVE_TASKS or lowered.startswith(("db:drop:", "db:reset:")):
+                return (
+                    "rails/rake destructive database reset or drop",
+                    "Use incremental reversible migrations (`rails db:migrate`) after backing up the database; never run `db:drop`, `db:reset`, or `db:schema:load` from an agent session.",
+                )
+    if name in ("manage.py", "django-admin", "django-admin.py", "django"):
+        if "flush" in args and any(a in ("--noinput", "--no-input") for a in args):
+            return (
+                "django flush --noinput",
+                "Never flush all database tables non-interactively from an agent session; inspect and delete scoped records inside an explicit transaction after user confirmation.",
+            )
+    if name == "dropdb":
+        return (
+            "dropdb database deletion",
+            "Verify the target database and have the user run `dropdb` directly after taking a verified backup.",
+        )
+    if name == "redis-cli" and any(a.lower() in ("flushall", "flushdb") for a in args):
+        return (
+            "redis-cli FLUSHALL/FLUSHDB",
+            "Scan and delete specific keys with `SCAN` and `DEL`/`UNLINK` after confirming the key pattern and count with the user.",
+        )
+    if name in SQL_CLIENTS:
+        for sql in _inline_sql_snippets(name, args):
+            if SQL_DESTRUCTIVE_RE.search(sql):
+                return (
+                    "inline destructive SQL (DROP, TRUNCATE, or unscoped DELETE)",
+                    "Run `SELECT COUNT(*)` first, wrap mutating SQL in an explicit `BEGIN`/`COMMIT` transaction with a `WHERE` clause, and get explicit user confirmation before dropping tables or databases.",
+                )
+    return None
+
+
 def find_destructive_op(command: str, cwd: str | None = None) -> tuple[str, str] | None:
     """Return (label, remediation) for the first destructive command found, or None."""
     if not command:
@@ -332,6 +454,9 @@ def find_destructive_op(command: str, cwd: str | None = None) -> tuple[str, str]
             return GIT_LABEL, GIT_NOTE
         if name == "kubectl" and _kubectl_finding(args):
             return KUBECTL_LABEL, KUBECTL_NOTE
+        db_hit = _db_finding(name, args)
+        if db_hit is not None:
+            return db_hit
     return None
 
 

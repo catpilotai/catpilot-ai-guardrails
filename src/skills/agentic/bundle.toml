@@ -1,0 +1,48 @@
+[bundle]
+name = "catpilot-agentic-security"
+tier = "agentic"
+version = "2026.10.28"
+category = "agentic-security"
+mode = "advisory"
+
+description = """
+Catpilot's security and reliability baseline for autonomous, scheduled, and
+multi-agent harnesses (LangGraph, CrewAI, OpenAI Agents SDK, Claude Agent SDK,
+custom MCP servers, and bespoke Python loops): advisory guardrails across five
+components: tool-execution sandboxing, memory and identity integrity,
+multi-agent authentication and delegation bounds, scheduled-task (cron)
+idempotency, and verifier-backed tool-loop discipline. Guidance the agent or
+builder reads, not a runtime control; pair with hooks/harness/ gates for
+tool-boundary enforcement.
+"""
+
+preamble = """
+# Catpilot Agentic Security
+
+Catpilot's security and operational baseline for autonomous agents, scheduled
+runs, and multi-agent harnesses. It is advice the agent or harness builder
+reads: installing this bundle is not activation, and an instruction the agent
+has read is not an enforced control. For deterministic runtime checks on shell
+commands, file writes, file paths, and outbound URLs inside a Python loop, wire
+the functions in `hooks/harness/` at your tool boundary.
+
+This file is deliberately short. Each component below names its reference file,
+states when it applies, and lists the rules that always hold. Do not answer
+from this file alone: before designing, reviewing, or running a tool wrapper,
+memory store, identity file, inter-agent call, scheduled job, or retry loop,
+read the named reference file with your file-reading tool and follow it. The
+code patterns, failure modes, and remediation steps live there. Component IDs
+match the `catpilot-components` entry in the frontmatter and the
+`bundle.components` list in `catpilot.json` next to this file.
+
+This bundle is generated deterministically from
+`src/skills/agentic/<id>/SKILL.md` by `tools/bundle.py` in the
+catpilotai/catpilot-ai-guardrails repository. Edits to this file or to the
+reference files are overwritten on the next bundle. To change behavior, edit
+the corresponding source skill and rebuild.
+"""
+
+[bundle.layout]
+kind = "baseline-references"
+baseline_section = "Baseline"
+max_lines = 500

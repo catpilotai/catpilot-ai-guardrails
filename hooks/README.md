@@ -152,6 +152,13 @@ then checks:
   `git push --force` while one of those is checked out (read from
   `.git/HEAD`, and blocked when the branch cannot be read), a deletion of one
   of those branches, and `git push --mirror`.
+- Database and cache resets: `prisma db push --accept-data-loss`, `prisma
+  migrate reset --force`, `rails`/`rake` `db:drop`, `db:reset`,
+  `db:schema:load`, and `db:structure:load`, Django `flush --noinput`,
+  `dropdb`, `redis-cli FLUSHALL`/`FLUSHDB`, and inline SQL passed to `psql`,
+  `mysql`, `mariadb`, `sqlite3`, or `sqlcmd` containing `DROP DATABASE`,
+  `DROP SCHEMA`, `DROP TABLE`, `TRUNCATE`, or an unscoped `DELETE FROM`
+  without a `WHERE` clause.
 - `chmod -R 777`, `dd` to a raw block device, credential or environment dumps
   piped to a network client, and `curl ... | sudo bash`.
 

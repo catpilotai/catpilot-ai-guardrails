@@ -38,15 +38,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$SERVER_URL" ] || { echo "--server-url is required (your own server; the public endpoint serves generic defaults only)" >&2; exit 2; }
-[ "$(id -u)" -eq 0 ] || { echo "run with sudo: the managed locations are root-owned on purpose" >&2; exit 2; }
+if [ "${CATPILOT_ALLOW_NONROOT:-0}" != "1" ]; then
+  [ "$(id -u)" -eq 0 ] || { echo "run with sudo: the managed locations are root-owned on purpose" >&2; exit 2; }
+fi
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 case "$(uname -s)" in
-  Darwin) CC_DIR="/Library/Application Support/ClaudeCode" ;;
-  Linux) CC_DIR="/etc/claude-code" ;;
+  Darwin) DEFAULT_CC_DIR="/Library/Application Support/ClaudeCode" ;;
+  Linux) DEFAULT_CC_DIR="/etc/claude-code" ;;
   *) echo "unsupported OS: $(uname -s)" >&2; exit 2 ;;
 esac
-CODEX_DIR="/etc/codex"
+CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
+CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
 
 PRIVATE_TMP=""
 cleanup() { [ -n "$PRIVATE_TMP" ] && rm -rf "$PRIVATE_TMP" || true; }

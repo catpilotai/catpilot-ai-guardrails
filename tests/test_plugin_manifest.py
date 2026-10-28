@@ -16,7 +16,7 @@ class PluginManifestTests(unittest.TestCase):
             self.assertNotIn(key, manifest, f"{key} would change what the plugin carries; the README and DEPLOY_ORG say skills only")
         # Skills are auto-discovered from skills/: every shipped skill has a SKILL.md whose name matches its directory.
         shipped = sorted(p.name for p in (ROOT / "skills").iterdir() if p.is_dir())
-        self.assertEqual(shipped, ["catpilot-safe-building", "catpilot-security-core"])
+        self.assertEqual(shipped, ["catpilot-agentic-security", "catpilot-safe-building", "catpilot-security-core"])
         for name in shipped:
             text = (ROOT / "skills" / name / "SKILL.md").read_text()
             self.assertIn(f"name: {name}\n", text)
