@@ -2,7 +2,9 @@
 """Summarize Catpilot evidence logs (JSONL) into a Markdown or JSON pilot report.
 
 Reads one or more files written by CATPILOT_EVIDENCE_LOG from the Claude Code
-hooks (pretooluse-secrets, pretooluse-write-private-key, pretooluse-destructive-ops)
+hooks (pretooluse-secrets, pretooluse-write-secrets, pretooluse-destructive-ops; entries
+from before the write hook's rename, logged as pretooluse-write-private-key, are counted
+under its new name)
 and the reference MCP server (get_guidance, check_plan, get_template, list_approved).
 
 Because the evidence log never records command text, file paths, file content,
@@ -23,6 +25,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+
+
+# The write hook was renamed; old evidence lines keep counting under the current name.
+HOOK_ALIASES = {"pretooluse-write-private-key": "pretooluse-write-secrets"}
 
 def summarize_lines(lines: list[str]) -> dict[str, Any]:
     total_events = 0
@@ -79,6 +85,7 @@ def summarize_lines(lines: list[str]) -> dict[str, Any]:
         source = entry.get("source")
         if source == "claude-code-hook":
             hook = str(entry.get("hook") or "unknown")
+            hook = HOOK_ALIASES.get(hook, hook)
             event = entry.get("event")
             if event == "deny":
                 hook_denials_by_hook[hook] += 1

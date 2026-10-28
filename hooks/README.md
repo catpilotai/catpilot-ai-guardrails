@@ -6,9 +6,9 @@ enforcement for that path only. Everything else in the repository is advice.
 
 | Hook | Host | Path covered | What it does | Verified |
 | --- | --- | --- | --- | --- |
-| `claude-code/pretooluse-secrets.py` | Claude Code | `Bash` tool, PreToolUse | Denies a shell command that contains a literal credential (the secret-blocking patterns) with a plain-language reason. Never returns allow. Fails closed on malformed input. | See the tested-runtimes table in the README for the host version and date. |
-| `claude-code/pretooluse-write-private-key.py` | Claude Code | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, PreToolUse | Denies file content that contains a PEM private-key header (RSA, EC, DSA, OPENSSH, ENCRYPTED, and PGP PRIVATE KEY BLOCK variants) or a literal credential matching the 27 secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input. | See the tested-runtimes table in the README for the host version and date, and [`evals/reports/2026.09.14-write-hook-verification.md`](../evals/reports/2026.09.14-write-hook-verification.md). |
-| `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` tool, PreToolUse | Denies high-blast-radius destructive CLI commands (cloud partial-YAML / `--replace-env-vars` / `--set-env-vars` full-map resets, `terraform apply/destroy -auto-approve`, `kubectl delete namespace`, `aws s3 rm --recursive` without `--dryrun`, `rm -rf` on `/`, `~`, `$HOME`, or unguarded variables, `git push --force` to protected branches, and credential exfiltration pipes) with a plain-language reason and safer alternative. Never returns allow. Fails closed on malformed input. | Protocol-tested in `tests/test_destructive_hook.py`. |
+| `claude-code/pretooluse-secrets.py` | Claude Code | `Bash` tool, PreToolUse | Denies a shell command that contains a literal credential (the secret-blocking patterns) with a plain-language reason. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md); earlier rows in the tested-runtimes table. |
+| `claude-code/pretooluse-write-secrets.py` (formerly `pretooluse-write-private-key.py`, kept as a compatibility entry point) | Claude Code | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, PreToolUse | Denies file content that contains a PEM private-key header or a literal credential matching the secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input, a missing sibling file, or any internal error. | Claude Code 2.1.312, 2026-10-27, under both file names: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
+| `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` tool, PreToolUse | Parses the command like a shell and denies a high-blast-radius operation (partial cloud-config resets, auto-approved infrastructure destroys, `kubectl delete` of a namespace or with `--all`, a recursive delete of root, a system directory, home, a credential directory, or a bare variable, a force push or deletion aimed at a protected branch, credential exfiltration pipes) with the safer alternative. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 
 ## Claude Code: literal credentials in shell commands
 
@@ -61,13 +61,16 @@ quoted form (`password="value"`) and the unquoted CLI/env-assignment form
 `PGPASSWORD=value`), plus a JSON-style quoted key (`"password": "value"`).
 Read the script; it is short.
 
-## Claude Code: private-key blocks and literal credentials in file writes
+## Claude Code: literal credentials and private-key blocks in file writes
 
 ### Install
 
 1. The hooks come from the same `claude-code/settings.example.json`. Copy
-   `claude-code/pretooluse-write-private-key.py` somewhere stable, or
-   reference it from a clone of this repository. Python 3.8 or later is
+   `claude-code/pretooluse-write-secrets.py` and `claude-code/pretooluse-secrets.py`
+   (it loads the credential patterns from there) somewhere stable, side by side,
+   or reference them from a clone of this repository. Settings that still point
+   at `pretooluse-write-private-key.py` keep working: that file now runs
+   `pretooluse-write-secrets.py`. Python 3.8 or later is
    required; the script uses only the standard library.
 2. Add the hook to your user settings (`~/.claude/settings.json`) or a
    project's `.claude/settings.json`, matcher
@@ -96,23 +99,76 @@ environment variable reference (`os.environ["AWS_ACCESS_KEY_ID"]`) or
   `pretooluse-secrets.py`.
 - Not covered: file reads, prompts, other tools, other hosts, and files a
   person edits themselves.
-- Failure behavior: if the hook cannot parse its input, or the input is
-  over 1 MiB, it exits 2 and the host blocks the write. If the hook is not
+- Failure behavior: if the hook cannot parse its input, the input is over
+  1 MiB, `pretooluse-secrets.py` is missing beside it, or anything else goes
+  wrong, it exits 2 and the host blocks the write. If the hook is not
   configured, disabled, or times out, the host's own rules apply and
   nothing here protects the path. A hook that is not running is not a
   control.
 
+### False positives
+
+Not reported, on purpose: environment references (`$VAR`, `${VAR}`), obvious
+placeholders (`REPLACE_ME`, `YOUR_API_KEY`, ...), the stock passwords of local
+development stacks (`postgres`, `password`, `admin`, ...), and database URLs
+whose host is `localhost`, `127.0.0.1`, `::1`, `0.0.0.0`, or
+`host.docker.internal`.
+
+There is no in-content marker that waves a line through, such as
+detect-secrets' `pragma: allowlist secret`. An earlier candidate honored one;
+on a real host the model read the reason, added the marker, and retried
+successfully ([`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md)). Anything the agent can do by itself is a bypass. A
+deliberate credential-shaped example in documentation (this repository's own
+skill references have several) is written by a person, or edited with the hook
+off for that repository.
+
 ## Claude Code: destructive CLI operations in shell commands
 
 `claude-code/pretooluse-destructive-ops.py` blocks high-blast-radius shell
-commands on the `Bash` tool path: partial-resource cloud CLI updates that
-reset unspecified fields (`az containerapp update --yaml` /
-`--replace-env-vars`, `aws lambda update-function-configuration --environment`,
-`gcloud run services update --set-env-vars`, `gcloud projects set-iam-policy`),
-unconfirmed IaC/cluster deletions (`terraform apply/destroy -auto-approve`,
-`kubectl delete namespace`, `aws s3 rm --recursive` without `--dryrun`),
-unguarded `rm -rf` on `/`, `~`, `$HOME`, or bare variables, `git push --force`
-to protected branches, and credential exfiltration pipes.
+commands on the `Bash` tool path. It splits the command into simple commands
+the way a shell would (pipes, `;`, `&&`, `||`, subshells), looks through
+`sudo`, `env`, `time`, and similar wrappers and through `bash -c "..."`, and
+then checks:
+
+- Cloud and infrastructure CLIs: partial-resource updates that reset
+  unspecified fields (`az containerapp update --yaml` / `--replace-env-vars`,
+  `aws lambda update-function-configuration --environment Variables={...}`,
+  `gcloud run services update --set-env-vars`, `gcloud projects set-iam-policy`),
+  auto-approved Terraform (`-auto-approve` or `--auto-approve`), `aws s3 rb
+  --force`, `aws s3 rm --recursive` without `--dryrun`, `gsutil rm -r`, and
+  quiet `gcloud` deletions.
+- `kubectl delete` of a namespace, or with `--all`, `--all-namespaces`, or
+  `-A`, unless `--dry-run=client` or `--dry-run=server` (`--dry-run=none`
+  really deletes, and is blocked).
+- Recursive `rm` (any spelling: `-rf`, `-Rf`, `-r -f`, `--recursive`) of `/`,
+  a top-level system directory, the home directory, a credential directory
+  (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.config`), or a
+  bare variable, quoted or not (`"$TARGET"`, `${TARGET}/*`), which removes
+  `/` or the current tree when the variable is unset. A named subdirectory
+  (`~/Library/Caches/pip`, `"$BUILD_DIR/dist"`) is allowed.
+- `git push` with `--force`, `-f`, `--force-with-lease`, or a `+refspec` to
+  `main`, `master`, `trunk`, `production`, `prod`, `staging`, `develop`, or
+  `release/*` (exact branch names, so `feature/main-fix` is fine), a bare
+  `git push --force` while one of those is checked out (read from
+  `.git/HEAD`, and blocked when the branch cannot be read), a deletion of one
+  of those branches, and `git push --mirror`.
+- `chmod -R 777`, `dd` to a raw block device, credential or environment dumps
+  piped to a network client, and `curl ... | sudo bash`.
+
+Text inside quotes is not a command, so `echo "rm -rf /"` and
+`grep 'git push --force origin main'` are allowed.
+
+### Exact coverage
+
+- Covered: commands the agent runs through the `Bash` tool, as above.
+- Not covered: a deliberately disguised command (`eval`, base64, a variable
+  holding the verb), commands a script runs internally, prompts, other tools,
+  and any host other than Claude Code. It stops accidents, not an adversary.
+- Failure behavior: malformed input or any internal error exits 2 and the host
+  blocks the command. It does not need the other hook files beside it (they
+  are loaded only for optional syslog).
+- The way past a false positive is a person running the command in their own
+  terminal; there is no flag the agent can add.
 
 ## Evidence log and syslog
 

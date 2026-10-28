@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /absolute/path/to/catpilot-ai-guardrails/hooks/claude-code/pretooluse-write-private-key.py",
+            "command": "python3 /absolute/path/to/catpilot-ai-guardrails/hooks/claude-code/pretooluse-write-secrets.py",
             "timeout": 10
           }
         ]

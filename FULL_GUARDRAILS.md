@@ -37,8 +37,8 @@
 # DANGEROUS: Partial YAML resets unspecified fields to defaults
 az containerapp update --yaml <partial-config.yaml>
 
-# DANGEROUS: This DELETES all other env vars
-az containerapp update --set-env-vars ONLY_ONE_VAR=value
+# DANGEROUS: This DELETES all other env vars (--set-env-vars merges; --replace-env-vars replaces)
+az containerapp update --replace-env-vars ONLY_ONE_VAR=value
 
 # DANGEROUS: Missing resource specs resets CPU/memory to defaults
 az containerapp update --name myapp --image newimage:latest

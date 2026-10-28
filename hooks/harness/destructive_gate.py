@@ -12,6 +12,7 @@ Standard library only.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 _HOOK = Path(__file__).resolve().parent.parent / "claude-code" / "pretooluse-destructive-ops.py"
@@ -28,21 +29,23 @@ def _load_hook():
 _hook = _load_hook()
 
 
-def gate_destructive_command(command: str) -> str | None:
+def gate_destructive_command(command: str, cwd: str | None = None) -> str | None:
     """Return a plain-language refusal reason if the command matches a destructive pattern, else None.
 
+    cwd is the directory the command will run in (default: the current one); it is
+    used only to read the checked-out branch for a bare `git push --force`.
     Raises ValueError on a non-string command, so a broken caller fails closed
     rather than silently allowing.
     """
     if not isinstance(command, str):
         raise ValueError("command must be a string")
-    verdict = _hook.decide({"tool_name": "Bash", "tool_input": {"command": command}})
+    verdict = _hook.decide({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd or os.getcwd()})
     if not verdict:
         return None
     return verdict["hookSpecificOutput"]["permissionDecisionReason"]
 
 
-def gate_destructive_tool_call(tool_name: str, tool_input: dict, field: str = "command") -> str | None:
+def gate_destructive_tool_call(tool_name: str, tool_input: dict, field: str = "command", cwd: str | None = None) -> str | None:
     """Same check for a harness whose shell tool has another name. Fails closed."""
     if not isinstance(tool_input, dict):
         raise ValueError("tool_input must be a mapping")
@@ -51,7 +54,7 @@ def gate_destructive_tool_call(tool_name: str, tool_input: dict, field: str = "c
     command = tool_input[field]
     if not isinstance(command, str):
         return f"Catpilot destructive-operation check: the '{field}' field must be a string, so the tool call was not allowed."
-    verdict = _hook.decide({"tool_name": "Bash", "tool_input": {"command": command}})
+    verdict = _hook.decide({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd or os.getcwd()})
     return verdict["hookSpecificOutput"]["permissionDecisionReason"] if verdict else None
 
 

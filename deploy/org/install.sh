@@ -80,6 +80,7 @@ install_skill() {  # $1 = destination root
 # Claude Code: hooks, managed settings, skills
 mkdir -p "$CC_DIR/catpilot-guardrails/hooks"
 cp "$REPO/hooks/claude-code/pretooluse-secrets.py" \
+   "$REPO/hooks/claude-code/pretooluse-write-secrets.py" \
    "$REPO/hooks/claude-code/pretooluse-write-private-key.py" \
    "$REPO/hooks/claude-code/pretooluse-destructive-ops.py" \
    "$CC_DIR/catpilot-guardrails/hooks/"

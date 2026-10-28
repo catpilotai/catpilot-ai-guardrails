@@ -59,6 +59,10 @@ ALLOWED = {
     "quoted client secret placeholder": 'echo client_secret="' + "X" * 16 + '"',
     "quoted auth token placeholder": 'echo token="' + "X" * 16 + '"',
     "DATABASE_URL placeholder password": "DATABASE_URL=postgres://user:REPLACE_ME@host/db node app.js",
+    # Local development databases and the stock default passwords are not credentials.
+    "loopback database URL": "psql postgres://app:s3cr3t-local-pw@localhost:5432/app",
+    "loopback IPv6 database URL": "redis-cli -u redis://default:s3cr3t-local-pw@[::1]:6379",
+    "docker default password": "DATABASE_URL=postgres://postgres:postgres@db:5432/app npm test",
 }
 
 
@@ -107,6 +111,12 @@ class HookTests(unittest.TestCase):
                 proc = run_hook(event(command))
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertEqual(json.loads(proc.stdout), {})
+
+    def test_shell_commands_cannot_be_allowlisted_by_a_comment(self):
+        # The detect-secrets pragma is honored only for file writes, never for a command.
+        proc = run_hook(json.dumps({"tool_name": "Bash", "tool_input": {
+            "command": "psql postgres://app:hunter2@db.internal:5432/prod  # pragma: allowlist secret"}}))
+        self.assertEqual(json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_never_returns_allow(self):
         for command in list(DENIED.values()) + list(ALLOWED.values()):

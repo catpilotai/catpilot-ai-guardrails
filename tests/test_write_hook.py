@@ -13,7 +13,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HOOK = ROOT / "hooks" / "claude-code" / "pretooluse-write-private-key.py"
+HOOK = ROOT / "hooks" / "claude-code" / "pretooluse-write-secrets.py"
+LEGACY_HOOK = ROOT / "hooks" / "claude-code" / "pretooluse-write-private-key.py"
+# Built at run time so no credential-shaped literal sits in this file.
+SYNTHETIC_GITHUB_TOKEN = "ghp" + "_" + "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3z5A"
 # Synthetic: a header line and a body that is not key material.
 KEY_BLOCK = "-----BEGIN RSA PRIVATE KEY-----\nSYNTHETIC-NOT-A-KEY\n-----END RSA PRIVATE KEY-----\n"
 
@@ -78,10 +81,51 @@ class WriteHookTests(unittest.TestCase):
             'STRIPE_API_KEY="REPLACE_ME"\n',
             '{"api_key": "YOUR_API_KEY"}\n',
             'DATABASE_URL="postgres://user:${DB_PASSWORD}@localhost:5432/app"\n',
+            "DATABASE_URL=postgres://user:s3cr3t-local-pw@localhost:5432/app\n",
+            "REDIS_URL=redis://default:s3cr3t-local-pw@127.0.0.1:6379\n",
+            "DATABASE_URL=postgres://postgres:postgres@db:5432/app\n",
+            'password: "password"\n',
         )
         for content in safe_contents:
             with self.subTest(content=content[:30]):
                 self.assert_no_decision(run_hook(event("Write", {"file_path": "f", "content": content})))
+
+    def test_still_denies_real_looking_values_the_allowances_do_not_cover(self):
+        for content in (
+            f'TOKEN = "{SYNTHETIC_GITHUB_TOKEN}"\n',
+            "DATABASE_URL=postgres://app:s3cr3t-prod-pw@db.internal:5432/prod\n",
+            # No in-content marker is honored: a host test showed an agent adds one and retries.
+            f'TOKEN = "{SYNTHETIC_GITHUB_TOKEN}"  # pragma: allowlist secret\n',
+            f"| GitHub token | `{SYNTHETIC_GITHUB_TOKEN}` | <!-- pragma: allowlist secret -->\n",
+        ):
+            with self.subTest(content=content[:30]):
+                self.assert_denied(run_hook(event("Write", {"file_path": "f", "content": content})), forbidden_fragment="s3cr3t")
+
+    def test_legacy_file_name_gives_identical_decisions(self):
+        payloads = (
+            event("Write", {"file_path": "f", "content": KEY_BLOCK}),
+            event("Write", {"file_path": "f", "content": f'TOKEN = "{SYNTHETIC_GITHUB_TOKEN}"'}),
+            event("Write", {"file_path": "f", "content": "print('hello')"}),
+        )
+        for payload in payloads:
+            new = run_hook(payload)
+            old = subprocess.run([sys.executable, str(LEGACY_HOOK)], input=payload, capture_output=True, text=True, timeout=10)
+            self.assertEqual((old.returncode, old.stdout), (new.returncode, new.stdout))
+        self.assertEqual(subprocess.run([sys.executable, str(LEGACY_HOOK)], input="not json", capture_output=True, text=True, timeout=10).returncode, 2)
+
+    def test_missing_sibling_module_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            alone = Path(tmp) / "pretooluse-write-secrets.py"
+            alone.write_text(HOOK.read_text())
+            proc = subprocess.run([sys.executable, str(alone)], input=event("Write", {"file_path": "f", "content": "print('hello')"}),
+                                  capture_output=True, text=True, timeout=10)
+            self.assertEqual(proc.returncode, 2)
+            legacy = Path(tmp) / "pretooluse-write-private-key.py"
+            legacy.write_text(LEGACY_HOOK.read_text())
+            alone.unlink()
+            proc = subprocess.run([sys.executable, str(legacy)], input=event("Write", {"file_path": "f", "content": "x"}),
+                                  capture_output=True, text=True, timeout=10)
+            self.assertEqual(proc.returncode, 2)
 
     def test_evidence_log_records_denials_without_the_content(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -92,7 +136,7 @@ class WriteHookTests(unittest.TestCase):
             lines = log.read_text().splitlines()
             self.assertEqual(len(lines), 1)
             entry = json.loads(lines[0])
-            self.assertEqual((entry["event"], entry["hook"], entry["tool"], entry["label"]), ("deny", "pretooluse-write-private-key", "Write", "private-key-block"))
+            self.assertEqual((entry["event"], entry["hook"], entry["tool"], entry["label"]), ("deny", "pretooluse-write-secrets", "Write", "private-key-block"))
             self.assertNotIn("SYNTHETIC-NOT-A-KEY", lines[0])
             self.assertNotIn("key.pem", lines[0])
             # Non-private-key credential logs its specific label without content.
@@ -101,7 +145,7 @@ class WriteHookTests(unittest.TestCase):
             lines = log.read_text().splitlines()
             self.assertEqual(len(lines), 2)
             entry2 = json.loads(lines[1])
-            self.assertEqual((entry2["event"], entry2["hook"], entry2["tool"], entry2["label"]), ("deny", "pretooluse-write-private-key", "Edit", "AWS access key ID"))
+            self.assertEqual((entry2["event"], entry2["hook"], entry2["tool"], entry2["label"]), ("deny", "pretooluse-write-secrets", "Edit", "AWS access key ID"))
             self.assertNotIn("AKIAIOSFODNN7EXAMPLE", lines[1])
             self.assert_no_decision(run_hook(event("Write", {"file_path": "notes.txt", "content": "plain text"}), env))
             self.assertEqual(len(log.read_text().splitlines()), 2)

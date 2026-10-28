@@ -67,13 +67,13 @@ PATTERNS = [
     ("npm access token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
     ("JSON Web Token", re.compile(r"\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\b")),
     ("private key block", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----")),
-    ("database URL with an embedded password", re.compile(r"\b(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqps?)://[^:\s/]*:(?P<val>[^@\s]+)@", re.IGNORECASE)),
+    ("database URL with an embedded password", re.compile(r"\b(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqps?)://[^:\s/]*:(?P<val>[^@\s]+)@(?P<host>\[[^\]\s]*\]|[^:/\s?#\"'@]*)", re.IGNORECASE)),
     ("bearer token", re.compile(r"\bbearer\s+[A-Za-z0-9_\-\.=]{16,}\b", re.IGNORECASE)),
     ("literal API key assignment", re.compile(r"\b(?:api[_-]?key|apikey)\s*[:=]\s*[\"']?(?P<val>[A-Za-z0-9_\-]{16,})[\"']?", re.IGNORECASE)),
     ("literal password assignment", re.compile(r"\b(?:password|passwd|pwd)\s*[:=]\s*[\"'](?P<val>[^\"'$]{6,})[\"']", re.IGNORECASE)),
     ("literal client secret", re.compile(r"\b(?:secret|client_secret)\s*[:=]\s*[\"'](?P<val>[A-Za-z0-9_\-]{16,})[\"']", re.IGNORECASE)),
     ("literal auth token assignment", re.compile(r"\b(?:token|auth_token|access_token)\s*[:=]\s*[\"'](?P<val>[A-Za-z0-9_\-\.]{16,})[\"']", re.IGNORECASE)),
-    ("literal DATABASE_URL", re.compile(r"\bDATABASE_URL\s*=\s*[\"']?(?:mongodb|postgres|mysql|redis|amqp)[^\s\"']*://[^\s\"']*:(?P<val>[^\s\"'@]+)@", re.IGNORECASE)),
+    ("literal DATABASE_URL", re.compile(r"\bDATABASE_URL\s*=\s*[\"']?(?:mongodb|postgres|mysql|redis|amqp)[^\s\"']*://[^\s\"']*:(?P<val>[^\s\"'@]+)@(?P<host>\[[^\]\s]*\]|[^:/\s?#\"'@]*)", re.IGNORECASE)),
     # Unquoted CLI/env forms: same literal-credential shape as above, but without the
     # quotes that the four "literal ... assignment" patterns require. Each captures the
     # bare value into the named group "val" so find_credential can apply the same
@@ -99,12 +99,22 @@ PATTERNS = [
 # A value that is only an environment reference is never a literal credential.
 ENV_REFERENCE = re.compile(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
 
-# Obvious placeholder tokens used in documentation and test fixtures, never a real
-# credential. Kept narrow and explicit on purpose: this is an allowance, not a filter.
+# Obvious placeholder tokens used in documentation and test fixtures, and the default
+# passwords local development stacks ship with (postgres, password, admin, ...), never a
+# real credential. Kept narrow and explicit on purpose: this is an allowance, not a filter.
 PLACEHOLDER_VALUE = re.compile(
-    r"^(?:REPLACE[_-]?ME|SAMPLE[_-]?KEY|YOUR[_-]?(?:API[_-]?)?KEY|CHANGE[_-]?ME|EXAMPLE|PLACEHOLDER|DUMMY|FAKE|TODO|FIXME|X{3,}|\*{3,})$",
+    r"^(?:REPLACE[_-]?ME|SAMPLE[_-]?KEY|YOUR[_-]?(?:API[_-]?)?KEY|CHANGE[_-]?ME|EXAMPLE|PLACEHOLDER|DUMMY|FAKE|TODO|FIXME|X{3,}|\*{3,}"
+    r"|PASSWORD|PASSW0RD|POSTGRES|MYSQL|ADMIN|SECRET)$",
     re.IGNORECASE,
 )
+
+# A database URL whose host is the local machine (or Docker's alias for it) points at a
+# development database; its password is a local default, not a credential to protect.
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"})
+
+# There is deliberately no in-content allowlist marker (such as detect-secrets'
+# "pragma: allowlist secret"): an agent that is told about one adds it and retries,
+# which a host test showed. False positives are resolved by a person, not in-band.
 
 MIN_CREDENTIAL_LENGTH = 6
 
@@ -181,11 +191,12 @@ def _is_placeholder_value(value: str) -> bool:
 
 
 def find_credential(command: str):
-    """Return the label of the first credential-shaped literal in the command, or None.
+    """Return the label of the first credential-shaped literal in the text, or None.
 
     The same placeholder/env-reference/short-value allowance applies whether or not the
     pattern captured a separate "val" group, so a quoted assignment such as
     password="REPLACE_ME" is allowed exactly like the unquoted --password=REPLACE_ME.
+    A database URL pointing at a loopback host is allowed.
     """
     if not command:
         return None
@@ -193,6 +204,8 @@ def find_credential(command: str):
         for match in pattern.finditer(command):
             value = match.group("val") if "val" in pattern.groupindex else match.group(0)
             if _is_placeholder_value(value):
+                continue
+            if "host" in pattern.groupindex and (match.group("host") or "").strip("[]").lower() in LOOPBACK_HOSTS:
                 continue
             return label
     return None
@@ -234,7 +247,9 @@ def main() -> int:
         if len(payload) > MAX_INPUT_BYTES:
             raise ValueError("hook input too large")
         result = decide(json.loads(payload))
-    except (ValueError, TypeError, RecursionError):
+    except Exception:
+        # Any failure, not only malformed input, blocks: a hook that crashes with an
+        # ordinary non-zero exit would let the host run the command.
         record_evidence("input_error")
         print(
             "Catpilot secret check could not read the hook input, so the command was not allowed. "

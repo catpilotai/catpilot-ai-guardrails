@@ -9,7 +9,7 @@ Verification status is in the [table at the end](#verification-status). A channe
 Central deployment puts the same files on every machine from a source the user cannot override: an admin-managed settings file, an MDM profile, a workspace setting. That answers "how do I roll this out to forty people" and "how do I know it is still there next month." It does not change what the files are:
 
 - A skill is still guidance the model reads. Centrally deployed, it is guidance the model reads on every machine.
-- The two `PreToolUse` hooks are still the only enforcement, on Claude Code only, on the `Bash` and file-write paths only. Centrally deployed, they are enforcement the user cannot switch off, which is the difference that matters for a control.
+- The three `PreToolUse` hooks are still the only enforcement, on Claude Code only, on the `Bash` and file-write paths only. Centrally deployed, they are enforcement the user cannot switch off, which is the difference that matters for a control.
 - The server still answers lookups the model chooses to make. Centrally deployed, it is reachable from every session, and with your overlay loaded it answers with your company's approved options instead of generic defaults.
 - ChatGPT and Claude.ai have no hook surface. On those hosts the honest story is coaching plus the vendor's own admin controls.
 
@@ -21,7 +21,7 @@ Everything an administrator places is under [`deploy/org/`](../deploy/org/):
 
 | File | What it is |
 | --- | --- |
-| `claude-code/managed-settings.json` | Both hooks, with the evidence log turned on per user, and the server provided through `managedMcpServers` alongside whatever servers users already have |
+| `claude-code/managed-settings.json` | All three hooks, with the evidence log turned on per user, and the server provided through `managedMcpServers` alongside whatever servers users already have |
 | `claude-code/managed-mcp.json` | The stricter alternative for the server: a fixed set, and users cannot add others |
 | `codex/managed_config.toml` | The server as a managed default for Codex CLI |
 | `install.sh` | Places all of it on one macOS or Linux machine as root, with your server URL substituted; refuses to overwrite a managed file that already exists and prints what to merge instead; `--managed-mcp-json` also writes the fixed-set `managed-mcp.json` |
@@ -42,7 +42,7 @@ Claude Code reads an admin-managed settings file above every user, project, and 
 
 Delivery options, from the vendor's [managed settings](https://code.claude.com/docs/en/managed-settings) page: the `managed-settings.json` file in that directory, an MDM profile (macOS managed preferences domain `com.anthropic.claudecode`, or the `Settings` value under `HKLM\SOFTWARE\Policies\ClaudeCode` on Windows), or server-managed settings from the claude.ai admin console. The file and the MDM profile reach local sessions; cloud sessions read only server-managed settings.
 
-**What the example file carries.** `deploy/org/claude-code/managed-settings.json` registers the two hooks from a root-owned copy under `<managed dir>/catpilot-guardrails/hooks/` (a hook the user can edit is not a control), sets `CATPILOT_EVIDENCE_LOG` on each hook command so denials are recorded under the user's home, and provides the server through `managedMcpServers`, which adds it to every user's session without removing servers they configured themselves. To lock the server set instead, deploy `managed-mcp.json` in the same directory (`install.sh --managed-mcp-json`); then only the servers it lists load, and `claude mcp add` refuses others. On Claude Code 2.1.241 the `managedMcpServers` key in the managed settings file did not load the server in Catpilot's check (the hooks and skills from the same file and directory did), while `managed-mcp.json` in the same directory did: `claude mcp list` showed only that server, connected, and a session completed a lookup through it. Until a newer version is checked, provide the server through `managed-mcp.json` or through a `.mcp.json` committed to your template repositories ([`mcp-server/host-configs/`](../mcp-server/host-configs/)). `allowManagedHooksOnly: true` and `allowManagedPermissionRulesOnly: true` are available if you want the managed file to be the only source of hooks or permission rules; the example leaves them out.
+**What the example file carries.** `deploy/org/claude-code/managed-settings.json` registers the three hooks from a root-owned copy under `<managed dir>/catpilot-guardrails/hooks/` (a hook the user can edit is not a control), sets `CATPILOT_EVIDENCE_LOG` on each hook command so denials are recorded under the user's home, and provides the server through `managedMcpServers`, which adds it to every user's session without removing servers they configured themselves. To lock the server set instead, deploy `managed-mcp.json` in the same directory (`install.sh --managed-mcp-json`); then only the servers it lists load, and `claude mcp add` refuses others. On Claude Code 2.1.241 the `managedMcpServers` key in the managed settings file did not load the server in Catpilot's check (the hooks and skills from the same file and directory did), while `managed-mcp.json` in the same directory did: `claude mcp list` showed only that server, connected, and a session completed a lookup through it. Until a newer version is checked, provide the server through `managed-mcp.json` or through a `.mcp.json` committed to your template repositories ([`mcp-server/host-configs/`](../mcp-server/host-configs/)). `allowManagedHooksOnly: true` and `allowManagedPermissionRulesOnly: true` are available if you want the managed file to be the only source of hooks or permission rules; the example leaves them out.
 
 **Skills.** Two central routes. A skill placed at `<managed dir>/.claude/skills/<name>/SKILL.md` loads for every user of the machine; the install script puts the chosen skills there. Alternatively, an organization owner uploads the skill once in claude.ai (below), and Claude Code v2.1.273 and later syncs the skills enabled for a signed-in claude.ai account into terminal sessions (`syncClaudeAiSkills`, on by default; not for API-key sessions). The repository route, `.claude/skills/` committed to your template repositories, still works and needs no admin rights.
 
@@ -115,14 +115,15 @@ On an individual plan only route 3 and a private custom GPT are available; they 
 
 ## The evidence log
 
-Both hooks and the server can append one JSON line per event to a local file named by `CATPILOT_EVIDENCE_LOG`. Off unless the variable is set; the public endpoint never sets it. A logging failure never changes a decision or an answer.
+The three hooks and the server can append one JSON line per event to a local file named by `CATPILOT_EVIDENCE_LOG`. Off unless the variable is set; the public endpoint never sets it. A logging failure never changes a decision or an answer.
 
 What a line carries, and what it never carries:
 
 | Source | Recorded | Never recorded |
 | --- | --- | --- |
 | `pretooluse-secrets` | time, hook, `deny` or `input_error`, tool `Bash`, the credential type (`label`), the session id | the command, the matched text |
-| `pretooluse-write-private-key` | time, hook, `deny` or `input_error`, the tool (`Write`, `Edit`, ...), `private-key-block`, the session id | the file path, the content |
+| `pretooluse-write-secrets` (logged as `pretooluse-write-private-key` before the rename) | time, hook, `deny` or `input_error`, the tool (`Write`, `Edit`, ...), the credential type or `private-key-block`, the session id | the file path, the content |
+| `pretooluse-destructive-ops` | time, hook, `deny` or `input_error`, tool `Bash`, the operation type (`label`), the session id | the command |
 | `mcp-server` | time, release, tool, `policy_status`, `unknown_policy`, the enumerated argument (`topic`, `category`, `kind`, or `invalid`), and for `check_plan` the `outcome`, `ask_a_human`, and the *names* of the fields the caller supplied | the description, data classes, hosting, services, or any other value |
 
 ```json
@@ -138,7 +139,7 @@ What a pilot report reads from it: denials per hook per day (the hooks were in f
 
 | Channel | What was checked | Date | By |
 | --- | --- | --- | --- |
-| Claude Code, hooks through the managed settings file | verified on 2.1.241 through the system path: both hooks denied, the evidence log received one line per denial with the session id, no user or project hook was configured ([note](../evals/reports/2026.09.20-org-deployment-verification.md)) | 2026-09-20 | Basil placed the file; Catpilot ran the session |
+| Claude Code, hooks through the managed settings file | verified on 2.1.241 through the system path: both hooks denied, the evidence log received one line per denial with the session id, no user or project hook was configured ([note](../evals/reports/2026.09.20-org-deployment-verification.md)); the destructive-operation hook and the renamed write hook were verified from project settings on 2.1.312 ([note](../evals/reports/2026.10.27-hooks-verification.md)), not yet through this system path | 2026-09-20 | Basil placed the file; Catpilot ran the session |
 | Claude Code, managed skills directory | verified on 2.1.241: both skills listed in a session with no user or project skill installed ([note](../evals/reports/2026.09.20-org-deployment-verification.md)) | 2026-09-20 | Basil placed the files; Catpilot ran the session |
 | Claude Code, plugin from `.claude-plugin/` | verified from a local checkout on 2.1.241: validate, a `--plugin-dir` session listing both namespaced skills, `marketplace add` and `install` in a throwaway config directory ([note](../evals/reports/2026.09.20-org-deployment-verification.md)); the GitHub form of `marketplace add` and `install` verified after merge | 2026-09-20 | Catpilot |
 | Claude Code, server through `managed-mcp.json` | verified on 2.1.241 through the system path: `claude mcp list` showed only the managed server, connected, and a session completed `list_approved` through it ([note](../evals/reports/2026.09.20-org-deployment-verification.md)) | 2026-09-20 | Basil placed the file; Catpilot ran the session |

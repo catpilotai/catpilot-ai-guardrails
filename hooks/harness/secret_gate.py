@@ -30,7 +30,7 @@ from pathlib import Path
 
 _HOOK_DIR = Path(__file__).resolve().parent.parent / "claude-code"
 _HOOK = _HOOK_DIR / "pretooluse-secrets.py"
-_WRITE_HOOK = _HOOK_DIR / "pretooluse-write-private-key.py"
+_WRITE_HOOK = _HOOK_DIR / "pretooluse-write-secrets.py"
 
 
 def _load_module(name: str, path: Path):

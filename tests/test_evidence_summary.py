@@ -12,6 +12,16 @@ from tools import evidence_summary
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class HookRenameTests(unittest.TestCase):
+    def test_old_write_hook_name_counts_under_the_new_one(self):
+        from tools.evidence_summary import summarize_lines
+        report = summarize_lines([
+            json.dumps({"source": "claude-code-hook", "hook": "pretooluse-write-private-key", "event": "deny", "tool": "Write", "label": "x"}),
+            json.dumps({"source": "claude-code-hook", "hook": "pretooluse-write-secrets", "event": "deny", "tool": "Write", "label": "x"}),
+        ])
+        self.assertEqual(report["hooks"]["denials_by_hook"], {"pretooluse-write-secrets": 2})
+
+
 class EvidenceSummaryTests(unittest.TestCase):
     def test_summarizes_hooks_and_mcp_events_in_markdown_and_json(self):
         events = [
