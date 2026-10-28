@@ -9,7 +9,7 @@
     {
       "name": "catpilot-guardrails",
       "source": "./",
-      "description": "Catpilot Security Skills: catpilot-safe-building and catpilot-security-core, as a skills-only plugin.",
+      "description": "Catpilot Security Skills: catpilot-safe-building, catpilot-security-core, and catpilot-agentic-security, as a skills-only plugin.",
       "version": "2026.09.18"
     }
   ]

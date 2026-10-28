@@ -28,10 +28,13 @@ Scope, stated exactly:
       * unconfirmed database or cache wipes: `prisma db push --accept-data-loss`,
         `prisma migrate reset --force`, `rails`/`rake` `db:drop`/`db:reset`/
         `db:schema:load`/`db:structure:load`, Django `flush --noinput`,
-        `dropdb`, `redis-cli FLUSHALL`/`FLUSHDB`, and inline SQL via `psql`/
-        `mysql`/`mariadb`/`sqlite3`/`sqlcmd` containing `DROP DATABASE`,
-        `DROP SCHEMA`, `DROP TABLE`, `TRUNCATE`, or an unscoped `DELETE FROM`
-        without a `WHERE` clause
+        `dropdb`, `redis-cli FLUSHALL`/`FLUSHDB`, and a `psql`/`mysql`/`mariadb`/
+        `sqlite3`/`sqlcmd` command whose command line (flags, arguments, heredoc,
+        here-string, or piped text) contains `DROP DATABASE`, `DROP SCHEMA`,
+        `DROP TABLE`, `TRUNCATE`, or a `DELETE FROM` with no `WHERE` clause;
+        also through `docker`/`podman exec`, `docker compose exec`/`run`,
+        `kubectl exec --`, `railway run`, and package runners. SQL in a file
+        (`-f`, `<`) is not read
       * direct credential exfiltration pipes (cat ~/.ssh/... | curl, env | curl)
         and pipe-to-shell with sudo
   - On a match, returns a PreToolUse "deny" decision with a plain-language
@@ -324,30 +327,71 @@ def _kubectl_finding(args: list[str]) -> bool:
 
 
 SQL_CLIENTS = {"psql", "mysql", "mariadb", "sqlite3", "sqlcmd"}
-SQL_INLINE_FLAGS = {"-c", "--command", "-e", "--execute", "-Q", "-q", "-cmd"}
-SQL_DESTRUCTIVE_RE = re.compile(
-    r"\b(?:"
-    r"DROP\s+(?:DATABASE|SCHEMA|TABLE)\b"
-    r"|TRUNCATE\s+(?:TABLE\s+)?[A-Za-z0-9_.\"`\[\]]+"
-    r"|DELETE\s+FROM\s+[A-Za-z0-9_.\"`\[\]]+\s*(?:;|$)"
-    r")",
+SQL_DROP_OR_TRUNCATE = re.compile(
+    r"\bDROP\s+(?:DATABASE|SCHEMA|TABLE)\b"
+    r"|\bTRUNCATE\s+(?:TABLE\s+)?[\"`\[]?[A-Za-z_]",  # TRUNCATE(x, 2) is MySQL's numeric function
     re.IGNORECASE,
 )
+SQL_DELETE_FROM = re.compile(r"\bDELETE\s+FROM\b", re.IGNORECASE)
+SQL_WHERE = re.compile(r"\bWHERE\b", re.IGNORECASE)
 RAILS_DESTRUCTIVE_TASKS = {"db:drop", "db:reset", "db:schema:load", "db:structure:load"}
+# Options that take a separate value, per runner, so the command after them is found.
+CONTAINER_VALUE_OPTIONS = {
+    "-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir", "--detach-keys", "--index",
+    "--name", "-v", "--volume", "-p", "--publish", "--entrypoint", "-l", "--label",
+}
+RAILWAY_VALUE_OPTIONS = {"-s", "--service", "-e", "--environment"}
+NPM_VALUE_OPTIONS = {"-p", "--package", "-w", "--workspace", "-c", "--call"}
+YARN_PNPM_VALUE_OPTIONS = {"--cwd", "-C", "--dir", "--filter", "-F"}
+
+
+def _skip_options(args: list[str], value_options: set[str]) -> list[str]:
+    """Drop leading options (and the values of those in value_options); stop after `--`."""
+    idx = 0
+    while idx < len(args) and args[idx].startswith("-"):
+        if args[idx] == "--":
+            return args[idx + 1:]
+        idx += 2 if args[idx] in value_options else 1
+    return args[idx:]
+
+
+def _unwrap_exec(name: str, args: list[str]) -> tuple[str, list[str]]:
+    """Strip container and remote runners: docker/podman exec, docker compose exec/run, kubectl exec --, railway run."""
+    if name in ("docker", "podman") and args[:1] == ["compose"]:
+        name, args = "docker-compose", args[1:]
+    if name == "kubectl" and args[:1] == ["exec"]:
+        rest = args[args.index("--") + 1:] if "--" in args else []
+        return (os.path.basename(rest[0]), rest[1:]) if rest else (name, args)
+    if name == "railway" and args[:1] == ["run"]:
+        rest = _skip_options(args[1:], RAILWAY_VALUE_OPTIONS)
+        return (os.path.basename(rest[0]), rest[1:]) if rest else (name, args)
+    if (name in ("docker", "podman") and args[:1] == ["exec"]) or (name == "docker-compose" and args[:1] in (["exec"], ["run"])):
+        rest = _skip_options(args[1:], CONTAINER_VALUE_OPTIONS)
+        if len(rest) >= 2:  # the container or service, then the command
+            return os.path.basename(rest[1]), rest[2:]
+    return name, args
 
 
 def _unwrap_runner(name: str, args: list[str]) -> tuple[str, list[str]]:
-    """Strip package/runtime runner prefixes (npx, bundle exec, poetry/uv run, python manage.py)."""
+    """Strip package/runtime runner prefixes (npx, npm exec, yarn/pnpm, bundle exec, poetry/uv run, python manage.py)."""
     if name in ("npx", "bunx", "pnpx"):
         idx = 0
         while idx < len(args) and args[idx].startswith("-"):
             idx += 2 if args[idx] in ("-p", "--package") else 1
         if idx < len(args):
             return os.path.basename(args[idx]), args[idx + 1:]
-    elif name in ("yarn", "pnpm") and args:
-        if args[0] in ("dlx", "exec") and len(args) > 1:
-            return os.path.basename(args[1]), args[2:]
-        return os.path.basename(args[0]), args[1:]
+    elif name == "npm" and args[:1] in (["exec"], ["x"]):
+        rest = _skip_options(args[1:], NPM_VALUE_OPTIONS)
+        if rest:
+            return os.path.basename(rest[0]), rest[1:]
+    elif name in ("yarn", "pnpm"):
+        rest = _skip_options(args, YARN_PNPM_VALUE_OPTIONS)
+        if rest[:1] == ["workspace"] and len(rest) > 2:
+            rest = rest[2:]
+        if rest[:1] in (["dlx"], ["exec"], ["run"]):
+            rest = rest[1:]
+        if rest:
+            return os.path.basename(rest[0]), rest[1:]
     elif name == "bundle" and len(args) >= 2 and args[0] == "exec":
         return os.path.basename(args[1]), args[2:]
     elif name in ("poetry", "uv", "pipenv") and len(args) >= 2 and args[0] == "run":
@@ -360,36 +404,28 @@ def _unwrap_runner(name: str, args: list[str]) -> tuple[str, list[str]]:
     return name, args
 
 
-def _inline_sql_snippets(name: str, args: list[str]) -> list[str]:
-    snippets: list[str] = []
-    positional: list[str] = []
-    idx = 0
-    while idx < len(args):
-        arg = args[idx]
-        if arg in SQL_INLINE_FLAGS and idx + 1 < len(args):
-            snippets.append(args[idx + 1])
-            idx += 2
-            continue
-        if arg.startswith(("--command=", "--execute=")):
-            snippets.append(arg.split("=", 1)[1])
-            idx += 1
-            continue
-        if name in ("psql", "mysql", "mariadb") and len(arg) > 2 and arg[:2] in ("-c", "-e"):
-            snippets.append(arg[2:])
-            idx += 1
-            continue
-        if arg.startswith("-"):
-            takes_val = arg in ("-h", "--host", "-p", "--port", "-U", "-u", "--user", "-d", "--dbname", "-D", "--database", "-S", "-f", "--file")
-            idx += 2 if takes_val else 1
-            continue
-        positional.append(arg)
-        idx += 1
-    if name == "sqlite3" and len(positional) >= 2:
-        snippets.extend(positional[1:])
-    return snippets
+def _destructive_sql(text: str) -> bool:
+    """True when a ;-separated statement drops a database, schema, or table, truncates, or deletes with no WHERE."""
+    for statement in text.split(";"):
+        if SQL_DROP_OR_TRUNCATE.search(statement):
+            return True
+        delete = SQL_DELETE_FROM.search(statement)
+        if delete and not SQL_WHERE.search(statement, delete.end()):
+            return True
+    return False
 
 
-def _db_finding(name: str, args: list[str]) -> tuple[str, str] | None:
+def _db_finding(name: str, args: list[str], command: str, depth: int = 0) -> tuple[str, str] | None:
+    name, args = _unwrap_exec(name, args)
+    if name in SHELLS and "-c" in args:
+        # A shell started inside a container (docker compose exec db sh -c "psql ..."): check its commands too.
+        index = args.index("-c")
+        if depth < 3 and index + 1 < len(args):
+            for inner in _simple_commands(args[index + 1], depth + 1):
+                hit = _db_finding(inner[0], inner[1:], command, depth + 1)
+                if hit is not None:
+                    return hit
+        return None
     name, args = _unwrap_runner(name, args)
     if name in ("python", "python3") and args:
         name, args = _unwrap_runner(name, args)
@@ -428,13 +464,14 @@ def _db_finding(name: str, args: list[str]) -> tuple[str, str] | None:
             "redis-cli FLUSHALL/FLUSHDB",
             "Scan and delete specific keys with `SCAN` and `DEL`/`UNLINK` after confirming the key pattern and count with the user.",
         )
-    if name in SQL_CLIENTS:
-        for sql in _inline_sql_snippets(name, args):
-            if SQL_DESTRUCTIVE_RE.search(sql):
-                return (
-                    "inline destructive SQL (DROP, TRUNCATE, or unscoped DELETE)",
-                    "Run `SELECT COUNT(*)` first, wrap mutating SQL in an explicit `BEGIN`/`COMMIT` transaction with a `WHERE` clause, and get explicit user confirmation before dropping tables or databases.",
-                )
+    # A SQL client reads its statements from flags (-c, -tAc, -e, -Q), positional arguments, a heredoc, a
+    # here-string, or a pipe; rather than model each client's options, check the whole command line. SQL in a
+    # file passed with -f or < is not read.
+    if name in SQL_CLIENTS and _destructive_sql(command):
+        return (
+            "inline destructive SQL (DROP, TRUNCATE, or unscoped DELETE)",
+            "Run `SELECT COUNT(*)` first, wrap mutating SQL in an explicit `BEGIN`/`COMMIT` transaction with a `WHERE` clause, and get explicit user confirmation before dropping tables or databases.",
+        )
     return None
 
 
@@ -454,7 +491,7 @@ def find_destructive_op(command: str, cwd: str | None = None) -> tuple[str, str]
             return GIT_LABEL, GIT_NOTE
         if name == "kubectl" and _kubectl_finding(args):
             return KUBECTL_LABEL, KUBECTL_NOTE
-        db_hit = _db_finding(name, args)
+        db_hit = _db_finding(name, args, command)
         if db_hit is not None:
             return db_hit
     return None

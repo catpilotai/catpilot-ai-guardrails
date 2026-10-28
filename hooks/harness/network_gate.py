@@ -9,8 +9,13 @@ Scope, stated honestly:
   - Blocks non-HTTP(S) schemes, URLs with embedded credentials, cloud metadata
     hostnames (`169.254.169.254`, `metadata.google.internal`, `metadata.internal`,
     `100.100.100.200`), `localhost`, IP literals in private/loopback/link-local/
-    reserved/multicast/unspecified ranges, and (when `resolve_dns=True`) any
-    hostname that fails DNS resolution or resolves to a non-public IP address.
+    reserved/multicast/unspecified ranges (including the numeric forms
+    `2130706433`, `0x7f000001`, `0177.0.0.1`, and `127.1`, which most clients
+    accept), and (when `resolve_dns=True`) any hostname that fails DNS
+    resolution or resolves to a non-public IP address.
+  - Resolves the name once. A client that resolves it again can get a
+    different answer (DNS rebinding); where that matters, connect to the
+    checked address or send traffic through an egress proxy.
   - Optionally enforces an explicit hostname allowlist (`allowed_hosts`).
   - Returns a plain-language reason string on a blocked URL, or `None` when no
     rule matched. Never returns "allow". Fails closed on non-string input.
@@ -20,6 +25,7 @@ Standard library only. Python 3.8+.
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 import sys
 from urllib.parse import urlparse
@@ -34,6 +40,38 @@ METADATA_HOSTS = {
     "localhost",
     "localhost.localdomain",
 }
+
+
+# Hosts that most HTTP clients read as an IPv4 address (the inet_aton forms): one to four parts, each
+# decimal, hex (0x), or octal (leading 0), the last part filling the remaining bytes.
+NUMERIC_IPV4 = re.compile(r"^(?:0x[0-9a-f]*|[0-9]+)(?:\.(?:0x[0-9a-f]*|[0-9]+)){0,3}$")
+
+
+def _numeric_ipv4(host: str) -> str | None:
+    """The dotted-quad address a numeric host means (2130706433 -> 127.0.0.1), "invalid", or None if not numeric.
+
+    Parsed here rather than with socket.inet_aton, whose range checks differ by platform.
+    """
+    if not NUMERIC_IPV4.match(host):
+        return None
+    values = []
+    for part in host.split("."):
+        try:
+            if part.startswith("0x"):
+                values.append(int(part[2:], 16))
+            elif len(part) > 1 and part.startswith("0"):
+                values.append(int(part, 8))
+            else:
+                values.append(int(part))
+        except ValueError:
+            return "invalid"
+    *head, last = values
+    if any(value > 255 for value in head) or last >= 256 ** (4 - len(head)):
+        return "invalid"
+    number = 0
+    for value in head:
+        number = number * 256 + value
+    return str(ipaddress.IPv4Address(number * 256 ** (4 - len(head)) + last))
 
 
 def _is_nonpublic_ip(ip_str: str) -> str | None:
@@ -92,6 +130,10 @@ def gate_url_fetch(
     host = (parsed.hostname or "").strip().rstrip(".").lower()
     if not host:
         return "Blocked URL fetch: URL is missing a hostname."
+    try:
+        port = parsed.port
+    except ValueError:
+        return "Blocked URL fetch: the URL's port is not a valid number."
 
     if host in METADATA_HOSTS or host.endswith(".internal") or host.endswith(".local"):
         return (
@@ -104,22 +146,26 @@ def gate_url_fetch(
         if host not in normalized_allow:
             return f"Blocked URL fetch: host {host!r} is not in the allowed_hosts list."
 
-    # Check if host is directly an IP literal
+    # Check if host is directly an IP literal, in standard or numeric (2130706433, 0x7f000001, 127.1) form
+    numeric = _numeric_ipv4(host)
+    if numeric == "invalid":
+        return f"Blocked URL fetch: host {host!r} looks like a numeric IP address but is not a valid one."
+    literal = numeric or host
     try:
-        ipaddress.ip_address(host.split("%", 1)[0])
+        ipaddress.ip_address(literal.split("%", 1)[0])
         is_ip_literal = True
     except ValueError:
         is_ip_literal = False
 
     if is_ip_literal:
-        reason = _is_nonpublic_ip(host)
+        reason = _is_nonpublic_ip(literal)
         if reason is not None:
             return f"Blocked URL fetch: host {host!r} is a {reason}."
         return None
 
     if resolve_dns:
         try:
-            infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme.lower() == "https" else 80), proto=socket.IPPROTO_TCP)
+            infos = socket.getaddrinfo(host, port or (443 if parsed.scheme.lower() == "https" else 80), proto=socket.IPPROTO_TCP)
         except OSError:
             return f"Blocked URL fetch: could not resolve hostname {host!r} (failing closed)."
         if not infos:

@@ -9,13 +9,13 @@
 
 ![Release](https://img.shields.io/github/v/release/catpilotai/catpilot-ai-guardrails?label=release&color=blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Format](https://img.shields.io/badge/format-Agent%20Skills-7B3FE4)
 
-Two security skills in the [Agent Skills](https://agentskills.io/specification) format: one for coding agents working in a codebase, one for the person, often not a developer, building something with an AI assistant. Either can run inside an agent loop a team builds. One repository, no telemetry.
+Three security skills in the [Agent Skills](https://agentskills.io/specification) format: one for coding agents working in a codebase, one for the person, often not a developer, building something with an AI assistant, and one for the team building an agent loop of its own. One repository, no telemetry.
 
 | Skill | Who it is for | What it covers |
 | --- | --- | --- |
 | **`catpilot-safe-building`** | A person, often not a developer, building an app, automation, dashboard, or data tool with an AI assistant, and the assistant helping them | Eight plain-language checkpoints that mirror Catpilot's Safe AI-assisted building course: data in prompts, access and identity, hosting, sharing, keys and credentials, third-party services, untrusted input, when to ask a human. |
 | **`catpilot-security-core`** | Coding agents working in real codebases | Nine engineering components: cloud CLI, databases, local shell, Docker, hardcoded secrets, secrets lifecycle, supply chain, PII and test data, secure-coding patterns. |
-| **Either skill, plus `hooks/` and `frameworks/agentic/`** | A harness: the loop a team builds around a model for one job | Standing guidance for every iteration of the loop, credential and destructive-command gates the loop enforces on its shell and file-write tools, and reference rules for retries, scheduled runs, delegation, and self-modification. See [For agent harnesses](docs/REFERENCE.md#for-agent-harnesses). |
+| **`catpilot-agentic-security`, plus `hooks/harness/`** | A harness: the loop a team builds around a model for one job | Five components of standing guidance for the loop (tool-execution sandboxing, memory and identity, multi-agent authentication and delegation, scheduled-task idempotency, loop discipline), and gates the loop enforces on the tools it routes through them: credentials, destructive commands, outbound URLs, and file paths. See [For agent harnesses](docs/REFERENCE.md#for-agent-harnesses). |
 
 Born from a real incident where an agent wiped production environment variables with a partial YAML update. The rules draw on incidents like that one and are used at [Catpilot.ai](https://catpilot.ai). They are MIT-licensed guidance, not a guarantee that an agent will follow them.
 
@@ -48,6 +48,7 @@ One Claude Code run in the last column hit the host's turn limit and did not com
 ```bash
 npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-safe-building
 npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-security-core
+npx skills add catpilotai/catpilot-ai-guardrails --skill catpilot-agentic-security   # if you build an agent loop
 ```
 
 Installation makes the instructions available to a compatible host; it does **not** prove they were loaded, followed, or enforced. Confirm the installed version, then try a safe and an unsafe task in an isolated environment. The [skills.sh CLI](https://skills.sh) (`vercel-labs/skills`) places the files for the hosts it supports; what Catpilot has actually observed on each host is in the [tested runtimes](docs/REFERENCE.md#tested-runtimes). Global installs, a specific agent, manual copies, and Hermes Agent: [`docs/INSTALL.md`](docs/INSTALL.md).
@@ -56,7 +57,7 @@ As a Claude Code plugin, skills only: `/plugin marketplace add catpilotai/catpil
 
 Rolling it out to a team or a whole company, with the files an administrator places and how to confirm they landed: [`docs/DEPLOY_ORG.md`](docs/DEPLOY_ORG.md).
 
-Building your own agent loop? The harness notes, the credential gate as a plain function, and the loop rules are in the [technical reference](docs/REFERENCE.md#for-agent-harnesses).
+Building your own agent loop? The harness notes, the gates as plain functions, and the loop rules are in the [technical reference](docs/REFERENCE.md#for-agent-harnesses).
 
 ## For non-engineers
 
@@ -104,6 +105,10 @@ Guidance for code generation, file edits, and shell commands: advice the agent r
 
 Components carry control references for **SOC 2, PCI-DSS, ISO 27001, NIST CSF, and OWASP Top 10**, with severity, suggested evidence patterns, and worked negative examples. These references do not establish compliance, current control applicability, or that a check ran. Review mappings against the relevant standard version and customer scope.
 
+### `catpilot-agentic-security`
+
+Guidance for the people building an agent loop and for the loop itself: advice, applied when the loop or the agent has loaded it. Five components, each a reference file the host opens when it is working in that area: **tool-sandboxing**, **memory-and-identity**, **multi-agent-auth**, **cron-idempotency**, and **loop-discipline** (retry caps, re-reading state after every state-changing call, verifier-backed progress, delegation-depth caps). It packages [`frameworks/agentic/FULL_AGENTIC.md`](frameworks/agentic/FULL_AGENTIC.md), which remains the long-form reference. Enforcement for a loop is the gates in [`hooks/harness/`](hooks/harness/), on the tools you route through them.
+
 ### `catpilot-safe-building`
 
 Plain language for a person with a deadline: one question at a time, the risk in one sentence, the safe alternative, and when to stop and ask a human. Each component mirrors checkpoints in Catpilot's Safe AI-assisted building course (Module 399), so the human course and the tool guidance are one artifact in two forms.
@@ -130,7 +135,7 @@ Everything company-specific lives in an **overlay**: a short, reviewed list of a
 | Open source (this repository) | Catpilot Plus |
 | --- | --- |
 | Overlay schema and validator, local merge into a private bundle, generic defaults, the same eight checkpoints as a course for people | Authoring the overlay from the company's actual policies, named-reviewer approval, versioning, tenant-scoped serving to tools, per-person coaching in Slack and Teams, and the evidence trail that links a coached moment to a policy version |
-| Three enforcement hooks and the same checks as harness gates, a content-free evidence log with optional syslog forwarding, `tools/evidence_summary.py` for a pilot readout, and an `escalation_draft` (with an optional `intake_url`) whenever `check_plan` asks for a human | Serving `check_plan` per company, so every `escalation_draft` carries the company's own contact and intake link |
+| Three enforcement hooks, the same checks as harness gates plus outbound-URL and file-path gates, a content-free evidence log with optional syslog forwarding, `tools/evidence_summary.py` for a pilot readout, and an `escalation_draft` (with an optional `intake_url`) whenever `check_plan` asks for a human | Serving `check_plan` per company, so every `escalation_draft` carries the company's own contact and intake link |
 
 Do not put private incidents, customer data, secrets, employee identifiers, or internal policy excerpts into this public baseline or a public fork. The bundler refuses to build if an overlay-shaped file is inside the tree, and a private build must be written outside it. A fork of a public repository is not private storage. Never turn an unreviewed event or document into an authoritative company rule automatically.
 

@@ -10,6 +10,10 @@ Scope, stated honestly:
     `/etc/shadow`, `/etc/sudoers`) even if a caller mistakenly includes the home
     directory in `allowed_dirs`, and requires the resolved target path to lie
     inside at least one directory in `allowed_dirs`.
+  - Matches the credential and system paths without regard to letter case,
+    because the default macOS and Windows file systems ignore it (`~/.SSH`
+    opens `~/.ssh`). The `allowed_dirs` check stays exact, which can only
+    refuse more.
   - Returns a plain-language reason string on a blocked path, or `None` when
     the path is inside `allowed_dirs` and not a sensitive path. Never returns
     "allow". Fails closed on non-string paths or an empty `allowed_dirs`.
@@ -57,6 +61,13 @@ def _is_within(child: Path, parent: Path) -> bool:
         return False
 
 
+def _is_within_any_case(child: Path, parent: Path) -> bool:
+    """Containment or equality, comparing each path component case-insensitively."""
+    child_parts = [part.casefold() for part in child.parts]
+    parent_parts = [part.casefold() for part in parent.parts]
+    return child_parts[: len(parent_parts)] == parent_parts
+
+
 def _resolved_With_expanduser(raw: str | Path, base_dir: Path | None = None) -> Path:
     expanded = Path(os.path.expanduser(str(raw)))
     if not expanded.is_absolute() and base_dir is not None:
@@ -97,7 +108,7 @@ def gate_file_path(
     home = Path.home().resolve()
     for rel in HOME_CREDENTIAL_RELPATHS:
         cred_path = (home / rel).resolve()
-        if target == cred_path or _is_within(target, cred_path):
+        if _is_within_any_case(target, cred_path):
             return (
                 f"Blocked file path: access to credential path '~/{rel}' is prohibited "
                 "even inside an allowed directory."
@@ -105,7 +116,7 @@ def gate_file_path(
 
     for sys_raw in SYSTEM_SENSITIVE_PATHS:
         sys_path = Path(sys_raw)
-        if target == sys_path or _is_within(target, sys_path):
+        if _is_within_any_case(target, sys_path):
             return f"Blocked file path: access to system file '{sys_raw}' is prohibited."
 
     if not any(target == allowed or _is_within(target, allowed) for allowed in resolved_allowed):
