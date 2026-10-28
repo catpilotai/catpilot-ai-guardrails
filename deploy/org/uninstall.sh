@@ -14,14 +14,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$SERVER_URL" ] || { echo "--server-url is required (the URL you installed with)" >&2; exit 2; }
-[ "$(id -u)" -eq 0 ] || { echo "run with sudo" >&2; exit 2; }
+if [ "${CATPILOT_ALLOW_NONROOT:-0}" != "1" ]; then
+  [ "$(id -u)" -eq 0 ] || { echo "run with sudo" >&2; exit 2; }
+fi
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 case "$(uname -s)" in
-  Darwin) CC_DIR="/Library/Application Support/ClaudeCode" ;;
-  Linux) CC_DIR="/etc/claude-code" ;;
+  Darwin) DEFAULT_CC_DIR="/Library/Application Support/ClaudeCode" ;;
+  Linux) DEFAULT_CC_DIR="/etc/claude-code" ;;
   *) echo "unsupported OS: $(uname -s)" >&2; exit 2 ;;
 esac
-CODEX_DIR="/etc/codex"
+CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
+CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
 
 remove_if_ours() {  # $1 = installed file, $2 = expected content
   if [ -e "$1" ]; then
@@ -34,7 +37,13 @@ MCP_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/or
 remove_if_ours "$CC_DIR/managed-mcp.json" "$MCP_JSON"
 CODEX_TOML="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/codex/managed_config.toml")"
 remove_if_ours "$CODEX_DIR/managed_config.toml" "$CODEX_TOML"
-for d in "$CC_DIR/catpilot-guardrails" "$CC_DIR/.claude/skills/catpilot-safe-building" "$CC_DIR/.claude/skills/catpilot-security-core" "$CODEX_DIR/skills/catpilot-safe-building" "$CODEX_DIR/skills/catpilot-security-core"; do
+for d in "$CC_DIR/catpilot-guardrails" \
+         "$CC_DIR"/.claude/skills/catpilot-safe-building* \
+         "$CC_DIR/.claude/skills/catpilot-security-core" \
+         "$CC_DIR/.claude/skills/catpilot-agentic-security" \
+         "$CODEX_DIR"/skills/catpilot-safe-building* \
+         "$CODEX_DIR/skills/catpilot-security-core" \
+         "$CODEX_DIR/skills/catpilot-agentic-security"; do
   [ -e "$d" ] && { rm -rf "$d"; echo "removed $d"; } || true
 done
 echo "Done. Per-user evidence logs under ~/.catpilot-guardrails/ are left in place."

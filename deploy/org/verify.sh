@@ -4,13 +4,16 @@
 # (a denied command, a server lookup, a skill load) are in docs/DEPLOY_ORG.md.
 set -uo pipefail
 case "$(uname -s)" in
-  Darwin) CC_DIR="/Library/Application Support/ClaudeCode" ;;
-  Linux) CC_DIR="/etc/claude-code" ;;
+  Darwin) DEFAULT_CC_DIR="/Library/Application Support/ClaudeCode" ;;
+  Linux) DEFAULT_CC_DIR="/etc/claude-code" ;;
   *) echo "unsupported OS: $(uname -s)" >&2; exit 2 ;;
 esac
+CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
+CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 ok=0; missing=0
 check() { if [ -e "$1" ]; then echo "present  $1"; ok=$((ok+1)); else echo "MISSING  $1"; missing=$((missing+1)); fi; }
-json_ok() { python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" 2>/dev/null && echo "valid    $1 parses as JSON" || echo "INVALID  $1 does not parse as JSON"; }
+json_ok() { "$PYTHON_BIN" -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" 2>/dev/null && echo "valid    $1 parses as JSON" || { echo "INVALID  $1 does not parse as JSON"; missing=$((missing+1)); }; }
 
 echo "Claude Code (managed dir: $CC_DIR)"
 check "$CC_DIR/managed-settings.json"; [ -e "$CC_DIR/managed-settings.json" ] && json_ok "$CC_DIR/managed-settings.json"
@@ -21,9 +24,9 @@ check "$CC_DIR/catpilot-guardrails/hooks/pretooluse-write-private-key.py"  # com
 check "$CC_DIR/catpilot-guardrails/hooks/pretooluse-destructive-ops.py"
 for s in "$CC_DIR"/.claude/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
 echo
-echo "Codex CLI"
-check /etc/codex/managed_config.toml
-for s in /etc/codex/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
+echo "Codex CLI (managed dir: $CODEX_DIR)"
+check "$CODEX_DIR/managed_config.toml"
+for s in "$CODEX_DIR"/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
 echo
 echo "Evidence log for this user"
 if [ -e "$HOME/.catpilot-guardrails/evidence.jsonl" ]; then

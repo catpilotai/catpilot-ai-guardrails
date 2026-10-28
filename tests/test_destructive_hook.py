@@ -69,6 +69,19 @@ DENIED = {
     "kubectl delete across namespaces": "kubectl delete pods -A",
     "kubectl namespace slash form": "kubectl delete namespace/prod",
     "terraform double-dash auto-approve": "terraform apply --auto-approve",
+    "prisma db push accept-data-loss": "npx prisma db push --accept-data-loss",
+    "prisma migrate reset force": "prisma migrate reset --force",
+    "rails db:drop": "bundle exec rails db:drop",
+    "rake db:reset": "rake db:reset",
+    "rails db:schema:load": "rails db:schema:load",
+    "django flush noinput": "python manage.py flush --no-input",
+    "dropdb cli": "dropdb production_db",
+    "redis-cli flushall": "redis-cli -h cache.internal FLUSHALL",
+    "psql drop table": 'psql "$DATABASE_URL" -c "DROP TABLE customers CASCADE;"',
+    "psql truncate table": 'psql "$DATABASE_URL" -c "TRUNCATE TABLE audit_logs;"',
+    "psql delete without where": 'psql "$DATABASE_URL" -c "DELETE FROM users;"',
+    "mysql drop database": 'mysql -u admin -e "DROP DATABASE production"',
+    "sqlite3 inline delete without where": 'sqlite3 app.db "DELETE FROM sessions"',
 }
 
 ALLOWED = {
@@ -98,8 +111,16 @@ ALLOWED = {
     "kubectl delete namespace server dry-run": "kubectl delete ns staging --dry-run=server",
     "kubectl get namespaces": "kubectl get ns",
     "echoing a dangerous string": 'echo "rm -rf /"',
+    "echoing a drop table string": 'echo "DROP TABLE users;"',
     "grep for a dangerous string": "grep -rn 'git push --force origin main' docs/",
     "terraform auto-approve false": "terraform apply -auto-approve=false",
+    "prisma migrate deploy": "npx prisma migrate deploy",
+    "prisma migrate status": "prisma migrate status",
+    "rails db:migrate": "bundle exec rails db:migrate",
+    "django migrate": "python manage.py migrate",
+    "psql select count": 'psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM users WHERE active = false;"',
+    "psql delete with where": 'psql "$DATABASE_URL" -c "BEGIN; DELETE FROM sessions WHERE expires_at < NOW(); COMMIT;"',
+    "redis-cli get key": "redis-cli GET session:123",
 }
 
 

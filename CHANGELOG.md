@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Added
+
+- **Database and cache destruction checks in `pretooluse-destructive-ops.py`.** `hooks/claude-code/pretooluse-destructive-ops.py` (and `hooks/harness/destructive_gate.py`) now inspects parsed simple commands (unwrapping `npx`, `bunx`, `pnpx`, `yarn`, `pnpm`, `bundle exec`, `poetry`/`uv`/`pipenv run`, and `python manage.py`) to block `prisma db push --accept-data-loss`, `prisma migrate reset --force`, `rails`/`rake` `db:drop`/`db:reset`/`db:schema:load`/`db:structure:load`, Django `flush --noinput`, `dropdb`, `redis-cli FLUSHALL`/`FLUSHDB`, and inline SQL passed to `psql`, `mysql`, `mariadb`, `sqlite3`, or `sqlcmd` containing `DROP DATABASE`, `DROP SCHEMA`, `DROP TABLE`, `TRUNCATE`, or an unscoped `DELETE FROM` without a `WHERE` clause. Tests in `tests/test_destructive_hook.py`.
+- **Outbound SSRF (`network_gate.py`) and workspace path-confinement (`path_gate.py`) harness gates.** `hooks/harness/network_gate.py` provides `gate_url_fetch()` and `gate_url_tool_call()` (blocking non-HTTP(S) schemes, embedded credentials, `169.254.169.254` / `metadata.google.internal` / `localhost`, and DNS-resolved private, loopback, link-local, and reserved IPs). `hooks/harness/path_gate.py` provides `gate_file_path()` and `gate_path_tool_call()` (resolving symlinks and `~`, blocking credential directories and `/etc/passwd` / `/etc/shadow`, and confining paths to `allowed_dirs`). Tests in `tests/test_harness_gates.py`.
+- **`catpilot-agentic-security` (`2026.10.28`) skill bundle.** `src/skills/agentic/` packages the agentic security guidance from `frameworks/agentic/FULL_AGENTIC.md` into a shipped Agent Skills bundle (`skills/catpilot-agentic-security/SKILL.md`, `catpilot.json`, and 5 `references/*.md` components: `cron-idempotency`, `loop-discipline`, `memory-and-identity`, `multi-agent-auth`, and `tool-sandboxing`).
+- **End-to-end verification suite for `deploy/org/` scripts.** `deploy/org/install.sh`, `deploy/org/verify.sh`, and `deploy/org/uninstall.sh` accept `CATPILOT_CC_DIR`, `CATPILOT_CODEX_DIR`, and `CATPILOT_ALLOW_NONROOT` overrides and clean up private overlay skill folders on uninstall. Tested end-to-end in `tests/test_deploy_org.py`.
+
 ## [2026.10.27] — 2026-10-27
 
 ### Added
