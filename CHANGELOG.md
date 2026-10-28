@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Changed
+
+- **The README leads with company rules.** It opens with the policy layer (one reviewed company-rules file served to every AI tool through the reference server) and a 15-minute quickstart: install, copy and validate the example rules, add the server to Claude Code (`claude mcp add -s user`) and Codex (`codex mcp add`), and ask a planning question. Every step was run on 2026-10-28, including one Claude Code session that called `check_plan` against the example file. The skills and hooks follow as the open baseline. User-facing text says "company rules"; "overlay" stays the name of the file format. The title is now "Catpilot Guardrails", matching the repository, and the "what this does" section names three skills and the database checks.
+
 ## [2026.10.28] — 2026-10-28
 
 ### Added
