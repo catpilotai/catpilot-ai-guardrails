@@ -1,6 +1,6 @@
 {
   "name": "catpilot",
-  "description": "Catpilot Security Skills for AI coding agents and for the people building with them, as a skills-only plugin.",
+  "description": "Catpilot Guardrails: security skills for AI coding agents and for the people building with them, as a skills-only plugin.",
   "owner": {
     "name": "Catpilot",
     "url": "https://catpilot.ai"
@@ -9,7 +9,7 @@
     {
       "name": "catpilot-guardrails",
       "source": "./",
-      "description": "Catpilot Security Skills: catpilot-safe-building, catpilot-security-core, and catpilot-agentic-security, as a skills-only plugin.",
+      "description": "Catpilot Guardrails skills: catpilot-safe-building, catpilot-security-core, and catpilot-agentic-security, as a skills-only plugin.",
       "version": "2026.09.18"
     }
   ]

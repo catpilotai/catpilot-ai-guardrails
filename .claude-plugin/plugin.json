@@ -1,6 +1,6 @@
 {
   "name": "catpilot-guardrails",
-  "displayName": "Catpilot Security Skills",
+  "displayName": "Catpilot Guardrails",
   "version": "2026.09.18",
   "description": "Three security skills in the Agent Skills format: catpilot-safe-building, eight plain-language checkpoints for a person building with an AI assistant; catpilot-security-core, nine engineering components for coding agents; and catpilot-agentic-security, five components for agent loops. Advice the model reads. This plugin carries no hooks, no MCP servers, and no telemetry.",
   "author": { "name": "Catpilot", "url": "https://catpilot.ai" },

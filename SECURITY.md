@@ -13,6 +13,10 @@ If you believe you've found a security issue, please report it privately. 🙏
 
 **Response time:** We'll acknowledge within 48 hours and provide a detailed response within 7 days.
 
+## Release integrity
+
+From `2026.10.29`, each release's source archive and Claude.ai zip carry GitHub build-provenance attestations, and an SPDX SBOM is attested against the source archive. Verify them with `gh attestation verify <file> --repo catpilotai/catpilot-ai-guardrails` ([how](docs/REFERENCE.md#verifying-a-release)). Report a release whose attestation does not verify as a security issue.
+
 ## What's In Scope
 
 This project ships skill markdown files in [Anthropic Agent Skills](https://agentskills.io/specification) format under `skills/` and `src/skills/`, the bundler and validators in `tools/`, the Claude Code hooks and the harness gate in `hooks/`, a reference MCP server in `mcp-server/`, the deployment scripts for the hosted reference server in `deploy/`, and the legacy v2.x bash installer (`setup.sh`). Security concerns include:
