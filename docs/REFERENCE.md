@@ -97,6 +97,24 @@ A recognized file layout helps distribution; it does not guarantee that a host l
 
 CalVer matches the cadence of a content repo: each release is a dated snapshot, and the date is the meaningful signal for users and auditors. Semver on individual components carries the breaking-change semantics that matter for downstream consumers.
 
+## Verifying a release
+
+From `2026.10.29`, each release carries three files that [`release-attestations.yml`](../.github/workflows/release-attestations.yml) builds from the tagged commit and signs with GitHub artifact attestations (Sigstore, keyless through GitHub's OIDC):
+
+- `catpilot-ai-guardrails-<tag>.tar.gz`: the source at the tag, with build provenance.
+- `catpilot-safe-building.zip`: the Claude.ai upload, with build provenance.
+- `catpilot-ai-guardrails-<tag>.spdx.json`: an SPDX 2.3 SBOM of the hash-pinned Python dependencies the server and tools install ([`tools/sbom.py`](../tools/sbom.py)), attested against the source archive. The hooks and gates use the standard library only.
+
+Check a download before installing it:
+
+```bash
+gh attestation verify catpilot-safe-building.zip --repo catpilotai/catpilot-ai-guardrails
+gh attestation verify catpilot-ai-guardrails-2026.10.29.tar.gz --repo catpilotai/catpilot-ai-guardrails \
+  --predicate-type https://spdx.dev/Document/v2.3
+```
+
+A passing check shows the file was built by this repository's workflow from the tagged commit. It does not review the content. Earlier releases are not attested.
+
 ## How it's built
 
 `tools/bundle.py` turns the source components under `src/skills/` into the shipped bundles under `skills/` and the per-host artifacts under `dist/<release>/`, deterministically; CI fails on drift. The core tier renders a baseline plus per-component references; the safe-building tier renders one file plus its per-host targets. The directory tree and the aggregation rules: [`docs/REPOSITORY_LAYOUT.md`](../docs/REPOSITORY_LAYOUT.md) and [`docs/spec/PACKAGING.md`](../docs/spec/PACKAGING.md).

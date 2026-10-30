@@ -4,9 +4,23 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
-## [Unreleased]
+## [2026.10.29] — 2026-10-29
+
+### Added
+
+- **Pilot guide (`docs/PILOT.md`).** A two-to-four-week plan:
+  - the two routes: hosted Catpilot Plus for Claude.ai, ChatGPT, Claude Code and Codex, or self-hosted for Claude Code and Codex. Self-hosting for Claude.ai and ChatGPT is stated as not verified;
+  - week-0 setup, with rules approval, connections, optional hooks and the evidence log;
+  - what to measure (`tools/evidence_summary.py` counts, unnecessary stops, escalations);
+  - the server-versus-pasted-rules comparison on your own tasks (benchmark conditions D and F);
+  - exit criteria, how to end the pilot, and what a pilot does not show.
+- **Signed releases.** `.github/workflows/release-attestations.yml` builds the source archive, the Claude.ai zip and an SPDX SBOM from the tagged commit when a release is published. It signs them with GitHub artifact attestations and attaches them to the release; verify with `gh attestation verify`. This is the only workflow allowed write permissions, and `tests/test_workflows.py` holds it to exactly `contents`, `id-token` and `attestations` on `release`/`workflow_dispatch`, with the tag never interpolated into a script.
+- **`tools/sbom.py`**, standard library only: SPDX 2.3 from the hash-pinned `requirements-dev.txt`, deterministic per tag. Tests in `tests/test_sbom.py`.
+- **`.github/CODEOWNERS`**: review requests go to the maintainer account.
 
 ### Changed
+
+- **The Claude Code plugin is now displayed as "Catpilot Guardrails"**, matching the repository and README. The plugin name `catpilot-guardrails` and its skills-only content are unchanged. The README points pilots that include Claude.ai or ChatGPT to the hosted route, and links the pilot guide and release verification.
 
 - **The README leads with company rules.** It opens with the policy layer (one reviewed company-rules file served to every AI tool through the reference server) and a 15-minute quickstart: install, copy and validate the example rules, add the server to Claude Code (`claude mcp add -s user`) and Codex (`codex mcp add`), and ask a planning question. Every step was run on 2026-10-28, including one Claude Code session that called `check_plan` against the example file. The skills and hooks follow as the open baseline. User-facing text says "company rules"; "overlay" stays the name of the file format. The title is now "Catpilot Guardrails", matching the repository, and the "what this does" section names three skills and the database checks.
 

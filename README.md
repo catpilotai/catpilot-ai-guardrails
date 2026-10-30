@@ -34,7 +34,8 @@ Then, in a new Claude Code or Codex session in any project, ask: *"Before writin
 In one observed run (Claude Code 2.1.312, `claude-haiku-5-5`, the example file, 2026-10-28) the assistant called `check_plan` and wrote no code. It answered that a personal cloud account is not approved hosting and Vercel would be a new service needing review; that real customer names and emails need the data owner's approval; that the allowed path is the company's approved hosting behind company sign-in, shared with a small named group, starting from made-up rows; and that `security-review@example.org` is who to ask, offering to draft the email. One run is an illustration, not a result: the [benchmarks](#what-the-benchmarks-show) are the evidence, with their limits.
 
 - **Make it yours.** Replace the example's values with your company's, have a named person review them, and set `reviewed_on` and `expires_on`. After `expires_on` the server reports the rules as expired and tells the assistant to treat them as unknown and ask the owner. Keep the file out of public repositories. Format and validator: [`docs/spec/OVERLAY.md`](docs/spec/OVERLAY.md).
-- **Claude.ai and ChatGPT** reach the server as a remote connector over HTTPS, so it has to be hosted behind your own gateway: [`mcp-server/README.md`](mcp-server/README.md). Catpilot Plus hosts it per company.
+- **Claude.ai and ChatGPT** reach the server only as a remote connector over HTTPS. Self-hosting it behind your own authenticated gateway is possible ([`mcp-server/README.md`](mcp-server/README.md)) but not verified by Catpilot; for a pilot that includes those tools, use Catpilot Plus, which hosts it per company.
+- **Running a pilot:** a two-to-four-week plan with setup, measures, exit criteria, and the server-versus-pasted-rules comparison on your own tasks: [`docs/PILOT.md`](docs/PILOT.md).
 - **The rules inform; they do not block.** The assistant reads them when it calls the server. The only enforcement here is the Claude Code hooks described in [what this does and does not do](#what-this-does-and-does-not-do).
 
 ## The open baseline
@@ -184,6 +185,8 @@ These validate the test inputs, not agent behavior. `tools/eval.py --execute` ru
 ## Technical reference
 
 Harness notes, the tested-runtimes table, the hooks, the reference MCP server and its hosted endpoint, the skill format, versioning, and how the bundles are built: [`docs/REFERENCE.md`](docs/REFERENCE.md).
+
+Releases from `2026.10.29` are signed: the source archive and the Claude.ai zip carry GitHub build-provenance attestations, with an SPDX SBOM of the pinned dependencies. How to check one before you install it: [verifying a release](docs/REFERENCE.md#verifying-a-release).
 
 ## Contributing
 

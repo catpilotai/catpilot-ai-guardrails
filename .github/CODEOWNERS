@@ -1,0 +1,4 @@
+# Review ownership. Branch protection on main requires one approving review from someone other than the author;
+# GitHub requests it from the owners below. Enforcement (hooks/), the MCP server, the overlay validator, release
+# signing, and workflows are all owned by the maintainer account.
+*    @catpilothq
