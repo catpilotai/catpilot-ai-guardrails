@@ -1,7 +1,9 @@
 """Claude Code PreToolUse destructive-ops hook and harness gate tests."""
 
+import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -102,6 +104,42 @@ DENIED = {
     "npm exec prisma reset": "npm exec -- prisma migrate reset --force",
     "yarn cwd prisma push": "yarn --cwd api prisma db push --accept-data-loss",
     "pnpm filter exec prisma reset": "pnpm --filter api exec prisma migrate reset --force",
+    # A shell given its command string after an option cluster or long option, not only a bare -c.
+    "rm inside bash -lc": "bash -lc 'rm -rf ~'",
+    "force push inside bash -lc": "bash -lc 'git push --force origin main'",
+    "rm inside sh -ec": 'sh -ec "rm -rf $HOME"',
+    "rm inside bash -euc": "bash -euc 'rm -rf /'",
+    "rm inside bash -l -c": "bash -l -c 'rm -rf ~'",
+    "rm inside bash --login -c": "bash --login -c 'rm -rf ~'",
+    "rm inside bash -o pipefail -c": "bash -o pipefail -c 'rm -rf ~'",
+    "rm inside bash -euo pipefail -c": "bash -euo pipefail -c 'rm -rf ~'",
+    "kubectl inside zsh -c after --": "zsh -c -- 'kubectl delete ns prod'",
+    "compose exec bash -lc running psql": "docker compose exec db bash -lc \"psql -c 'DROP TABLE users'\"",
+    "compose exec bash -lc running redis-cli": "docker compose exec cache bash -lc 'redis-cli FLUSHALL'",
+    # Wrappers that run another command: timeout, stdbuf, ionice, setsid, unbuffer.
+    "timeout force push": "timeout 60 git push --force origin main",
+    "timeout with a signal option": "timeout -s KILL 30 rm -rf ~",
+    "timeout with kill-after": "timeout --kill-after 5 60 kubectl delete ns prod",
+    "timeout with attached option": "timeout --signal=TERM 1m rm -rf /",
+    "gtimeout rm": "gtimeout 10m rm -rf /",
+    "stdbuf rm": "stdbuf -o L rm -rf ~",
+    "ionice rm": "ionice -c 3 rm -rf /",
+    "setsid rm": "setsid rm -rf ~",
+    "unbuffer force push": "unbuffer git push -f origin main",
+    "nice then timeout then bash -lc": "nice -n 10 timeout 60 bash -lc 'rm -rf ~'",
+    "timeout around dropdb": "timeout 30 dropdb production_db",
+    # The home directory by absolute path, and its credential directories.
+    "rm macOS home by absolute path": "rm -rf /Users/alice",
+    "rm macOS home glob": "rm -rf /Users/alice/*",
+    "rm Linux home by absolute path": "rm -rf /home/ubuntu/",
+    "rm Linux home ssh by absolute path": "rm -rf /home/ubuntu/.ssh",
+    "rm macOS home gcloud by absolute path": "rm -rf /Users/alice/.config/gcloud",
+    "rm double-slash home": "rm -rf //home//ubuntu",
+    # Terraform global options before the subcommand, and OpenTofu.
+    "terraform chdir destroy": "terraform -chdir=infra destroy -auto-approve",
+    "terraform chdir apply double dash": "terraform -chdir=envs/prod apply --auto-approve",
+    "tofu destroy": "tofu destroy -auto-approve",
+    "tofu chdir apply": "tofu -chdir=infra apply -auto-approve",
 }
 
 ALLOWED = {
@@ -149,6 +187,37 @@ ALLOWED = {
     "kubectl exec listing": "kubectl exec -it pod/web -- ls /app",
     "npm exec prisma status": "npm exec -- prisma migrate status",
     "yarn workspace build": "yarn workspace web build",
+    # Shells, wrappers, and absolute home paths around routine work.
+    "bash -lc build": "bash -lc 'npm run build'",
+    "bash -lc rm build dir": "bash -lc 'rm -rf ./build'",
+    "bash script with -o, no command string": "bash -o pipefail scripts/deploy.sh",
+    "bash -c with no command string": "bash -c",
+    "timeout tests": "timeout 60 pytest -q",
+    "timeout force-with-lease feature": "timeout 60 git push --force-with-lease origin feature/x",
+    "stdbuf tail": "stdbuf -oL tail -f app.log",
+    "ionice backup copy": "ionice -c 3 rsync -a ./data/ /backup/data/",
+    "rm under macOS home by absolute path": "rm -rf /Users/alice/project/build",
+    "rm under Linux home by absolute path": "rm -rf /home/runner/work/app/app/build",
+    "rm cache under absolute home": "rm -rf /home/ubuntu/.cache/pip",
+    "terraform chdir plan": "terraform -chdir=infra plan -out=tfplan",
+    "tofu apply plan file": "tofu -chdir=infra apply tfplan",
+    "terraform chdir auto-approve false": "terraform -chdir=infra apply -auto-approve=false",
+}
+
+
+def load_hook_module():
+    spec = importlib.util.spec_from_file_location("catpilot_destructive_hook_under_test", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# Ways an agent wraps a command it means to run. Every must-block case stays blocked inside each one,
+# and every must-allow case stays allowed.
+WRAPPER_FORMS = {
+    "bash -lc": lambda command: "bash -lc " + shlex.quote(command),
+    "sh -ec": lambda command: "sh -ec " + shlex.quote(command),
+    "timeout 60": lambda command: "timeout 60 " + command,
 }
 
 
@@ -177,6 +246,41 @@ class DestructiveHookTests(unittest.TestCase):
         for label, command in ALLOWED.items():
             with self.subTest(label=label):
                 proc = run_hook(event(command))
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(json.loads(proc.stdout), {})
+
+    def test_wrapped_commands_keep_their_decision(self):
+        hook = load_hook_module()
+        with tempfile.TemporaryDirectory() as not_a_repo:
+            for form, wrap in WRAPPER_FORMS.items():
+                for label, command in DENIED.items():
+                    with self.subTest(form=form, label=label):
+                        self.assertIsNotNone(hook.find_destructive_op(wrap(command), not_a_repo))
+                for label, command in ALLOWED.items():
+                    if command == "bash -c":
+                        continue  # not a complete command once wrapped
+                    with self.subTest(form=form, label=label):
+                        self.assertIsNone(hook.find_destructive_op(wrap(command), not_a_repo))
+
+    def test_running_users_home_by_absolute_path(self):
+        for home in ("/srv/agent-home", "/var/lib/jenkins/"):
+            base = home.rstrip("/")
+            for command, denied in (
+                (f"rm -rf {base}", True),
+                (f"rm -rf {base}/", True),
+                (f"rm -rf {base}/*", True),
+                (f"rm -rf {base}/.aws", True),
+                (f"rm -rf {base}/project/build", False),
+                (f"rm -rf {base}-other", False),
+                ("rm -rf ./build", False),
+            ):
+                with self.subTest(home=home, command=command):
+                    proc = run_hook(event(command), {"HOME": home})
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual("deny" in proc.stdout, denied)
+        for home in ("/", "relative/home"):
+            with self.subTest(home=home):
+                proc = run_hook(event("rm -rf ./build"), {"HOME": home})
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertEqual(json.loads(proc.stdout), {})
 

@@ -127,25 +127,31 @@ off for that repository.
 `claude-code/pretooluse-destructive-ops.py` blocks high-blast-radius shell
 commands on the `Bash` tool path. It splits the command into simple commands
 the way a shell would (pipes, `;`, `&&`, `||`, subshells), looks through
-`sudo`, `env`, `time`, and similar wrappers and through `bash -c "..."`, and
-then checks:
+`sudo`, `env`, `time`, `timeout`, `stdbuf`, `ionice`, `setsid`, `unbuffer`, and
+similar wrappers and through a shell's command string, however its options
+are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
+`bash --login -c`), and then checks:
 
 - Cloud and infrastructure CLIs: partial-resource updates that reset
   unspecified fields (`az containerapp update --yaml` / `--replace-env-vars`,
   `aws lambda update-function-configuration --environment Variables={...}`,
   `gcloud run services update --set-env-vars`, `gcloud projects set-iam-policy`),
-  auto-approved Terraform (`-auto-approve` or `--auto-approve`), `aws s3 rb
+  auto-approved Terraform or OpenTofu (`-auto-approve` or `--auto-approve`,
+  also after global options such as `-chdir=infra`), `aws s3 rb
   --force`, `aws s3 rm --recursive` without `--dryrun`, `gsutil rm -r`, and
   quiet `gcloud` deletions.
 - `kubectl delete` of a namespace, or with `--all`, `--all-namespaces`, or
   `-A`, unless `--dry-run=client` or `--dry-run=server` (`--dry-run=none`
   really deletes, and is blocked).
 - Recursive `rm` (any spelling: `-rf`, `-Rf`, `-r -f`, `--recursive`) of `/`,
-  a top-level system directory, the home directory, a credential directory
-  (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.config`), or a
+  a top-level system directory, the home directory (`~`, `$HOME`,
+  `/Users/<name>`, `/home/<name>`, or the running user's home by its absolute
+  path), a credential directory (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`,
+  `~/.docker`, `~/.config`, also under those absolute home paths), or a
   bare variable, quoted or not (`"$TARGET"`, `${TARGET}/*`), which removes
   `/` or the current tree when the variable is unset. A named subdirectory
-  (`~/Library/Caches/pip`, `"$BUILD_DIR/dist"`) is allowed.
+  (`~/Library/Caches/pip`, `/Users/<name>/project/build`, `"$BUILD_DIR/dist"`)
+  is allowed.
 - `git push` with `--force`, `-f`, `--force-with-lease`, or a `+refspec` to
   `main`, `master`, `trunk`, `production`, `prod`, `staging`, `develop`, or
   `release/*` (exact branch names, so `feature/main-fix` is fine), a bare

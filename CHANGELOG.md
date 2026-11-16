@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Fixed
+
+- **The destructive-operation hook missed common spellings of commands it covers.** It let through a shell command string given after an option cluster or a long option (`bash -lc 'rm -rf ~'`, `sh -ec ...`, `bash -euo pipefail -c ...`, `bash --login -c ...`; only a bare `-c` was read), commands behind `timeout`, `gtimeout`, `stdbuf`, `ionice`, `setsid`, or `unbuffer` (`timeout 60 git push --force origin main`), a recursive `rm` of a home directory by its absolute path (`/Users/<name>`, `/home/<name>`, the running user's home, and the credential directories under them), and `terraform -chdir=DIR apply|destroy -auto-approve`. OpenTofu (`tofu`) is now matched like `terraform`. The same shell parsing applies to a shell started inside a container (`docker compose exec db bash -lc "psql ..."`). Must-block and must-allow cases in `tests/test_destructive_hook.py`, plus a generated test that runs every must-block and must-allow case again inside `bash -lc`, `sh -ec`, and `timeout 60` and expects the same decision. Evidence labels are unchanged. Not run on a host: the tested-runtimes rows are unchanged.
+
 ## [2026.10.29] — 2026-10-29
 
 ### Added
