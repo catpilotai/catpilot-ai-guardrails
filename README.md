@@ -17,6 +17,8 @@ Underneath is an open security baseline: three skills the model reads, and Claud
 
 ```bash
 git clone https://github.com/catpilotai/catpilot-ai-guardrails && cd catpilot-ai-guardrails
+# Python 3.11 to 3.14 (3.15 waits on a PyYAML wheel). If python3 is another version, use python3.13 or python3.14 in the next two lines.
+python3 -c 'import sys; sys.exit(0 if (3, 11) <= sys.version_info[:2] <= (3, 14) else "Use Python 3.11 to 3.14 for the locked dependencies, for example python3.13")'
 python3 -m venv .venv
 .venv/bin/python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.txt
 

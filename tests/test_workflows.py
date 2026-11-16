@@ -33,6 +33,22 @@ class WorkflowTests(unittest.TestCase):
                         if "uses" in step:
                             self.assertRegex(step["uses"], re.compile(r"^[\w.-]+/[\w./-]+@[a-f0-9]{40}$"))
 
+    def test_ci_tests_both_ends_of_the_quickstart_python_range(self):
+        # The README quickstart checks the interpreter against a stated range; CI must install and test at
+        # both ends of it, so the range never claims a version the locked dependencies were not tried on.
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        found = re.search(r"\((3), (\d+)\) <= sys\.version_info\[:2\] <= \((3), (\d+)\)", readme)
+        self.assertIsNotNone(found, "the quickstart's Python range check is missing from README.md")
+        lowest, highest = f"{found.group(1)}.{found.group(2)}", f"{found.group(3)}.{found.group(4)}"
+        workflow = yaml.load(
+            (ROOT / ".github" / "workflows" / "evaluation-foundation.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        versions = workflow["jobs"]["validate-fixtures"]["strategy"]["matrix"]["python-version"]
+        self.assertIn(lowest, versions)
+        self.assertIn(highest, versions)
+        self.assertIn(f"Python {lowest} to {highest}", readme)
+
     def test_attestation_workflow_never_interpolates_the_tag_into_a_script(self):
         # The tag reaches shell steps only through $TAG, so a crafted dispatch input cannot inject commands.
         text = (ROOT / ".github" / "workflows" / "release-attestations.yml").read_text(encoding="utf-8")
