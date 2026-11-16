@@ -10,6 +10,10 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 
 - **The destructive-operation hook missed common spellings of commands it covers.** It let through a shell command string given after an option cluster or a long option (`bash -lc 'rm -rf ~'`, `sh -ec ...`, `bash -euo pipefail -c ...`, `bash --login -c ...`; only a bare `-c` was read), commands behind `timeout`, `gtimeout`, `stdbuf`, `ionice`, `setsid`, or `unbuffer` (`timeout 60 git push --force origin main`), a recursive `rm` of a home directory by its absolute path (`/Users/<name>`, `/home/<name>`, the running user's home, and the credential directories under them), and `terraform -chdir=DIR apply|destroy -auto-approve`. OpenTofu (`tofu`) is now matched like `terraform`. The same shell parsing applies to a shell started inside a container (`docker compose exec db bash -lc "psql ..."`). Must-block and must-allow cases in `tests/test_destructive_hook.py`, plus a generated test that runs every must-block and must-allow case again inside `bash -lc`, `sh -ec`, and `timeout 60` and expects the same decision. Evidence labels are unchanged. Not run on a host: the tested-runtimes rows are unchanged.
 
+### Changed
+
+- **Documentation matches the code again.** `docs/REPOSITORY_LAYOUT.md` lists the three hooks (it said two), the agentic skill, the harness gates beyond the credential check, `deploy/org/`, `tools/bench/`, the evidence summary and SBOM tools, the plugin manifest, `frameworks/`, and `tests/`. `docs/spec/OVERLAY.md` §6 says tenant-scoped, authenticated serving runs in Catpilot Plus, as `docs/PILOT.md` does, instead of calling it planned, and names `create_server(policy_provider=...)`. `CONTRIBUTING.md` is titled Catpilot Guardrails like the README, names `tests/test_destructive_hook.py` and the agentic tier, and replaces a current-focus list whose items had shipped. Documentation only.
+
 ## [2026.10.29] — 2026-10-29
 
 ### Added
