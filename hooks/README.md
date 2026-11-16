@@ -190,6 +190,20 @@ Text inside quotes is not a command, so `echo "rm -rf /"` and
 - The way past a false positive is a person running the command in their own
   terminal; there is no flag the agent can add.
 
+## When a hook cannot start
+
+Each hook fails closed once Python is running: malformed input or an internal
+error exits 2, which blocks. Before that point it cannot. If the `python3` in
+the hook command is missing, is the macOS Command Line Tools stub on a machine
+without the tools, or is older than 3.8, the command exits with another code,
+which Claude Code treats as a non-blocking error: the command or write goes
+ahead unchecked. `deploy/org/verify.sh` checks the interpreter, runs each
+installed hook on harmless probes, and runs each hook command in
+`managed-settings.json` the same way. Run it as a normal user on each machine
+after install and after an OS or Python upgrade. It cannot see Claude Code's
+own `PATH`, so the session check in [`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md)
+stays the proof.
+
 ## Evidence log and syslog
 
 Set `CATPILOT_EVIDENCE_LOG` to a file path in the hook's environment (the
