@@ -5,21 +5,26 @@ Scope, stated exactly:
   - Runs only for the Bash tool (the matcher in settings selects it).
   - Splits the proposed command into simple commands the way a shell would
     (pipes, ;, &&, ||, subshells), looks through sudo/env/time-style wrappers
-    and `bash -c "..."`, and checks each one against deterministic signatures
+    (also timeout, gtimeout, stdbuf, ionice, setsid, unbuffer) and a shell's
+    command string (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
+    `bash --login -c`), and checks each one against deterministic signatures
     from the cloud-cli-safety, database-safety, and local-cli-safety components
     of catpilot-security-core:
       * partial-resource replacements that wipe unspecified fields or env vars
         (az containerapp update --yaml / --replace-env-vars, aws lambda
         update-function-configuration --environment Variables={...}, gcloud run
         services update --set-env-vars, gcloud projects set-iam-policy)
-      * unconfirmed cloud / IaC / Kubernetes mass deletion (terraform apply or
-        destroy with -auto-approve, kubectl delete of a namespace or with --all
+      * unconfirmed cloud / IaC / Kubernetes mass deletion (terraform or tofu
+        apply or destroy with -auto-approve, also after global options such as
+        -chdir=DIR, kubectl delete of a namespace or with --all
         unless --dry-run=client|server, aws s3 rb --force, aws s3 rm --recursive
         without --dryrun, gsutil rm -r, gcloud app versions delete --all --quiet,
         gcloud run services delete --quiet)
       * irreversible local or history wipes: recursive rm of /, a top-level
-        system directory, the home directory, a credential directory
-        (~/.ssh, ~/.aws, ...), or a bare variable that would expand to one of
+        system directory, the home directory (~, $HOME, /Users/<name>,
+        /home/<name>, or the running user's home by its absolute path), a
+        credential directory (~/.ssh, ~/.aws, ..., also under those absolute
+        home paths), or a bare variable that would expand to one of
         those when unset ("$TARGET", $TARGET/, ${TARGET}/*); chmod -R 777;
         dd to a raw block device; a force push (--force, -f, --force-with-lease,
         or a +refspec) or a deletion aimed at main, master, trunk, production,
@@ -95,7 +100,8 @@ DESTRUCTIVE_PATTERNS = [
     ),
     (
         "terraform auto-approve apply or destroy",
-        re.compile(r"\bterraform\s+(?:apply|destroy)\b.*?\s--?auto-approve\b(?!=false)", re.IGNORECASE | re.DOTALL),
+        # terraform or OpenTofu (`tofu`, same CLI), with global options such as -chdir=DIR before the subcommand.
+        re.compile(r"\b(?:terraform|tofu)(?:\s+-\S+)*\s+(?:apply|destroy)\b.*?\s--?auto-approve\b(?!=false)", re.IGNORECASE | re.DOTALL),
         "Run `terraform plan -out=tfplan`, show the plan to the user, and apply the reviewed plan without `-auto-approve`.",
     ),
     (
@@ -154,17 +160,34 @@ KUBECTL_NOTE = "Preview with `--dry-run=client` and get explicit user confirmati
 
 PROTECTED_BRANCH = re.compile(r"^(?:main|master|trunk|production|prod|staging|develop|release/.+)$", re.IGNORECASE)
 HOME = r"(?:~|\$HOME|\$\{HOME\})"
+CREDENTIAL_DIR = r"\.(?:ssh|aws|gnupg|kube|docker|openclaw|config(?:/gcloud)?)"
+ABSOLUTE_HOME = r"/+(?:Users|home)/+[^/]+"  # /Users/<name>, /home/<name>
 RM_DANGEROUS_TARGET = re.compile(
     r"^(?:"
     r"/+\*?"  # / and /*
     r"|/+(?:bin|boot|dev|etc|home|lib|lib64|opt|private|proc|root|sbin|srv|sys|usr|var|Users|System|Library|Applications|Volumes)/*\*?"
     rf"|{HOME}/*\*?"  # the home directory itself
-    rf"|{HOME}/+\.(?:ssh|aws|gnupg|kube|docker|openclaw|config(?:/gcloud)?)/*\*?"  # credential directories
+    rf"|{HOME}/+{CREDENTIAL_DIR}/*\*?"  # credential directories
+    rf"|{ABSOLUTE_HOME}/*\*?"  # a home directory by absolute path
+    rf"|{ABSOLUTE_HOME}/+{CREDENTIAL_DIR}/*\*?"  # its credential directories
     r"|\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/*\*?"  # a bare variable: unset expands to / or ""
     r")$"
 )
 WRAPPERS = {"sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time", "nice", "xargs", "caffeinate"}
+# Wrappers that run another command, each with the options that take a separate value and the number of
+# positional arguments that come before the command (timeout's DURATION).
+TIMEOUT_VALUE_OPTIONS = {"-s", "--signal", "-k", "--kill-after"}
+WRAPPER_SPECS = {
+    "timeout": (TIMEOUT_VALUE_OPTIONS, 1),
+    "gtimeout": (TIMEOUT_VALUE_OPTIONS, 1),
+    "stdbuf": ({"-i", "-o", "-e"}, 0),
+    "ionice": ({"-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "--pgid", "-u", "--uid"}, 0),
+    "setsid": (set(), 0),
+    "unbuffer": (set(), 0),
+}
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+# Shell options that take a separate value (`bash -o pipefail -c ...`, `bash --rcfile FILE -c ...`).
+SHELL_VALUE_OPTIONS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 KUBECTL_VALUE_FLAGS = {"-n", "--namespace", "-l", "--selector", "-f", "--filename", "-o", "--output", "--context",
                        "--cluster", "--kubeconfig", "--field-selector", "--grace-period", "--timeout", "-k", "--kustomize",
@@ -195,23 +218,72 @@ def _simple_commands(command: str, depth: int = 0):
             current.append(token)
 
 
+def _strip_wrappers(argv: list[str]) -> list[str]:
+    """Drop leading assignments and wrapper commands (sudo, env, timeout 60, ...) with their options."""
+    while True:
+        while argv and ASSIGNMENT.match(argv[0]):
+            argv = argv[1:]
+        if not argv:
+            return argv
+        name = os.path.basename(argv[0].lstrip("`"))
+        if name in WRAPPERS:
+            argv = argv[1:]
+            while argv and (argv[0].startswith("-") or ASSIGNMENT.match(argv[0])):
+                takes_value = argv[0] in ("-u", "-g", "-n", "-C")
+                argv = argv[2:] if takes_value else argv[1:]
+        elif name in WRAPPER_SPECS:
+            value_options, positionals = WRAPPER_SPECS[name]
+            argv = _skip_options(argv[1:], value_options)[positionals:]
+        else:
+            return argv
+
+
+def _shell_command_string(args: list[str]) -> str | None:
+    """The command string a shell is given with -c (`bash -lc`, `sh -ec`, `bash -o pipefail -c`), or None.
+
+    `args` are the shell's arguments without its name. Options come first; -c may sit in a cluster with other
+    single-letter options, and -o/+o/-O/+O (also as the last letter of a cluster) and --rcfile/--init-file take
+    a value. The command string is the first argument after the options, or after `--`.
+    """
+    index, has_c = 0, False
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            index += 1
+            break
+        if arg in SHELL_VALUE_OPTIONS:
+            index += 2
+        elif arg.startswith("--"):
+            index += 1
+        elif len(arg) > 1 and arg[0] in "-+":
+            has_c = has_c or (arg[0] == "-" and "c" in arg[1:])
+            index += 2 if arg[-1] in "oO" else 1
+        else:
+            break
+    return args[index] if has_c and index < len(args) else None
+
+
 def _unwrap(argv: list[str], depth: int):
-    while argv and ASSIGNMENT.match(argv[0]):
-        argv = argv[1:]
-    while argv and os.path.basename(argv[0].lstrip("`")) in WRAPPERS:
-        argv = argv[1:]
-        while argv and (argv[0].startswith("-") or ASSIGNMENT.match(argv[0])):
-            takes_value = argv[0] in ("-u", "-g", "-n", "-C")
-            argv = argv[2:] if takes_value else argv[1:]
+    argv = _strip_wrappers(argv)
     if not argv:
         return
     name = os.path.basename(argv[0].lstrip("`"))
-    if name in SHELLS and depth < 3 and "-c" in argv[1:]:
-        index = argv.index("-c", 1)
-        if index + 1 < len(argv):
-            yield from _simple_commands(argv[index + 1], depth + 1)
-        return
+    if name in SHELLS and depth < 3:
+        script = _shell_command_string(argv[1:])
+        if script is not None:
+            yield from _simple_commands(script, depth + 1)
+            return
     yield [name] + argv[1:]
+
+
+def _running_users_home_target(target: str) -> bool:
+    """True when target is the running user's home directory by its absolute path, or a credential directory in it."""
+    home = os.path.normpath(os.path.expanduser("~"))
+    if not os.path.isabs(home) or home in ("/", "//"):
+        return False
+    parts = [re.escape(part) for part in home.strip("/").split("/") if part]
+    pattern = r"^/+" + "/+".join(parts) + rf"(?:/+{CREDENTIAL_DIR})?/*\*?$"
+    return re.match(pattern, target) is not None
 
 
 def _rm_finding(args: list[str]) -> bool:
@@ -225,7 +297,7 @@ def _rm_finding(args: list[str]) -> bool:
             recursive = recursive or "r" in arg[1:].lower()
         else:
             targets.append(arg)
-    return recursive and any(RM_DANGEROUS_TARGET.match(t) for t in targets)
+    return recursive and any(RM_DANGEROUS_TARGET.match(t) or _running_users_home_target(t) for t in targets)
 
 
 def _git_dir(start: Path) -> Path | None:
@@ -417,11 +489,11 @@ def _destructive_sql(text: str) -> bool:
 
 def _db_finding(name: str, args: list[str], command: str, depth: int = 0) -> tuple[str, str] | None:
     name, args = _unwrap_exec(name, args)
-    if name in SHELLS and "-c" in args:
+    script = _shell_command_string(args) if name in SHELLS else None
+    if script is not None:
         # A shell started inside a container (docker compose exec db sh -c "psql ..."): check its commands too.
-        index = args.index("-c")
-        if depth < 3 and index + 1 < len(args):
-            for inner in _simple_commands(args[index + 1], depth + 1):
+        if depth < 3:
+            for inner in _simple_commands(script, depth + 1):
                 hit = _db_finding(inner[0], inner[1:], command, depth + 1)
                 if hit is not None:
                     return hit
