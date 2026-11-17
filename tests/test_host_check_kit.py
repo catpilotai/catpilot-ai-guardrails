@@ -20,6 +20,7 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -127,9 +128,33 @@ def probe_items(prompt):
 
 
 def run_hooks(commands, event):
-    """Each registered hook command run as the tool runs it, through bash with the event on stdin."""
+    """Each registered hook command run as the tool runs it, through bash with the event on stdin. True when one
+    denied: a deny decision, or exit 2."""
+    denied = False
     for command in commands:
-        subprocess.run(["bash", "-c", command], input=json.dumps(event), capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(["bash", "-c", command], input=json.dumps(event), capture_output=True, text=True, timeout=60)
+        try:
+            decision = (json.loads(proc.stdout or "{}").get("hookSpecificOutput") or {}).get("permissionDecision")
+        except ValueError:
+            decision = None
+        denied = denied or proc.returncode == 2 or decision == "deny"
+    return denied
+
+
+def run_item(number, command, cwd):
+    """Run a probe item the hooks let through, as the tool would, and log how it went."""
+    proc = subprocess.run(["bash", "-c", command], cwd=str(cwd), capture_output=True, text=True, timeout=60)
+    with open(os.environ["STUB_ITEM_LOG"], "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"cwd": str(cwd), "item": number, "exit": proc.returncode,
+                             "src_refspec": "src refspec" in proc.stderr}) + "\n")
+
+
+def probe(items, hooks, event, cwd, numbers=(7, 8, 9), ignore_deny=False):
+    """Items 7 to 9 (and, with no hooks, item 1 too) through the hooks, then run unless a hook denied them."""
+    for number in ((1,) if not hooks else ()) + tuple(numbers):
+        denied = run_hooks(hooks, dict(event, tool_input={"command": items[number]}))
+        if ignore_deny or not denied:
+            run_item(number, items[number], cwd)
 
 
 def bash_hooks(managed_file, read, matches, command_key):
@@ -173,10 +198,8 @@ else:
     if hooks:
         for label in ("force-push", "force-push", "rm", "terraform", "AWS access key ID", "private-key-block"):
             evidence(event="deny", hook="stub", host="claude-code", label=label, session_id=session_id, source="claude-code-hook")
-    items = probe_items(prompt)
-    for number in (7, 8, 9):
-        run_hooks(hooks, {"session_id": session_id, "hook_event_name": "PreToolUse", "tool_name": "Bash",
-                          "tool_input": {"command": items[number]}, "cwd": os.getcwd(), "permission_mode": "acceptEdits"})
+    probe(probe_items(prompt), hooks, {"session_id": session_id, "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                                       "cwd": os.getcwd(), "permission_mode": "acceptEdits"}, os.getcwd())
     answer = "Items 1 to 6 and 8 were blocked by hooks; items 7 and 9 ran." if hooks else "All nine items ran."
 slug = re.sub(r"[^A-Za-z0-9]", "-", os.getcwd())
 transcript = HOME / ".claude" / "projects" / slug / ("%s.jsonl" % session_id)
@@ -221,10 +244,8 @@ else:
 
     hooks = bash_hooks(Path(os.environ["CATPILOT_CODEX_DIR"], "requirements.toml"), tomllib.loads,
                        lambda m: re.search(m, "Bash") is not None, None)
-    items = probe_items(prompt)
-    for number in (7, 8, 9):
-        run_hooks(hooks, {"session_id": thread_id, "hook_event_name": "PreToolUse", "tool_name": "Bash",
-                          "tool_input": {"command": items[number]}, "cwd": str(workdir)})
+    probe(probe_items(prompt), hooks, {"session_id": thread_id, "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                                       "cwd": str(workdir)}, workdir)
     answer = "Item 8 was blocked by a company rule; the other items ran." if hooks else "All nine items ran."
 last.write_text(answer + "\n", encoding="utf-8")
 rollout = HOME / ".codex" / "sessions" / "2026" / "11" / "17" / ("rollout-2026-11-17T00-00-00-%s.jsonl" % thread_id)
@@ -250,11 +271,10 @@ hooks = bash_hooks(Path(os.environ["CATPILOT_COPILOT_DIR"], "policy.d", "catpilo
                    lambda text: {"hooks": {"PreToolUse": [{"matcher": e["matcher"], "bash": e["bash"]}
                                                           for e in json.loads(text)["hooks"]["PreToolUse"]]}},
                    lambda m: "Bash" in m.split("|"), "bash")
-items = probe_items(prompt)
-for number in (7, 8, 9):
-    run_hooks(hooks, {"hook_event_name": "PreToolUse", "session_id": session_id, "cwd": os.getcwd(),
-                      "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "tool_name": "Bash",
-                      "tool_input": {"command": items[number]}})
+# STUB_COPILOT_IGNORES_DENY: run every item even when a hook denies it, as a tool that misread the hook's answer would.
+probe(probe_items(prompt), hooks, {"hook_event_name": "PreToolUse", "session_id": session_id, "cwd": os.getcwd(),
+                                   "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "tool_name": "Bash"},
+      os.getcwd(), ignore_deny=os.environ.get("STUB_COPILOT_IGNORES_DENY") == "1")
 Path("key.pem").write_text("synthetic\n", encoding="utf-8")  # this stub runs no file-write hook
 answer = "Item 8 was blocked by a company rule." if hooks else "All nine items ran."
 transcript = HOME / ".copilot" / "session-state" / session_id / "events.jsonl"
@@ -309,6 +329,7 @@ class HostCheckKitTests(unittest.TestCase):
         self.bin.mkdir()
         (self.tmp / "tmp").mkdir()
         self.stub_log = self.tmp / "stub-calls.jsonl"
+        self.item_log = self.tmp / "stub-items.jsonl"
         self.sudo_log = self.tmp / "sudo-calls.txt"
         self.claude = self.stub("claude", CLAUDE_STUB)
         self.codex_bin = self.stub("codex", CODEX_STUB)
@@ -332,6 +353,7 @@ class HostCheckKitTests(unittest.TestCase):
             "SUDO_BIN": str(self.sudo),
             "STUB_LOG": str(self.stub_log),
             "STUB_SUDO_LOG": str(self.sudo_log),
+            "STUB_ITEM_LOG": str(self.item_log),
             "HOST_CHECK_SESSION_TIMEOUT": "60",
         })
 
@@ -372,6 +394,24 @@ class HostCheckKitTests(unittest.TestCase):
             return []
         return [json.loads(line) for line in self.stub_log.read_text(encoding="utf-8").splitlines()]
 
+    def item_runs(self) -> list:
+        if not self.item_log.exists():
+            return []
+        return [json.loads(line) for line in self.item_log.read_text(encoding="utf-8").splitlines()]
+
+    def sudo_calls(self) -> list:
+        return self.sudo_log.read_text(encoding="utf-8").splitlines() if self.sudo_log.exists() else []
+
+    def own_copilot_config(self, home: Path) -> list:
+        """A Copilot configuration directory with everything the kit refuses to run over; the paths it should name."""
+        (home / "hooks").mkdir(parents=True)
+        (home / "hooks" / "mine.json").write_text('{"version": 1, "hooks": {}}\n', encoding="utf-8")
+        (home / "settings.json").write_text(
+            '{\n  // my settings\n  "hooks": {"preToolUse": [{"type": "command", "bash": "echo allow"}]},\n}\n', encoding="utf-8")
+        (home / "mcp-config.json").write_text('{"mcpServers": {"mine": {"command": "true"}}}\n', encoding="utf-8")
+        (home / "installed-plugins" / "_direct" / "mine").mkdir(parents=True)
+        return [home / "hooks", home / "settings.json", home / "mcp-config.json", home / "installed-plugins"]
+
     def managed_left(self) -> list:
         return sorted(str(p.relative_to(self.tmp)) for root in (self.cc, self.codex, self.copilot) if root.exists()
                       for p in root.rglob("*"))
@@ -396,6 +436,8 @@ class HostCheckKitTests(unittest.TestCase):
 
     @FULL_RUN
     def test_full_run_without_sessions(self):
+        # Without sessions Copilot never runs, so the person's own Copilot configuration does not stop the run.
+        self.own_copilot_config(self.home / ".copilot")
         proc = self.run_kit("--no-sessions")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         results = self.results()
@@ -407,6 +449,7 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertEqual(summary["sessions"], [])
         self.assertFalse(summary["options"]["sessions"])
         self.assertFalse(summary["options"]["control"])
+        self.assertFalse(summary["options"]["allow_copilot_config"])
         self.assertEqual(summary["commit"]["head"], subprocess.run(
             ["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip())
         self.assertEqual(summary["versions"]["claude_code"], "9.9.9 (Claude Code stub)")
@@ -542,6 +585,20 @@ class HostCheckKitTests(unittest.TestCase):
             self.assertEqual([(e["event"], e["rule_id"], e["mode"], e["host"]) for e in company],
                              [("deny", block, "block", host), ("would_deny", monitor, "monitor", host)], name)
         self.assertEqual(sessions["copilot-probe"]["tool"], "copilot-cli")
+        # From the tool's side: in each probe folder's own bare remote the block branch did not move and the monitor
+        # branch did; in each control folder both moved, and nothing at all was logged while the control ran.
+        for name in probes:
+            self.assertEqual(sessions[name]["remote_refs"], {"block_branch": "unmoved", "monitor_branch": "pushed"}, name)
+        for name in controls:
+            self.assertEqual(sessions[name]["remote_refs"], {"block_branch": "pushed", "monitor_branch": "pushed"}, name)
+            self.assertEqual(sessions[name]["evidence_lines_in_window"], 0, name)
+        # Items 1 and 2 stay inert with the remote: there is no local main, so the push fails and pushes nothing.
+        item1 = [r for r in self.item_runs() if r["item"] == 1]
+        self.assertEqual(len(item1), 3)  # once per control session, where no hook stops it
+        for run in item1:
+            self.assertNotEqual(run["exit"], 0, run)
+            self.assertTrue(run["src_refspec"], run)
+        self.assertEqual(sorted(r["item"] for r in self.item_runs() if r["cwd"].endswith("/copilot-probe")), [7, 9])
         self.assertEqual(sessions["claude-code-probe"]["deny_lines"], 7)
         self.assertFalse(sessions["claude-code-probe"]["key_file_created"])
         self.assertEqual(sessions["codex-probe"]["deny_lines"], 1)
@@ -594,6 +651,13 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertFalse(self.cc.exists())
         self.assertFalse(self.codex.exists())
         self.assertFalse(self.copilot.exists())
+        # Once the uninstall step (uninstall.sh, then rmdir of the directories it made) succeeded, the kit dropped
+        # the sudo ticket, and nothing used sudo after that.
+        sudo = self.sudo_calls()
+        uninstall = max(i for i, line in enumerate(sudo) if "deploy/org/uninstall.sh" in line)
+        after = sudo[uninstall + 1:]
+        self.assertEqual(after[-1], "-k")
+        self.assertTrue(all(line.startswith("rmdir ") for line in after[:-1]), after)
 
     def assert_isolated(self, calls: list, token: str) -> None:
         """Each session's flags keep the person's own settings out where the tool allows it: their defaults may be
@@ -827,8 +891,13 @@ class HostCheckKitTests(unittest.TestCase):
 
     @FULL_RUN
     def test_no_control_skips_the_control_sessions(self):
-        proc = self.run_kit("--no-control")
+        # Also: the person's own Copilot configuration, accepted with --allow-copilot-config, and a Copilot stub that
+        # runs item 8 although the hook denied it, so the deny line alone must not count as enforcement.
+        self.own_copilot_config(self.home / ".copilot")
+        proc = self.run_kit("--no-control", "--allow-copilot-config", STUB_COPILOT_IGNORES_DENY="1")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("WARNING (--allow-copilot-config)", proc.stdout)
+        self.assertIn(str(self.home / ".copilot" / "hooks"), proc.stdout)
         self.assertIn("This run starts 7 model sessions", proc.stdout)
         self.assertIn("1 GitHub Copilot CLI (copilot -p), with no control run (--no-control)", proc.stdout)
         summary = self.summary()
@@ -840,6 +909,13 @@ class HostCheckKitTests(unittest.TestCase):
                          ["claude-code-probe", "codex-probe", "copilot-probe"])
         self.assertEqual(len([c for c in self.stub_calls() if c["args"] != ["--version"]]), 7)
         self.assertFalse(self.copilot.exists())
+        self.assertTrue(summary["options"]["allow_copilot_config"])
+        self.assertTrue(any(n.startswith("--allow-copilot-config:") and "mcp-config.json" in n for n in summary["notes"]))
+        copilot = self.sessions(summary)["copilot-probe"]
+        self.assertEqual(copilot["company_rules"]["deny"], ["kit-block-" + summary["tokens"]["token"]])
+        self.assertEqual(copilot["remote_refs"], {"block_branch": "pushed", "monitor_branch": "pushed"})
+        self.assertFalse(copilot["expected_company_rules_met"])
+        self.assertTrue(self.sessions(summary)["claude-code-probe"]["expected_company_rules_met"])
 
     @FULL_RUN
     def test_keep_skips_the_control(self):
@@ -859,11 +935,11 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertIn("Kept the test install (--keep)", proc.stdout)
 
     @FULL_RUN
-    def test_copilot_files_left_by_the_uninstall_fail_the_run(self):
+    def test_copilot_files_left_by_the_uninstall_fail_the_run_and_skip_the_control(self):
         # An administrator's edit to the Copilot CLI policy file before the uninstall: uninstall.sh keeps the file
-        # and the hooks it runs, and the kit's check names both.
+        # and the hooks it runs, and the kit's check names both. With hooks still installed there is no control run.
         policy = self.copilot / "policy.d" / "catpilot-guardrails.json"
-        proc = self.run_kit("--no-sessions", STUB_SUDO_EDIT_ON="org/uninstall.sh", STUB_SUDO_EDIT_FILE=str(policy))
+        proc = self.run_kit(STUB_SUDO_EDIT_ON="org/uninstall.sh", STUB_SUDO_EDIT_FILE=str(policy))
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         summary = self.summary()
         self.assertEqual(summary["outcome"], "failed")
@@ -876,6 +952,63 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertTrue(policy.exists())
         self.assertFalse(self.cc.exists())
         self.assertIn("The test install is not fully removed. Remove it with:", proc.stdout)
+        step = next(s for s in summary["steps"] if s["name"] == "control")
+        self.assertEqual(step["status"], "skipped")
+        self.assertIn("uninstall did not finish cleanly", step["note"])
+        self.assertEqual([s["name"] for s in summary["sessions"] if s["kind"] == "control"], [])
+        self.assertNotIn("-k", self.sudo_calls())
+
+    @FULL_RUN
+    def test_an_interruption_during_the_control_leaves_nothing_behind(self):
+        # The claude stub interrupts the kit from the first control session, when nothing is installed.
+        proc = self.run_kit(STUB_INTERRUPT="none")
+        self.assertEqual(proc.returncode, 130, proc.stdout + proc.stderr)
+        self.assertIn("Interrupted", proc.stdout)
+        summary = self.summary()
+        self.assertEqual(summary["outcome"], "interrupted")
+        self.assertEqual([s["name"] for s in summary["steps"]].count("uninstall"), 1)
+        self.assertEqual(self.steps(summary)["uninstall"], "ok")
+        self.assertNotIn("restore-on-exit", self.steps(summary))
+        control = self.sessions(summary)["claude-code-control"]
+        self.assertEqual(control["exit_code"], 130)
+        self.assertFalse(control["control_clean"])
+        self.assertNotIn("codex-control", self.sessions(summary))
+        self.assertEqual(self.managed_left(), [])
+        self.assertFalse(self.copilot.exists())
+        self.assertEqual(list((self.tmp / "tmp").iterdir()), [], "the run's temporary directory is removed")
+        self.assertEqual(self.sudo_calls()[-1], "-k")
+
+    @FULL_RUN
+    def test_an_existing_policy_d_keeps_its_owner_and_mode(self):
+        policy_d = self.copilot / "policy.d"
+        policy_d.mkdir(parents=True)
+        policy_d.chmod(0o700)
+        proc = self.run_kit("--no-sessions")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertTrue(policy_d.is_dir())
+        self.assertEqual(stat.S_IMODE(policy_d.stat().st_mode), 0o700)
+        self.assertEqual(policy_d.stat().st_uid, os.getuid())
+        self.assertEqual(list(policy_d.iterdir()), [])
+        self.assertNotIn("removed %s (empty" % policy_d, (self.results() / "uninstall.txt").read_text(encoding="utf-8"))
+
+    def test_refuses_over_the_persons_own_copilot_configuration(self):
+        named = self.own_copilot_config(self.home / ".copilot")
+        proc = self.run_kit()
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("Not started; nothing was changed.", proc.stderr)
+        self.assertIn("--allow-copilot-config", proc.stderr)
+        for path in named:
+            self.assertIn(str(path), proc.stderr)
+        self.assertFalse((self.home / "catpilot-host-check").exists())
+        self.assertFalse(self.sudo_log.exists())
+        # COPILOT_HOME moves the directory Copilot reads, and the check follows it.
+        elsewhere = self.tmp / "copilot-home"
+        elsewhere.mkdir()
+        (elsewhere / "extensions" / "mine").mkdir(parents=True)
+        proc = self.run_kit(COPILOT_HOME=str(elsewhere))
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn(str(elsewhere / "extensions"), proc.stderr)
+        self.assertNotIn(str(self.home / ".copilot"), proc.stderr)
 
 
 class HelperTests(unittest.TestCase):
@@ -947,17 +1080,81 @@ class HelperTests(unittest.TestCase):
 
         good = [line("deny", block, "block"), line("would_deny", monitor, "monitor"),
                 {"event": "deny", "hook": "pretooluse-destructive-ops", "host": "copilot-cli", "label": "force-push"}]
+        refs = {"block_branch": "unmoved", "monitor_branch": "pushed"}
         self.assertEqual(hostcheck.company_rules(good), {"deny": [block], "would_deny": [monitor]})
-        self.assertTrue(hostcheck.company_rules_met(good, "copilot-cli", tokens))
-        self.assertFalse(hostcheck.company_rules_met(good, "codex", tokens), "the host must be the session's tool")
-        self.assertFalse(hostcheck.company_rules_met(good[:1], "copilot-cli", tokens), "no would_deny line")
+        self.assertTrue(hostcheck.company_rules_met(good, "copilot-cli", tokens, refs))
+        self.assertFalse(hostcheck.company_rules_met(good, "codex", tokens, refs), "the host must be the session's tool")
+        self.assertFalse(hostcheck.company_rules_met(good[:1], "copilot-cli", tokens, refs), "no would_deny line")
         self.assertFalse(hostcheck.company_rules_met(
-            [line("deny", block, "block"), line("would_deny", monitor, "block")], "copilot-cli", tokens), "wrong mode")
+            [line("deny", block, "block"), line("would_deny", monitor, "block")], "copilot-cli", tokens, refs), "wrong mode")
         self.assertFalse(hostcheck.company_rules_met(
-            [line("deny", monitor, "block"), line("would_deny", block, "monitor")], "copilot-cli", tokens), "rules swapped")
-        self.assertFalse(hostcheck.company_rules_met(good, "copilot-cli", None))
+            [line("deny", monitor, "block"), line("would_deny", block, "monitor")], "copilot-cli", tokens, refs), "rules swapped")
+        self.assertFalse(hostcheck.company_rules_met(good, "copilot-cli", None, refs))
+        for moved in ({"block_branch": "pushed", "monitor_branch": "pushed"},   # the tool ran the denied push
+                      {"block_branch": "unmoved", "monitor_branch": "unmoved"},  # the monitored push did not run
+                      {"block_branch": "other", "monitor_branch": "pushed"}, {}):
+            self.assertFalse(hostcheck.company_rules_met(good, "copilot-cli", tokens, moved), moved)
         errors = [{"event": "policy_error", "hook": "pretooluse-company-rules", "label": "not-owned"}]
         self.assertEqual(hostcheck.company_rules(errors), {"policy_error": ["not-owned"]})
+
+    def test_copilot_config_names_what_would_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self.assertEqual(hostcheck.copilot_config(home / "missing"), [])
+            # Present but harmless: no hook files, an empty hooks key, no enabled plugin, no MCP servers, empty dirs.
+            (home / "hooks").mkdir()
+            (home / "hooks" / "README.md").write_text("notes\n", encoding="utf-8")
+            (home / "settings.json").write_text(
+                '{\n  // comments are allowed\n  "model": "x", /* here too */ "hooks": {},\n'
+                '  "enabledPlugins": {"p@m": false}, "url": "https://example.org//path",\n}\n', encoding="utf-8")
+            (home / "mcp-config.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
+            (home / "installed-plugins").mkdir()
+            (home / "extensions").mkdir()
+            self.assertEqual(hostcheck.copilot_config(home), [])
+            # Each kind on its own.
+            cases = (
+                ("hooks/mine.json", '{"version": 1}', "hooks"),
+                ("settings.json", '{"hooks": {"preToolUse": []}, // trailing comment\n}', "settings.json has a hooks key"),
+                ("settings.json", '{"enabledPlugins": {"p@m": true}}', "enables plugins"),
+                ("settings.json", "{not json", "cannot be read"),
+                ("mcp-config.json", '{"mcpServers": {"s": {"command": "true"}}}', "mcp-config.json defines MCP servers"),
+                ("installed-plugins/_direct/p/plugin.json", "{}", "installed plugins"),
+                ("extensions/e/main.js", "", "extensions"),
+            )
+            for relative, text, expected in cases:
+                with self.subTest(relative=relative, text=text), tempfile.TemporaryDirectory() as other:
+                    path = Path(other, relative)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(text, encoding="utf-8")
+                    found = hostcheck.copilot_config(Path(other))
+                    self.assertEqual(len(found), 1, found)
+                    self.assertIn(expected, found[0])
+                    self.assertTrue(found[0].startswith(other), found)
+
+    def test_control_clean_needs_a_clean_exit_no_lines_and_both_pushes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            (results / "sessions").mkdir()
+            (results / "sessions" / "c.stdout").write_text("", encoding="utf-8")
+            record = {"name": "copilot-control", "tool": "copilot-cli", "kind": "control", "rules": "none",
+                      "exit_code": "0", "stdout": "sessions/c.stdout", "started_epoch": "100", "at_epoch": "200",
+                      "block_ref": "pushed", "monitor_ref": "pushed"}
+
+            def clean(evidence=(), **changes):
+                r = dict(record, **changes)
+                credited = hostcheck.assign_evidence([dict(r, _results=tmp)], list(evidence))
+                return hostcheck.session_details(results, r, self.TOKENS, credited, evidence)["control_clean"]
+
+            self.assertTrue(clean())
+            self.assertFalse(clean(exit_code="1"))
+            self.assertFalse(clean(exit_code="124"))  # timed out
+            self.assertFalse(clean(block_ref="unmoved"))
+            self.assertFalse(clean(monitor_ref="other"))
+            # Any line written while it ran counts, whatever its session id or source, and a line with no readable time.
+            self.assertFalse(clean([{"event": "deny", "session_id": "someone-else", "_epoch": 150.0}]))
+            self.assertFalse(clean([{"event": "rules_delivered", "source": "session-start", "_epoch": 150.0}]))
+            self.assertFalse(clean([{"event": "deny", "_epoch": None}]))
+            self.assertTrue(clean([{"event": "deny", "session_id": "earlier", "_epoch": 50.0}]))
 
     def test_backdate_changes_only_the_dates(self):
         sidecar = json.dumps({"block_sha256": "a" * 64, "expires_on": "2027-03-13", "owner": "o@example.org",

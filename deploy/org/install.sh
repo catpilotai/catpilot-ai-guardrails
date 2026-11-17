@@ -263,7 +263,9 @@ chmod 755 "$COPILOT_DIR/catpilot-guardrails" "$COPILOT_DIR/catpilot-guardrails/h
 chmod 644 "$COPILOT_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $COPILOT_DIR/catpilot-guardrails/hooks/"
 install_package "$COPILOT_DIR/catpilot-guardrails/hooks"
 if [ -n "$HOSTS_DIR" ]; then install_policy "$COPILOT_DIR"; fi
-mkdir -p "$COPILOT_DIR/policy.d"; chmod 755 "$COPILOT_DIR/policy.d"
+# policy.d is created, mode 755, only when it does not exist: an existing directory, which may hold the
+# organization's own policy files, keeps its owner and mode.
+if [ ! -d "$COPILOT_DIR/policy.d" ]; then mkdir -p "$COPILOT_DIR/policy.d"; chmod 755 "$COPILOT_DIR/policy.d"; fi
 if [ -e "$COPILOT_DIR/policy.d/catpilot-guardrails.json" ] || [ -L "$COPILOT_DIR/policy.d/catpilot-guardrails.json" ]; then
   echo "exists  $COPILOT_DIR/policy.d/catpilot-guardrails.json (not overwritten); replace it with:"; echo "$COPILOT_POLICY_JSON"
 else

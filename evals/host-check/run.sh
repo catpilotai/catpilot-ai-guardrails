@@ -9,17 +9,22 @@
 # checkout; it calls sudo itself.
 #
 #   PYTHON_BIN=/path/to/venv/bin/python evals/host-check/run.sh [--no-sessions] [--no-control] [--keep]
+#                                                                [--allow-copilot-config]
 #
-#   --no-sessions  install, verify, backdate, restore and uninstall without starting any model session
-#   --no-control   skip the three control sessions after the uninstall
-#   --keep         leave the test install in place at the end, so there is no control run; it prints the
-#                  uninstall.sh line to remove the install later
+#   --no-sessions           install, verify, backdate, restore and uninstall without starting any model session
+#   --no-control            skip the three control sessions after the uninstall
+#   --keep                  leave the test install in place at the end, so there is no control run; it prints the
+#                           uninstall.sh line to remove the install later
+#   --allow-copilot-config  start even though your own Copilot CLI hooks, MCP servers, plugins or extensions would
+#                           load into its sessions (the kit refuses by default; it records and prints that you chose this)
 #
 # It asks for the sudo password once and keeps the sudo ticket fresh until it exits. Without --no-sessions it starts
 # ten model sessions (four Claude Code, four Codex, two Copilot CLI), or seven with --no-control or --keep, with your
 # own sign-in, which cost money. The Claude Code and Codex sessions ignore your own settings files; Copilot CLI has no
-# option for that. Every session runs with no controlling terminal, so it cannot use the sudo ticket. Until the run
-# finishes, keep the terminal open and do not use Claude Code, Codex or Copilot CLI for other work on this machine.
+# option for that, so the kit refuses to start while your own Copilot configuration would load into its sessions.
+# Every session runs with no controlling terminal, so it cannot use the sudo ticket, and the ticket is dropped once
+# the uninstall succeeds, before the control sessions. Until the run finishes, keep the terminal open and do not use
+# Claude Code, Codex or Copilot CLI for other work on this machine.
 # Results: ~/catpilot-host-check/<UTC timestamp>/, read summary.json first. More: evals/host-check/README.md.
 #
 # Overrides, for tests and unusual machines: PYTHON_BIN (Python 3.11 to 3.14 with PyYAML; default python3),
@@ -33,10 +38,12 @@ usage() { sed -n '2,/^set -uo pipefail/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'
 NO_SESSIONS=0
 NO_CONTROL=0
 KEEP=0
+ALLOW_COPILOT_CONFIG=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-sessions) NO_SESSIONS=1; shift ;;
     --no-control) NO_CONTROL=1; shift ;;
+    --allow-copilot-config) ALLOW_COPILOT_CONFIG=1; shift ;;
     --keep) KEEP=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
@@ -140,9 +147,36 @@ if [ "$NO_SESSIONS" -eq 0 ]; then
   command -v "$COPILOT_BIN" >/dev/null 2>&1 || problem "GitHub Copilot CLI ($COPILOT_BIN) is not on PATH; install it, or run with --no-sessions"
 fi
 
-if [ ${#problems[@]} -gt 0 ] || [ ${#existing[@]} -gt 0 ]; then
+# Copilot CLI has no option to leave your own configuration out of a session, and it loads, besides the policy
+# hooks: user hook files, ${COPILOT_HOME:-~/.copilot}/hooks/*.json, and a top-level "hooks" key in settings.json
+# (hooks reference, "Hooks locations"; config-dir reference, "hooks/"); hooks from installed plugins, under
+# installed-plugins/ (hooks reference, "Hooks contributed by installed plugins"; config-dir reference,
+# "installed-plugins/"), and the plugins settings.json's enabledPlugins installs (config-dir reference,
+# "enabledPlugins"); MCP servers from mcp-config.json (config-dir reference, "mcp-config.json"; command reference, "MCP
+# server configuration") and from plugins; and personal extensions under extensions/ (config-dir reference). A user
+# preToolUse or permissionRequest hook that allows a call would get past the --allow-tool list. hostcheck.py
+# copilot-config names whichever of these exist; the run does not start unless --allow-copilot-config is given.
+COPILOT_CONFIG_DIR="${COPILOT_HOME:-$HOME/.copilot}"
+copilot_config=()
+COPILOT_REFUSE=0
+if [ "$NO_SESSIONS" -eq 0 ] && [ -n "$PY_PATH" ]; then
+  found="$("$PY_PATH" "$HELPER" copilot-config --home "$COPILOT_CONFIG_DIR" 2>&1)"
+  case $? in
+    0) ;;
+    1) while IFS= read -r line; do [ -z "$line" ] || copilot_config+=("$line"); done <<< "$found" ;;
+    *) problem "could not check your Copilot CLI configuration in $COPILOT_CONFIG_DIR: $(printf '%s' "$found" | tail -n 1)" ;;
+  esac
+  [ ${#copilot_config[@]} -eq 0 ] || [ "$ALLOW_COPILOT_CONFIG" -eq 1 ] || COPILOT_REFUSE=1
+fi
+
+if [ ${#problems[@]} -gt 0 ] || [ ${#existing[@]} -gt 0 ] || [ "$COPILOT_REFUSE" -eq 1 ]; then
   echo "Not started; nothing was changed." >&2
   for p in ${problems[@]+"${problems[@]}"}; do echo "  - $p" >&2; done
+  if [ "$COPILOT_REFUSE" -eq 1 ]; then
+    echo "  - your own Copilot CLI configuration would load into the kit's Copilot sessions, where it can approve more" >&2
+    echo "    than the probe commands. Move it aside for the run, or pass --allow-copilot-config to run anyway:" >&2
+    for line in "${copilot_config[@]}"; do echo "      $line" >&2; done
+  fi
   if [ ${#existing[@]} -gt 0 ]; then
     echo "  - managed files the test install would overwrite, or its uninstall would remove, are already in place:" >&2
     for f in "${existing[@]}"; do echo "      $f" >&2; done
@@ -203,6 +237,9 @@ notes=()
 for f in "$COPILOT_DIR"/policy.d/*.json; do
   if [ -e "$f" ]; then notes+=("$COPILOT_DIR/policy.d held other policy hook files before the run; Copilot CLI loads them alongside the kit's"); break; fi
 done
+for line in ${copilot_config[@]+"${copilot_config[@]}"}; do
+  notes+=("--allow-copilot-config: the Copilot CLI sessions loaded the person's own configuration: $line")
+done
 CC_DIR_EXISTED=0; [ -d "$CC_DIR" ] && CC_DIR_EXISTED=1
 CODEX_DIR_EXISTED=0; [ -d "$CODEX_DIR" ] && CODEX_DIR_EXISTED=1
 COPILOT_DIR_EXISTED=0; [ -d "$COPILOT_DIR" ] && COPILOT_DIR_EXISTED=1
@@ -244,6 +281,9 @@ SESSION_PID=""
 KEEPALIVE_PID=""
 S_NAME=""
 S_SID=""
+S_REPO=""
+S_BASE=""
+S_PUSHED=""
 
 helper() { "$PY_PATH" "$HELPER" "$@"; }
 as_root() { "$SUDO_BIN" "$@"; }
@@ -297,11 +337,23 @@ run_limited() {
   return "$status"
 }
 
+# ref_state BRANCH: where the probe folder's bare remote has BRANCH: unmoved (the base commit it started at), pushed
+# (the commit the folder's local branch of that name holds, which items 8 and 9 push), or other.
+ref_state() {
+  local sha
+  sha="$(git --git-dir="$S_REPO/.kit-origin.git" rev-parse -q --verify "refs/heads/$1^{commit}" 2>/dev/null)" || sha=""
+  if [ -n "$sha" ] && [ "$sha" = "$S_BASE" ]; then echo unmoved
+  elif [ -n "$sha" ] && [ "$sha" = "$S_PUSHED" ]; then echo pushed
+  else echo other; fi
+}
+
 record_session() {  # EXIT_CODE
+  local refs=()
+  [ -z "$S_REPO" ] || refs=("block_ref=$(ref_state "kestrel-$TOKEN/kit")" "monitor_ref=$(ref_state "wren-$TOKEN")")
   helper record --file "$RESULTS/sessions.jsonl" "name=$S_NAME" "tool=$S_TOOL" "kind=$S_KIND" "rules=$S_RULES" \
     "cwd=$S_CWD" "exit_code=$1" "seconds=$(( $(epoch) - S_T0 ))" "started_epoch=$S_T0" \
     "stdout=sessions/$S_NAME.stdout" "stderr=sessions/$S_NAME.stderr" "command=sessions/$S_NAME.command.txt" \
-    ${S_LAST:+"last_message=$(rel "$S_LAST")"} ${S_SID:+"session_id=$S_SID"} > /dev/null 2>&1 || true
+    ${S_LAST:+"last_message=$(rel "$S_LAST")"} ${S_SID:+"session_id=$S_SID"} ${refs[@]+"${refs[@]}"} > /dev/null 2>&1 || true
 }
 
 # session NAME TOOL KIND RULES CWD LAST_MESSAGE_FILE COMMAND...: one model session, its whole output saved. A
@@ -320,7 +372,7 @@ session() {
     *) echo "exit $status (sessions/$S_NAME.stderr)" ;;
   esac
   record_session "$status"
-  S_NAME=""; S_SID=""
+  S_NAME=""; S_SID=""; S_REPO=""
   return 0  # a failed session is recorded, and the run goes on so the rules are still restored and checked
 }
 
@@ -352,11 +404,40 @@ $KEY_BLOCK
 EOF
 }
 
-# session_folder NAME [git]: a new empty folder for one session (an empty git repository with no remote for a probe).
-# A folder that cannot be made is a failed step, and that session does not start.
+# probe_repo DIR: the probe's git repository, with a bare repository inside the folder as its only remote, so a push
+# that runs is seen to land and one that is blocked is seen not to, from the tool's side, whatever the evidence lines
+# say. The remote holds kestrel-<token>/kit and wren-<token> at a base commit; the local branches of the same names
+# are one commit ahead, so items 8 and 9 move the remote refs if they run. HEAD is on kit-probe and there is no
+# local main, so items 1 and 2 still fail ("src refspec main does not match any") and push nothing. The bare
+# repository is inside the folder so Codex's workspace-write sandbox can write it. Nothing goes to the network, and
+# hooks from your own git configuration do not run in either repository.
+probe_repo() {
+  local dir="$1" bare="$1/.kit-origin.git"
+  git -C "$dir" init -q --template= &&
+    git -C "$dir" symbolic-ref HEAD refs/heads/kit-probe &&
+    git -C "$dir" config user.name "Catpilot host check" &&
+    git -C "$dir" config user.email host-check@example.invalid &&
+    git -C "$dir" config commit.gpgsign false &&
+    git -C "$dir" config core.hooksPath "$dir/.git/kit-no-hooks" &&
+    git init -q --bare --template= "$bare" &&
+    git --git-dir="$bare" config core.hooksPath "$bare/kit-no-hooks" &&
+    git -C "$dir" commit -q --allow-empty --no-verify -m "host check: base" &&
+    git -C "$dir" remote add origin "$bare" &&
+    git -C "$dir" push -q --no-verify origin "HEAD:refs/heads/kestrel-$TOKEN/kit" "HEAD:refs/heads/wren-$TOKEN" &&
+    S_BASE="$(git -C "$dir" rev-parse HEAD)" &&
+    git -C "$dir" commit -q --allow-empty --no-verify -m "host check: what items 8 and 9 push" &&
+    S_PUSHED="$(git -C "$dir" rev-parse HEAD)" &&
+    git -C "$dir" branch "kestrel-$TOKEN/kit" HEAD &&
+    git -C "$dir" branch "wren-$TOKEN" HEAD
+}
+
+# session_folder NAME [git]: a new empty folder for one session (for a probe, the git repository above). A folder
+# that cannot be made is a failed step, and that session does not start.
 session_folder() {
   local dir="$RUN_TMP/$1"
-  if mkdir "$dir" 2>/dev/null && { [ "${2:-}" != git ] || git -C "$dir" init -q > /dev/null 2>&1; }; then
+  S_REPO=""; S_BASE=""; S_PUSHED=""
+  if mkdir "$dir" 2>/dev/null && { [ "${2:-}" != git ] || probe_repo "$dir" > /dev/null 2>&1; }; then
+    [ "${2:-}" != git ] || S_REPO="$dir"
     return 0
   fi
   printf '  %-30s FAILED (could not create its folder; the session did not start)\n' "$1"
@@ -532,6 +613,13 @@ remove_test_install() {
   fi
 }
 
+# drop_sudo: once the uninstall has succeeded nothing else needs root, so stop refreshing the sudo ticket and drop
+# it before the control sessions start.
+drop_sudo() {
+  if [ -n "$KEEPALIVE_PID" ]; then kill "$KEEPALIVE_PID" 2>/dev/null; wait "$KEEPALIVE_PID" 2>/dev/null; KEEPALIVE_PID=""; fi
+  "$SUDO_BIN" -k > /dev/null 2>&1 < /dev/null || true
+}
+
 skip_control() {  # REASON
   printf '  %-30s skipped (%s)\n' control "$1"
   record_step control skipped 0 "" "$1"
@@ -602,10 +690,12 @@ trap finalize EXIT
 SESSIONS_WORD="yes"; [ "$NO_SESSIONS" -eq 0 ] || SESSIONS_WORD="no"
 KEEP_WORD="no"; [ "$KEEP" -eq 0 ] || KEEP_WORD="yes"
 CONTROL_WORD="no"; [ "$PLAN_CONTROL" -eq 0 ] || CONTROL_WORD="yes"
+ALLOW_COPILOT_WORD="no"; [ "$ALLOW_COPILOT_CONFIG" -eq 0 ] || ALLOW_COPILOT_WORD="yes"
 NOTES=""; for n in ${notes[@]+"${notes[@]}"}; do NOTES="$NOTES|$n"; done
 helper start --results "$RESULTS" --evidence-log "$EVIDENCE_LOG" \
   "run_tag=$RUN_TAG" "home=$HOME" "claude_config_dir=${CLAUDE_CONFIG_DIR:-}" "codex_home=${CODEX_HOME:-}" \
   "copilot_home=${COPILOT_HOME:-}" "sessions=$SESSIONS_WORD" "keep=$KEEP_WORD" "control=$CONTROL_WORD" \
+  "allow_copilot_config=$ALLOW_COPILOT_WORD" "copilot_config_dir=$COPILOT_CONFIG_DIR" \
   "git_head=$GIT_HEAD" "git_branch=$GIT_BRANCH" "git_dirty=$GIT_DIRTY" \
   "claude_version=$CLAUDE_VERSION" "codex_version=$CODEX_VERSION" "copilot_version=$COPILOT_VERSION" \
   "python_bin=$PY_PATH" "python_bin_version=$PY_VERSION" "python3_path=$PY3_PATH" "python3_version=$PY3_VERSION" \
@@ -635,6 +725,11 @@ else
   echo "This run starts 7 model sessions with your own sign-in: 3 Claude Code (claude -p), 3 Codex (codex exec) and"
   echo "1 GitHub Copilot CLI (copilot -p), with no control run ($CONTROL_WHY)."
   echo "They use your plan or API credit. Use --no-sessions to check the install without them."
+fi
+if [ ${#copilot_config[@]} -gt 0 ]; then
+  echo "WARNING (--allow-copilot-config): the Copilot CLI sessions load your own configuration, which can approve more"
+  echo "than the probe commands, so their results may not show what the policy hooks alone do:"
+  for line in "${copilot_config[@]}"; do echo "  - $line"; done
 fi
 echo "It installs into $CC_DIR, $CODEX_DIR and $COPILOT_DIR with sudo and $([ "$KEEP" -eq 1 ] && echo "keeps the install (--keep)" || echo "uninstalls at the end")."
 echo "Until it finishes, keep this terminal open, and do not use Claude Code, Codex or Copilot CLI for other work on this"
@@ -688,6 +783,7 @@ run_step verify-restored "$RESULTS/verify-restored.txt" env -u PYTHON_BIN "$REPO
 if [ "$KEEP" -eq 0 ]; then
   echo "Uninstall:"
   remove_test_install
+  [ "$UNINSTALLED" -ne 1 ] || drop_sudo
 fi
 if [ "$NO_SESSIONS" -eq 0 ]; then
   echo "Control, nothing installed:"
