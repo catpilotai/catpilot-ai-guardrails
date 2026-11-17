@@ -11,11 +11,16 @@ ships:
 
 A change to the wording here is a change to benchmark condition F. Review it
 as one.
+
+Beside the block, a private build writes `company-checklist.json`, the
+sidecar from `sidecar()`: what the session-start script
+(`catpilot_guard/session_start.py`) needs at run time, and no rule text.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -85,6 +90,38 @@ def render(overlay: dict, raw: bytes) -> str:
         + policy_yaml
         + "\n```"
     )
+
+
+SIDECAR_SCHEMA_VERSION = 1
+
+
+def block_file(block: str) -> bytes:
+    """The bytes of `company-checklist.md`: the block and the final newline
+    condition F adds when it plants the block in a project with no
+    `CLAUDE.md` or `AGENTS.md`."""
+    return (block + "\n").encode("utf-8")
+
+
+def sidecar(overlay: dict, raw: bytes, block: str, release: str | None) -> str:
+    """`company-checklist.json` for a block `render(overlay, raw)` returned.
+
+    The session-start script reads it: the owner, the review and expiry
+    dates, the overlay's SHA-256 (the one the block prints), the SHA-256 of
+    `company-checklist.md`, and the Catpilot release the bundle was built
+    from. It checks both hashes against the block, so a block and sidecar
+    from different builds are refused. Deterministic: sorted keys, no
+    timestamps, one final newline.
+    """
+    document = {
+        "schema_version": SIDECAR_SCHEMA_VERSION,
+        "owner": overlay["owner"],
+        "reviewed_on": overlay["reviewed_on"].isoformat(),
+        "expires_on": overlay["expires_on"].isoformat(),
+        "policy_sha256": hashlib.sha256(raw).hexdigest(),
+        "block_sha256": hashlib.sha256(block_file(block)).hexdigest(),
+        "release": release,
+    }
+    return json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def company_checklist_instruction(overlay_file: Path) -> str:

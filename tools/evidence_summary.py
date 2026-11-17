@@ -78,12 +78,12 @@ def summarize_lines(lines: list[str]) -> dict[str, Any]:
             if latest_ts is None or ts > latest_ts:
                 latest_ts = ts
 
-        sid = entry.get("session_id")
-        if isinstance(sid, str) and sid:
-            unique_sessions.add(sid)
-
         source = entry.get("source")
         if source == "claude-code-hook":
+            # Hook sessions only: session-start lines carry a session id on every session, denial or not.
+            sid = entry.get("session_id")
+            if isinstance(sid, str) and sid:
+                unique_sessions.add(sid)
             hook = str(entry.get("hook") or "unknown")
             hook = HOOK_ALIASES.get(hook, hook)
             event = entry.get("event")

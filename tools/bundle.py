@@ -40,7 +40,9 @@ Per-host targets (docs/spec/PACKAGING.md §9):
     dist/<release>/ (zip, paste blocks, web page). `--check` covers dist/.
   - A private build also writes the `company-checklist` target,
     company-checklist.md, from tools/company_checklist.py: the same text
-    benchmark condition F plants. The public build never writes it.
+    benchmark condition F plants. Beside it goes company-checklist.json,
+    what the session-start script reads at run time. The public build
+    never writes either.
 
 Usage:
   python tools/bundle.py                        # build all tiers into skills/
@@ -967,11 +969,13 @@ def build_tier(
             hosts_dir = dist_root / f"{bundle_name}-hosts"
             if hosts_dir.exists():
                 shutil.rmtree(hosts_dir)
+            block = company_checklist.render(overlay, overlay_bytes or b"")
             targets_module.render_all(
                 cfg, skills, rendered_bodies, rendered, hosts_dir, [t for t in enabled if t != "web"],
                 manifest_json=manifest_json,
                 bundle_name=bundle_name, values_block=overlay_values_block(overlay), install_source=install_source or "<your private repository>",
-                company_checklist=company_checklist.render(overlay, overlay_bytes or b""),
+                company_checklist=block,
+                company_checklist_sidecar=company_checklist.sidecar(overlay, overlay_bytes or b"", block, cfg["version"]),
             )
     return bundle_dir
 

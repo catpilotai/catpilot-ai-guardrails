@@ -7,7 +7,8 @@ web page that is the source for catpilot.ai/safe-ai-building. No third-party
 templating dependency; plain Python strings.
 
 One target is not built from the component bodies: `company-checklist`, the
-block from `tools/company_checklist.py` that benchmark condition F plants.
+block from `tools/company_checklist.py` that benchmark condition F plants,
+with its sidecar `company-checklist.json` for the session-start script.
 It holds company values, so only a private build writes it.
 
 Determinism: fixed zip timestamps derived from the release CalVer, no
@@ -40,8 +41,9 @@ TARGET_NAMES = (
 # The bundler's sidecar manifest. Defined here because bundle.py imports this
 # module, not the other way round; bundle.MANIFEST_NAME aliases this name.
 MANIFEST_NAME = "catpilot.json"
-# The company-checklist target's file, written by private builds only.
+# The company-checklist target's file and its sidecar, written by private builds only.
 COMPANY_CHECKLIST_NAME = "company-checklist.md"
+COMPANY_CHECKLIST_SIDECAR_NAME = "company-checklist.json"
 PASTE_LIMIT = 8000  # ChatGPT project/GPT instructions and Copilot Studio instructions
 PASTE_HEADROOM = 300  # room for the per-file header line so the whole pasted file fits
 REPO_URL = "https://github.com/catpilotai/catpilot-ai-guardrails"
@@ -367,12 +369,12 @@ def web_page(cfg: dict, digests: list[dict], paste: str, release: str, npx_comma
 # Rendering
 
 
-def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_md: str, out_dir: Path, enabled: list[str], *, manifest_json: str, bundle_name: str | None = None, values_block: str | None = None, install_source: str = "catpilotai/catpilot-ai-guardrails", company_checklist: str | None = None) -> list[Path]:
+def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_md: str, out_dir: Path, enabled: list[str], *, manifest_json: str, bundle_name: str | None = None, values_block: str | None = None, install_source: str = "catpilotai/catpilot-ai-guardrails", company_checklist: str | None = None, company_checklist_sidecar: str | None = None) -> list[Path]:
     """Render the enabled targets. Artifacts that ship the skill directory carry
     the catpilot.json manifest alongside SKILL.md. For a private build pass
-    bundle_name, values_block, the private install source, and the
-    company_checklist block. The public build passes no company_checklist,
-    so it never writes the company-checklist target."""
+    bundle_name, values_block, the private install source, the
+    company_checklist block and its sidecar JSON. The public build passes no
+    company_checklist, so it never writes the company-checklist target."""
     release = cfg["version"]
     name = bundle_name or cfg["name"]
     private = values_block is not None
@@ -420,6 +422,9 @@ def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_
         # plants the block in a project with no CLAUDE.md or AGENTS.md. No
         # header: the file is the text the benchmark measured.
         files[COMPANY_CHECKLIST_NAME] = (company_checklist + "\n").encode("utf-8")
+        if company_checklist_sidecar is not None:
+            # What the session-start script reads at run time, beside the block.
+            files[COMPANY_CHECKLIST_SIDECAR_NAME] = company_checklist_sidecar.encode("utf-8")
     files["README.md"] = dist_readme(cfg, release, sorted(files), name=name, private=private, npx_command=npx_command).encode("utf-8")
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -443,6 +448,7 @@ def dist_readme(cfg: dict, release: str, names: list[str], *, name: str | None =
         "AGENTS.md": ("Repository-based agents", "Append the block to the project's AGENTS.md."),
         "CLAUDE.md": ("Claude Code", "Append the block to the project's CLAUDE.md or ~/.claude/CLAUDE.md."),
         COMPANY_CHECKLIST_NAME: ("Claude Code, Codex", "A short checklist plus the company's validated rules: the text benchmark condition F puts in the project's CLAUDE.md or AGENTS.md."),
+        COMPANY_CHECKLIST_SIDECAR_NAME: ("Claude Code, Codex", f"For the session-start script, beside `{COMPANY_CHECKLIST_NAME}`: the owner, the review and expiry dates, the release, and the SHA-256 of the rules file and of the block."),
         "copilot-instructions.md": ("GitHub Copilot in a repository", "Append the block to .github/copilot-instructions.md."),
         "lovable-knowledge.md": ("Lovable", "Project → Settings → Knowledge."),
         "bolt-prompt.txt": ("Bolt", "Save as .bolt/prompt in the project."),

@@ -30,6 +30,8 @@ Everything an administrator places is under [`deploy/org/`](../deploy/org/):
 
 The skills come from [`skills/`](../skills/) in a checkout of the release you are deploying; the install script copies them. Pin the release: the files are deterministic per release and the [`CHANGELOG.md`](../CHANGELOG.md) says what changed.
 
+**Company rules at session start: not placed yet.** [`hooks/session-start/catpilot-company-rules.py`](../hooks/session-start/README.md) is a `SessionStart` hook for Claude Code and Codex. It reads the `company-checklist.md` block and its `company-checklist.json` sidecar from a private build (`tools/bundle.py --overlay`). When the rules are current, it gives Codex the whole block as developer context and gives Claude Code a one-line status, since a managed `CLAUDE.md` is to carry the block there. When they expired, or cannot be loaded or checked, it says so and names who to ask. It writes one evidence line either way. It is advice, not enforcement: `SessionStart` cannot block on either host. `install.sh`, `verify.sh` and `uninstall.sh` do not place the hook, the block or the sidecar yet; the next release does. Not run on a host.
+
 ## Claude Code
 
 Claude Code reads an admin-managed settings file above every user, project, and command-line setting. Users cannot override it, apart from a few security-sensitive keys where a stricter user value still counts.

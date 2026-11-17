@@ -24,14 +24,17 @@ skills/                     # shipped bundles (CalVer, generated)
     references/<component>.md
 dist/2026.09.18/            # per-host artifacts (generated): zip, paste blocks, web page
 catpilot_guard/             # the hook checks as a standard-library package (Python 3.8+), one module per check:
-                            # secrets.py, write_secrets.py, destructive.py; and evidence.py, the evidence
-                            # writer the checks and the reference server share
+                            # secrets.py, write_secrets.py, destructive.py; evidence.py, the evidence
+                            # writer the checks and the reference server share; and session_start.py,
+                            # the company rules at session start (advice, not a check)
 hooks/README.md             # install steps and exact coverage for every hook and gate
 hooks/claude-code/          # the three PreToolUse hooks (credentials in Bash, credentials in file writes,
                             # destructive commands) as thin shims that run catpilot_guard, the former write
                             # hook's name kept as an entry point, and example settings
 hooks/harness/              # the same checks as functions for your own agent loop, imported from catpilot_guard,
                             # plus outbound-URL and file-path gates
+hooks/session-start/        # SessionStart hook for Claude Code and Codex: prints the company rules or a notice
+                            # that they expired or could not be loaded; a shim that runs catpilot_guard
 mcp-server/                 # reference MCP server: four read-only tools over the checkpoints and an overlay
 deploy/                     # Azure and Cloudflare scripts for hosting the reference server, notes on Catpilot's instance, and verify.sh
   org/                      # install.sh, verify.sh, uninstall.sh and templates for the Claude Code and Codex managed locations
@@ -39,7 +42,8 @@ deploy/                     # Azure and Cloudflare scripts for hosting the refer
 tools/
   bundle.py                 # deterministic bundler: --target all, --overlay, --check
   targets.py                # per-host renderers
-  company_checklist.py      # company checklist block: benchmark condition F and the private company-checklist.md target
+  company_checklist.py      # company checklist block: benchmark condition F, the private company-checklist.md
+                            # target, and its company-checklist.json sidecar for the session-start script
   validate_skill.py         # skill directory validator
   validate_overlay.py       # organization overlay validator
   validate_evals.py         # cases.json validator

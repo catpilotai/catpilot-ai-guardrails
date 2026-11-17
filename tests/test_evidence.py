@@ -207,8 +207,8 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(props["schema_version"]["const"], evidence.SCHEMA_VERSION)
         self.assertEqual(props["event"]["enum"], list(evidence.EVENTS))
         self.assertEqual(props["mode"]["enum"], list(evidence.MODES))
-        self.assertEqual(props["source"]["enum"], [evidence.HOOK_SOURCE, evidence.SERVER_SOURCE])
-        self.assertEqual(props["host"]["enum"], [evidence.CLAUDE_CODE])
+        self.assertEqual(props["source"]["enum"], [evidence.HOOK_SOURCE, evidence.SERVER_SOURCE, evidence.SESSION_START_SOURCE])
+        self.assertEqual(props["host"]["enum"], [evidence.CLAUDE_CODE, evidence.CODEX])
         self.assertEqual(props["hook"]["enum"], [module.HOOK_NAME for module in CHECKS.values()])
         for name, (pattern, longest) in evidence.CHECKED.items():
             with self.subTest(field=name):

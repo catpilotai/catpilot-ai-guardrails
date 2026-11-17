@@ -253,6 +253,20 @@ Both import the checks from `catpilot_guard`, the same code the hooks run.
 The harness owns its tool boundary, so a gate it enforces is enforcement on
 that path; a skill it loads is still advice.
 
+## Session start: company rules (advice, not enforcement)
+
+`session-start/catpilot-company-rules.py` is a `SessionStart` hook for Claude
+Code and Codex. It is not in the table above because it stops nothing:
+`SessionStart` cannot block on either host, so what it prints is a notice,
+not a control. It reads the company rules block and its sidecar from a
+private build. When the rules are current, it gives Codex the whole block as
+developer context and gives Claude Code a one-line status (a managed
+`CLAUDE.md` carries the block there). When they expired, or cannot be loaded
+or checked, it says so and names who to ask, and prints no rules. It always
+exits 0 and writes one evidence line. Details, dates and size budgets:
+[`session-start/README.md`](session-start/README.md). Not run on a host, and
+`deploy/org/install.sh` does not place it yet.
+
 ## Other hosts
 
 Cursor has a hooks facility. The same check will be ported only after it is

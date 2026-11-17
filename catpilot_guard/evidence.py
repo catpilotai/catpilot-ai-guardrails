@@ -1,4 +1,4 @@
-"""Content-free evidence lines, schema version 1: the one writer for the hooks and the reference MCP server.
+"""Content-free evidence lines, schema version 1: the one writer for the hooks, the session-start script and the reference MCP server.
 
 The schema is docs/spec/evidence-event.schema.json, described in docs/spec/EVIDENCE.md. When
 CATPILOT_EVIDENCE_LOG names a file, each event appends one JSON line to it. When
@@ -7,7 +7,7 @@ line goes to syslog. Off unless one is set.
 
 What a line carries: the schema version, a random event id, the time, the source, the event,
 and the enumerated fields its caller passes (a hook name, a label, a tool name, a session id, a
-policy hash). Never a command, a file path, file content, a prompt, a plan description, or a
+policy hash, a size). Never a command, a file path, file content, a prompt, a plan description, or a
 value from the company rules file.
 
 Several hooks and sessions may append to one file at once. Each line is one write to a file
@@ -35,8 +35,9 @@ except ImportError:  # Windows has no fcntl: each line is still one write, witho
     fcntl = None
 
 SCHEMA_VERSION = 1
-# The closed list. Written today: deny and input_error (hooks), lookup (server). The rest are reserved
-# for the company-rules hooks and the session-start script; see docs/spec/EVIDENCE.md.
+# The closed list. Written today: deny and input_error (hooks), lookup (server), and rules_delivered,
+# rules_expired and policy_error (the session-start script). ask and would_deny are reserved for the
+# company-rules hooks; see docs/spec/EVIDENCE.md.
 EVENTS = ("rules_delivered", "rules_expired", "deny", "ask", "would_deny", "policy_error", "input_error", "lookup")
 MODES = ("monitor", "ask", "block")
 
@@ -44,7 +45,9 @@ EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
 SYSLOG_ENV = "CATPILOT_EVIDENCE_SYSLOG"
 HOOK_SOURCE = "claude-code-hook"
 SERVER_SOURCE = "mcp-server"
+SESSION_START_SOURCE = "session-start"
 CLAUDE_CODE = "claude-code"
+CODEX = "codex"
 
 LOCK_WAIT_SECONDS = 0.5
 

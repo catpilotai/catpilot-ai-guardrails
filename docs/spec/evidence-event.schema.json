@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/catpilotai/catpilot-ai-guardrails/docs/spec/evidence-event.schema.json",
   "title": "Catpilot evidence event",
-  "description": "One line of the evidence log written by the Claude Code hooks and the reference MCP server, schema version 1. Content-free: every value is a fixed label, an enumerated value, an opaque id or a hash. Never a command, a file path, file content, a prompt, a plan description, or a value from the company rules file. See docs/spec/EVIDENCE.md.",
+  "description": "One line of the evidence log written by the Claude Code hooks, the session-start script and the reference MCP server, schema version 1. Content-free: every value is a fixed label, an enumerated value, an opaque id or a hash. Never a command, a file path, file content, a prompt, a plan description, or a value from the company rules file. See docs/spec/EVIDENCE.md.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "event_id", "ts", "source", "event"],
@@ -20,16 +20,16 @@
       "description": "When the line was written, in UTC to the second (2026-11-16T15:04:05+00:00)."
     },
     "source": {
-      "enum": ["claude-code-hook", "mcp-server"],
-      "description": "The component that wrote the line: one of the hooks, or the reference MCP server."
+      "enum": ["claude-code-hook", "mcp-server", "session-start"],
+      "description": "The component that wrote the line: one of the Claude Code hooks, the reference MCP server, or the session-start script, which runs on Claude Code and Codex."
     },
     "host": {
-      "enum": ["claude-code"],
-      "description": "The AI tool the event came from, when the writer knows it: claude-code for a hook run as a Claude Code PreToolUse hook. Absent when unknown: the server does not know which tool called it, and a check called from a harness does not say. Never the machine's hostname."
+      "enum": ["claude-code", "codex"],
+      "description": "The AI tool the event came from, when the writer knows it: claude-code for a hook run as a Claude Code PreToolUse hook; claude-code or codex for the session-start script, from its --host argument. Absent when unknown: the server does not know which tool called it, a check called from a harness does not say, and a session-start line whose --host was missing or unknown has none. Never the machine's hostname."
     },
     "event": {
       "enum": ["rules_delivered", "rules_expired", "deny", "ask", "would_deny", "policy_error", "input_error", "lookup"],
-      "description": "What happened. Written today: deny and input_error (hooks), lookup (server). The others are reserved for the company-rules hooks and the session-start script."
+      "description": "What happened. Written today: deny and input_error (hooks), lookup (server), rules_delivered, rules_expired and policy_error (session-start script). ask and would_deny are reserved for the company-rules hooks."
     },
     "rule_id": {
       "type": "string",
@@ -44,17 +44,31 @@
     "policy_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "SHA-256 of the company rules file's bytes, whenever one was read and parsed. The server writes it; the hooks load no rules file yet."
+      "description": "SHA-256 of the company rules file's bytes. The server writes it whenever it read and parsed the file. The session-start script writes the hash its private build recorded, on rules_delivered and rules_expired. The hooks load no rules file yet."
     },
     "release": {
       "type": "string",
       "pattern": "^[0-9]{4}\\.[0-9]{2}(\\.[0-9]{2})?(-[0-9]+)?$",
-      "description": "The CalVer release of the writer's content. The server writes the release of its guidance (mcp-server/defaults/guidance.json); the hooks have no release of their own yet and leave it out."
+      "description": "The CalVer release of the writer's content. The server writes the release of its guidance (mcp-server/defaults/guidance.json). The session-start script writes the release the company rules bundle was built from, when its sidecar names one of this shape. The hooks have no release of their own yet and leave it out."
     },
     "session_id": {
       "type": "string",
       "pattern": "^[A-Za-z0-9._:-]{1,128}$",
       "description": "The host's session id from the hook event, when it is an opaque identifier of this shape; otherwise absent."
+    },
+    "session_source": {
+      "enum": ["startup", "resume", "clear", "compact", "fork"],
+      "description": "Session-start script: how the session started, from the SessionStart event's source. Absent when the event did not say, or said something else."
+    },
+    "block_chars": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Session-start script, rules_delivered: the length in characters of the company rules block it read (company-checklist.md). A size, never the text."
+    },
+    "block_lines": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Session-start script, rules_delivered: the number of lines in the company rules block it read. A size, never the text."
     },
     "hook": {
       "enum": ["pretooluse-secrets", "pretooluse-write-secrets", "pretooluse-destructive-ops"],
@@ -68,7 +82,7 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 200,
-      "description": "A hook's fixed label for what it matched: a credential type, private-key-block, or a destructive-operation type. Never the matched text."
+      "description": "A hook's fixed label for what it matched: a credential type, private-key-block, or a destructive-operation type. Never the matched text. On a session-start policy_error line, why the company rules could not be loaded: one of the values the session-start condition below lists."
     },
     "error": {
       "enum": ["invalid-input", "unknown-category", "unknown-kind", "unknown-topic", null],
@@ -117,6 +131,15 @@
     {
       "if": {"properties": {"source": {"const": "mcp-server"}}},
       "then": {"required": ["tool", "release", "error", "policy_status", "unknown_policy"]}
+    },
+    {
+      "if": {"properties": {"source": {"const": "session-start"}}},
+      "then": {
+        "properties": {
+          "event": {"enum": ["rules_delivered", "rules_expired", "policy_error"]},
+          "label": {"enum": ["bad-arguments", "missing", "unreadable", "malformed", "hash-mismatch", "internal-error"]}
+        }
+      }
     }
   ]
 }

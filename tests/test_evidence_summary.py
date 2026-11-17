@@ -22,6 +22,19 @@ class HookRenameTests(unittest.TestCase):
         self.assertEqual(report["hooks"]["denials_by_hook"], {"pretooluse-write-secrets": 2})
 
 
+class SessionStartLineTests(unittest.TestCase):
+    def test_session_start_lines_do_not_count_as_sessions_with_denials(self):
+        from tools.evidence_summary import summarize_lines
+        report = summarize_lines([
+            json.dumps({"source": "claude-code-hook", "hook": "pretooluse-secrets", "event": "deny", "tool": "Bash", "label": "x", "session_id": "s1"}),
+            json.dumps({"source": "session-start", "event": "rules_delivered", "host": "claude-code", "session_id": "s1"}),
+            json.dumps({"source": "session-start", "event": "rules_delivered", "host": "codex", "session_id": "s2"}),
+        ])
+        self.assertEqual(report["total_events"], 3)
+        self.assertEqual(report["hooks"]["unique_sessions_with_denials"], 1)
+        self.assertEqual(report["hooks"]["total_denials"], 1)
+
+
 class EvidenceSummaryTests(unittest.TestCase):
     def test_summarizes_hooks_and_mcp_events_in_markdown_and_json(self):
         events = [
