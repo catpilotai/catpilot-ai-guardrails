@@ -683,6 +683,9 @@ def _exec(command: list) -> int:
     return 127
 
 
+STOP_GRACE_SECONDS = 1  # under run.sh's two seconds between TERM and KILL
+
+
 def detach(command: list) -> int:
     """Run command in a new session, with no controlling terminal. sudo ties its ticket to the terminal, so a session
     started this way cannot use the ticket run.sh holds. Normally this process becomes the new session and the command
@@ -714,12 +717,23 @@ def detach(command: list) -> int:
     failed = os.read(read_end, 200).decode("ascii", "replace")
     os.close(read_end)
 
+    # run.sh stops a session with TERM and, two seconds later, KILL to this process's group. KILL cannot be passed
+    # on, and the command's group is not this one, so this process sends KILL to the command's group itself one
+    # second after passing on a stop signal: a command that ignores TERM does not outlive the run.
+    def kill_group(_signum=None, _frame=None):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
     def forward(signum, _frame):
         try:
             os.killpg(pid, signum)
         except OSError:
             pass
+        signal.alarm(STOP_GRACE_SECONDS)
 
+    signal.signal(signal.SIGALRM, kill_group)
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(signum, forward)
     while True:

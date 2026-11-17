@@ -15,6 +15,7 @@ import ast
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -782,6 +783,38 @@ class HelperTests(unittest.TestCase):
         missing = subprocess.run([sys.executable, str(HELPER_PATH), "detach", "/nonexistent/command"],
                                  capture_output=True, text=True, timeout=30)
         self.assertEqual(missing.returncode, 127)
+
+    def test_a_stopped_session_does_not_outlive_detach_in_the_fallback(self):
+        # Under job control detach leads its own group, so a child starts the session; run.sh then signals detach's
+        # group (TERM, then KILL two seconds later), which does not hold the command. detach must take it down.
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp) / "pid"
+            stubborn = ("import os, signal, time\n"
+                        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+                        "time.sleep(60)\n")
+            proc = subprocess.Popen([sys.executable, str(HELPER_PATH), "detach", sys.executable, "-c", stubborn],
+                                    stdin=subprocess.DEVNULL, start_new_session=True)
+            deadline = time.time() + 20
+            while not pidfile.exists() or not pidfile.read_text():
+                self.assertLess(time.time(), deadline, "the command did not start")
+                time.sleep(0.05)
+            child = int(pidfile.read_text())
+            self.assertNotEqual(os.getsid(child), os.getsid(proc.pid), "the fallback did not start a new session")
+            os.killpg(proc.pid, signal.SIGTERM)
+            time.sleep(2)
+            os.killpg(proc.pid, signal.SIGKILL) if proc.poll() is None else None
+            proc.wait(timeout=10)
+            deadline = time.time() + 5
+            while True:
+                try:
+                    os.kill(child, 0)
+                except ProcessLookupError:
+                    break
+                if time.time() > deadline:
+                    os.kill(child, signal.SIGKILL)
+                    self.fail("the session's command outlived detach")
+                time.sleep(0.05)
 
     def test_new_evidence_reads_only_what_was_appended(self):
         with tempfile.TemporaryDirectory() as tmp:
