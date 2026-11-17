@@ -10,6 +10,8 @@ Each module reads one Claude Code PreToolUse event on stdin in main() and prints
 decision or nothing. The files in hooks/claude-code/ are thin shims that run main(), and
 hooks/harness/ calls the same functions. Importing the package imports no check.
 
+  copilot        GitHub Copilot CLI's PreToolUse event read in the Claude Code shape the checks take, and
+                 its decision written with the fields Copilot reads (--host copilot-cli)
   evidence       the content-free evidence writer the checks and the reference MCP server
                  share (docs/spec/EVIDENCE.md); a check imports it only to write a line
   session_start  not a check: the SessionStart hook for Claude Code and Codex that puts the
@@ -70,19 +72,41 @@ def _discard(stream) -> None:
         pass
 
 
-# The tools a PreToolUse check can say it ran on, in its evidence lines. Both send the same
-# PreToolUse event shape for Bash (tool_input.command), so the decision does not depend on it.
-HOOK_HOSTS = ("claude-code", "codex")
+# The tools a PreToolUse check can say it ran on, in its evidence lines. Claude Code and Codex send the same
+# PreToolUse event shape for Bash (tool_input.command). Copilot CLI's is read through catpilot_guard/copilot.py
+# (event_for_host, decision_for_host), so the checks decide the same way on every tool.
+HOOK_HOSTS = ("claude-code", "codex", "copilot-cli")
 DEFAULT_HOOK_HOST = "claude-code"
+COPILOT_CLI = "copilot-cli"
+
+
+def event_for_host(event: object, host: str | None) -> object:
+    """The hook event in the Claude Code shape every check reads. Only Copilot CLI's differs.
+    Raises ValueError for a Copilot file write of a shape it does not know, so the hook fails closed."""
+    if host == COPILOT_CLI:
+        from .copilot import to_claude
+
+        return to_claude(event)
+    return event
+
+
+def decision_for_host(result: dict, host: str | None) -> dict:
+    """The decision with the fields the host reads. Copilot CLI also gets top-level permissionDecision fields."""
+    if host == COPILOT_CLI:
+        from .copilot import with_copilot_fields
+
+        return with_copilot_fields(result)
+    return result
 
 
 def hook_host(argv: list | None = None) -> str | None:
-    """The tool a PreToolUse check names in its evidence lines, from `--host claude-code|codex`.
+    """The tool a PreToolUse check runs on, from `--host claude-code|codex|copilot-cli`.
 
     No arguments: claude-code, the tool every configuration written before this option names.
-    `--host codex` or `--host=codex` (or claude-code): that tool. Anything else: None, so the
-    line leaves host out rather than name the wrong tool. Only the evidence label depends on
-    this; the decision never does, and it never raises.
+    `--host codex` or `--host=codex` (or another of HOOK_HOSTS): that tool. Anything else: None,
+    so the line leaves host out rather than name the wrong tool. It labels evidence lines, and for
+    copilot-cli it also selects how the event is read and the decision written (event_for_host,
+    decision_for_host); what a check decides never depends on it. It never raises.
     """
     try:
         args = sys.argv[1:] if argv is None else list(argv)

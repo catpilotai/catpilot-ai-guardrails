@@ -64,7 +64,7 @@ class CodexManagedHookTests(unittest.TestCase):
         self.home.mkdir()
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("CATPILOT_EVIDENCE")}
         self.env.update({"CATPILOT_ALLOW_NONROOT": "1", "CATPILOT_CC_DIR": str(self.cc), "CATPILOT_CODEX_DIR": str(self.codex),
-                         "PYTHON_BIN": sys.executable, "HOME": str(self.home)})
+                         "CATPILOT_COPILOT_DIR": str(self.tmp / "copilot"), "PYTHON_BIN": sys.executable, "HOME": str(self.home)})
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -280,7 +280,7 @@ class CodexManagedHookTests(unittest.TestCase):
                 self.assertTrue(self.requirements.exists())
                 for name in HOOK_FILES:
                     self.assertTrue((self.hooks / name).is_file(), name)
-                self.assertIn(f"kept    {self.hooks} ({self.requirements}, kept above, still runs hooks from it", uninstall.stdout)
+                self.assertIn(f"kept    {self.hooks} ({self.requirements} still runs hooks from it", uninstall.stdout)
                 # The declared commands still run their hooks.
                 data = parse_toml(self.requirements.read_text(encoding="utf-8"))
                 command = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]

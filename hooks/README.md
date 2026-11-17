@@ -8,7 +8,7 @@ enforcement for that path only. Everything else in the repository is advice.
 | --- | --- | --- | --- | --- |
 | `claude-code/pretooluse-secrets.py` | Claude Code | `Bash` tool, PreToolUse | Denies a shell command that contains a literal credential (the secret-blocking patterns) with a plain-language reason. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md); earlier rows in the tested-runtimes table. |
 | `claude-code/pretooluse-write-secrets.py` (formerly `pretooluse-write-private-key.py`, kept as a compatibility entry point) | Claude Code; Codex (`apply_patch`) | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, and Codex's `apply_patch`, PreToolUse | Denies file content that contains a PEM private-key header or a literal credential matching the secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input, a missing sibling file, or any internal error. | Claude Code 2.1.312, 2026-10-27, under both file names: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
-| `claude-code/pretooluse-company-rules.py` | Claude Code; Codex | `Bash` tool, PreToolUse | The company's own enforcement rules, from a compiled policy (`tools/validate_overlay.py compile`): denies, asks the person about, or only logs a force push or deletion aimed at a branch the company protects, by each rule's mode (`block`, `ask`, `monitor`). Names the rule and the approved alternative, never a listed value. Never returns allow. A policy it cannot use applies no company rule and is logged; the built-in hooks are unaffected. Fails closed on malformed input. | Not run on a host. |
+| `claude-code/pretooluse-company-rules.py` | Claude Code; Codex; Copilot CLI (not run on a host) | `Bash` tool, PreToolUse | The company's own enforcement rules, from a compiled policy (`tools/validate_overlay.py compile`): denies, asks the person about, or only logs a force push or deletion aimed at a branch the company protects, by each rule's mode (`block`, `ask`, `monitor`). Names the rule and the approved alternative, never a listed value. Never returns allow. A policy it cannot use applies no company rule and is logged; the built-in hooks are unaffected. Fails closed on malformed input. | Not run on a host. |
 | `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` tool, PreToolUse | Parses the command like a shell and denies a high-blast-radius operation (partial cloud-config resets, auto-approved infrastructure destroys, `kubectl delete` of a namespace or with `--all`, a recursive delete of root, a system directory, home, a credential directory, or a bare variable, a force push or deletion aimed at a protected branch, credential exfiltration pipes) with the safer alternative. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 
 Each file in `claude-code/` is a thin shim. The check itself is a module of the
@@ -401,6 +401,70 @@ timeout = 30
 `deploy/org/install.sh` sets the three up as managed Codex hooks in
 `/etc/codex/requirements.toml`, with `--host codex`
 ([`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md#blocking-hooks-on-codex)).
+
+## GitHub Copilot CLI
+
+Copilot CLI runs the same checks as policy hooks: JSON files in
+`/etc/github-copilot/policy.d/` that root owns and no one else can write.
+Copilot loads them before user and project hooks, whatever the folder's trust
+state, and people cannot turn them off with `disableAllHooks`
+([hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference),
+read on 2026-11-17). `deploy/org/install.sh` writes
+`policy.d/catpilot-guardrails.json` and copies the hooks to
+`/etc/github-copilot/catpilot-guardrails/hooks/`
+([`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md#github-copilot-cli)).
+
+The hooks are registered under the Claude-style event name `PreToolUse`, so
+Copilot sends Claude Code's event shape and Claude tool names: `Bash` for its
+`bash` and `powershell` tools, `Write` for `create`, and `Edit` for `edit`,
+`str_replace_editor` and `apply_patch`. `tool_input` keeps the runtime tool's
+own arguments (`file_text`, `new_str`, or a patch). With `--host copilot-cli`,
+[`catpilot_guard/copilot.py`](../catpilot_guard/copilot.py) reads them in the
+shape every check takes: `write_bash` and `write_powershell` (input sent to a
+running shell) as commands, file text and new text as content, and a patch as
+`apply_patch`. A file write of any other shape exits 2, which Copilot treats
+as a deny. Each decision also carries the top-level `permissionDecision` and
+`permissionDecisionReason` that Copilot documents. What a check decides does
+not change.
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "type": "command",
+        "matcher": "Bash|write_bash|write_powershell",
+        "bash": "python3 \"/path/to/hooks/pretooluse-destructive-ops.py\" --host copilot-cli",
+        "timeoutSec": 30
+      }
+    ]
+  }
+}
+```
+
+Two differences from the other tools:
+
+- **A timeout lets the call run.** Copilot's documentation says a timed-out
+  hook, policy hooks included, fails open. The timeout is Copilot's default of
+  30 seconds; a check takes well under one.
+- **`ask` is opt-in, and Copilot settles it.** With `--ask` on its command,
+  the company-rules hook returns `ask`; Copilot denies an ask in autopilot
+  mode and the cloud agent. How it treats one under `copilot -p` or an
+  allow-all mode is not verified. Without `--ask`, `ask` acts as `block`.
+- **Shell input is read line by line.** `write_bash` sends keystrokes to a
+  running shell. `{enter}` is read as a line break. Any other key token
+  (`{up}`, `{backspace}`, `{tab}`, ...) can change which command runs, so the
+  checks cannot read it and the hook exits 2, which Copilot treats as a deny.
+  The same goes for raw control characters, tab included, since tab
+  completes (a carriage return is read as a line break). Tokens match in any case and after `$`, so text such as
+  `${HOME}` or `{{end}}` sent with `write_bash` is refused too; `$HOME` and the
+  `bash` tool are not affected. A command split across several `write_bash`
+  calls is not covered.
+
+Not covered: Copilot in the cloud (policy hooks do not run there),
+PowerShell-specific forms of the destructive checks, and the session-start
+rules. Not run on a host.
 
 ## Other hosts
 

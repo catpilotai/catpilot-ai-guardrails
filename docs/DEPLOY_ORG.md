@@ -251,6 +251,21 @@ If your `requirements.toml` already has a `[hooks]` table with its own `managed_
 
 **What this does not reach.** Codex cloud tasks, and Work with Local computer access, whose cloud orchestration supports only MCP hooks; and ChatGPT.
 
+## GitHub Copilot CLI
+
+`install.sh` also gives Copilot CLI the three checks, as policy hooks: JSON files in `/etc/github-copilot/policy.d/` that root owns and no one else can write. Copilot loads them before user and project hooks, whatever the folder's trust state, and people cannot turn them off with `disableAllHooks` ([hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference), read on 2026-11-17).
+
+**What `install.sh` places.**
+
+- `/etc/github-copilot/catpilot-guardrails/hooks/`: the secret, file-write, destructive-operation and company-rules hooks and the `catpilot_guard` package beside them;
+- `/etc/github-copilot/policy.d/catpilot-guardrails.json`, only when there is none; otherwise it prints the file to put in its place. It registers the checks under `PreToolUse`, so Copilot sends Claude Code's event shape, with `--host copilot-cli` on each command so the hooks read Copilot's file-edit arguments and write the decision fields Copilot reads. The credential and destructive-operation checks run on `Bash|write_bash|write_powershell`, the file-write check on `Write|Edit`, each with a 30-second timeout. With enforcement rules, the company-rules hook is added on the shell tools with `--policy /etc/github-copilot/catpilot-guardrails/policy/company-policy.json`.
+
+**A timeout lets the call run.** Copilot fails open when a hook times out, policy hooks included. The same exposure to a `python3` that does not start applies as on the other tools ([above](#blocking-hooks-on-codex)): a hook that exits with an error, rather than timing out, denies the call on Copilot.
+
+**`verify.sh`** checks the files; that `policy.d/catpilot-guardrails.json` is owned by root and writable by no one else, since Copilot ignores it otherwise; runs each hook directly on harmless probes in Copilot's event shape; and runs each command the file declares through a shell. It fails a command without `--host copilot-cli` and a matcher that misses its tool. **`uninstall.sh`** removes the tree and a policy file that is byte-for-byte what `install.sh` writes, with or without enforcement rules, and keeps an edited one with the hooks it runs.
+
+**What this does not reach.** Copilot in the cloud does not run policy hooks. The session-start rules are not placed for Copilot CLI. Not run on a host.
+
 ## Company enforcement rules
 
 A version 2 rules file can carry an `enforcement` section: rules a hook applies exactly, each in `monitor`, `ask` or `block` ([`spec/OVERLAY_V2.md`](spec/OVERLAY_V2.md) §2.2 and §2.3). In this release the hook acts on `protected_branch` rules: a force push or deletion aimed at a branch the company protects, on top of the built-in list. `deploy_host` rules are validated and compiled, and not acted on yet.
@@ -259,7 +274,7 @@ When the file given to `install.sh --overlay` has an `enforcement` section, `ins
 
 - compiles it with `tools/validate_overlay.py compile` into a JSON policy: each rule's id, kind, mode and values, the approved alternative's text, the file's `expires_on` and its SHA-256, and nothing else. It prints what each rule does on each tool, without the values, and refuses to write a policy the hook would not load;
 - places the policy at `<managed dir>/catpilot-guardrails/policy/company-policy.json` for each tool, owned by root and writable only by root;
-- registers `hooks/pretooluse-company-rules.py --host <tool> --policy <that file>` on `Bash`, in `managed-settings.json` and `requirements.toml` (in the files it writes, or the JSON and TOML it prints for you to merge).
+- registers `hooks/pretooluse-company-rules.py --host <tool> --policy <that file>` on `Bash`, in `managed-settings.json`, `requirements.toml` and Copilot CLI's `policy.d/catpilot-guardrails.json` (in the files it writes, or the JSON and TOML it prints for you to merge).
 
 For the example rules file, the commands added are:
 
@@ -271,7 +286,7 @@ Codex (a [[hooks.PreToolUse]] table, matcher "^Bash$"):
 CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-company-rules.py" --host codex --policy "/etc/codex/catpilot-guardrails/policy/company-policy.json"
 ```
 
-**Rolling out a rule.** Start a new rule in `monitor`: it blocks nothing and writes a `would_deny` line each time it would have. `python3 tools/evidence_summary.py` counts them per rule id. Move it to `ask` or `block` once the count shows it fires where you expect, then reinstall. `ask` acts as `block` unless you add `--ask` to the company-rules hook command in `managed-settings.json`. The hook cannot tell a person from a program that approves, such as `claude -p` with a permission-prompt tool or an Agent SDK callback, and `ask` means a person decides first (decision 2 in the spec). Add it once a session check shows a person answering on your machines. With it, the person confirms on Claude Code in the `default`, `acceptEdits` and `plan` permission modes. In other modes, and on Codex, which does not support `ask`, it still denies. After the file's `expires_on`, every company rule acts in `monitor` until you renew the file and reinstall; the built-in checks are unaffected.
+**Rolling out a rule.** Start a new rule in `monitor`: it blocks nothing and writes a `would_deny` line each time it would have. `python3 tools/evidence_summary.py` counts them per rule id. Move it to `ask` or `block` once the count shows it fires where you expect, then reinstall. `ask` acts as `block` unless you add `--ask` to the company-rules hook command in `managed-settings.json`. The hook cannot tell a person from a program that approves, such as `claude -p` with a permission-prompt tool or an Agent SDK callback, and `ask` means a person decides first (decision 2 in the spec). Add it once a session check shows a person answering on your machines. With it, the person confirms on Claude Code in the `default`, `acceptEdits` and `plan` permission modes. In other modes, and on Codex, which does not support `ask`, it still denies. On Copilot CLI, with `--ask` in the policy file's command, the hook returns `ask` and Copilot settles it: Copilot denies an ask in autopilot and the cloud agent, and how it treats one under `copilot -p` or an allow-all mode is not verified. After the file's `expires_on`, every company rule acts in `monitor` until you renew the file and reinstall; the built-in checks are unaffected.
 
 **What a failure does.** A policy the hook cannot use, because it is missing, malformed, or owned or writable by anyone but root, applies no company rule: the hook returns no decision and writes a `policy_error` line. The built-in hooks keep running. `verify.sh` fails it. A rules file without an `enforcement` section installs no policy, and removes one an earlier install placed.
 
@@ -361,6 +376,7 @@ What a pilot report reads from it: denials per hook per day (the hooks were in f
 | Codex CLI, `PreToolUse` hooks through `/etc/codex/requirements.toml` (`install.sh`) | verified on 0.169.0 on macOS, through the host check (`evals/host-check/run.sh`) in a headless `codex exec` session with the owner's own config left out: Codex loaded the managed hooks with no trust step; two force pushes to `main`, an `rm -rf` of a home-directory path, a `terraform` auto-approve apply and AWS's documentation key were blocked on `Bash`, a synthetic key block written through Codex's file-edit tool was blocked on `apply_patch` and no file was created, and a harmless command ran; six evidence lines labeled `host` `codex`. Interactive sessions and the `Edit`/`Write` matcher aliases not run ([note](../evals/reports/2026.11.17-host-check-codex-managed-hooks.md)) | 2026-11-17 | The maintainer ran the host check; Catpilot recorded |
 | Codex CLI, `SessionStart` hook through `/etc/codex/requirements.toml` | verified on 0.169.0 with no trust step: a session answered the same question with the two distinctive values. With the rules expired, the host showed the warning, and the model named no approved host and named the owner. Each session wrote a `rules_delivered` or `rules_expired` line with `host` `codex`. `/hooks` was not run, and only the `startup` source ran ([note](../evals/reports/2026.11.17-session-start-rules-verification.md)) | 2026-11-17 | A maintainer installed and ran the sessions; Catpilot recorded |
 | Claude Code and Codex CLI, the company-rules hook (`install.sh --overlay` with enforcement rules) | not yet verified on a host: unit tests, and `install.sh`, `verify.sh` and `uninstall.sh` run in temporary directories (`tests/test_company_rules.py`) | | |
+| GitHub Copilot CLI, policy hooks in `/etc/github-copilot/policy.d/` (`install.sh`), the company-rules hook included | not yet verified on a host: unit tests, and `install.sh`, `verify.sh` and `uninstall.sh` run in temporary directories (`tests/test_copilot_hooks.py`); the event shape and decision fields are from Copilot's documentation | | |
 | Evidence log, hooks and server | unit and stdio contract tests in `tests/` | 2026-09-20 | Catpilot |
 
 A row moves to "verified" when a person has run the steps on a real machine and recorded the transcript or screenshot under `evals/reports/`, the same standard as the tested-runtimes table.

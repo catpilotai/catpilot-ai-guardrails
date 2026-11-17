@@ -21,6 +21,10 @@
 #                managed PreToolUse hooks (--host codex) with [features].hooks = true (only when absent;
 #                otherwise printed for you to merge). Generating it needs Python 3.8+ (PYTHON_BIN), as the
 #                hooks themselves do.
+#   Copilot CLI  the secret, file-write and destructive-operation hooks and their catpilot_guard package copied to
+#                /etc/github-copilot/catpilot-guardrails/hooks/, and /etc/github-copilot/policy.d/catpilot-guardrails.json
+#                declaring them as policy PreToolUse hooks (--host copilot-cli), which people cannot turn off (only
+#                when absent; otherwise printed for you to merge). Copilot loads a policy file only when root owns it.
 #   With --overlay: validates and builds the private company bundle and host blocks into a temporary directory
 #                outside the repository, then installs the private safe-building bundle and places the rendered
 #                company CLAUDE.md and AGENTS.md blocks under <managed dir>/catpilot-guardrails/instructions/.
@@ -38,8 +42,9 @@
 #                (tools/validate_overlay.py compile) into the JSON policy the company-rules hook reads, placed
 #                root-owned at <managed dir>/catpilot-guardrails/policy/company-policy.json for each tool, and the
 #                hook, hooks/pretooluse-company-rules.py --policy <that file>, is registered on Bash in
-#                managed-settings.json and requirements.toml (in the files written or printed above). It enforces
-#                the company's own rules in monitor, ask or block; ask acts as block on Codex.
+#                managed-settings.json, requirements.toml and the Copilot CLI policy file (in the files written or
+#                printed above). It enforces the company's own rules in monitor, ask or block; ask acts as block on
+#                Codex. The session-start rules are not placed for Copilot CLI.
 #                With no --overlay, nothing about session-start rules or company enforcement is placed or registered.
 # It does not touch user settings, does not restart anything, and does not send anything anywhere.
 # Windows paths differ and are not handled here; see docs/DEPLOY_ORG.md.
@@ -73,6 +78,7 @@ case "$(uname -s)" in
 esac
 CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
 CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
+COPILOT_DIR="${CATPILOT_COPILOT_DIR:-/etc/github-copilot}"
 RULES_FILES="$REPO/deploy/org/session_start_files.py"
 
 PRIVATE_TMP=""
@@ -114,6 +120,9 @@ if [ -n "$HOSTS_DIR" ]; then
 else
   REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR" --no-rules)"
 fi
+COPILOT_ENFORCE=()
+[ -n "$POLICY_FILE" ] && COPILOT_ENFORCE=(--enforce)
+COPILOT_POLICY_JSON="$("$PYTHON_BIN" "$RULES_FILES" copilot-policy --copilot-dir "$COPILOT_DIR" ${COPILOT_ENFORCE[@]+"${COPILOT_ENFORCE[@]}"})"
 
 # install_package HOOKS_DIR: the catpilot_guard package the hook scripts import from beside them. Its .py files
 # only, so no __pycache__ or .pyc from the checkout comes along, replacing any earlier copy, so a module a newer
@@ -239,6 +248,27 @@ if [ -e "$CODEX_DIR/requirements.toml" ] || [ -L "$CODEX_DIR/requirements.toml" 
   echo "exists  $CODEX_DIR/requirements.toml (not overwritten); merge this into it, keeping one [features] and one [hooks] table:"; echo "$REQUIREMENTS_TOML"
 else
   printf '%s\n' "$REQUIREMENTS_TOML" > "$CODEX_DIR/requirements.toml"; chmod 644 "$CODEX_DIR/requirements.toml"; echo "policy  $CODEX_DIR/requirements.toml"
+fi
+
+# Copilot CLI: the same three checks, and with a compiled policy the company-rules hook, as policy hooks. Copilot
+# loads a policy file only when root owns it and no one else can write it; it reads them before user and project
+# hooks, and people cannot turn them off.
+mkdir -p "$COPILOT_DIR/catpilot-guardrails/hooks"
+cp "$REPO/hooks/claude-code/pretooluse-secrets.py" \
+   "$REPO/hooks/claude-code/pretooluse-write-secrets.py" \
+   "$REPO/hooks/claude-code/pretooluse-destructive-ops.py" \
+   "$REPO/hooks/claude-code/pretooluse-company-rules.py" \
+   "$COPILOT_DIR/catpilot-guardrails/hooks/"
+chmod 755 "$COPILOT_DIR/catpilot-guardrails" "$COPILOT_DIR/catpilot-guardrails/hooks"
+chmod 644 "$COPILOT_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $COPILOT_DIR/catpilot-guardrails/hooks/"
+install_package "$COPILOT_DIR/catpilot-guardrails/hooks"
+if [ -n "$HOSTS_DIR" ]; then install_policy "$COPILOT_DIR"; fi
+mkdir -p "$COPILOT_DIR/policy.d"; chmod 755 "$COPILOT_DIR/policy.d"
+if [ -e "$COPILOT_DIR/policy.d/catpilot-guardrails.json" ] || [ -L "$COPILOT_DIR/policy.d/catpilot-guardrails.json" ]; then
+  echo "exists  $COPILOT_DIR/policy.d/catpilot-guardrails.json (not overwritten); replace it with:"; echo "$COPILOT_POLICY_JSON"
+else
+  printf '%s\n' "$COPILOT_POLICY_JSON" > "$COPILOT_DIR/policy.d/catpilot-guardrails.json"
+  chmod 644 "$COPILOT_DIR/policy.d/catpilot-guardrails.json"; echo "policy  $COPILOT_DIR/policy.d/catpilot-guardrails.json"
 fi
 
 echo

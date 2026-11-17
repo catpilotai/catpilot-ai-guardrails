@@ -30,6 +30,7 @@ class DeployOrgScriptTests(unittest.TestCase):
                 "CATPILOT_ALLOW_NONROOT": "1",
                 "CATPILOT_CC_DIR": str(cc_dir),
                 "CATPILOT_CODEX_DIR": str(codex_dir),
+                "CATPILOT_COPILOT_DIR": str(Path(codex_dir).parent / "copilot"),
                 "PYTHON_BIN": sys.executable,
             }
         )

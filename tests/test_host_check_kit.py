@@ -237,6 +237,7 @@ class HostCheckKitTests(unittest.TestCase):
             "CATPILOT_ALLOW_NONROOT": "1",
             "CATPILOT_CC_DIR": str(self.cc),
             "CATPILOT_CODEX_DIR": str(self.codex),
+            "CATPILOT_COPILOT_DIR": str(self.tmp / "copilot"),
             "PYTHON_BIN": sys.executable,
             "CLAUDE_BIN": str(self.claude),
             "CODEX_BIN": str(self.codex_bin),

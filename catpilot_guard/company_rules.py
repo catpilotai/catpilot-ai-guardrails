@@ -2,11 +2,12 @@
 
 hooks/claude-code/pretooluse-company-rules.py runs this module's main(). It reads the compiled company policy
 (catpilot_guard/policy.py) from the absolute path given as `--policy` on its own command line, and `--host
-claude-code|codex` says which tool runs it. deploy/org/install.sh registers it only when the rules file it was
+claude-code|codex|copilot-cli` says which tool runs it. deploy/org/install.sh registers it only when the rules file it was
 given has an `enforcement` section (docs/spec/OVERLAY_V2.md §2.2).
 
 Scope, stated exactly:
-  - Runs only for the Bash tool, which Claude Code and Codex both name Bash.
+  - Runs only for the Bash tool, which Claude Code and Codex both name Bash; on Copilot CLI, bash, powershell and
+    write_bash (input sent to a running shell), read through catpilot_guard/copilot.py.
   - Kind protected_branch: fires on a `git push` that force-pushes to (--force, -f, --force-with-lease,
     --force-if-includes, or a +refspec) or deletes (--delete, -d, or `:branch`) a branch one of the rule's values
     covers, including a bare force push while such a branch is checked out, and on `git push --mirror`, which
@@ -21,8 +22,10 @@ Scope, stated exactly:
     adds --ask to the root-owned command once a host check shows a person answers there. With --ask, Claude Code
     asks the person in the default, acceptEdits and plan permission modes; other modes approve without asking a
     person or run with nobody to answer, so ask still acts as block there, as it does on Codex, which does not
-    support ask, and on an unknown host. When several rules match, the strictest effect wins and each rule
-    writes its own line.
+    support ask, and on an unknown host. On Copilot CLI, whose event carries no permission mode, --ask makes the
+    hook return ask and Copilot settles it: it denies an ask in autopilot and the cloud agent; how it treats one
+    under `copilot -p` or an allow-all mode is not verified. When several rules match, the strictest effect wins
+    and each rule writes its own line.
   - After the policy's expires_on, every company rule acts in monitor until the file is renewed (decision 3).
   - A deny or ask reason names the rule ids and the approved alternative (use_instead_text), never a listed
     value, and never repeats the command.
@@ -43,7 +46,7 @@ import json
 import os
 import sys
 
-from . import DEFAULT_HOOK_HOST, HOOK_HOSTS, write_decision, write_reason
+from . import COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, event_for_host, write_decision, write_reason
 from . import policy as policy_module
 from .destructive import _simple_commands, git_push_rewrites
 
@@ -129,8 +132,13 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy) -> li
 
 
 def can_ask(host: str | None, event: dict, ask_enabled: bool = False) -> bool:
-    """Whether to return ask: only with --ask, and on Claude Code only in a mode where a person answers."""
-    return ask_enabled and host == CLAUDE_CODE and event.get("permission_mode") in ASK_PERMISSION_MODES
+    """Whether to return ask: only with --ask. Claude Code: only in a mode where a person answers. Copilot CLI: its
+    event names no mode, so the hook returns ask and Copilot settles it."""
+    if not ask_enabled:
+        return False
+    if host == COPILOT_CLI:
+        return True
+    return host == CLAUDE_CODE and event.get("permission_mode") in ASK_PERMISSION_MODES
 
 
 def reason_for(effect: str, deciding: list) -> str:
@@ -208,7 +216,7 @@ def main() -> int:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:
             raise ValueError("hook input too large")
-        event = json.loads(payload)
+        event = event_for_host(json.loads(payload), host)
         if not isinstance(event, dict):
             raise ValueError("hook event must be an object")
         policy = load_policy(event, host, path, ok) if event.get("tool_name") == "Bash" else None
@@ -220,7 +228,7 @@ def main() -> int:
             "Catpilot company-rules check could not read the hook input, so the command was not allowed. "
             "Review the command and retry.")
         return 2
-    return write_decision(result)
+    return write_decision(decision_for_host(result, host))
 
 
 if __name__ == "__main__":
