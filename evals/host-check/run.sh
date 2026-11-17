@@ -11,7 +11,9 @@
 #   --keep         leave the test install in place at the end; it prints the uninstall.sh line to remove it later
 #
 # It asks for the sudo password once and keeps the sudo ticket fresh until it exits. Without --no-sessions it starts
-# six model sessions (three Claude Code, three Codex) with your own sign-in and configuration, which cost money.
+# six model sessions (three Claude Code, three Codex) with your own sign-in, which cost money. The sessions ignore your
+# own settings files and run with no controlling terminal, so they cannot use the sudo ticket. Until it finishes, keep
+# the terminal open and do not use Claude Code or Codex for other work on this machine.
 # Results: ~/catpilot-host-check/<UTC timestamp>/, read summary.json first. More: evals/host-check/README.md.
 #
 # Overrides, for tests and unusual machines: PYTHON_BIN (Python 3.11 to 3.14 with PyYAML; default python3),
@@ -32,6 +34,10 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
+
+# The terminal, kept on fds 3 and 4 so the exit path can write to it even when an interruption lands inside a step
+# whose output goes to a file.
+exec 3>&1 4>&2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
@@ -70,8 +76,10 @@ PROBE_RM="bash -lc 'rm -rf $PROBE_HOME_PATH'"
 PROBE_TERRAFORM="terraform -chdir=infra apply -auto-approve"
 PROBE_KEY="export AWS_ACCESS_KEY_ID=$AWS_DOC_KEY && echo ok"
 PROBE_CONTROL="bash -lc 'echo catpilot-control-ok'"
-# Claude Code: only the probe commands are allowed, so a probe a hook misses runs (inertly) instead of being refused
-# by the permission system, and the write is accepted by acceptEdits. Nothing can prompt: -p has no one to ask.
+# Claude Code's probe session: --restricted ignores the person's own settings files, so their allow rules and default
+# mode do not apply, and --tools leaves only Bash and Write. The probe commands are the only Bash commands allowed, so
+# a probe a hook misses runs (inertly) instead of being refused by the permission system; acceptEdits approves file
+# edits inside the probe folder. Nothing can prompt: --permission-prompts none denies anything that would.
 CLAUDE_ALLOW=(
   "Bash($PROBE_FORCE_LC)" "Bash($PROBE_FORCE_TIMEOUT)" "Bash($PROBE_RM)" "Bash($PROBE_TERRAFORM)"
   "Bash($PROBE_KEY)" "Bash(export AWS_ACCESS_KEY_ID=$AWS_DOC_KEY)" "Bash(echo ok)" "Bash($PROBE_CONTROL)"
@@ -182,6 +190,7 @@ BACKDATED=0
 INTERRUPTED=0
 FINALIZING=0
 STOP_REASON=""
+FAILED_REASON=""
 SESSION_PID=""
 KEEPALIVE_PID=""
 S_NAME=""
@@ -190,8 +199,13 @@ helper() { "$PY_PATH" "$HELPER" "$@"; }
 as_root() { "$SUDO_BIN" "$@"; }
 epoch() { date +%s; }
 rel() { echo "${1#"$RESULTS/"}"; }
-record_step() { helper record --file "$RESULTS/steps.jsonl" "name=$1" "status=$2" "exit_code=$3" "output=$(rel "$4")" > /dev/null 2>&1 || true; }
+record_step() {  # NAME STATUS EXIT_CODE OUTPUT [NOTE]
+  helper record --file "$RESULTS/steps.jsonl" "name=$1" "status=$2" "exit_code=$3" "output=$(rel "$4")" \
+    ${5:+"note=$5"} > /dev/null 2>&1 || true
+}
 die() { STOP_REASON="$1"; echo "Stopped: $1" >&2; exit 1; }
+# A failure that does not stop the run but makes its outcome failed.
+fail_later() { [ -n "$FAILED_REASON" ] || FAILED_REASON="$1"; }
 
 # run_step NAME OUTPUT COMMAND...: run a step, its output to a file, one status line on the terminal.
 run_step() {
@@ -209,16 +223,21 @@ run_step() {
   return "$status"
 }
 
+# stop_session SIGNAL: signal the running session's process group (it leads its own session), else the process.
+stop_session() { kill "-$1" -- "-$SESSION_PID" 2>/dev/null || kill "-$1" "$SESSION_PID" 2>/dev/null; }
+
 # run_limited SECONDS STDOUT STDERR CWD COMMAND...: the command's exit status, or 124 when it ran too long. Plain
-# bash, because macOS has no timeout(1). The command runs in the background so an interruption can stop it.
+# bash, because macOS has no timeout(1). The command runs in the background so an interruption can stop it, in a new
+# session with no controlling terminal (hostcheck.py detach), stdin from /dev/null and the terminal's copies on fds 3
+# and 4 closed: the sudo ticket this run holds is tied to the terminal, so nothing a model runs can use it.
 run_limited() {
   local seconds="$1" out="$2" err="$3" cwd="$4" ticks=0 status
   shift 4
-  ( cd "$cwd" && exec "$@" ) > "$out" 2> "$err" < /dev/null &
+  ( cd "$cwd" && exec "$PY_PATH" "$HELPER" detach "$@" ) > "$out" 2> "$err" < /dev/null 3>&- 4>&- &
   SESSION_PID=$!
   while kill -0 "$SESSION_PID" 2>/dev/null; do
     if [ "$ticks" -ge $((seconds * 5)) ]; then
-      kill -TERM "$SESSION_PID" 2>/dev/null; sleep 2; kill -KILL "$SESSION_PID" 2>/dev/null
+      stop_session TERM; sleep 2; stop_session KILL
       wait "$SESSION_PID" 2>/dev/null; SESSION_PID=""; return 124
     fi
     sleep 0.2; ticks=$((ticks + 1))
@@ -276,37 +295,58 @@ $KEY_BLOCK
 EOF
 }
 
+# session_folder NAME [git]: a new empty folder for one session (an empty git repository with no remote for a probe).
+# A folder that cannot be made is a failed step, and that session does not start.
+session_folder() {
+  local dir="$RUN_TMP/$1"
+  if mkdir "$dir" 2>/dev/null && { [ "${2:-}" != git ] || git -C "$dir" init -q > /dev/null 2>&1; }; then
+    return 0
+  fi
+  printf '  %-30s FAILED (could not create its folder; the session did not start)\n' "$1"
+  record_step "$1" failed 1 "" "could not create the session folder, so the session did not start"
+  fail_later "the folder for session $1 could not be created"
+  return 1
+}
+
+# Isolation from the person's own setup, whose defaults may be permissive (Codex's danger-full-access sandbox and
+# never-ask approvals, Claude Code's auto mode): Claude Code with --restricted, which ignores user, project and local
+# settings files while managed settings still apply, and --tools naming only what the session needs; Codex with
+# --ignore-user-config and --ignore-rules and an explicit sandbox. Managed requirements.toml still applies and pins
+# hooks on. Codex trusts managed hooks by policy, so no hook-trust flag is passed.
 claude_question() {  # NAME RULES
-  mkdir "$RUN_TMP/$1" || return 1
+  session_folder "$1" || return 0
   session "$1" claude-code question "$2" "$RUN_TMP/$1" "" \
-    "$CLAUDE_BIN" -p "$QUESTION" --strict-mcp-config --permission-prompts none --output-format stream-json --verbose \
-    --include-hook-events
+    "$CLAUDE_BIN" -p "$QUESTION" --restricted --tools "" --strict-mcp-config --permission-prompts none \
+    --output-format stream-json --verbose --include-hook-events
 }
 
 codex_question() {  # NAME RULES
   local last="$RESULTS/sessions/$1.last-message.txt"
-  mkdir "$RUN_TMP/$1" || return 1
+  session_folder "$1" || return 0
   session "$1" codex question "$2" "$RUN_TMP/$1" "$last" \
-    "$CODEX_BIN" exec --json --skip-git-repo-check -C "$RUN_TMP/$1" -o "$last" "$QUESTION"
+    "$CODEX_BIN" exec --json --skip-git-repo-check -s read-only --ignore-user-config --ignore-rules -C "$RUN_TMP/$1" \
+    -o "$last" "$QUESTION"
 }
 
 claude_probe() {
-  local dir="$RUN_TMP/claude-code-probe"
-  mkdir "$dir" && git -C "$dir" init -q > /dev/null 2>&1 || return 1
-  session claude-code-probe claude-code probe current "$dir" "" \
-    "$CLAUDE_BIN" -p "$(probe_prompt claude-code)" --strict-mcp-config --permission-mode acceptEdits \
-    --permission-prompts none --output-format stream-json --verbose --include-hook-events --allowedTools "${CLAUDE_ALLOW[@]}"
+  session_folder claude-code-probe git || return 0
+  session claude-code-probe claude-code probe current "$RUN_TMP/claude-code-probe" "" \
+    "$CLAUDE_BIN" -p "$(probe_prompt claude-code)" --restricted --tools "Bash,Write" --strict-mcp-config \
+    --permission-mode acceptEdits --permission-prompts none --output-format stream-json --verbose --include-hook-events \
+    --allowedTools "${CLAUDE_ALLOW[@]}"
 }
 
 codex_probe() {
-  local dir="$RUN_TMP/codex-probe" last="$RESULTS/sessions/codex-probe.last-message.txt"
-  mkdir "$dir" && git -C "$dir" init -q > /dev/null 2>&1 || return 1
-  session codex-probe codex probe current "$dir" "$last" \
-    "$CODEX_BIN" exec --json --skip-git-repo-check -s workspace-write -C "$dir" -o "$last" "$(probe_prompt codex)"
+  local last="$RESULTS/sessions/codex-probe.last-message.txt"
+  session_folder codex-probe git || return 0
+  session codex-probe codex probe current "$RUN_TMP/codex-probe" "$last" \
+    "$CODEX_BIN" exec --json --skip-git-repo-check -s workspace-write --ignore-user-config --ignore-rules \
+    -C "$RUN_TMP/codex-probe" -o "$last" "$(probe_prompt codex)"
 }
 
 # The root environment for install.sh and uninstall.sh: sudo resets the environment, so the overrides are named.
-ROOT_ENV=("PYTHON_BIN=$PY_PATH")
+# PYTHONDONTWRITEBYTECODE keeps the build, run as root, from writing root-owned __pycache__ into the checkout.
+ROOT_ENV=("PYTHON_BIN=$PY_PATH" "PYTHONDONTWRITEBYTECODE=1")
 for v in CATPILOT_CC_DIR CATPILOT_CODEX_DIR CATPILOT_ALLOW_NONROOT; do
   if printenv "$v" > /dev/null 2>&1; then ROOT_ENV+=("$v=$(printenv "$v")"); fi
 done
@@ -351,6 +391,10 @@ restore_rules() {
   return "$status"
 }
 
+uninstall_command() {
+  printf 'sudo'; printf ' %q' "${ROOT_ENV[@]}" "$REPO/deploy/org/uninstall.sh" --server-url "$SERVER_URL"; echo
+}
+
 uninstall_test_install() {
   local left=0 f
   as_root "${ROOT_ENV[@]}" "$REPO/deploy/org/uninstall.sh" --server-url "$SERVER_URL" || return 1
@@ -382,8 +426,10 @@ finalize() {
   [ "$FINALIZING" -eq 0 ] || return
   FINALIZING=1
   trap '' INT TERM HUP
+  # An interruption inside a step leaves that step's output file on fds 1 and 2; this path writes to the terminal.
+  exec 1>&3 2>&4
   if [ -n "$SESSION_PID" ]; then
-    kill -TERM "$SESSION_PID" 2>/dev/null; sleep 1; kill -KILL "$SESSION_PID" 2>/dev/null; wait "$SESSION_PID" 2>/dev/null
+    stop_session TERM; sleep 1; stop_session KILL; wait "$SESSION_PID" 2>/dev/null
     SESSION_PID=""
     if [ -n "$S_NAME" ]; then echo "stopped"; record_session 130; fi
   fi
@@ -399,12 +445,16 @@ finalize() {
   if [ "$INSTALL_STARTED" -eq 1 ]; then
     if [ "$KEEP" -eq 1 ]; then
       record_step uninstall skipped 0 ""
-      echo "  Kept the test install (--keep). Remove it with: sudo deploy/org/uninstall.sh --server-url $SERVER_URL"
-    else
-      run_step uninstall "$RESULTS/uninstall.txt" uninstall_test_install
+      echo "  Kept the test install (--keep). Remove it with:"
+      echo "    $(uninstall_command)"
+    elif ! run_step uninstall "$RESULTS/uninstall.txt" uninstall_test_install; then
+      fail_later "the test install was not fully removed (uninstall.txt)"
+      echo "  The test install is not fully removed. Remove it with:"
+      echo "    $(uninstall_command)"
     fi
   fi
   if [ -n "$KEEPALIVE_PID" ]; then kill "$KEEPALIVE_PID" 2>/dev/null; wait "$KEEPALIVE_PID" 2>/dev/null; fi
+  if [ "$code" -eq 0 ] && [ -n "$FAILED_REASON" ]; then code=1; STOP_REASON="$FAILED_REASON"; fi
   if [ "$INTERRUPTED" -eq 1 ]; then outcome=interrupted; elif [ "$code" -ne 0 ]; then outcome=failed; else outcome=complete; fi
   echo
   helper collect --results "$RESULTS" --run-tmp "$RUN_TMP" --outcome "$outcome" --exit-code "$code" --stop-reason "$STOP_REASON"
@@ -444,6 +494,8 @@ else
   echo "--no-sessions: no model session will start."
 fi
 echo "It installs into $CC_DIR and $CODEX_DIR with sudo and $([ "$KEEP" -eq 1 ] && echo "keeps the install (--keep)" || echo "uninstalls at the end")."
+echo "Until it finishes, keep this terminal open, and do not use Claude Code or Codex for other work on this machine:"
+echo "every session started meanwhile gets the test rules, the hooks and, for a while, rules that have expired."
 echo "sudo will ask for your password once:"
 "$SUDO_BIN" -v || die "sudo did not accept the password; nothing was installed"
 keep_sudo_alive
@@ -474,7 +526,9 @@ status=$?
 if [ "$status" -ne 0 ]; then
   echo "failed, as expected (verify-expired.txt)"; record_step verify-expired failed-as-expected "$status" "$RESULTS/verify-expired.txt"
 else
-  echo "PASSED, which it should not with expired rules (verify-expired.txt)"; record_step verify-expired passed-unexpectedly 0 "$RESULTS/verify-expired.txt"
+  echo "FAILED: verify.sh passed with the rules backdated (verify-expired.txt)"
+  record_step verify-expired failed 0 "$RESULTS/verify-expired.txt" "verify.sh passed while the rules were backdated"
+  fail_later "verify.sh passed while the rules were backdated (verify-expired.txt)"
 fi
 if [ "$NO_SESSIONS" -eq 0 ]; then
   claude_question claude-code-question-expired expired

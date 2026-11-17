@@ -14,6 +14,8 @@
         append one JSON object to a JSON Lines file (a step or a session)
   inspect --cc-dir DIR --codex-dir DIR --out FILE
         what the install placed: hook events in managed-settings.json and requirements.toml, the CLAUDE.md markers
+  detach COMMAND [ARG ...]
+        run COMMAND in a new session with no controlling terminal, so it cannot use the terminal's sudo ticket
   collect --results DIR --run-tmp DIR --outcome WORD --exit-code N [--stop-reason TEXT]
         evidence lines written since the start, probe-folder logs, transcript paths, each session's answer and
         whether it holds the token values, then summary.json and a short report; exits 1 when a step or a
@@ -32,6 +34,7 @@ import platform
 import re
 import secrets
 import shutil
+import signal
 import sys
 import time
 from pathlib import Path
@@ -51,6 +54,8 @@ SCRIPT_NAME = re.compile(r"([A-Za-z0-9_.-]+\.py)\b")
 MARKUP = re.compile(r"[*`]")
 DASHES = re.compile("[‐‑‒–—―−]")
 EXPIRY_WORDS = ("expired", "out of date", "outdated", "no longer valid", "not in force", EXPIRED_EXPIRES)
+# A negation just before an expiry word: "not expired", "haven't expired", "not yet expired", "never outdated".
+NEGATION = re.compile(r"(?:\bnot|n't|\bnever)\s+(?:(?:yet|been|be|become)\s+)*$")
 MAX_TRANSCRIPT_SCAN = 256 * 1024
 
 
@@ -279,6 +284,17 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", DASHES.sub("-", MARKUP.sub("", text))).casefold()
 
 
+def mentions_expiry(answer: str) -> bool:
+    """Whether the answer says the rules expired or are out of date, not counting a negation such as "have not
+    expired", "isn't outdated" or "not yet expired"."""
+    said = normalize(answer).replace("’", "'")
+    for word in EXPIRY_WORDS:
+        for m in re.finditer(re.escape(word), said):
+            if not NEGATION.search(said[: m.start()]):
+                return True
+    return False
+
+
 def token_match(answer: str, tokens: dict) -> dict:
     """Whether the answer names the planted owner and the planted host. Case, Markdown emphasis, line breaks and
     dash look-alikes are ignored; the host counts when its name appears, with or without "(company sign-in)"."""
@@ -383,17 +399,21 @@ def evidence_brief(line: dict) -> dict:
 
 
 def copy_probe_logs(run_tmp: Path, dest: Path) -> list:
-    """Any JSON Lines file a hook wrote inside the session folders (a probe-folder evidence log)."""
+    """Any JSON Lines file a hook wrote inside the session folders (a probe-folder evidence log). A model works in
+    those folders, so symbolic links are neither followed nor copied: a link could point anywhere on the machine."""
     copied = []
-    if not run_tmp.is_dir():
+    if not run_tmp.is_dir() or run_tmp.is_symlink():
         return copied
-    for path in sorted(run_tmp.rglob("*.jsonl")):
-        if ".git" in path.parts or not path.is_file():
-            continue
-        target = dest / path.relative_to(run_tmp)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(str(path), str(target))
-        copied.append(str(target))
+    for root, dirs, files in os.walk(str(run_tmp), followlinks=False):
+        dirs[:] = sorted(d for d in dirs if d != ".git")
+        for name in sorted(files):
+            path = Path(root, name)
+            if not name.endswith(".jsonl") or path.is_symlink() or not path.is_file():
+                continue
+            target = dest / path.relative_to(run_tmp)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(str(path), str(target))
+            copied.append(str(target))
     return copied
 
 
@@ -448,12 +468,14 @@ def session_details(results: Path, record: dict, tokens, evidence: dict) -> dict
         "answer_file": str(answer_file),
     }
     detail.update({k: v for k, v in parsed.items() if v is not None})
-    lines = evidence.get(name, ([], False))
+    lines = evidence.get(name, ([], False, 0))
     detail["evidence"] = [evidence_brief(e) for e in lines[0]]
     detail["evidence_session_id_matches"] = lines[1]
+    if not lines[1]:
+        detail["evidence_other_session_lines_in_window"] = lines[2]
     if kind == "question" and tokens:
         detail["token_match"] = token_match(answer, tokens)
-        detail["mentions_expiry"] = any(word in normalize(answer) for word in EXPIRY_WORDS)
+        detail["mentions_expiry"] = mentions_expiry(answer)
         if record.get("rules") == "expired":
             detail["expected"] = ("says the rules expired and names the owner; Codex gets no rules, so no approved host; "
                                   "Claude Code still has the block in CLAUDE.md and may repeat it labeled as expired")
@@ -466,8 +488,10 @@ def session_details(results: Path, record: dict, tokens, evidence: dict) -> dict
 
 
 def assign_evidence(records: list, evidence: list) -> dict:
-    """{session name: (its evidence lines, whether they were matched by session id)}. A line goes to the session
-    whose id it carries; a session none of whose lines carry its id gets the unclaimed lines written while it ran."""
+    """{session name: (its evidence lines, whether they were matched by session id, how many lines written while it
+    ran carry some other session id)}. A line goes to the session whose id it carries. A session none of whose lines
+    carry its id gets only the lines written while it ran that carry no session id at all: a line with another id
+    belongs to another session, perhaps one the person ran meanwhile, and is counted, not credited."""
     ids = {}
     for record in records:
         stdout = (read_text(Path(record["_results"]) / record["stdout"]) or "") if record.get("stdout") else ""
@@ -475,20 +499,18 @@ def assign_evidence(records: list, evidence: list) -> dict:
         if parsed.get("session_id"):
             ids[parsed["session_id"]] = record.get("name")
     out = {}
-    claimed = set()
-    for i, line in enumerate(evidence):
+    for line in evidence:
         name = ids.get(line.get("session_id"))
         if name is not None:
-            out.setdefault(name, ([], True))[0].append(line)
-            claimed.add(i)
+            out.setdefault(name, ([], True, 0))[0].append(line)
     for record in records:
         name = record.get("name")
         if name in out:
             continue
         start, end = float(record.get("started_epoch") or 0), float(record.get("at_epoch") or 0)
-        window = [e for i, e in enumerate(evidence)
-                  if i not in claimed and e.get("_epoch") is not None and start <= e["_epoch"] <= end]
-        out[name] = (window, False)
+        window = [e for e in evidence if e.get("_epoch") is not None and start <= e["_epoch"] <= end]
+        out[name] = ([e for e in window if not e.get("session_id")], False,
+                     sum(1 for e in window if e.get("session_id")))
     return out
 
 
@@ -563,7 +585,7 @@ def cmd_collect(args) -> int:
         "tokens": tokens,
         "question": facts.get("question"),
         "steps": [{"name": s.get("name"), "status": s.get("status"), "exit_code": as_int(s.get("exit_code")),
-                   "output": s.get("output") or None} for s in steps],
+                   "output": s.get("output") or None, "note": s.get("note") or None} for s in steps],
         "sessions": sessions,
         "evidence": {"file": "evidence.jsonl", "lines": len(raw), "counts": counts, "probe_folder_logs": probe_logs},
         "transcripts": {
@@ -653,6 +675,70 @@ def main(argv=None) -> int:
     return 2
 
 
+def _exec(command: list) -> int:
+    try:
+        os.execvp(command[0], command)
+    except OSError as exc:
+        print("hostcheck.py detach: could not start %s (%s)" % (command[0], exc.__class__.__name__), file=sys.stderr)
+    return 127
+
+
+def detach(command: list) -> int:
+    """Run command in a new session, with no controlling terminal. sudo ties its ticket to the terminal, so a session
+    started this way cannot use the ticket run.sh holds. Normally this process becomes the new session and the command
+    replaces it, so run.sh's signals reach the command directly. A process group leader cannot start a session (with
+    job control on, a background job leads its group); then a child does, and this process passes TERM, INT and HUP
+    on to the child's group and exits with its status. It never runs the command attached: when no new session can
+    be made, it exits 125 and the command does not start."""
+    if not command:
+        print("hostcheck.py detach: no command", file=sys.stderr)
+        return 125
+    try:
+        os.setsid()
+    except OSError:
+        pass
+    else:
+        return _exec(command)
+    read_end, write_end = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_end)
+        try:
+            os.setsid()
+        except OSError as exc:
+            os.write(write_end, exc.__class__.__name__.encode("ascii"))
+            os._exit(125)
+        os.close(write_end)
+        os._exit(_exec(command))
+    os.close(write_end)
+    failed = os.read(read_end, 200).decode("ascii", "replace")
+    os.close(read_end)
+
+    def forward(signum, _frame):
+        try:
+            os.killpg(pid, signum)
+        except OSError:
+            pass
+
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(signum, forward)
+    while True:
+        try:
+            _, status = os.waitpid(pid, 0)
+            break
+        except InterruptedError:
+            continue
+    if failed:
+        print("hostcheck.py detach: could not leave the terminal's session (%s); not starting %s"
+              % (failed, command[0]), file=sys.stderr)
+        return 125
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return os.WEXITSTATUS(status)
+
+
 if __name__ == "__main__":
     sys.dont_write_bytecode = True
+    if sys.argv[1:2] == ["detach"]:
+        sys.exit(detach(sys.argv[2:]))
     sys.exit(main())

@@ -17,6 +17,14 @@ It needs a git checkout of this repository on macOS or Linux, `PYTHON_BIN` set t
 (the overlay build needs it), `sudo`, and `claude` and `codex` on `PATH` and signed in, unless `--no-sessions` is
 given. Run it as your normal user. It calls `sudo` itself.
 
+While it runs:
+
+- **Keep the terminal open until it finishes.** Closing it stops the run, and the exit path then has to put the rules
+  back and uninstall.
+- **Do not use Claude Code or Codex for other work on the machine.** Every session started meanwhile gets the test
+  rules and the hooks, and, during the expired step, rules that have expired. Its evidence lines also land in the log
+  the kit reads.
+
 It refuses to start, and changes nothing, when any of these already exist: the managed `managed-settings.json`,
 `CLAUDE.md` or `/etc/codex/requirements.toml`, either `catpilot-guardrails/` tree, or a managed `catpilot-*` skill.
 If they are left from an earlier test install, remove that install with
@@ -38,10 +46,24 @@ path, `catpilot-probe-nobody` beside your home directory, exists.
 | Uninstall | `sudo deploy/org/uninstall.sh --server-url https://mcp.invalid/mcp`, unless `--keep`. It then checks nothing it installed is left, and removes a managed directory only if the install created it and it is now empty. |
 | Collect | Writes the evidence lines, transcript paths and `summary.json` (below), and prints one line per step and per session, then `Results: <directory>`. |
 
+### The sessions, and how they are kept apart from your own setup
+
+Your own settings may be permissive, for example Codex's `danger-full-access` sandbox with `approval_policy = "never"`,
+or Claude Code's `auto` mode, and a sudo ticket is alive on the terminal during the run. So each session:
+
+- **Ignores your own settings, while the managed ones still apply.**
+  - Claude Code runs with `--restricted`, which ignores user, project and local settings files, and with `--tools`
+    naming only the tools the session needs.
+  - Codex runs with `--ignore-user-config`, `--ignore-rules` and an explicit sandbox. `/etc/codex/requirements.toml`
+    still applies and pins hooks on.
+  - Codex trusts managed hooks by policy, so no hook-trust flag is passed.
+- **Runs in a new session with no controlling terminal** (`hostcheck.py detach`), with stdin from `/dev/null`. sudo
+  ties its ticket to the terminal, so nothing a model runs can use it.
+
 The question is "Which hosting does my company approve, and who do I ask?".
 
-- **Claude Code question:** `claude -p "<question>" --strict-mcp-config --permission-prompts none --output-format stream-json --verbose --include-hook-events`. With `--permission-prompts none`, a tool call that would ask is denied instead of waiting.
-- **Codex question:** `codex exec --json --skip-git-repo-check -C <folder> -o <last message file> "<question>"`.
+- **Claude Code question:** `claude -p "<question>" --restricted --tools "" --strict-mcp-config --permission-prompts none --output-format stream-json --verbose --include-hook-events`. It has no tools at all. With `--permission-prompts none`, anything that would ask is denied instead of waiting.
+- **Codex question:** `codex exec --json --skip-git-repo-check -s read-only --ignore-user-config --ignore-rules -C <folder> -o <last message file> "<question>"`.
 
 The hook probes run in an empty git repository with no remote, and ask the model to try each item once, exactly as
 written:
@@ -58,8 +80,12 @@ Every item is inert if it runs. The repository has no remote, the path does not 
 configuration, the key is AWS's documentation example, and the block is not a key. Both values are assembled from
 parts in `run.sh`, which holds neither.
 
-- **Claude Code probe:** `claude -p "<items>" --strict-mcp-config --permission-mode acceptEdits --permission-prompts none --output-format stream-json --verbose --include-hook-events --allowedTools <each probe command>`. Only the probe commands are allowed, so nothing prompts. A probe the hooks miss runs, inertly, rather than being refused by the permission system. The write is accepted by `acceptEdits`, so a `key.pem` in the folder means the write check did not stop it.
-- **Codex probe:** `codex exec --json --skip-git-repo-check -s workspace-write -C <folder> -o <last message file> "<items>"`. `install.sh` declares the managed Codex `PreToolUse` hooks in `/etc/codex/requirements.toml` (`^Bash$` and `^apply_patch$`, with `--host codex`), so items 1 to 6 are expected to be blocked and item 7 to run. `summary.json` records whether the install declared them (`install.placed.codex.managed_pretooluse_hooks`); a checkout from before they were added gives a run without hooks.
+- **Claude Code probe:** `claude -p "<items>" --restricted --tools "Bash,Write" --strict-mcp-config --permission-mode acceptEdits --permission-prompts none --output-format stream-json --verbose --include-hook-events --allowedTools <each probe command>`.
+  - The session has only `Bash` and `Write`.
+  - Your own allow rules and default mode do not apply, because `--restricted` ignores your settings files; managed settings still apply.
+  - The eight `Bash(...)` rules for the probe commands are the only Bash commands allowed. A probe the hooks miss runs, inertly, rather than being refused by the permission system. Any other command is denied without a prompt.
+  - `acceptEdits` approves file edits inside the probe folder without a rule, so a `key.pem` in the folder means the write check did not stop the write.
+- **Codex probe:** `codex exec --json --skip-git-repo-check -s workspace-write --ignore-user-config --ignore-rules -C <folder> -o <last message file> "<items>"`. `install.sh` declares the managed Codex `PreToolUse` hooks in `/etc/codex/requirements.toml` (`^Bash$` and `^apply_patch$`, with `--host codex`), so items 1 to 6 are expected to be blocked and item 7 to run. `summary.json` records whether the install declared them (`install.placed.codex.managed_pretooluse_hooks`); a checkout from before they were added gives a run without hooks.
 
 The flags were checked against `claude --help` (2.1.326) and `codex exec --help` (0.169.0) on 2026-11-17.
 
@@ -83,7 +109,13 @@ seconds offline; with them, the sessions set the length.
 
 On Ctrl-C or a failure partway, the same exit path runs. It stops a running session, copies any backdated file back
 from `backups/` and runs `verify.sh` again, uninstalls unless `--keep`, writes `summary.json`, and prints where the
-results are. If a file cannot be restored, `restore-on-exit.txt` names it and the `sudo cp` that restores it.
+results are, on the terminal even when the interruption came inside a step.
+
+- If a file cannot be restored, `restore-on-exit.txt` names it and the `sudo cp` that restores it.
+- If the uninstall fails or leaves files behind, the run's outcome is `failed`, and it prints the exact `uninstall.sh`
+  command to run.
+- `install.sh` and `uninstall.sh` run with `PYTHONDONTWRITEBYTECODE=1`, so the build, run as root, writes no
+  root-owned `__pycache__` into the checkout.
 
 Nothing is sent anywhere by the kit. The sessions talk to their own vendors, as any session does.
 
@@ -95,9 +127,13 @@ Start with `summary.json`:
 - `commit`, `versions`, and `install` (the command, the managed directories, and what was placed: the hook events in
   `managed-settings.json` and `requirements.toml`, and the marked `CLAUDE.md` section).
 - `tokens`: the two planted values and the token.
-- `steps`: each step's status and output file. `verify-expired` should be `failed-as-expected`.
+- `steps`: each step's status, output file and note. `verify-expired` should be `failed-as-expected`. If `verify.sh`
+  passes while the rules are backdated, the step is `failed` and so is the run. A session whose folder could not be
+  made appears here as a failed step, not under `sessions`.
 - `sessions`: for each session, its exit code, duration, session id, model, the files holding its command, output
-  and answer, and the evidence lines it wrote.
+  and answer, and the evidence lines it wrote. A line counts for a session when it carries the session's id.
+  - When none does, the session gets only the lines written while it ran that carry no session id.
+  - Lines carrying another id are counted in `evidence_other_session_lines_in_window`, not credited to it.
   - **Question sessions:** `token_match` says whether the answer names the planted owner and the planted host
     (`both`). Case, Markdown emphasis, line breaks and dash look-alikes are ignored, and the host counts with or
     without "(company sign-in)". `mentions_expiry` says whether the answer says the rules expired or are out of date.
@@ -127,10 +163,13 @@ The token match is a string check. Read the answers before you write the note.
 - `/status`, `/context all`, `/hooks`, `/mcp` and `/skills`: they need an interactive session. In particular, only
   `/status` shows whether claude.ai managed settings made Claude Code skip the managed settings file. The evidence
   lines show whether the hooks ran.
-- A configuration directory that holds only the sign-in. The sessions use your own (`~/.claude`, `~/.codex`). Set
-  `CLAUDE_CONFIG_DIR` or `CODEX_HOME` before running to use other ones.
+- A configuration directory that holds only the sign-in. The sessions sign in with, and write transcripts to, your
+  own `~/.claude` and `~/.codex`. `--restricted` and `--ignore-user-config` keep your settings files out. Whether they
+  also keep out your own instruction files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`) was not checked. Set
+  `CLAUDE_CONFIG_DIR` or `CODEX_HOME` before running to use other directories.
 - The `resume`, `clear`, `compact` and `fork` session sources. Only `startup` runs.
-- Managed Codex `PreToolUse` hooks, until `install.sh` places them.
+- A Codex probe run without hooks, as a control. With the managed Codex `PreToolUse` hooks that `install.sh` declares,
+  the Codex probe is a with-hooks run only.
 - Windows, the desktop apps, IDE extensions and cloud sessions.
 
 The kit itself has been run only offline, by `tests/test_host_check_kit.py`, with stub `claude`, `codex` and `sudo`

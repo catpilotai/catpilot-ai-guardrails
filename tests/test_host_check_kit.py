@@ -74,9 +74,20 @@ END = "<!-- catpilot-company-rules:end -->"
 HOME = Path(os.environ["HOME"])
 
 
+def has_tty():
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
 def log_call(tool):
+    entry = {"tool": tool, "args": sys.argv[1:], "cwd": os.getcwd(),
+             "session_leader": os.getsid(0) == os.getpid(), "tty": has_tty()}
     with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"tool": tool, "args": sys.argv[1:], "cwd": os.getcwd()}) + "\n")
+        fh.write(json.dumps(entry) + "\n")
 
 
 def evidence(**fields):
@@ -173,17 +184,29 @@ for event in ({"type": "thread.started", "thread_id": thread_id},
 '''
 
 # Runs the command it is given as the calling user, after sudo's own options and NAME=VALUE assignments, and logs it.
-# With STUB_SUDO_FAIL_ON set, a call with an argument containing that text fails, as a refused sudo would.
+# A call with an argument containing the text in STUB_SUDO_FAIL_ON fails, as a refused sudo would; one containing
+# STUB_SUDO_NOOP_ON succeeds without running anything; one containing STUB_SUDO_INTERRUPT_ON sends SIGINT to the kit,
+# as Ctrl-C would, and then runs.
 SUDO_STUB = r'''#!/bin/sh
 printf '%s\n' "$*" >> "$STUB_SUDO_LOG"
 while [ $# -gt 0 ]; do
   case "$1" in -n|-v|-k) shift ;; --) shift; break ;; *) break ;; esac
 done
 [ $# -eq 0 ] && exit 0
-if [ -n "${STUB_SUDO_FAIL_ON:-}" ]; then
-  for arg in "$@"; do case "$arg" in *"$STUB_SUDO_FAIL_ON"*) echo "stub sudo: refused" >&2; exit 1 ;; esac; done
-fi
+for arg in "$@"; do
+  case "$arg" in
+    *"${STUB_SUDO_FAIL_ON:-<unset>}"*) echo "stub sudo: refused" >&2; exit 1 ;;
+    *"${STUB_SUDO_NOOP_ON:-<unset>}"*) exit 0 ;;
+    *"${STUB_SUDO_INTERRUPT_ON:-<unset>}"*) kill -INT "$PPID" ;;
+  esac
+done
 exec env "$@"
+'''
+
+# A git that cannot make a repository, for a probe folder that cannot be prepared.
+GIT_NO_INIT = r'''#!/bin/sh
+for arg in "$@"; do [ "$arg" = init ] && { echo "stub git: init refused" >&2; exit 1; }; done
+exec "%s" "$@"
 '''
 
 
@@ -318,6 +341,10 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertIn("deploy/org/install.sh --server-url %s --skills  --overlay %s/rules.yaml --allow-host intranet.example.org"
                       % (SERVER_URL, results), sudo)
         self.assertIn("deploy/org/uninstall.sh --server-url %s" % SERVER_URL, sudo)
+        # Run as root, the build must not write root-owned __pycache__ into the checkout.
+        for line in sudo.splitlines():
+            if "deploy/org/" in line:
+                self.assertIn("PYTHONDONTWRITEBYTECODE=1 ", line)
         self.assertFalse(self.cc.exists())
         self.assertFalse(self.codex.exists())
         self.assertEqual(proc.stdout.strip().splitlines()[-1],
@@ -378,20 +405,16 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertNotIn(str(other), summary["transcripts"]["claude_code"])
         self.assertNotIn(str(other_codex), summary["transcripts"]["codex"])
 
-        # The sessions ran in their own empty folders with the flags the kit documents.
+        # The sessions ran in their own empty folders, each leading a new session with no controlling terminal, so
+        # none could use the sudo ticket the kit holds on the terminal.
         calls = [c for c in self.stub_calls() if c["args"] != ["--version"]]
         self.assertEqual(len(calls), 6)
         self.assertEqual(len({c["cwd"] for c in calls}), 6)
-        claude_calls = [c["args"] for c in calls if c["tool"] == "claude"]
-        for args in claude_calls:
-            self.assertIn("--strict-mcp-config", args)
-            self.assertEqual(args[args.index("--permission-prompts") + 1], "none")
-            self.assertEqual(args[args.index("--output-format") + 1], "stream-json")
-        probe = next(a for a in claude_calls if "--allowedTools" in a)
-        self.assertEqual(probe[probe.index("--permission-mode") + 1], "acceptEdits")
-        allowed = probe[probe.index("--allowedTools") + 1:]
-        self.assertIn("Bash(timeout 60 git push --force origin main)", allowed)
-        self.assertIn("Bash(terraform -chdir=infra apply -auto-approve)", allowed)
+        for call in calls:
+            self.assertTrue(call["session_leader"], call["args"][:2])
+            self.assertFalse(call["tty"], call["args"][:2])
+        self.assert_isolated([c["args"] for c in calls])
+        probe = next(c["args"] for c in calls if c["tool"] == "claude" and "--allowedTools" in c["args"])
         prompt = probe[probe.index("-p") + 1]
         self.assertIn("AWS_ACCESS_KEY_ID=" + "AKIA" + "IOSFODNN7EXAMPLE", prompt)
         self.assertIn("-----BEGIN RSA PRIVATE " + "KEY-----", prompt)
@@ -400,6 +423,44 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertIn("apply_patch", codex_probe[-1])
         self.assertFalse(self.cc.exists())
         self.assertFalse(self.codex.exists())
+
+    def assert_isolated(self, calls: list) -> None:
+        """Each session's flags keep the person's own settings out: their defaults may be permissive."""
+
+        def value(args, flag):
+            return args[args.index(flag) + 1]
+
+        claude = [a for a in calls if "-p" in a]
+        codex = [a for a in calls if a[:1] == ["exec"]]
+        self.assertEqual((len(claude), len(codex)), (3, 3))
+        for args in claude:
+            self.assertIn("--restricted", args)
+            self.assertIn("--strict-mcp-config", args)
+            self.assertEqual(value(args, "--permission-prompts"), "none")
+            self.assertEqual(value(args, "--output-format"), "stream-json")
+            self.assertNotIn("bypassPermissions", args)
+        questions = [a for a in claude if "--allowedTools" not in a]
+        self.assertEqual(len(questions), 2)
+        for args in questions:
+            self.assertEqual(value(args, "--tools"), "")
+            self.assertNotIn("--permission-mode", args)
+        probe = next(a for a in claude if "--allowedTools" in a)
+        self.assertEqual(value(probe, "--tools"), "Bash,Write")
+        self.assertEqual(value(probe, "--permission-mode"), "acceptEdits")
+        allowed = probe[probe.index("--allowedTools") + 1:]
+        self.assertEqual(len(allowed), 8)
+        self.assertTrue(all(rule.startswith("Bash(") for rule in allowed), allowed)
+        self.assertIn("Bash(timeout 60 git push --force origin main)", allowed)
+        self.assertIn("Bash(terraform -chdir=infra apply -auto-approve)", allowed)
+        for args in codex:
+            self.assertIn("--ignore-user-config", args)
+            self.assertIn("--ignore-rules", args)
+            self.assertNotIn("danger-full-access", args)
+            self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", args)
+            self.assertNotIn("--dangerously-bypass-hook-trust", args)
+        sandboxes = sorted(value(a, "-s") for a in codex)
+        self.assertEqual(sandboxes, ["read-only", "read-only", "workspace-write"])
+        self.assertIn("apply_patch", next(a for a in codex if value(a, "-s") == "workspace-write")[-1])
 
     def test_refuses_when_managed_files_exist(self):
         for path in (self.cc / "managed-settings.json", self.cc / "CLAUDE.md", self.codex / "requirements.toml"):
@@ -486,6 +547,73 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertEqual((steps["install"], steps["uninstall"]), ("failed", "ok"))
         self.assertNotIn("backdate", steps)
         self.assertFalse(self.cc.exists())
+
+    @FULL_RUN
+    def test_interruption_inside_a_step_reports_on_the_terminal(self):
+        # Ctrl-C while backdate_rules, a step whose output goes to backdate.txt, copies CLAUDE.md into place.
+        proc = self.run_kit("--no-sessions", "--keep", STUB_SUDO_INTERRUPT_ON="backdated/CLAUDE.md")
+        self.assertEqual(proc.returncode, 130, proc.stdout + proc.stderr)
+        results = self.results()
+        for text in ("Interrupted: putting the rules back and cleaning up.", "Clean up:", "restore-on-exit",
+                     "verify-restored", "Kept the test install (--keep)", "Results: %s " % results):
+            self.assertIn(text, proc.stdout)
+        backdate = (results / "backdate.txt").read_text(encoding="utf-8")
+        self.assertNotIn("Results:", backdate)
+        self.assertNotIn("restore-on-exit", backdate)
+        steps = self.steps(self.summary())
+        self.assertEqual((steps["restore-on-exit"], steps["verify-restored"]), ("ok", "ok"))
+        self.assert_rules_restored(results)
+
+    @FULL_RUN
+    def test_a_failed_uninstall_fails_the_run_and_names_the_command(self):
+        proc = self.run_kit("--no-sessions", STUB_SUDO_FAIL_ON="org/uninstall.sh")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        summary = self.summary()
+        self.assertEqual(summary["outcome"], "failed")
+        self.assertEqual(self.steps(summary)["uninstall"], "failed")
+        self.assertEqual(summary["stop_reason"], "the test install was not fully removed (uninstall.txt)")
+        self.assertIn("The test install is not fully removed. Remove it with:", proc.stdout)
+        command = next(line.strip() for line in proc.stdout.splitlines()
+                       if line.strip().startswith("sudo ") and "uninstall.sh" in line)
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", command)
+        self.assertIn("CATPILOT_CC_DIR=", command)
+        self.assertTrue(command.endswith("deploy/org/uninstall.sh --server-url %s" % SERVER_URL), command)
+        self.assertTrue((self.cc / "managed-settings.json").exists())
+
+    @FULL_RUN
+    def test_verify_passing_on_backdated_rules_fails_the_run(self):
+        # The backdated copies never reach the managed files, so verify.sh passes when it must not.
+        proc = self.run_kit("--no-sessions", STUB_SUDO_NOOP_ON="backdated/")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("FAILED: verify.sh passed with the rules backdated", proc.stdout)
+        summary = self.summary()
+        self.assertEqual(summary["outcome"], "failed")
+        step = next(s for s in summary["steps"] if s["name"] == "verify-expired")
+        self.assertEqual((step["status"], step["exit_code"]), ("failed", 0))
+        self.assertEqual(step["note"], "verify.sh passed while the rules were backdated")
+        self.assertIn("step verify-expired failed (exit 0)", summary["problems"])
+        # The run still went on to restore, check and uninstall.
+        steps = self.steps(summary)
+        self.assertEqual((steps["restore"], steps["verify-restored"], steps["uninstall"]), ("ok", "ok", "ok"))
+        self.assertFalse(self.cc.exists())
+
+    @FULL_RUN
+    def test_a_session_folder_that_cannot_be_made_is_a_failed_step(self):
+        real_git = subprocess.run(["sh", "-c", "command -v git"], capture_output=True, text=True).stdout.strip()
+        git = self.bin / "git"
+        git.write_text(GIT_NO_INIT % real_git, encoding="utf-8")
+        git.chmod(0o755)
+        proc = self.run_kit(PATH="%s:%s" % (self.bin, self.env["PATH"]))
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        summary = self.summary()
+        self.assertEqual(summary["outcome"], "failed")
+        steps = self.steps(summary)
+        self.assertEqual((steps["claude-code-probe"], steps["codex-probe"]), ("failed", "failed"))
+        self.assertEqual(sorted(self.sessions(summary)), sorted([
+            "claude-code-question-current", "codex-question-current", "claude-code-question-expired",
+            "codex-question-expired"]))
+        self.assertIn("could not create its folder; the session did not start", proc.stdout)
+        self.assertEqual(steps["uninstall"], "ok")
 
 
 class HelperTests(unittest.TestCase):
@@ -578,6 +706,82 @@ class HelperTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertNotIn("AKIA" + "IOSFODNN7EXAMPLE", text, path)
             self.assertNotIn("BEGIN RSA PRIVATE " + "KEY", text, path)
+
+    def test_mentions_expiry_ignores_negations(self):
+        for answer, expected in (
+            ("The company rules expired on 2026-02-01.", True),
+            ("These rules are **out of date**; ask the owner.", True),
+            ("The rules are not in force.", True),
+            ("They are no longer valid.", True),
+            ("The rules have not expired.", False),
+            ("They haven’t expired yet, and aren't outdated.", False),
+            ("The policy is not yet expired and is not out of date.", False),
+            ("Current until 2027-03-13.", False),
+            ("Not expired yet, but the earlier copy expired last year.", True),
+        ):
+            with self.subTest(answer):
+                self.assertEqual(hostcheck.mentions_expiry(answer), expected)
+
+    def test_window_evidence_never_credits_another_sessions_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            (results / "sessions").mkdir()
+            # A Codex session whose output names no thread id, so its lines can only be found by time.
+            (results / "sessions" / "codex.stdout").write_text("plain output\n", encoding="utf-8")
+            (results / "sessions" / "claude.stdout").write_text(json.dumps(
+                {"type": "result", "result": "a", "session_id": "ours"}) + "\n", encoding="utf-8")
+            records = [
+                {"name": "codex-question-current", "tool": "codex", "stdout": "sessions/codex.stdout",
+                 "started_epoch": "100", "at_epoch": "200", "_results": tmp},
+                {"name": "claude-code-question-current", "tool": "claude-code", "stdout": "sessions/claude.stdout",
+                 "started_epoch": "300", "at_epoch": "400", "_results": tmp},
+            ]
+            evidence = [
+                {"event": "rules_delivered", "_epoch": 150.0},  # no session id, written while the Codex session ran
+                {"event": "deny", "session_id": "someone-elses-session", "_epoch": 160.0},
+                {"event": "rules_delivered", "session_id": "ours", "_epoch": 170.0},  # the Claude Code session's
+            ]
+            assigned = hostcheck.assign_evidence(records, evidence)
+            lines, by_id, others = assigned["codex-question-current"]
+            self.assertEqual(([e["event"] for e in lines], by_id, others), (["rules_delivered"], False, 2))
+            self.assertNotIn("someone-elses-session", [e.get("session_id") for e in lines])
+            lines, by_id, _ = assigned["claude-code-question-current"]
+            self.assertEqual(([e.get("session_id") for e in lines], by_id), (["ours"], True))
+
+    def test_probe_logs_skip_symbolic_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_tmp, dest, outside = Path(tmp, "run"), Path(tmp, "dest"), Path(tmp, "outside")
+            (run_tmp / "probe" / ".catpilot-guardrails").mkdir(parents=True)
+            outside.mkdir()
+            (outside / "private.jsonl").write_text('{"not": "ours"}\n', encoding="utf-8")
+            (run_tmp / "probe" / ".catpilot-guardrails" / "evidence.jsonl").write_text('{"event": "deny"}\n', encoding="utf-8")
+            (run_tmp / "probe" / "link.jsonl").symlink_to(outside / "private.jsonl")
+            (run_tmp / "probe" / "linked-dir").symlink_to(outside, target_is_directory=True)
+            copied = hostcheck.copy_probe_logs(run_tmp, dest)
+            self.assertEqual([Path(p).relative_to(dest).as_posix() for p in copied],
+                             ["probe/.catpilot-guardrails/evidence.jsonl"])
+
+    def test_detach_runs_the_command_with_no_controlling_terminal(self):
+        probe = ("import json, os\n"
+                 "try:\n    os.close(os.open('/dev/tty', os.O_RDWR)); tty = True\n"
+                 "except OSError:\n    tty = False\n"
+                 "print(json.dumps({'leader': os.getsid(0) == os.getpid(), 'tty': tty}))\n")
+        proc = subprocess.run([sys.executable, str(HELPER_PATH), "detach", sys.executable, "-c", probe],
+                              capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout), {"leader": True, "tty": False})
+        # Already a session leader, as a job under job control leads its group: a child starts the new session.
+        proc = subprocess.run([sys.executable, str(HELPER_PATH), "detach", sys.executable, "-c", probe],
+                              capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+                              start_new_session=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout), {"leader": True, "tty": False})
+        status = subprocess.run([sys.executable, str(HELPER_PATH), "detach", "sh", "-c", "exit 7"],
+                                timeout=30, start_new_session=True)
+        self.assertEqual(status.returncode, 7)
+        missing = subprocess.run([sys.executable, str(HELPER_PATH), "detach", "/nonexistent/command"],
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(missing.returncode, 127)
 
     def test_new_evidence_reads_only_what_was_appended(self):
         with tempfile.TemporaryDirectory() as tmp:
