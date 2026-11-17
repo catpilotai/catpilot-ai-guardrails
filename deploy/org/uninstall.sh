@@ -89,16 +89,18 @@ fi
 # A managed file kept above may still run hooks from catpilot-guardrails/hooks/. Removing the scripts under it
 # would leave every command it covers running a missing file: python3 exits 2, which blocks every command or
 # file write on Claude Code and Codex, or the host skips a hook it cannot load. So that tool's hooks/ directory
-# stays until the file no longer names it; the rest of catpilot-guardrails/ (the rules) is removed.
-keep_hooks_for() {  # FILE DIR
-  [ -e "$1" ] && grep -qF "$2/hooks/" "$1" 2>/dev/null
+# stays while the file mentions catpilot-guardrails at all, however the path is spelled there (escaped slashes,
+# split quotes, a cd first): leaving files behind is the safe failure. The rest of catpilot-guardrails/ (the rules)
+# is removed.
+keep_hooks_for() {  # FILE
+  [ -e "$1" ] && grep -qF "catpilot-guardrails" "$1" 2>/dev/null
 }
 for d in "$CC_DIR/catpilot-guardrails" "$CODEX_DIR/catpilot-guardrails"; do
   case "$d" in
     "$CC_DIR/catpilot-guardrails") file="$CC_DIR/managed-settings.json" ;;
     *) file="$CODEX_DIR/requirements.toml" ;;
   esac
-  if [ -d "$d/hooks" ] && keep_hooks_for "$file" "$d"; then
+  if [ -d "$d/hooks" ] && keep_hooks_for "$file"; then
     find "$d" -mindepth 1 -maxdepth 1 ! -name hooks -exec rm -rf {} +
     echo "kept    $d/hooks ($file, kept above, still runs hooks from it; remove those hook entries from $file, then run uninstall.sh again)"
   elif [ -e "$d" ]; then

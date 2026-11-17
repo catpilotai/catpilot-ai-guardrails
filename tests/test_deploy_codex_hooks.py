@@ -207,7 +207,7 @@ class CodexManagedHookTests(unittest.TestCase):
     def test_the_minimal_reader_fails_on_features_it_cannot_read(self):
         self.install()
         text = self.requirements.read_text(encoding="utf-8").replace("[features]\nhooks = true\n\n", "")
-        for features in ("features.hooks = false\n", "features = { hooks = false }\n"):
+        for features in ("features.hooks = false\n", "features = { hooks = false }\n", '"features".hooks = false\n'):
             with self.subTest(features=features):
                 self.requirements.write_text(features + text, encoding="utf-8")
                 out = io.StringIO()
@@ -291,6 +291,20 @@ class CodexManagedHookTests(unittest.TestCase):
                 self.requirements.unlink()
                 uninstall = self.run_script("uninstall.sh", "--server-url", URL)
                 self.assertFalse((self.codex / "catpilot-guardrails").exists())
+
+    def test_uninstall_keeps_the_hooks_whatever_spelling_the_kept_file_uses(self):
+        self.install()
+        settings = self.cc / "managed-settings.json"
+        # Valid JSON with the same values, slashes escaped, as some serializers write it.
+        settings.write_text(json.dumps(json.loads(settings.read_text(encoding="utf-8")), indent=2).replace("/", "\\/") + "\n", encoding="utf-8")
+        self.assertEqual(json.loads(settings.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["hooks"][0]["command"].count("catpilot-guardrails/hooks/"), 1)
+        # The same command with the quote closed before the slash.
+        text = self.requirements.read_text(encoding="utf-8")
+        self.requirements.write_text(text.replace('/hooks/pretooluse-secrets.py"', '/hooks""/pretooluse-secrets.py"'), encoding="utf-8")
+        uninstall = self.run_script("uninstall.sh", "--server-url", URL)
+        self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
+        for managed_dir in (self.cc, self.codex):
+            self.assertTrue((managed_dir / "catpilot-guardrails" / "hooks" / "pretooluse-secrets.py").is_file(), managed_dir)
 
     def test_a_dangling_symlink_at_requirements_is_not_written_through(self):
         self.codex.mkdir(parents=True)

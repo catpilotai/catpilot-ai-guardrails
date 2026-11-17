@@ -66,7 +66,7 @@ CODEX_PRETOOLUSE = (
 # Names a matcher may use for a tool: for file edits, Codex also matches Edit and Write and still reports apply_patch.
 CODEX_MATCHER_NAMES = {"Bash": ("Bash",), "apply_patch": ("apply_patch", "Edit", "Write")}
 # [features] written as a dotted key or an inline table, which the minimal reader does not read.
-_FEATURES_ELSEWHERE = re.compile(r"^\s*features\s*(?:\.|=)", re.MULTILINE)
+_FEATURES_ELSEWHERE = re.compile(r"^\s*([\"']?)features\1\s*(?:\.|=)", re.MULTILINE)
 CODEX_HOOK_FILES = tuple(name for _, _, names in CODEX_PRETOOLUSE for name in names)
 CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence")
 # A managed directory is written into a double-quoted shell word and a TOML literal string, so it may hold none
