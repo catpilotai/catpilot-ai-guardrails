@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,12 @@ INSTALL_SH = ROOT / "deploy" / "org" / "install.sh"
 VERIFY_SH = ROOT / "deploy" / "org" / "verify.sh"
 UNINSTALL_SH = ROOT / "deploy" / "org" / "uninstall.sh"
 EXAMPLE_OVERLAY = ROOT / "docs" / "spec" / "overlay.example.yaml"
+HOOK_NAMES = (
+    "pretooluse-secrets.py",
+    "pretooluse-write-secrets.py",
+    "pretooluse-write-private-key.py",
+    "pretooluse-destructive-ops.py",
+)
 
 
 class DeployOrgScriptTests(unittest.TestCase):
@@ -237,6 +244,112 @@ class DeployOrgScriptTests(unittest.TestCase):
             self.assertIn("kept", uninstall.stdout)
             self.assertEqual(list((cc_dir / ".claude" / "skills").glob("catpilot-safe-building-*")), [])
             self.assertFalse((cc_dir / "catpilot-guardrails").exists())
+
+    def _checkout_with_bytecode(self, tmp: Path) -> Path:
+        """A copy of what install.sh reads, with bytecode planted in catpilot_guard/ that it must not copy."""
+        checkout = tmp / "checkout"
+        no_bytecode = shutil.ignore_patterns("__pycache__", "*.pyc")
+        shutil.copytree(ROOT / "deploy" / "org", checkout / "deploy" / "org")
+        shutil.copytree(ROOT / "hooks" / "claude-code", checkout / "hooks" / "claude-code", ignore=no_bytecode)
+        shutil.copytree(ROOT / "catpilot_guard", checkout / "catpilot_guard", ignore=no_bytecode)
+        (checkout / "skills").symlink_to(ROOT / "skills", target_is_directory=True)
+        (checkout / "catpilot_guard" / "__pycache__").mkdir()
+        (checkout / "catpilot_guard" / "__pycache__" / "secrets.cpython-38.pyc").write_bytes(b"not bytecode")
+        (checkout / "catpilot_guard" / "stray.pyc").write_bytes(b"not bytecode")
+        return checkout
+
+    def test_install_places_the_package_beside_the_hooks_and_uninstall_removes_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = self._checkout_with_bytecode(Path(tmp))
+            cc_dir = Path(tmp) / "claude-code"
+            env = self._env(cc_dir, Path(tmp) / "codex")
+            url = "https://mcp.internal.example.org/mcp"
+            install = subprocess.run(
+                ["bash", str(checkout / "deploy" / "org" / "install.sh"), "--server-url", url],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(install.returncode, 0, install.stderr)
+
+            package = cc_dir / "catpilot-guardrails" / "hooks" / "catpilot_guard"
+            self.assertIn(f"package {package}/", install.stdout)
+            source = sorted(p.name for p in (ROOT / "catpilot_guard").glob("*.py"))
+            self.assertIn("__init__.py", source)
+            # Exactly the package's .py files: no __pycache__ directory and no .pyc.
+            self.assertEqual(sorted(p.relative_to(package).as_posix() for p in package.rglob("*")), source)
+            self.assertEqual(package.stat().st_mode & 0o777, 0o755)
+            for path in package.iterdir():
+                self.assertEqual(path.stat().st_mode & 0o777, 0o644, path.name)
+                self.assertEqual(path.read_bytes(), (ROOT / "catpilot_guard" / path.name).read_bytes(), path.name)
+
+            verify = self._verify(env)
+            self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+            for name in ("__init__.py", "secrets.py", "write_secrets.py", "destructive.py"):
+                self.assertIn(f"present  {package}/{name}", verify.stdout)
+            for hook_name in HOOK_NAMES:
+                self.assertIn(f"denies   {hook_name}", verify.stdout)
+            # Running the installed hooks leaves no bytecode beside them.
+            self.assertEqual(sorted(p.relative_to(package).as_posix() for p in package.rglob("*")), source)
+
+            # Installing again replaces the package, so a module a newer release dropped does not linger.
+            (package / "dropped_module.py").write_text("", encoding="utf-8")
+            install = subprocess.run(
+                ["bash", str(checkout / "deploy" / "org" / "install.sh"), "--server-url", url],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(install.returncode, 0, install.stderr)
+            self.assertEqual(sorted(p.name for p in package.iterdir()), source)
+
+            uninstall = subprocess.run(
+                ["bash", str(checkout / "deploy" / "org" / "uninstall.sh"), "--server-url", url],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
+            self.assertFalse(package.exists())
+            self.assertFalse((cc_dir / "catpilot-guardrails").exists())
+
+    def test_deployed_hooks_fail_closed_without_the_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cc_dir = Path(tmp) / "claude-code"
+            env = self._env(cc_dir, Path(tmp) / "codex")
+            self._install(env)
+            hooks = cc_dir / "catpilot-guardrails" / "hooks"
+            shutil.rmtree(hooks / "catpilot_guard")
+
+            marker = "catpilot-probe-5c1e"
+            bash = json.dumps({"tool_name": "Bash", "tool_input": {"command": f"echo {marker}"}})
+            write = json.dumps({"tool_name": "Write", "tool_input": {"file_path": f"{marker}.txt", "content": marker}})
+            for hook_name in HOOK_NAMES:
+                with self.subTest(hook=hook_name):
+                    proc = subprocess.run(
+                        [sys.executable, str(hooks / hook_name)],
+                        input=write if "write" in hook_name else bash,
+                        env={k: v for k, v in env.items() if not k.startswith("CATPILOT_EVIDENCE")},
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+                    self.assertEqual(proc.stdout, "")
+                    self.assertIn("catpilot_guard", proc.stderr)
+                    self.assertNotIn(marker, proc.stderr)
+
+            verify = self._verify(env)
+            self.assertNotEqual(verify.returncode, 0, verify.stdout)
+            for name in ("__init__.py", "secrets.py", "write_secrets.py", "destructive.py"):
+                self.assertIn(f"MISSING  {hooks}/catpilot_guard/{name}", verify.stdout)
+            for hook_name in HOOK_NAMES:
+                self.assertIn(f"FAIL     {hook_name} exited 2", verify.stdout)
+                self.assertNotIn(f"denies   {hook_name}", verify.stdout)
+            self.assertIn("load the catpilot_guard package", verify.stdout)
 
 
 if __name__ == "__main__":

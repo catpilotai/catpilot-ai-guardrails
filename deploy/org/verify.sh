@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Checks of what deploy/org/install.sh placed, run as a normal user. It checks that the files are present,
-# that the Python interpreter the hook commands use can start, that each installed hook denies a harmless
-# probe (AWS's documentation-only example key, a force push to main) and lets an ordinary command through,
-# and that managed-settings.json actually runs each hook on the tools it covers. It writes only to a
-# temporary directory it removes on exit, sends nothing anywhere, and writes no evidence line.
+# Checks of what deploy/org/install.sh placed, run as a normal user. It checks that the files are present
+# (the hooks and the catpilot_guard package they import from beside them), that the Python interpreter the
+# hook commands use can start, that each installed hook denies a harmless probe (AWS's documentation-only
+# example key, a force push to main) and lets an ordinary command through, and that managed-settings.json
+# actually runs each hook on the tools it covers. It writes only to a temporary directory it removes on
+# exit, sends nothing anywhere, and writes no evidence line.
 #
 # It runs the hooks directly, not through Claude Code, so it proves nothing about what a session does:
 # Claude Code's own PATH can differ from this shell's, and only a session shows the host applying a deny.
@@ -76,7 +77,7 @@ judge() {
   if [ "$status" -eq 124 ]; then
     fail "$name did not finish $what within the ${TIMEOUT_SECONDS}s hook timeout"; return 1
   elif [ "$status" -ne 0 ]; then
-    fail "$name exited $status on $what instead of returning a decision (2 means it could not read the event)"; return 1
+    fail "$name exited $status on $what instead of returning a decision (2 means it could not read the event or load the catpilot_guard package)"; return 1
   elif [ "$expect" = deny ]; then
     if grep -q '"permissionDecision": *"deny"' "$WORK/out"; then return 0; fi
     fail "$name did not deny $what"; return 1
@@ -179,6 +180,8 @@ check "$HOOK_DIR/pretooluse-secrets.py"
 check "$HOOK_DIR/pretooluse-write-secrets.py"
 check "$HOOK_DIR/pretooluse-write-private-key.py"  # compatibility entry point for older settings
 check "$HOOK_DIR/pretooluse-destructive-ops.py"
+# The package the hooks import from beside them; a hook that cannot load it exits 2, which blocks everything it covers.
+for m in __init__ secrets write_secrets destructive; do check "$HOOK_DIR/catpilot_guard/$m.py"; done
 for s in "$CC_DIR"/.claude/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
 echo
 

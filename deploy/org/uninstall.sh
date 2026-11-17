@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Remove what deploy/org/install.sh placed, and nothing else. Run as an administrator (sudo).
-# Removes the hook copies, the skills it installed, and the managed files only when they are
+# Removes the hook copies and the catpilot_guard package beside them (all under
+# <managed dir>/catpilot-guardrails/), the skills it installed, and the managed files only when they are
 # byte-for-byte what install.sh writes for the given server URL; a managed file you have since
 # edited or merged is left in place and named, so you can remove our keys by hand.
 #

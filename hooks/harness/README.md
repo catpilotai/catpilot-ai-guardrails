@@ -93,10 +93,11 @@ python hooks/harness/path_gate.py '~/.ssh/id_rsa' '/tmp/workspace'
 # gate_destructive_command(command, cwd=...) reads the checked-out branch from cwd for a bare `git push --force`.
 ```
 
-The secret and destructive checks are the same files the Claude Code hooks run,
-loaded in place, so the two cannot drift. None of the gates ever return
-"allow"; an input without a match returns `None` and your loop's own rules
-apply. A non-string input raises, so a broken caller fails closed.
+The secret and destructive checks are imported from the `catpilot_guard`
+package at the repository root, the same code the Claude Code hooks run, so the
+two cannot drift. None of the gates ever return "allow"; an input without a
+match returns `None` and your loop's own rules apply. A non-string input
+raises, so a broken caller fails closed.
 
 If your tool's argument uses a custom field name, use
 `gate_tool_call(tool_name, tool_input, field="cmd")`,

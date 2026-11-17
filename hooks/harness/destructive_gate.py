@@ -1,32 +1,26 @@
 """Use the Claude Code hook's destructive-operation check as a tool gate inside any Python agent harness.
 
-Exposes the check in ../claude-code/pretooluse-destructive-ops.py as plain
-functions so an agent loop can refuse high-blast-radius shell commands (partial
-cloud-CLI replacements, auto-approved Terraform applies/destroys, unguarded
-rm -rf, force-pushes to protected branches, and credential exfiltration pipes)
-before the command runs.
+Exposes the check in catpilot_guard/destructive.py (the module the Claude Code
+hook pretooluse-destructive-ops.py runs) as plain functions so an agent loop can
+refuse high-blast-radius shell commands (partial cloud-CLI replacements,
+auto-approved Terraform applies/destroys, unguarded rm -rf, force-pushes to
+protected branches, and credential exfiltration pipes) before the command runs.
 
 Standard library only.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import os
+import sys
 from pathlib import Path
 
-_HOOK = Path(__file__).resolve().parent.parent / "claude-code" / "pretooluse-destructive-ops.py"
-
-
-def _load_hook():
-    spec = importlib.util.spec_from_file_location("catpilot_pretooluse_destructive_ops", _HOOK)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-_hook = _load_hook()
+try:
+    from catpilot_guard import destructive as _hook
+except ImportError:
+    # Run as a script (python hooks/harness/destructive_gate.py), the repository root is not on the path.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from catpilot_guard import destructive as _hook
 
 
 def gate_destructive_command(command: str, cwd: str | None = None) -> str | None:
@@ -59,8 +53,6 @@ def gate_destructive_tool_call(tool_name: str, tool_input: dict, field: str = "c
 
 
 if __name__ == "__main__":
-    import sys
-
     reason = gate_destructive_command(" ".join(sys.argv[1:]))
     print(reason or "allowed: no destructive operation pattern matched")
     sys.exit(2 if reason else 0)

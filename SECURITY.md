@@ -19,7 +19,7 @@ From `2026.10.29`, each release's source archive and Claude.ai zip carry GitHub 
 
 ## What's In Scope
 
-This project ships skill markdown files in [Anthropic Agent Skills](https://agentskills.io/specification) format under `skills/` and `src/skills/`, the bundler and validators in `tools/`, the Claude Code hooks and the harness gate in `hooks/`, a reference MCP server in `mcp-server/`, the deployment scripts for the hosted reference server in `deploy/`, and the legacy v2.x bash installer (`setup.sh`). Security concerns include:
+This project ships skill markdown files in [Anthropic Agent Skills](https://agentskills.io/specification) format under `skills/` and `src/skills/`, the bundler and validators in `tools/`, the Claude Code hooks and the harness gates in `hooks/` and the checks they run in `catpilot_guard/`, a reference MCP server in `mcp-server/`, the deployment scripts for the hosted reference server in `deploy/`, and the legacy v2.x bash installer (`setup.sh`). Security concerns include:
 
 | Risk | Example |
 |------|---------|
