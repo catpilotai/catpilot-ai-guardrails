@@ -59,7 +59,7 @@ configuration, the key is AWS's documentation example, and the block is not a ke
 parts in `run.sh`, which holds neither.
 
 - **Claude Code probe:** `claude -p "<items>" --strict-mcp-config --permission-mode acceptEdits --permission-prompts none --output-format stream-json --verbose --include-hook-events --allowedTools <each probe command>`. Only the probe commands are allowed, so nothing prompts. A probe the hooks miss runs, inertly, rather than being refused by the permission system. The write is accepted by `acceptEdits`, so a `key.pem` in the folder means the write check did not stop it.
-- **Codex probe:** `codex exec --json --skip-git-repo-check -s workspace-write -C <folder> -o <last message file> "<items>"`. `install.sh` on `main` registers no managed Codex `PreToolUse` hooks, so on that install this session is a run without hooks: the items are expected to run. `summary.json` records whether the install declared them (`install.placed.codex.managed_pretooluse_hooks`).
+- **Codex probe:** `codex exec --json --skip-git-repo-check -s workspace-write -C <folder> -o <last message file> "<items>"`. `install.sh` declares the managed Codex `PreToolUse` hooks in `/etc/codex/requirements.toml` (`^Bash$` and `^apply_patch$`, with `--host codex`), so items 1 to 6 are expected to be blocked and item 7 to run. `summary.json` records whether the install declared them (`install.placed.codex.managed_pretooluse_hooks`); a checkout from before they were added gives a run without hooks.
 
 The flags were checked against `claude --help` (2.1.326) and `codex exec --help` (0.169.0) on 2026-11-17.
 

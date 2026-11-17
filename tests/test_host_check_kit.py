@@ -370,7 +370,7 @@ class HostCheckKitTests(unittest.TestCase):
             self.assertEqual(session["evidence_session_id_matches"], name != "codex-probe", name)
         self.assertEqual(summary["evidence"]["lines"], 10)
         self.assertEqual(len((self.results() / "evidence.jsonl").read_text(encoding="utf-8").splitlines()), 10)
-        self.assertFalse(summary["install"]["placed"]["codex"]["managed_pretooluse_hooks"])
+        self.assertTrue(summary["install"]["placed"]["codex"]["managed_pretooluse_hooks"])  # install.sh declares them since #119
 
         # Transcripts: this run's three per tool, not the other sessions'.
         self.assertEqual(len(summary["transcripts"]["claude_code"]), 3, summary["transcripts"])
