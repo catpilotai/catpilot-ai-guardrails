@@ -3,8 +3,12 @@
 # (the hooks and the catpilot_guard package they import from beside them), that the Python interpreter the
 # hook commands use can start, that each installed hook denies a harmless probe (AWS's documentation-only
 # example key, a force push to main) and lets an ordinary command through, and that managed-settings.json
-# actually runs each hook on the tools it covers. It writes only to a temporary directory it removes on
-# exit, sends nothing anywhere, and writes no evidence line.
+# actually runs each hook on the tools it covers. After an install with --overlay it also checks the company
+# rules at session start: the block and its sidecar on each tool and that their SHA-256 hashes match, the
+# marked section of the managed CLAUDE.md, the expiry date, the session-start script run directly for each
+# tool, and the SessionStart hook that managed-settings.json and /etc/codex/requirements.toml register, run
+# the way the tool would. It writes only to a temporary directory it removes on exit, sends nothing anywhere,
+# and writes no evidence line.
 #
 # It runs the hooks directly, not through Claude Code, so it proves nothing about what a session does:
 # Claude Code's own PATH can differ from this shell's, and only a session shows the host applying a deny.
@@ -18,6 +22,7 @@ esac
 CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
 CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+RULES_FILES="$(cd "$(dirname "$0")" && pwd)/session_start_files.py"
 HOOK_DIR="$CC_DIR/catpilot-guardrails/hooks"
 TIMEOUT_SECONDS=10  # the timeout managed-settings.json gives each hook
 NO_START="Claude Code treats a hook that cannot start as a non-blocking error, so commands and writes would run unchecked."
@@ -181,7 +186,7 @@ check "$HOOK_DIR/pretooluse-write-secrets.py"
 check "$HOOK_DIR/pretooluse-write-private-key.py"  # compatibility entry point for older settings
 check "$HOOK_DIR/pretooluse-destructive-ops.py"
 # The package the hooks import from beside them; a hook that cannot load it exits 2, which blocks everything it covers.
-for m in __init__ secrets write_secrets destructive evidence; do check "$HOOK_DIR/catpilot_guard/$m.py"; done
+for m in __init__ secrets write_secrets destructive evidence session_start; do check "$HOOK_DIR/catpilot_guard/$m.py"; done
 for s in "$CC_DIR"/.claude/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
 echo
 
@@ -208,6 +213,31 @@ echo "Codex CLI (managed dir: $CODEX_DIR)"
 check "$CODEX_DIR/managed_config.toml"
 for s in "$CODEX_DIR"/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
 echo
+
+# Company rules at session start (install.sh --overlay). The checks and the runs are in session_start_files.py:
+# each run gets a SessionStart event on stdin, HOME pointed at the temporary directory and no evidence variable,
+# so no evidence line is written anywhere real.
+echo "Company rules at session start (advice, not enforcement)"
+if [ ! -f "$RULES_FILES" ]; then
+  if [ -e "$CC_DIR/catpilot-guardrails/instructions/company-checklist.json" ] || [ -e "$CODEX_DIR/catpilot-guardrails/instructions/company-checklist.json" ]; then
+    fail "the company rules at session start are installed, and $RULES_FILES, which checks them, is not beside verify.sh: run verify.sh from a checkout"
+  else
+    echo "skipped  session_start_files.py is not beside verify.sh"
+  fi
+elif [ "$python_ok" -ne 1 ]; then
+  echo "skipped  no working interpreter (see the FAIL line above)"
+else
+  while IFS= read -r line; do
+    echo "$line"
+    case "$line" in
+      "present  "*) ok=$((ok+1)) ;;
+      MISSING*|INVALID*) missing=$((missing+1)) ;;
+      FAIL*) failed=$((failed+1)) ;;
+    esac
+  done < <("$PYTHON_BIN" "$RULES_FILES" verify --cc-dir "$CC_DIR" --codex-dir "$CODEX_DIR" --home "$WORK/home" --timeout "$TIMEOUT_SECONDS" 2>&1 \
+             || echo "FAIL     the session-start checks stopped with an error (above)")
+fi
+echo
 echo "Evidence log for this user"
 if [ -e "$HOME/.catpilot-guardrails/evidence.jsonl" ]; then
   echo "present  $HOME/.catpilot-guardrails/evidence.jsonl ($(wc -l < "$HOME/.catpilot-guardrails/evidence.jsonl" | tr -d ' ') lines); last line:"; tail -n 1 "$HOME/.catpilot-guardrails/evidence.jsonl"
@@ -218,4 +248,8 @@ echo
 echo "$ok present, $missing missing, $failed failed. Next: start Claude Code and run /status. 'Setting sources' must name the"
 echo "file, as '(file)' or '(remote + file, merged)'. If 'Skipped sources' lists the file, the hooks are not running: see"
 echo "docs/DEPLOY_ORG.md. Then claude mcp list, then the test prompts in docs/DEPLOY_ORG.md."
+if [ -e "$CC_DIR/catpilot-guardrails/instructions/company-checklist.json" ]; then
+  echo "Company rules at session start: in Claude Code, /context all lists $CC_DIR/CLAUDE.md under Memory files and /hooks"
+  echo "lists the SessionStart hook; in Codex, /hooks lists it as managed. Then the session checks in docs/DEPLOY_ORG.md."
+fi
 [ "$missing" -eq 0 ] && [ "$failed" -eq 0 ]

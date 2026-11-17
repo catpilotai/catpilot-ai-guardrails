@@ -7,8 +7,8 @@ The code is `catpilot_guard/session_start.py`.
 
 This is advice, not enforcement. `SessionStart` cannot block on either host,
 so every message it prints is a notice, not a control. It has not been run
-on a host. `deploy/org/install.sh` does not place it yet; the next release
-does.
+on a host. `deploy/org/install.sh --overlay` places it on both tools
+([below](#deployed-by-deployorg)).
 
 ## What it reads
 
@@ -77,6 +77,37 @@ the whole block and writes the size, never the text, to stderr. On Claude
 Code, it does the same when the block is over 200 lines, the vendor's
 guidance for a `CLAUDE.md` file. Every `rules_delivered` line carries the
 block's size in `block_chars` and `block_lines`.
+
+## Deployed by `deploy/org/`
+
+`deploy/org/install.sh --overlay rules.yaml` builds the rules privately and
+places them on each tool, root-owned, from its own copy:
+
+| | Claude Code | Codex |
+| --- | --- | --- |
+| Script and package | `<managed dir>/catpilot-guardrails/hooks/catpilot-company-rules.py` and `hooks/catpilot_guard/` | `/etc/codex/catpilot-guardrails/hooks/`, the same two |
+| Block and sidecar | `<managed dir>/catpilot-guardrails/instructions/company-checklist.md` and `.json` | `/etc/codex/catpilot-guardrails/instructions/`, the same two |
+| The block reaches the model through | the managed `CLAUDE.md`, `<managed dir>/CLAUDE.md`, between `<!-- catpilot-company-rules:begin -->` and `<!-- catpilot-company-rules:end -->` | this script's `additionalContext` |
+| The hook is registered in | `<managed dir>/managed-settings.json`, `hooks.SessionStart` | `/etc/codex/requirements.toml`, `[[hooks.SessionStart]]`, with `[hooks] managed_dir` set to the `hooks/` directory above |
+
+`<managed dir>` is `/Library/Application Support/ClaudeCode` on macOS and
+`/etc/claude-code` on Linux. Both registrations use the matcher
+`startup|resume|clear|compact|fork`, a 10-second timeout, and the
+`CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl"` prefix
+the other hooks use. A managed file that already exists is never
+overwritten: `install.sh` prints what to merge. The one exception is the
+marked section of a managed `CLAUDE.md` that already has the markers: only
+that section is replaced. Without `--overlay`, nothing here is placed or
+registered.
+
+`deploy/org/verify.sh` checks both copies and their hashes, the marked
+section, the expiry date, the script run directly for each tool, and each
+registered command run through a shell, writing no evidence line.
+`deploy/org/uninstall.sh` removes the copies, the marked section (and the
+`CLAUDE.md` when nothing else is in it), and a managed file that is still
+byte-for-byte what `install.sh` wrote. Why the managed `CLAUDE.md` rather
+than the `claudeMd` settings key, and what each tool does not reach:
+[`docs/DEPLOY_ORG.md`](../../docs/DEPLOY_ORG.md#company-rules-at-session-start-on-claude-code).
 
 ## Evidence
 

@@ -264,8 +264,9 @@ developer context and gives Claude Code a one-line status (a managed
 `CLAUDE.md` carries the block there). When they expired, or cannot be loaded
 or checked, it says so and names who to ask, and prints no rules. It always
 exits 0 and writes one evidence line. Details, dates and size budgets:
-[`session-start/README.md`](session-start/README.md). Not run on a host, and
-`deploy/org/install.sh` does not place it yet.
+[`session-start/README.md`](session-start/README.md). `deploy/org/install.sh
+--overlay` places it on both tools ([`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md#company-rules-at-session-start-on-claude-code)).
+Not run on a host.
 
 ## Other hosts
 
