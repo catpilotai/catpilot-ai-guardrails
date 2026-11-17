@@ -222,7 +222,7 @@ class CurrentRulesTests(Base):
         output = self.assert_host_output("claude-code", code, out)
         self.assertEqual(
             output["hookSpecificOutput"]["additionalContext"],
-            f"Company rules from {OWNER}, reviewed 2026-09-13, valid until 2027-03-13, are loaded.",
+            f"Company rules from {OWNER}, reviewed 2026-09-13, valid until 2027-03-13, are current.",
         )
         self.assertNotIn("systemMessage", output)
         self.assertNotIn(company_checklist.CHECKLIST_INSTRUCTION[:40], out)
@@ -744,7 +744,7 @@ class EndToEndTests(Base):
                 elif host == "codex":
                     self.assertEqual(context, block)
                 else:
-                    self.assertEqual(context, f"Company rules from {OWNER}, reviewed 2026-09-13, valid until 2027-03-13, are loaded.")
+                    self.assertEqual(context, f"Company rules from {OWNER}, reviewed 2026-09-13, valid until 2027-03-13, are current.")
                 self.assertEqual(proc.stderr, b"")
         lines = read_lines(self.log)
         self.assert_lines_valid(lines)

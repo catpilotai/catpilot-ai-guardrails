@@ -223,7 +223,7 @@ def current_output(host: str, rules: Rules) -> dict:
         return host_output(rules.block)
     return host_output(
         f"Company rules from {rules.owner}, reviewed {rules.reviewed_on.isoformat()}, "
-        f"valid until {rules.expires_on.isoformat()}, are loaded."
+        f"valid until {rules.expires_on.isoformat()}, are current."
     )
 
 

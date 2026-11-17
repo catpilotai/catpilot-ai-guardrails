@@ -49,7 +49,7 @@ show the person, is added only when the rules expired or could not be loaded.
 
 | Rules | Codex | Claude Code | Evidence |
 | --- | --- | --- | --- |
-| Current: today is on or before `expires_on` | The whole block, as developer context | One line: "Company rules from `<owner>`, reviewed `<date>`, valid until `<date>`, are loaded." The block itself comes from a managed `CLAUDE.md`. | `rules_delivered` |
+| Current: today is on or before `expires_on` | The whole block, as developer context | One line: "Company rules from `<owner>`, reviewed `<date>`, valid until `<date>`, are current." The block itself comes from a managed `CLAUDE.md`. | `rules_delivered` |
 | Expired | "The company rules expired on `<date>` and are not in force. Ask `<owner>` for current rules." No rules. | The same, plus: "The company rules in the instruction file are out of date and must not be relied on." | `rules_expired` |
 | Anything wrong | "Company rules could not be loaded and are unknown. Ask your IT or security owner." | The same | `policy_error` |
 
