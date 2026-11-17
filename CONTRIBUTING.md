@@ -1,4 +1,4 @@
-# Contributing to Catpilot Security Skills
+# Contributing to Catpilot Guardrails
 
 You found the community scratching post.
 
@@ -17,7 +17,8 @@ You found the community scratching post.
 |------|-----|
 | Found a dangerous pattern for coding agents | Open an issue, or PR a new component under `src/skills/core/<id>/SKILL.md` |
 | A checkpoint the safe-building skill gets wrong for non-engineers | PR the component under `src/skills/safe-building/<id>/SKILL.md`; keep the plain-language shape in the format spec §4 |
-| False positive in an existing rule, or in a hook | PR a fix and bump `metadata.catpilot.version`; for a hook, add the case to `tests/test_hook.py` or `tests/test_write_hook.py`, whichever one it is |
+| Guidance for teams building an agent loop | PR the component under `src/skills/agentic/<id>/SKILL.md`; enforcement for a loop belongs in `hooks/harness/` |
+| False positive in an existing rule, or in a hook | PR a fix and bump `metadata.catpilot.version`; for a hook, add the case to `tests/test_hook.py`, `tests/test_write_hook.py`, or `tests/test_destructive_hook.py`, whichever one it is, as a must-block or must-allow case |
 | Add a control mapping (SOC 2, PCI-DSS, ISO 27001, NIST CSF, OWASP) | PR the component's frontmatter. Safe-building mappings are marked `mapping_review: pending`; a PR that reviews them should say what edition it checked against |
 | A host you verified (skill loads, hook blocks) | PR the tested-runtimes table in `docs/REFERENCE.md` with the host version, date, and what you observed; a verification note under `evals/reports/` is welcome |
 | A new evaluation scenario | PR `evals/scenarios/<id>.yaml`; every `must`/`must_not` id has to exist in `tools/eval.py` |
@@ -30,7 +31,7 @@ You found the community scratching post.
 
 - [ ] Read [`docs/spec/SKILL_FORMAT.md`](./docs/spec/SKILL_FORMAT.md): frontmatter shape, severity scale, body conventions, slots.
 - [ ] Edit `src/skills/<tier>/<id>/SKILL.md`, **not** the shipped bundle in `skills/` or the artifacts in `dist/`. The bundler regenerates both.
-- [ ] Install the hash-locked dependencies in an isolated environment: `python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.txt`.
+- [ ] Install the hash-locked dependencies in an isolated environment on Python 3.11 to 3.14: `python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.txt`.
 - [ ] Run `python tools/bundle.py --target all` to rebuild `skills/` and `dist/`.
 - [ ] Run `python tools/bundle.py --check` to confirm determinism. CI runs the same check and fails on drift in either tree.
 - [ ] Run `python tools/validate_skill.py` and `python -m unittest discover -s tests -v`. These validate structure and tooling, not model behavior.
@@ -92,14 +93,14 @@ For the safe-building skill the test is different: would a marketing analyst wit
 | `src/skills/<tier>/bundle.toml` | Tier name, CalVer version, description, preamble; slots and targets where the tier uses them. |
 | `skills/<bundle-name>/SKILL.md` | Auto-generated. Do not hand-edit. |
 | `dist/<release>/` | Auto-generated per-host artifacts. Do not hand-edit. |
-| Components per bundle | No hard cap, but keep a bundle scannable. Core is at nine; safe-building at eight, matching the course. |
+| Components per bundle | No hard cap, but keep a bundle scannable. Core is at nine; safe-building at eight, matching the course; agentic at five. |
 
 ## Current focus
 
-- Recording ChatGPT and Claude.ai custom-connector verification against the hosted endpoint.
-- Publishing the first full with/without evaluation report.
-- The organization-overlay path end to end: a reviewed overlay, a private build, an installed private bundle, a tenant-scoped MCP lookup.
-- Populating the tested-runtimes table with real dates for Cursor, Claude.ai, and the design partner's host.
+- Closing gaps inside the hooks' stated coverage (shell and wrapper forms, absolute paths), each with must-block and must-allow tests.
+- Making `deploy/org/verify.sh` show that each installed hook runs, not only that its file exists.
+- Keeping the hash-locked install working on current Python releases.
+- Recording host verification for the rows that have none: Cursor, hooks on Codex, and organization provisioning in Claude.ai and ChatGPT.
 
 Deferred this quarter: framework extension bundles, the advanced tier, `tools/recommend.py`, HIPAA and GDPR mappings. The `frameworks/` content stays; PRs that port it into source skills are still welcome, they just will not ship as bundles yet.
 

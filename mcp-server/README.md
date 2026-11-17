@@ -162,7 +162,7 @@ is a possible future addition, never a requirement.
 
 ## Run it
 
-From a checkout of this repository, with the locked dependencies installed:
+From a checkout of this repository, with the locked dependencies installed on Python 3.11 to 3.14 (3.15 waits on a PyYAML wheel):
 
 ```bash
 python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.txt

@@ -142,6 +142,10 @@ A fork of a public repository is not private storage.
   exceptions, or history behind them.
 - Not authorization. Nothing in the overlay grants access, approves a
   request, or proves a review happened. The `owner` field is where to ask.
-- Not a hosted service. The open-source tooling reads a local file. The
-  tenant-scoped, authenticated serving of overlay values through an MCP
-  server is planned for the design-partnership stage that names the host.
+- Not a hosted service. The open-source tooling reads a local file, and the
+  reference server has no authentication. Tenant-scoped, authenticated
+  serving of overlay values runs in Catpilot Plus, per company (the routes
+  are in [`PILOT.md`](../PILOT.md)). A host that serves several
+  organizations can build the same tools with
+  `create_server(policy_provider=...)`
+  ([`mcp-server/README.md`](../../mcp-server/README.md)).
