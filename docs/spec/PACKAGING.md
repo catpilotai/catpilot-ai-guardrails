@@ -252,7 +252,7 @@ enables targets today.
 | `chatgpt` | `chatgpt-project-instructions.md` | ChatGPT Project or Custom GPT instructions (≤8,000 characters). |
 | `copilot` | `copilot-agent-instructions.md`, `copilot-declarative-agent.stub.json` | Copilot Studio instructions; Microsoft 365 declarative-agent manifest stub. |
 | `agents-md` | `AGENTS.md` | Block to append to a project's `AGENTS.md`. |
-| `company-checklist` | `company-checklist.md` | Private builds only: a short checklist plus the company's validated rules, the text benchmark condition F plants. The public build never writes it. |
+| `company-checklist` | `company-checklist.md`, `company-checklist.json` | Private builds only: a short checklist plus the company's validated rules, the text benchmark condition F plants, and a sidecar for the session-start script (`hooks/session-start/`) with the owner, the review and expiry dates, the release, and the SHA-256 of the rules file and of the block. The public build never writes them. |
 | `copilot-instructions` | `copilot-instructions.md` | Block to append to `.github/copilot-instructions.md`. |
 | `lovable` | `lovable-knowledge.md` | Lovable project Knowledge. |
 | `bolt` | `bolt-prompt.txt` | `.bolt/prompt`. |

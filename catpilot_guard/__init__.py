@@ -10,9 +10,13 @@ hooks/harness/ calls the same functions. Importing the package imports no check.
 
   evidence       the content-free evidence writer the checks and the reference MCP server
                  share (docs/spec/EVIDENCE.md); a check imports it only to write a line
+  session_start  not a check: the SessionStart hook for Claude Code and Codex that puts the
+                 company rules in front of the model, or says they expired or could not be
+                 loaded (hooks/session-start/). Advice, not enforcement
 
 write_decision() and write_reason() are how every main() talks to the host, so that a
-failure to write never ends in an exit code the host treats as non-blocking.
+failure to write never ends in an exit code the host treats as non-blocking. session_start
+writes through them too but always exits 0: SessionStart cannot block on either host.
 """
 from __future__ import annotations
 

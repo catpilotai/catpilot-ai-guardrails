@@ -31,8 +31,9 @@ when an overlay-shaped file is inside `src/`, `skills/`, or `dist/`.
 The bundler also generates `mcp-server/defaults/guidance.json` for the reference
 MCP server from the same sources; `--check` reports drift in it.
 
-A private build also writes `company-checklist.md` beside the per-host blocks;
-see `company_checklist.py` below.
+A private build also writes `company-checklist.md` and its sidecar,
+`company-checklist.json`, beside the per-host blocks; see `company_checklist.py`
+below.
 
 ## targets.py
 
@@ -43,7 +44,7 @@ agent manifest stub, and the standalone web page. Deterministic; fixed zip
 timestamps; fails the build if a paste block exceeds 8,000 characters.
 
 The `company-checklist` target is private only. A private build writes it as
-`company-checklist.md`; the public build never does, and
+`company-checklist.md` and `company-checklist.json`; the public build never does, and
 `bundle.py --target company-checklist` without `--overlay` is refused.
 
 ## company_checklist.py
@@ -53,7 +54,11 @@ rules, as YAML with the rules file's SHA-256. One renderer serves two uses.
 Benchmark condition F plants the block in the project's `CLAUDE.md` or
 `AGENTS.md`. A private build writes the same text, with a final newline, to
 `company-checklist.md`. A wording change here changes condition F, so review
-it as one.
+it as one. `sidecar()` renders `company-checklist.json` beside it: the owner,
+`reviewed_on`, `expires_on`, the release, and the SHA-256 of the rules file and
+of `company-checklist.md`, with sorted keys and no timestamps. The session-start
+script (`hooks/session-start/`) reads both and refuses a pair whose hashes do
+not match.
 
 ## validate_skill.py
 

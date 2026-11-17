@@ -1,8 +1,11 @@
-"""One renderer for benchmark condition F and the shipped company-checklist target. Offline."""
+"""One renderer for benchmark condition F and the shipped company-checklist target, and its sidecar. Offline."""
 
 import contextlib
 import datetime as dt
+import hashlib
 import io
+import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -93,6 +96,38 @@ class SharedRendererTests(unittest.TestCase):
         (hosts,) = (self.root / "private").glob("*-hosts")
         readme = (hosts / "README.md").read_text(encoding="utf-8")
         self.assertIn(f"| `{targets.COMPANY_CHECKLIST_NAME}` | Claude Code, Codex |", readme)
+        self.assertIn(f"| `{targets.COMPANY_CHECKLIST_SIDECAR_NAME}` | Claude Code, Codex |", readme)
+
+    def test_the_sidecar_matches_the_block(self):
+        block = self.shipped_checklist()
+        (hosts,) = (self.root / "private").glob("*-hosts")
+        sidecar_bytes = (hosts / targets.COMPANY_CHECKLIST_SIDECAR_NAME).read_bytes()
+        sidecar = json.loads(sidecar_bytes)
+        overlay, raw = company_checklist.validated_company_overlay(EXAMPLE)
+        stated = re.search(r"^Overlay SHA-256: ([0-9a-f]{64})$", block.decode("utf-8"), re.MULTILINE).group(1)
+        self.assertEqual(
+            sidecar,
+            {
+                "schema_version": company_checklist.SIDECAR_SCHEMA_VERSION,
+                "owner": overlay["owner"],
+                "reviewed_on": "2026-09-13",
+                "expires_on": "2027-03-13",
+                "policy_sha256": stated,
+                "block_sha256": hashlib.sha256(block).hexdigest(),
+                "release": bundle.load_bundle_cfg(TIER)["version"],
+            },
+        )
+        self.assertEqual(stated, hashlib.sha256(raw).hexdigest())
+        self.assertEqual(block, company_checklist.block_file(company_checklist.render(overlay, raw)))
+        # Deterministic: sorted keys, no timestamps, the same bytes from a second build.
+        self.assertEqual(list(sidecar), sorted(sidecar))
+        self.assertTrue(sidecar_bytes.endswith(b"}\n"))
+        first = sidecar_bytes
+        self.assertEqual(self.shipped_checklist(), block)
+        self.assertEqual((hosts / targets.COMPANY_CHECKLIST_SIDECAR_NAME).read_bytes(), first)
+        # No rule text: only the owner and the dates come from the rules file.
+        for value in ("Internal App Platform", "Personal cloud accounts", "Example Org", "checklist"):
+            self.assertNotIn(value, sidecar_bytes.decode("utf-8"))
 
 
 class PublicBuildTests(unittest.TestCase):
@@ -104,10 +139,11 @@ class PublicBuildTests(unittest.TestCase):
             bundle.build_tier(TIER, Path(tmp) / "skills", with_targets=True, targets_root=Path(tmp) / "dist")
             written = [p for p in Path(tmp).rglob("*") if p.is_file()]
             self.assertTrue(written)
-            self.assertFalse([p for p in written if p.name == targets.COMPANY_CHECKLIST_NAME])
+            self.assertFalse([p for p in written if p.name in (targets.COMPANY_CHECKLIST_NAME, targets.COMPANY_CHECKLIST_SIDECAR_NAME)])
             readme = (Path(tmp) / "dist" / cfg["version"] / "README.md").read_text(encoding="utf-8")
             self.assertNotIn(targets.COMPANY_CHECKLIST_NAME, readme)
         self.assertFalse(list(bundle.TARGETS_ROOT.rglob(targets.COMPANY_CHECKLIST_NAME)))
+        self.assertFalse(list(bundle.TARGETS_ROOT.rglob(targets.COMPANY_CHECKLIST_SIDECAR_NAME)))
 
     def test_public_build_of_only_this_target_is_refused_before_anything_is_removed(self):
         with tempfile.TemporaryDirectory() as tmp:

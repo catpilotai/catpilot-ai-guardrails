@@ -7,8 +7,9 @@
 
 ## 1. What a line is
 
-The three Claude Code hooks and the reference MCP server can record what they
-did as one JSON object per line. Each line is UTF-8 and ends with a newline.
+The three Claude Code hooks, the session-start script
+([`hooks/session-start/`](../../hooks/session-start/README.md)) and the
+reference MCP server can record what they did as one JSON object per line. Each line is UTF-8 and ends with a newline.
 Nothing is written unless one of these is set in the writer's environment:
 
 - `CATPILOT_EVIDENCE_LOG`: a file path. Each event appends one line. `~` is
@@ -17,7 +18,7 @@ Nothing is written unless one of these is set in the writer's environment:
   socket, a `host:port` for UDP, or a socket path. Each event sends the same
   line, prefixed `catpilot-guardrails: `.
 
-One writer, `catpilot_guard/evidence.py`, builds every line for both sources.
+One writer, `catpilot_guard/evidence.py`, builds every line for every source.
 The server imports it from the repository root, and the container image
 copies it.
 
@@ -31,17 +32,19 @@ value for them, and are left out otherwise.
 | `schema_version` | all | `1`. A line without it was written before this schema. |
 | `event_id` | all | A random UUID, lowercase. Unique per line; it has no other meaning. |
 | `ts` | all | The time in UTC, to the second: `2026-11-16T15:04:05+00:00`. |
-| `source` | all | `claude-code-hook` or `mcp-server`. |
+| `source` | all | `claude-code-hook`, `mcp-server` or `session-start`. |
 | `event` | all | One of the list in §3. |
-| `host` | hooks | `claude-code` when the hook runs as a Claude Code `PreToolUse` hook. Absent when a harness calls the check, and on server lines: the server does not know which tool called it. Never the machine's hostname. |
-| `session_id` | hooks | The session id from the hook event, when it is an opaque id: 1 to 128 letters, digits, `.`, `_`, `:` or `-`. Any other value is left out. |
-| `release` | server | The CalVer release of the guidance that answered, from `mcp-server/defaults/guidance.json`. The hooks have no release of their own yet and leave it out. |
-| `policy_sha256` | server | SHA-256 of the company rules file's bytes, on every call where the file was read and parsed, error answers included. Absent with no file, a missing file, or one that fails the structure check. The hooks load no rules file yet. |
+| `host` | hooks, session start | `claude-code` when the hook runs as a Claude Code `PreToolUse` hook. For the session-start script, `claude-code` or `codex`, from its `--host` argument; absent when that argument was missing or unknown. Absent when a harness calls the check, and on server lines: the server does not know which tool called it. Never the machine's hostname. |
+| `session_id` | hooks, session start | The session id from the hook event, when it is an opaque id: 1 to 128 letters, digits, `.`, `_`, `:` or `-`. Any other value is left out. |
+| `session_source` | session start | How the session started, from the `SessionStart` event: `startup`, `resume`, `clear`, `compact` or `fork`. Absent when the event did not say, or said something else. |
+| `release` | server, session start | Server: the CalVer release of the guidance that answered, from `mcp-server/defaults/guidance.json`. Session start: the release the company rules bundle was built from, from its `company-checklist.json`, when it has this shape. The hooks have no release of their own yet and leave it out. |
+| `policy_sha256` | server, session start | SHA-256 of the company rules file's bytes. Server: on every call where the file was read and parsed, error answers included; absent with no file, a missing file, or one that fails the structure check. Session start: the hash the private build recorded, on `rules_delivered` and `rules_expired`. The hooks load no rules file yet. |
+| `block_chars`, `block_lines` | session start | On `rules_delivered`: the size of `company-checklist.md` in characters and in lines. Sizes only, so an administrator can see a block that is over a host's budget. |
 | `rule_id` | not yet | The id of the company rule that decided ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.1). |
 | `mode` | not yet | That rule's mode: `monitor`, `ask` or `block` ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.3). The built-in checks have no mode. |
 | `hook` | hooks | `pretooluse-secrets`, `pretooluse-write-secrets` or `pretooluse-destructive-ops`. |
 | `tool` | all | Hooks: the tool checked (`Bash`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`). Server: the MCP tool called. |
-| `label` | hooks | The fixed label of what matched: a credential type, `private-key-block`, or a destructive-operation type. |
+| `label` | hooks, session start | Hooks: the fixed label of what matched: a credential type, `private-key-block`, or a destructive-operation type. Session start, on `policy_error`: why the rules could not be loaded, one of `bad-arguments`, `missing`, `unreadable`, `malformed`, `hash-mismatch` or `internal-error`. |
 | `error`, `policy_status`, `unknown_policy` | server | On every server line; `null` when the tool returned an error. |
 | `topic`, `category`, `kind` | server | The enumerated argument, or `invalid`. |
 | `outcome`, `ask_a_human`, `fields` | server | For `check_plan`: the outcome, whether to ask a human, and the names of the fields supplied. |
@@ -57,9 +60,9 @@ value for them, and are left out otherwise.
 | `lookup` | The server answered a tool call, including with an error. | the server |
 | `ask` | A rule in `ask` mode asked the person. The line records that they were asked, not what they chose. | nothing yet |
 | `would_deny` | A rule in `monitor` mode matched; nothing was blocked. | nothing yet |
-| `policy_error` | A company rules file could not be loaded or did not validate. | nothing yet |
-| `rules_delivered` | The company rules were delivered at session start. | nothing yet |
-| `rules_expired` | At session start, the company rules file was past its expiry date. | nothing yet |
+| `policy_error` | A company rules file could not be loaded or did not validate. | the session-start script |
+| `rules_delivered` | The company rules were delivered at session start. On Claude Code, the script delivers a one-line status; the managed `CLAUDE.md` carries the rules. | the session-start script |
+| `rules_expired` | At session start, the company rules file was past its expiry date. | the session-start script |
 
 Lines written before schema version 1 map onto the list without a change:
 hook lines already carry `event` (`deny` or `input_error`), and a server line
@@ -72,10 +75,12 @@ line's `policy_status`, as before, not as `policy_error`.
 
 No line carries a command, a file path, file content, a prompt, a plan
 description, a data class, hosting or service text, a credential reference
-name, a matched secret, or any value from the company rules file. A
+name, a matched secret, or any value from the company rules file, including
+its owner and its dates. A
 `session_id` that is not an opaque id is dropped. The writer refuses a line
 whose `event`, `mode`, `rule_id`, `session_id` or `policy_sha256` has the
-wrong shape, and the schema allows no field beyond those in §2.
+wrong shape, and the schema allows no field beyond those in §2. The schema
+also limits a session-start line's `event` and `label` to the values above.
 
 ## 5. How lines are written
 
@@ -86,15 +91,18 @@ wrong shape, and the schema allows no field beyond those in §2.
   or the file system has no locks, it writes without one.
 - The writer never raises. A path it cannot write, a syslog address that does
   not resolve, or a broken writer module drops the line and changes no
-  decision, exit code or answer. The hooks and the server import the writer
-  only when they write a line.
+  decision, exit code, answer or session-start output. The hooks, the
+  session-start script and the server import the writer only when they write
+  a line.
 
 ## 6. Versions
 
 `schema_version` goes up when a field is removed or renamed, a field changes
 meaning or type, or the `event` list changes. Adding an optional field, or a
-value to any other list, keeps version 1. Validate a line against the schema
-in the release that wrote it.
+value to any other list, keeps version 1. The `session-start` source, the
+`codex` host, and the `session_source`, `block_chars` and `block_lines` fields
+were added this way, so a session-start line is version 1 too. Validate a line
+against the schema in the release that wrote it.
 
 ## 7. Not in version 1
 
