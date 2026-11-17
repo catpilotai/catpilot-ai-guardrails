@@ -147,7 +147,9 @@ off for that repository.
 
 `claude-code/pretooluse-destructive-ops.py` blocks high-blast-radius shell
 commands on the `Bash` tool path. It splits the command into simple commands
-the way a shell would (pipes, `;`, `&&`, `||`, subshells), looks through
+the way a shell would (pipes, `;`, `&&`, `||`, subshells, and each line of a
+multi-line command, with a backslash at the end of a line joining it to the
+next), looks through
 `sudo`, `env`, `time`, `timeout`, `stdbuf`, `ionice`, `setsid`, `unbuffer`, and
 similar wrappers and through a shell's command string, however its options
 are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
@@ -206,7 +208,7 @@ Text inside quotes is not a command, so `echo "rm -rf /"` and
 
 - Covered: commands the agent runs through the `Bash` tool, as above.
 - Not covered: a deliberately disguised command (`eval`, base64, a variable
-  holding the verb), commands a script runs internally, prompts, other tools,
+  holding the verb, ANSI-C quoting such as `bash -c $'ls\nrm -rf ~'`), commands a script runs internally, prompts, other tools,
   and any host other than Claude Code. It stops accidents, not an adversary.
 - Failure behavior: malformed input, a missing `catpilot_guard` package, or any
   internal error exits 2 and the host blocks the command. It needs the package

@@ -6,7 +6,7 @@ calls decide(). It needs no other check module; it imports catpilot_guard/eviden
 Scope, stated exactly:
   - Runs only for the Bash tool (the matcher in settings selects it).
   - Splits the proposed command into simple commands the way a shell would
-    (pipes, ;, &&, ||, subshells), looks through sudo/env/time-style wrappers
+    (pipes, ;, &&, ||, subshells, and each line of a multi-line command), looks through sudo/env/time-style wrappers
     (also timeout, gtimeout, stdbuf, ionice, setsid, unbuffer) and a shell's
     command string (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
     `bash --login -c`), and checks each one against deterministic signatures
@@ -199,22 +199,63 @@ KUBECTL_VALUE_FLAGS = {"-n", "--namespace", "-l", "--selector", "-f", "--filenam
 SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", ")", "\n"}
 
 
+# A backslash-newline continues a line only when the backslash is not itself escaped: an odd number of backslashes.
+LINE_CONTINUATION = re.compile(r"(?<!\\)((?:\\\\)*)\\\n")
+SHELL_WORD_BREAKS = set(" \t\r\n;&|()")
+
+
+def _strip_comments(command: str) -> str:
+    """The command without its comments: an unquoted `#` at the start of a word, up to the end of its line. A
+    shell ignores them, and a quote character inside one (`# what's left`) must not open a quote that hides the
+    lines after it. The newline that ends a comment is kept."""
+    out, i, quote, n = [], 0, None, len(command)
+    while i < n:
+        c = command[i]
+        if quote == "'":
+            out.append(c)
+            if c == "'":
+                quote = None
+        elif c == "\\" and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        elif quote == '"':
+            out.append(c)
+            if c == '"':
+                quote = None
+        elif c in "'\"":
+            quote = c
+            out.append(c)
+        elif c == "#" and (i == 0 or command[i - 1] in SHELL_WORD_BREAKS):
+            end = command.find("\n", i)
+            i = n if end == -1 else end
+            continue
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _tokens(command: str) -> list[str]:
+    """The command's words and operators. An unquoted newline separates commands, as in a shell, a backslash-newline
+    joins two lines into one, and comments are dropped, so every line of a multi-line command is read."""
+    command = _strip_comments(LINE_CONTINUATION.sub(r"\1", command))
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
+        lexer.whitespace = " \t\r"
         lexer.whitespace_split = True
         lexer.commenters = ""
         return list(lexer)
     except ValueError:
         # Unbalanced quotes: fall back to whitespace splitting with quotes stripped.
-        return [t.strip("\"'") for t in command.replace(";", " ; ").replace("&&", " && ").replace("|", " | ").split()]
+        return [t.strip("\"'") for t in command.replace("\n", " ; ").replace(";", " ; ").replace("&&", " && ").replace("|", " | ").split()]
 
 
 def _simple_commands(command: str, depth: int = 0):
     """Yield argv lists for each simple command, with wrappers removed and `sh -c` bodies expanded."""
     current: list[str] = []
     for token in _tokens(command) + [";"]:
-        if token in SEPARATORS or set(token) <= set(";&|()"):
+        if token in SEPARATORS or set(token) <= set(";&|()\n"):
             if current:
                 yield from _unwrap(current, depth)
             current = []
