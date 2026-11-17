@@ -54,7 +54,8 @@ tools/
   sbom.py                   # SPDX SBOM of the pinned dependencies, for signed releases
 docs/spec/                  # format, packaging, overlay and evidence specs; V2 postmortem
 frameworks/                 # long-form framework guides, kept as reference and not packaged as skills
-evals/                      # cases.json, scenarios/, retired scenarios, reference examples, reports/
+evals/                      # cases.json, scenarios/, retired scenarios, reference examples, reports/,
+                            # and host-check/, the one-command host check behind a deployment verification note
 tests/                      # unit tests for the bundler, validators, hooks and their package, gates, server, deployment scripts, and runner
 ```
 

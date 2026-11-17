@@ -262,6 +262,8 @@ If your `requirements.toml` already has a `[hooks]` table with its own `managed_
 
 Record the version of each tool, the date and the transcript under `evals/reports/` to move the rows below to verified.
 
+On a test machine, [`evals/host-check/run.sh`](../evals/host-check/README.md) runs steps 2 to 4 with one command, together with the hook probes of the [2026-11-16 note](../evals/reports/2026.11.16-managed-hooks-verification.md). It installs a test rules file with two values that carry a random token, runs `verify.sh`, asks each tool the question in a headless session, backdates the rules and asks again, restores them, uninstalls, and writes the versions, evidence lines, transcript paths and answers to a results directory. It starts six model sessions, or none with `--no-sessions`. It uses your own configuration directories and does not run step 1, which needs an interactive session. Tested offline with stub commands only; not yet run on a host.
+
 ## ChatGPT
 
 The largest non-engineer population, and the thinnest coverage. What exists: a paste block, [`dist/<release>/chatgpt-project-instructions.md`](../dist/), sized under the 8,000-character limit of a GPT's instructions, and a manual verification protocol in [`evals/HOST_VERIFICATION.md`](../evals/HOST_VERIFICATION.md) that has not yet been run. Nothing has been measured on ChatGPT; the [benchmarks](../evals/reports/) ran on Claude Code and Codex CLI, and the finding that a short list in the instruction slot did about as well as the full skill was measured there, not here.
