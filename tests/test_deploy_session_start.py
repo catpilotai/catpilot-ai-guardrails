@@ -186,8 +186,12 @@ class SessionStartDeployTests(unittest.TestCase):
         self.assertFalse((self.cc / "CLAUDE.md").exists())
         self.assertEqual((self.cc / "managed-settings.json").read_text(encoding="utf-8"), self.base_settings())
         self.assertNotIn("SessionStart", (self.cc / "managed-settings.json").read_text(encoding="utf-8"))
-        self.assertFalse((self.codex / "requirements.toml").exists())
-        self.assertFalse((self.codex / "catpilot-guardrails").exists())
+        # Codex gets its PreToolUse hooks (tests/test_deploy_codex_hooks.py) and no session-start hook or rules.
+        self.assertEqual((self.codex / "requirements.toml").read_text(encoding="utf-8"),
+                         helper.requirements_toml(str(self.codex), rules=False) + "\n")
+        self.assertNotIn("SessionStart", (self.codex / "requirements.toml").read_text(encoding="utf-8"))
+        self.assertFalse((self.codex / "catpilot-guardrails" / "hooks" / "catpilot-company-rules.py").exists())
+        self.assertFalse(self.instructions(self.codex).exists())
         self.assertFalse((self.cc / "catpilot-guardrails" / "hooks" / "catpilot-company-rules.py").exists())
         self.assertFalse(self.instructions(self.cc).exists())
         self.assertNotIn("rules   ", proc.stdout)
@@ -240,11 +244,14 @@ class SessionStartDeployTests(unittest.TestCase):
         self.assertEqual((self.instructions(self.codex) / "company-checklist.json").read_bytes(),
                          (self.instructions(self.cc) / "company-checklist.json").read_bytes())
 
-        # Codex: requirements.toml declares the managed hook, and switches nothing else on or off.
+        # Codex: requirements.toml declares the managed session-start hook beside the PreToolUse hooks, keeps hooks
+        # on, and switches nothing else on or off.
         text = (self.codex / "requirements.toml").read_text(encoding="utf-8")
         self.assertEqual(text, helper.requirements_toml(str(self.codex)) + "\n")
         requirements = parse_toml(text)
-        self.assertEqual(set(requirements), {"hooks"})
+        self.assertEqual(set(requirements), {"features", "hooks"})
+        self.assertEqual(requirements["features"], {"hooks": True})
+        self.assertEqual(set(requirements["hooks"]), {"managed_dir", "PreToolUse", "SessionStart"})
         self.assertEqual(requirements["hooks"]["managed_dir"], str(self.codex / "catpilot-guardrails" / "hooks"))
         self.assertTrue(Path(requirements["hooks"]["managed_dir"]).is_dir())
         self.assertEqual(
@@ -520,7 +527,10 @@ class SessionStartFilesHelperTests(unittest.TestCase):
     def test_the_minimal_reader_reads_the_hooks_tomllib_reads(self):
         if tomllib is None:
             self.skipTest("tomllib needs Python 3.11 or later")
-        for text in (helper.requirements_toml("/etc/codex"), self.MERGED + helper.requirements_toml("/etc/codex")):
+        generated = helper.requirements_toml("/etc/codex")
+        # Merged by hand into a file that already pins [features].hooks: one [features] table.
+        merged = self.MERGED + generated.replace("[features]\nhooks = true\n\n", "")
+        for text in (generated, merged):
             self.assertEqual(helper.minimal_toml(text)["hooks"], tomllib.loads(text)["hooks"])
         self.assertEqual(helper.minimal_toml(self.MERGED)["features"], {"hooks": True})
         escaped = '[hooks]\nmanaged_dir = "/opt/\\u00e9t\\U0001F600/\\"q\\"\\\\"\n'
@@ -542,8 +552,11 @@ class SessionStartFilesHelperTests(unittest.TestCase):
 
     def test_the_docs_show_what_install_writes(self):
         doc = (ROOT / "docs" / "DEPLOY_ORG.md").read_text(encoding="utf-8")
+        # The file without --overlay in full, then the session-start tables --overlay adds after it.
+        hooks_only = helper.requirements_toml("/etc/codex", rules=False)
+        self.assertIn(hooks_only[hooks_only.index("[features]"):], doc)
         toml = helper.requirements_toml("/etc/codex")
-        self.assertIn(toml[toml.index("[hooks]"):], doc)
+        self.assertIn(toml[toml.index("[[hooks.SessionStart]]"):], doc)
         group = json.dumps(helper.session_start_group("/Library/Application Support/ClaudeCode"), indent=2)
         self.assertIn(group, doc)
 

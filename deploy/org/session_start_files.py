@@ -4,7 +4,9 @@ verify.sh and uninstall.sh. Advice, not enforcement: SessionStart cannot block o
 CLAUDE.md shapes what the model does without enforcing anything.
 
   settings --cc-dir DIR            read managed-settings.json on stdin, print it with the SessionStart hook added
-  requirements --codex-dir DIR     print the requirements.toml that declares the Codex SessionStart hook
+  requirements --codex-dir DIR [--no-rules]
+                                   print the requirements.toml that declares the managed Codex hooks: the
+                                   PreToolUse checks always, and the SessionStart hook unless --no-rules
   claude-md-place --block FILE --target FILE
                                    put the block in the managed CLAUDE.md between the marker comments: create the
                                    file, or replace only the marked section; a file without the markers is left
@@ -12,6 +14,9 @@ CLAUDE.md shapes what the model does without enforcing anything.
   claude-md-remove --target FILE   remove the marked section; delete the file only when nothing else is in it
   verify --cc-dir DIR --codex-dir DIR --home DIR [--timeout SECONDS]
                                    verify.sh's checks of the above, one report line each
+  verify-codex-hooks --codex-dir DIR --home DIR [--timeout SECONDS]
+                                   verify.sh's checks of the managed Codex PreToolUse hooks: the files, each hook run
+                                   directly on harmless probes, and each requirements.toml command run through a shell
 
 What each host reads, from the vendors' documentation (read on 2026-11-16):
   Claude Code  the managed CLAUDE.md in the managed directory, /Library/Application Support/ClaudeCode/CLAUDE.md
@@ -51,6 +56,15 @@ MATCHER = "|".join(START_SOURCES)
 # The prefix the managed PreToolUse hook commands carry, so each person's evidence lands in their own home.
 EVIDENCE_PREFIX = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl"'
 TIMEOUT_SECONDS = 10  # the timeout the managed PreToolUse hooks have
+# The blocking hooks install.sh registers for Codex in requirements.toml: (matcher, tool the matcher must cover,
+# hook files). Codex reports every file edit as apply_patch, whichever of apply_patch, Edit or Write the matcher
+# names; Bash commands as Bash. Each command passes --host codex so its evidence lines name the tool.
+CODEX_PRETOOLUSE = (
+    ("^Bash$", "Bash", ("pretooluse-secrets.py", "pretooluse-destructive-ops.py")),
+    ("^apply_patch$", "apply_patch", ("pretooluse-write-secrets.py",)),
+)
+CODEX_HOOK_FILES = tuple(name for _, _, names in CODEX_PRETOOLUSE for name in names)
+CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence")
 # A managed directory is written into a double-quoted shell word and a TOML literal string, so it may hold none
 # of the characters either would read specially.
 UNSAFE_PATH = re.compile("[\"'\\\\$`\x00-\x1f\x7f]")
@@ -104,17 +118,40 @@ def settings_with_session_start(base: str, cc_dir: str) -> str:
     return json.dumps(data, indent=2)
 
 
-def requirements_toml(codex_dir: str) -> str:
+def codex_pretooluse_command(codex_dir: str, filename: str) -> str:
+    script = "%s/hooks/%s" % (tree(checked_dir(codex_dir)), filename)
+    return '%s python3 "%s" --host %s' % (EVIDENCE_PREFIX, script, CODEX)
+
+
+def requirements_toml(codex_dir: str, rules: bool = True) -> str:
+    """The requirements.toml install.sh writes: the blocking PreToolUse hooks always, the session-start hook with
+    the company rules (install.sh --overlay) only."""
     managed_dir = tree(checked_dir(codex_dir)) + "/hooks"
-    return "\n".join(
-        [
-            "# Catpilot Guardrails: the company rules at session start, written by deploy/org/install.sh --overlay.",
-            "# A managed SessionStart hook: Codex adds what it prints as developer context. Advice, not enforcement:",
-            "# SessionStart cannot block. It leaves allow_managed_hooks_only and [features].hooks unset, so people's own",
-            "# hooks keep running; docs/DEPLOY_ORG.md says what each would change.",
-            "",
-            "[hooks]",
-            'managed_dir = "%s"' % managed_dir,
+    lines = [
+        "# Catpilot Guardrails, written by deploy/org/install.sh: managed Codex hooks.",
+        "# PreToolUse: the credential and destructive-operation checks on Bash and the credential check on file edits",
+        "# (apply_patch); each denies what it matches and never allows anything. Pinning the hooks feature on keeps",
+        "# them on for people who turned hooks off in their own config. allow_managed_hooks_only stays unset, so",
+        "# people's own hooks keep running; docs/DEPLOY_ORG.md says what it would change.",
+    ]
+    if rules:
+        lines += [
+            "# SessionStart (install.sh --overlay): the company rules as developer context. Advice, not enforcement:",
+            "# SessionStart cannot block.",
+        ]
+    lines += ["", "[features]", "hooks = true", "", "[hooks]", 'managed_dir = "%s"' % managed_dir]
+    for matcher, _, names in CODEX_PRETOOLUSE:
+        lines += ["", "[[hooks.PreToolUse]]", 'matcher = "%s"' % matcher]
+        for name in names:
+            lines += [
+                "",
+                "[[hooks.PreToolUse.hooks]]",
+                'type = "command"',
+                "command = '%s'" % codex_pretooluse_command(codex_dir, name),
+                "timeout = %d" % TIMEOUT_SECONDS,
+            ]
+    if rules:
+        lines += [
             "",
             "[[hooks.SessionStart]]",
             'matcher = "%s"' % MATCHER,
@@ -124,7 +161,7 @@ def requirements_toml(codex_dir: str) -> str:
             "command = '%s'" % hook_command(codex_dir, CODEX),
             "timeout = %d" % TIMEOUT_SECONDS,
         ]
-    )
+    return "\n".join(lines)
 
 
 # --- the managed CLAUDE.md -------------------------------------------------------------------------------------
@@ -668,6 +705,151 @@ def verify(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, today=None, 
     return 0
 
 
+# --- verify the managed Codex PreToolUse hooks ------------------------------------------------------------------
+
+# Harmless probes. The key is AWS's documentation-only example; nothing here is a real credential or target.
+_DOC_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+_PATCH_WITH_KEY = "*** Begin Patch\n*** Add File: probe.env\n+AWS_ACCESS_KEY_ID=%s\n*** End Patch\n" % _DOC_KEY
+_PATCH_HARMLESS = "*** Begin Patch\n*** Add File: notes.md\n+# Notes\n*** End Patch\n"
+CODEX_PROBES = {
+    "pretooluse-secrets.py": (("Bash", "export AWS_ACCESS_KEY_ID=%s && echo ok" % _DOC_KEY, "a command carrying AWS's documentation example key"),
+                              ("Bash", "ls", "ls")),
+    "pretooluse-destructive-ops.py": (("Bash", "git push --force origin main", "git push --force origin main"),
+                                      ("Bash", "ls", "ls")),
+    "pretooluse-write-secrets.py": (("apply_patch", _PATCH_WITH_KEY, "a patch adding AWS's documentation example key"),
+                                    ("apply_patch", _PATCH_HARMLESS, "a patch adding a harmless file")),
+}
+
+
+def codex_event(tool: str, command: str, cwd: Path) -> str:
+    """A PreToolUse event in Codex's shape: Bash and apply_patch both carry tool_input.command."""
+    return json.dumps({"session_id": "catpilot-verify", "turn_id": "catpilot-verify", "hook_event_name": "PreToolUse",
+                       "tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)})
+
+
+def run_hook(argv: list, event: str, home: Path, timeout: int):
+    """A CompletedProcess, or a sentence saying why there is none."""
+    try:
+        return subprocess.run(argv, input=event, capture_output=True, encoding="utf-8", errors="replace",
+                              timeout=timeout, env=clean_env(home), cwd=str(home))
+    except subprocess.TimeoutExpired:
+        return "did not finish within the %ds hook timeout" % timeout
+    except OSError as exc:
+        return "could not start (%s)" % exc.__class__.__name__
+
+
+def decision(result) -> str:
+    """"deny", "none" (the empty decision) or a sentence saying what went wrong."""
+    if isinstance(result, str):
+        return result
+    if result.returncode != 0:
+        return "exited %d instead of returning a decision (2 means it could not read the event or load the catpilot_guard package)" % result.returncode
+    try:
+        output = json.loads(result.stdout)
+    except ValueError:
+        return "printed no JSON decision"
+    if output == {}:
+        return "none"
+    try:
+        if output["hookSpecificOutput"]["permissionDecision"] == "deny":
+            return "deny"
+    except (TypeError, KeyError):
+        pass
+    return "printed something other than a deny or the empty decision"
+
+
+def codex_registrations(groups) -> list:
+    """(matcher, hook file, command) for each command hook that runs one of the Catpilot PreToolUse checks."""
+    found = []
+    for group in groups if isinstance(groups, list) else []:
+        if not isinstance(group, dict):
+            continue
+        for handler in group.get("hooks") or []:
+            command = handler.get("command") if isinstance(handler, dict) else None
+            if not isinstance(command, str):
+                continue
+            for name in CODEX_HOOK_FILES:
+                if name in command:
+                    found.append((group.get("matcher"), name, command))
+    return found
+
+
+def verify_codex_hooks(codex_dir: Path, home: Path, timeout: int, prefer_tomllib: bool = True) -> int:
+    report = Report()
+    hooks_dir = Path(tree(str(codex_dir))) / "hooks"
+    for name in CODEX_HOOK_FILES:
+        report.present(hooks_dir / name)
+    for module in CODEX_HOOK_MODULES:
+        report.present(hooks_dir / "catpilot_guard" / (module + ".py"))
+    tool_of = {name: tool for _, tool, names in CODEX_PRETOOLUSE for name in names}
+    for name in CODEX_HOOK_FILES:
+        script = hooks_dir / name
+        if not script.exists():
+            continue
+        for (tool, command, what), expected in zip(CODEX_PROBES[name], ("deny", "none")):
+            got = decision(run_hook([sys.executable, str(script), "--host", CODEX], codex_event(tool, command, home), home, timeout))
+            if got == expected:
+                report.line("denies" if expected == "deny" else "passes", "%s --host codex: %s" % (name, what))
+            elif got in ("deny", "none"):
+                report.line("FAIL", "%s --host codex %s %s" % (name, "did not deny" if expected == "deny" else "denied", what))
+            else:
+                report.line("FAIL", "%s --host codex %s on %s" % (name, got, what))
+    requirements_path = codex_dir / "requirements.toml"
+    if not report.present(requirements_path):
+        return 0
+    try:
+        requirements, reader = read_toml(requirements_path, prefer_tomllib)
+    except (OSError, ValueError):
+        report.line("INVALID", "%s does not parse as TOML" % requirements_path)
+        return 0
+    print("         (read with %s)" % reader)
+    features = requirements.get("features") if isinstance(requirements, dict) else None
+    if isinstance(features, dict) and features.get("hooks") is False:
+        report.line("FAIL", "%s sets [features].hooks = false, which turns every hook off" % requirements_path)
+    elif not (isinstance(features, dict) and features.get("hooks") is True):
+        report.line("note", "%s does not pin [features].hooks = true, so a person who turns hooks off in their own "
+                    "config turns these off too" % requirements_path)
+    req_hooks = requirements.get("hooks") if isinstance(requirements, dict) else None
+    managed_dir = req_hooks.get("managed_dir") if isinstance(req_hooks, dict) else None
+    if not isinstance(managed_dir, str) or not os.path.isabs(managed_dir):
+        report.line("FAIL", "%s sets no absolute [hooks] managed_dir; Codex loads managed hooks only with one" % requirements_path)
+    elif not Path(managed_dir).is_dir():
+        report.line("FAIL", "[hooks] managed_dir %s does not exist; Codex loads managed hooks only when it does" % managed_dir)
+    entries = codex_registrations(req_hooks.get("PreToolUse") if isinstance(req_hooks, dict) else None)
+    hint = "install.sh prints the TOML to merge when the file already existed"
+    if reader != "tomllib":
+        hint += "; this reader follows only [[hooks.PreToolUse]] tables, so if the file declares them another way, "
+        hint += "run verify.sh with PYTHON_BIN set to Python 3.11 or later"
+    for name in CODEX_HOOK_FILES:
+        mine = [(matcher, command) for matcher, hook, command in entries if hook == name]
+        if not mine:
+            report.line("FAIL", "requirements.toml does not run %s at PreToolUse (%s)" % (name, hint))
+            continue
+        tool = tool_of[name]
+        tool_probe, command_probe, what = CODEX_PROBES[name][0]
+        for matcher, command in mine:
+            if not covers(matcher, tool, anchored=False):
+                report.line("FAIL", "requirements.toml runs %s under a matcher that does not cover %s" % (name, tool))
+            if "--host codex" not in command and "--host=codex" not in command:
+                report.line("note", "requirements.toml runs %s without --host codex, so its evidence lines say claude-code" % name)
+            if isinstance(managed_dir, str):
+                paths = [token for token in _split(command) if token.endswith(name)]
+                if paths and not paths[0].startswith(managed_dir.rstrip("/") + "/"):
+                    report.line("note", "the command runs %s, outside managed_dir; Codex's documentation says managed "
+                                "hook commands should use absolute script paths under it" % paths[0])
+            if "CATPILOT_EVIDENCE_SYSLOG" in command:
+                report.line("skipped", "requirements.toml command for %s (it forwards evidence to syslog; check it in a session)" % name)
+                continue
+            got = decision(run_hook(["bash", "-c", command], codex_event(tool_probe, command_probe, home), home, timeout))
+            if got == "deny":
+                report.line("wired", "requirements.toml runs %s at PreToolUse and it denies its probe" % name)
+            elif got == "none":
+                report.line("FAIL", "requirements.toml command for %s did not deny %s" % (name, what))
+            else:
+                report.line("FAIL", "requirements.toml command for %s %s on %s" % (name, got, what))
+    return 0
+
+
 def _split(command: str) -> list:
     try:
         return shlex.split(command)
@@ -682,6 +864,7 @@ def main(argv=None) -> int:
     p.add_argument("--cc-dir", required=True)
     p = sub.add_parser("requirements")
     p.add_argument("--codex-dir", required=True)
+    p.add_argument("--no-rules", action="store_true", help="without the session-start hook (no --overlay)")
     p = sub.add_parser("claude-md-place")
     p.add_argument("--block", required=True, type=Path)
     p.add_argument("--target", required=True, type=Path)
@@ -692,18 +875,24 @@ def main(argv=None) -> int:
     p.add_argument("--codex-dir", required=True, type=Path)
     p.add_argument("--home", required=True, type=Path)
     p.add_argument("--timeout", type=int, default=TIMEOUT_SECONDS)
+    p = sub.add_parser("verify-codex-hooks")
+    p.add_argument("--codex-dir", required=True, type=Path)
+    p.add_argument("--home", required=True, type=Path)
+    p.add_argument("--timeout", type=int, default=TIMEOUT_SECONDS)
     args = parser.parse_args(argv)
     try:
         if args.action == "settings":
             print(settings_with_session_start(sys.stdin.read(), args.cc_dir))
         elif args.action == "requirements":
-            print(requirements_toml(args.codex_dir))
+            print(requirements_toml(args.codex_dir, rules=not args.no_rules))
         elif args.action == "claude-md-place":
             return place_claude_md(args.block, args.target)
         elif args.action == "claude-md-remove":
             return remove_claude_md(args.target)
         elif args.action == "verify":
             return verify(args.cc_dir, args.codex_dir, args.home, args.timeout)
+        elif args.action == "verify-codex-hooks":
+            return verify_codex_hooks(args.codex_dir, args.home, args.timeout)
         else:
             parser.print_usage(sys.stderr)
             return 2

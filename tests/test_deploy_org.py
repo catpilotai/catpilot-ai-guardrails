@@ -162,7 +162,7 @@ class DeployOrgScriptTests(unittest.TestCase):
             verify = self._verify(env)
             self.assertNotEqual(verify.returncode, 0, verify.stdout)
             self.assertIn("FAIL     pretooluse-secrets.py did not deny", verify.stdout)
-            self.assertNotIn("denies   pretooluse-secrets.py", verify.stdout)
+            self.assertNotIn("denies   pretooluse-secrets.py:", verify.stdout)  # the Claude Code copy; the Codex copy prints "--host codex:"
             self.assertIn("denies   pretooluse-destructive-ops.py", verify.stdout)
 
     def test_verify_reports_managed_settings_that_do_not_run_the_hooks(self):
@@ -348,7 +348,7 @@ class DeployOrgScriptTests(unittest.TestCase):
                 self.assertIn(f"MISSING  {hooks}/catpilot_guard/{name}", verify.stdout)
             for hook_name in HOOK_NAMES:
                 self.assertIn(f"FAIL     {hook_name} exited 2", verify.stdout)
-                self.assertNotIn(f"denies   {hook_name}", verify.stdout)
+                self.assertNotIn(f"denies   {hook_name}:", verify.stdout)  # the Claude Code copy
             self.assertIn("load the catpilot_guard package", verify.stdout)
 
 

@@ -25,10 +25,11 @@ Everything an administrator places is under [`deploy/org/`](../deploy/org/):
 | `claude-code/managed-settings.json` | All three hooks, with the evidence log turned on per user, and the server provided through `managedMcpServers` alongside whatever servers users already have |
 | `claude-code/managed-mcp.json` | The stricter alternative for the server: a fixed set, and users cannot add others |
 | `codex/managed_config.toml` | The server as a managed default for Codex CLI |
+| `/etc/codex/requirements.toml` (generated) | The three hooks as managed Codex `PreToolUse` hooks, with `--host codex`, and `[features].hooks = true`; with `--overlay`, also the session-start hook. Written by `install.sh` from `session_start_files.py`, only when there is none |
 | `install.sh` | Places all of it on one macOS or Linux machine as root, with your server URL substituted: the hooks and the `catpilot_guard` package they run go to `<managed dir>/catpilot-guardrails/hooks/` (the package as `hooks/catpilot_guard/`, its `.py` files only, never `__pycache__` or `.pyc`); refuses to overwrite a managed file that already exists and prints what to merge instead; `--managed-mcp-json` also writes the fixed-set `managed-mcp.json`; `--overlay` also places the company rules at session start on both tools (below) |
 | `verify.sh` | Checks as a normal user: the files are present, including each module of the `catpilot_guard` package beside the hooks; the `python3` the hook commands use starts and is 3.8 or later; each installed hook, run directly, denies a harmless probe and lets `ls` through; `managed-settings.json` runs each hook on the tools it covers; after `--overlay`, the company rules at session start (below); and the evidence log's last line. Writes nothing outside a temporary directory and no evidence line; exits non-zero on any failure |
 | `uninstall.sh` | Removes exactly what `install.sh` placed, including the `catpilot_guard` package beside the hooks and, after `--overlay`, the session-start files and the marked section of the managed `CLAUDE.md`; leaves a managed file alone if it was edited since |
-| `session_start_files.py` | The standard-library helper the three scripts share for the session-start pieces: it adds the `SessionStart` hook to the parsed settings JSON, writes `requirements.toml`, places and removes the marked `CLAUDE.md` section, and runs `verify.sh`'s session-start checks |
+| `session_start_files.py` | The standard-library helper the three scripts share for the generated pieces: it adds the `SessionStart` hook to the parsed settings JSON, writes `requirements.toml`, places and removes the marked `CLAUDE.md` section, and runs `verify.sh`'s Codex hook and session-start checks |
 
 The skills come from [`skills/`](../skills/) in a checkout of the release you are deploying; the install script copies them. Pin the release: the files are deterministic per release and the [`CHANGELOG.md`](../CHANGELOG.md) says what changed.
 
@@ -162,7 +163,53 @@ Precedence, highest first: MDM, cloud-delivered requirements from the ChatGPT ad
 
 **Confirm it on one machine.** Codex emits no load event for skills, so the signals are the ones the [tested-runtimes table](REFERENCE.md#tested-runtimes) records: the model naming the skill when asked what guidance it has, input token usage rising when it reads the skill, and `mcp_tool_call` in the transcript when it calls `list_approved`. Run `codex` in an empty directory and ask: "What guidance skills do you have available, by name? Then call the catpilot_guardrails tool list_approved with category hosting and tell me the first item."
 
-**What this does not reach.** The only Codex hook this package ships is the session-start rules hook below, which is advice, so there is no enforcement on this host. Its evidence lines are the only local evidence; the server-side evidence log (below) records the lookups.
+**What this does not reach.** Codex cloud tasks and Work with Local computer access, whose cloud orchestration runs only MCP hooks, get none of the hooks below. The server-side evidence log (below) records the lookups.
+
+### Blocking hooks on Codex
+
+`install.sh` gives Codex the same three checks as Claude Code, as managed `PreToolUse` hooks: the credential and destructive-operation checks on `Bash`, and the credential check on file edits, which Codex sends as `apply_patch`, the patch in `tool_input.command`, whichever of `apply_patch`, `Edit` or `Write` a matcher names. Each command passes `--host codex`, so its evidence lines say `codex`. A hook that denies prints the same reason as on Claude Code. Not verified on a host as managed hooks ([status](#verification-status)); the `Bash` checks were verified on Codex CLI 0.169.0 as project-level hooks on 2026-11-17 ([note](../evals/reports/2026.11.17-session-start-rules-verification.md)).
+
+**What `install.sh` places.**
+
+- `/etc/codex/catpilot-guardrails/hooks/`: `pretooluse-secrets.py`, `pretooluse-write-secrets.py` and `pretooluse-destructive-ops.py`, and the `catpilot_guard` package beside them (its `.py` files only);
+- `/etc/codex/requirements.toml`, only when there is none; otherwise it prints the file for you to merge, keeping one `[features]` and one `[hooks]` table. Without `--overlay` it is exactly:
+
+```toml
+[features]
+hooks = true
+
+[hooks]
+managed_dir = "/etc/codex/catpilot-guardrails/hooks"
+
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-secrets.py" --host codex'
+timeout = 10
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-destructive-ops.py" --host codex'
+timeout = 10
+
+[[hooks.PreToolUse]]
+matcher = "^apply_patch$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-write-secrets.py" --host codex'
+timeout = 10
+```
+
+With `--overlay` the session-start hook follows (next section). Writing the file needs Python 3.8 or later as `PYTHON_BIN` (by default `python3`, which under `sudo` is the system one); `install.sh` stops before changing anything when it cannot run, since the hooks need it too.
+
+**`[features].hooks = true`.** Codex's documentation says to pin it in `requirements.toml` to keep managed hooks on for someone who turned hooks off in their own `config.toml`. Without it, a person could switch these checks off. It does not switch off anyone's own hooks. `verify.sh` notes a `requirements.toml` that does not pin it and fails one that sets it to `false`.
+
+**What a denial looks like, and what a failure does.** Codex reads the same deny decision as Claude Code. A hook that cannot read its input or load its package exits 2, which blocks. Codex's documentation also says a `PreToolUse` error, timeout or malformed response can let the tool run, so a hook that never starts (no `python3` on Codex's `PATH`) protects nothing; `verify.sh` checks the interpreter.
+
+**`verify.sh`** runs each hook directly on harmless probes in Codex's event shape (AWS's documentation key in a command, a force push to `main`, a patch adding that key, and `ls` and a harmless patch that must pass), then runs each command `requirements.toml` declares through a shell, with `HOME` at a temporary directory so no evidence line is written. It fails a hook that is missing, does not deny its probe, or sits under a matcher that misses its tool, and notes a command without `--host codex`.
 
 ### Company rules at session start on Codex
 
@@ -172,12 +219,9 @@ With `--overlay`, `install.sh` declares a managed `SessionStart` hook that gives
 
 - `/etc/codex/catpilot-guardrails/hooks/catpilot-company-rules.py` and, beside it, the `catpilot_guard` package (`hooks/catpilot_guard/`, its `.py` files only);
 - `/etc/codex/catpilot-guardrails/instructions/company-checklist.md` and `company-checklist.json`;
-- `/etc/codex/requirements.toml`, only when there is none; otherwise it prints this for you to merge, keeping one `[hooks]` table:
+- in `/etc/codex/requirements.toml`, after the blocking hooks above, the session-start hook:
 
 ```toml
-[hooks]
-managed_dir = "/etc/codex/catpilot-guardrails/hooks"
-
 [[hooks.SessionStart]]
 matcher = "startup|resume|clear|compact|fork"
 
@@ -191,10 +235,7 @@ The files are root-owned, mode 644, in directories with mode 755, like the Claud
 
 **One copy per tool.** On a machine with both tools, Codex gets its own copy of the script, the package and the rules under `/etc/codex/`, rather than a path into Claude Code's managed directory. Each tool then reads only from its own managed location, a fleet that deploys one tool gets a self-contained tree, and removing one tool's directory does not break the other. `install.sh` writes both copies from one build, and `verify.sh` fails when they differ.
 
-**Left to you.** Two requirements would change more than this hook, so `install.sh` sets neither; add them to `requirements.toml` if your policy wants them:
-
-- `allow_managed_hooks_only = true` skips every user, project, session and plugin hook and keeps only managed ones. It would switch off people's own hooks.
-- `[features]` with `hooks = true` keeps hooks on for someone who turned them off in their own `config.toml`. Without it, a person who sets `hooks = false` does not get the rules at session start.
+**Left to you.** `allow_managed_hooks_only = true` skips every user, project, session and plugin hook and keeps only managed ones. It would switch off people's own hooks, so `install.sh` does not set it; add it to `requirements.toml` if your policy wants it. `[features].hooks = true` is set (above), so a person who turned hooks off still gets the rules at session start.
 
 If your `requirements.toml` already has a `[hooks]` table with its own `managed_dir`, keep that one and copy `catpilot-guardrails/` under it, adjusting the command's path; `verify.sh` notes a script outside `managed_dir`. `uninstall.sh` then leaves the file and the copy to you.
 
@@ -206,7 +247,7 @@ If your `requirements.toml` already has a `[hooks]` table with its own `managed_
 
 **On expiry.** From the day after `expires_on`, by the machine's local date, Codex gets no rules. The script prints "The company rules expired on `<date>` and are not in force. Ask `<owner>` for current rules." as developer context and as a warning the person sees. A missing or mismatched file prints that the company rules could not be loaded and are unknown.
 
-**What this does not reach.** Codex cloud tasks, and Work with Local computer access, whose cloud orchestration supports only MCP hooks; ChatGPT; and, unless you pin `[features] hooks = true`, a person who turned hooks off.
+**What this does not reach.** Codex cloud tasks, and Work with Local computer access, whose cloud orchestration supports only MCP hooks; and ChatGPT.
 
 ## Check the company rules in a session
 
@@ -282,6 +323,7 @@ What a pilot report reads from it: denials per hook per day (the hooks were in f
 | ChatGPT, the block as instructions on an individual plan | verified on a ChatGPT Pro account with the block pasted into the chat: the shared-password scenario was declined with the reason, company sign-in for the named group proposed, and a message to the IT/security owner drafted ([note](../evals/reports/2026.09.20-org-deployment-verification.md)); Project and GPT instructions carry the same text and were not separately run | 2026-09-20 | Basil ran it; Catpilot recorded |
 | Claude Code, company rules in the managed `CLAUDE.md` (`install.sh --overlay`) | verified on 2.1.326 through the system path on macOS, in an organization with claude.ai managed settings and `"merge"` set: with no skills and an unreachable server, a session answered which hosting is approved and whom to ask with the two distinctive values from the installed test rules. With the rules expired, it said they were out of date, named the owner, and repeated them labeled as expired. `/context all` was not run ([note](../evals/reports/2026.11.17-session-start-rules-verification.md)) | 2026-11-17 | A maintainer installed and ran the sessions; Catpilot recorded |
 | Claude Code, `SessionStart` status hook through the managed settings file | verified on 2.1.326: each session start wrote a `rules_delivered` or `rules_expired` line with `host` `claude-code`, Its output reached the model: with only the sidecar backdated, the model quoted an expiry date, 2026-02-01, that only the hook's notice carried. `/hooks` was not run, and only the `startup` source ran ([note](../evals/reports/2026.11.17-session-start-rules-verification.md)) | 2026-11-17 | A maintainer installed and ran the sessions; Catpilot recorded |
+| Codex CLI, `PreToolUse` hooks through `/etc/codex/requirements.toml` (`install.sh`) | not verified as managed hooks. `tests/test_deploy_codex_hooks.py` installs them in temporary directories, runs each declared command through a shell on Codex-shaped events, and checks `verify.sh` and `uninstall.sh`; the `Bash` checks were verified on Codex CLI 0.169.0 as project-level hooks on 2026-11-17 ([note](../evals/reports/2026.11.17-session-start-rules-verification.md)); the `apply_patch` check has not run on a host | | |
 | Codex CLI, `SessionStart` hook through `/etc/codex/requirements.toml` | verified on 0.169.0 with no trust step: a session answered the same question with the two distinctive values. With the rules expired, the host showed the warning, and the model named no approved host and named the owner. Each session wrote a `rules_delivered` or `rules_expired` line with `host` `codex`. `/hooks` was not run, and only the `startup` source ran ([note](../evals/reports/2026.11.17-session-start-rules-verification.md)) | 2026-11-17 | A maintainer installed and ran the sessions; Catpilot recorded |
 | Evidence log, hooks and server | unit and stdio contract tests in `tests/` | 2026-09-20 | Catpilot |
 
