@@ -9,6 +9,7 @@ message and exits 2, which the host treats as a block. Standard library only. Py
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -41,7 +42,16 @@ try:
 except Exception:
     if __name__ != "__main__":
         raise
-    print(UNAVAILABLE, file=sys.stderr)
+    try:
+        print(UNAVAILABLE, file=sys.stderr)
+        sys.stderr.flush()
+    except Exception:
+        # The exit code blocks whether or not the message was shown. Point stderr at
+        # os.devnull so the interpreter's flush at exit cannot replace 2 with 120.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+        except Exception:
+            pass
     sys.exit(2)
 
 if __name__ == "__main__":

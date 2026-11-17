@@ -34,6 +34,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import write_decision, write_reason
+
 PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----")
 MAX_INPUT = 1_048_576
 
@@ -166,10 +168,9 @@ def main() -> int:
         # Any failure (malformed input, a missing sibling module, an unexpected error)
         # blocks: an ordinary non-zero exit would let the host perform the write.
         record_evidence("input_error")
-        print("Catpilot write check unavailable: invalid input or an internal error. Review the write before retrying.", file=sys.stderr)
+        write_reason("Catpilot write check unavailable: invalid input or an internal error. Review the write before retrying.")
         return 2
-    print(json.dumps(result))
-    return 0
+    return write_decision(result)
 
 
 if __name__ == "__main__":
