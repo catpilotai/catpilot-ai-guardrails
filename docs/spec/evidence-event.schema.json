@@ -75,7 +75,7 @@
       "description": "Which hook wrote the line. Lines written before the write hook's rename say pretooluse-write-private-key; they have no schema_version."
     },
     "tool": {
-      "enum": ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "get_guidance", "check_plan", "get_template", "list_approved"],
+      "enum": ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch", "get_guidance", "check_plan", "get_template", "list_approved"],
       "description": "For a hook, the host tool it checked. For the server, the MCP tool that was called."
     },
     "label": {

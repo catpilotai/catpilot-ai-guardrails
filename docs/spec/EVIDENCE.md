@@ -43,7 +43,7 @@ value for them, and are left out otherwise.
 | `rule_id` | not yet | The id of the company rule that decided ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.1). |
 | `mode` | not yet | That rule's mode: `monitor`, `ask` or `block` ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.3). The built-in checks have no mode. |
 | `hook` | hooks | `pretooluse-secrets`, `pretooluse-write-secrets` or `pretooluse-destructive-ops`. |
-| `tool` | all | Hooks: the tool checked (`Bash`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`). Server: the MCP tool called. |
+| `tool` | all | Hooks: the tool checked (`Bash`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, or Codex's `apply_patch`). Server: the MCP tool called. |
 | `label` | hooks, session start | Hooks: the fixed label of what matched: a credential type, `private-key-block`, or a destructive-operation type. Session start, on `policy_error`: why the rules could not be loaded, one of `bad-arguments`, `missing`, `unreadable`, `malformed`, `hash-mismatch` or `internal-error`. |
 | `error`, `policy_status`, `unknown_policy` | server | On every server line; `null` when the tool returned an error. |
 | `topic`, `category`, `kind` | server | The enumerated argument, or `invalid`. |
