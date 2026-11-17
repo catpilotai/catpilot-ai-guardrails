@@ -1,13 +1,14 @@
 # Overlay version 2: design note
 
-**Status:** Proposed, not implemented. For review in [issue #92](https://github.com/catpilotai/catpilot-ai-guardrails/issues/92). Nothing here changes the schema, the validator or any code; `schema_version: 1` is the only version the tools accept.
+**Status:** Approved on 2026-11-17 in [issue #92](https://github.com/catpilotai/catpilot-ai-guardrails/issues/92), with the decisions in §7. Not yet implemented: until the version 2 code merges, `schema_version: 1` is the only version the tools accept.
 **Companion to:** [`OVERLAY.md`](./OVERLAY.md) (version 1), [`overlay.schema.json`](./overlay.schema.json), [`overlay.example.yaml`](./overlay.example.yaml).
 
 The overlay is the company rules file. Version 1 is written to advise a model.
 Version 2 would let hooks, a pull-request check and `check_plan` match the
 same rules exactly, without putting machine values in front of a model. This
-note proposes a first build, a next increment, and what waits. Schema code
-starts only after the maintainer approves or changes it in #92.
+note proposes a first build, a next increment, and what waits. The maintainer
+approved it on 2026-11-17 with the decisions in §7, which this text already
+reflects.
 
 ---
 
@@ -156,10 +157,12 @@ yourself in your own terminal." It names no host and repeats no command.
 
 **What a hook can express.** A Claude Code `PreToolUse` hook can deny the call,
 ask the person to confirm it, allow it, or return nothing so the host's own
-permission rules apply. This repository's hooks never return allow. Codex has
-no hook from this package yet (`docs/DEPLOY_ORG.md`); its documentation
-describes the same deny shape, and this note does not assume it acts on
-`ask`. That leaves three effects: deny, ask, nothing.
+permission rules apply. This repository's hooks never return allow. Codex runs
+the same hooks as managed hooks (`docs/DEPLOY_ORG.md`) and reads the same deny
+shape, but its documentation says `permissionDecision: "ask"` is not supported:
+the hook run fails and the call continues. On Codex a hook must therefore turn
+`ask` into a deny itself; `--host codex` tells it which host it is on. That
+leaves three effects: deny, ask, nothing.
 
 | Mode | Claude Code hook | Where no prompt is possible | Pull-request check | Evidence event |
 | --- | --- | --- | --- | --- |
@@ -533,10 +536,13 @@ review_triggers:
    one. An exception relaxes only a company rule, in the file that holds that
    rule, until a date. A child file (§3.2) cannot remove a parent's
    prohibition and can only narrow a parent's allow-list.
-5. **A file is never less careful than no file.** An expired, invalid,
-   unreadable or wrongly owned file means the built-in checks in `block`,
-   generic defaults on the server, and a `policy_error` evidence line. Never
-   allow. An unlisted data class still gets the generic outcome.
+5. **A file is never less careful than no file.** An invalid, unreadable or
+   wrongly owned file means the built-in checks in `block`, generic defaults on
+   the server, and a `policy_error` evidence line. An expired file's company
+   enforcement rules act in `monitor` until it is renewed: nothing is blocked on
+   stale values, each match still writes a `would_deny` line, and the built-in
+   checks stay in `block` (decision 3, §7). Never allow. An unlisted data class
+   still gets the generic outcome.
 6. **No switch the agent can reach.** No mode, exception or policy path comes
    from a project file, the home directory, an environment variable or a tool
    argument. A person answers `ask`.
@@ -600,24 +606,30 @@ refusal of symlinks. Version 2 adds:
    a kind with no host verification note yet; and, in the next increment, an
    exception within 14 days of expiry.
 
-## 7. Open questions for the maintainer
+## 7. Decisions (2026-11-17)
 
-1. **Mode names.** `monitor` / `ask` / `block` instead of #92's `monitor` /
-   `warn` / `block` (§2.3)?
-2. **`ask` with no prompt.** Fall back to `block`, as proposed, or to
-   `monitor`? The same question for the pull-request check, which could
-   instead pass with an annotation that asks the reviewer.
-3. **Expiry and the hooks.** When the file expires, should hooks drop the
-   company rules and keep only the built-in checks, as proposed (expired values
-   are unknown everywhere), or keep enforcing the last company rules in
-   `block` until the file is renewed?
-4. **Plain strings in a version 2 list.** Reject them, as proposed, or accept
-   them as items without ids?
-5. **Hosts in phrases.** Is rule 7 in §6.3 an error, as proposed, or a lint
-   warning for a company that wants the model to know a mirror's host name?
-6. **A rollout window for the built-in checks.** Should a version 2 file be
-   able to put them in `monitor` until a fixed end date, for a monitor-first
-   rollout ([#93](https://github.com/catpilotai/catpilot-ai-guardrails/issues/93))? This note leaves it out of the first build.
-7. **Catpilot Plus.** It serves overlay values for companies (`OVERLAY.md`
-   §6). When it accepts version 2 files, and whether existing files are
-   migrated for their owners, need agreeing before schema code merges.
+The maintainer approved this note in #92 with these answers to its open
+questions:
+
+1. **Mode names:** `monitor` / `ask` / `block`. Each says what the person sees,
+   and "warn" would promise a message nobody has shown is read before the
+   action runs.
+2. **`ask` with no prompt** acts as `block`: on Codex, in the pull-request
+   check (which fails), in a run with nobody to answer, and in Claude Code
+   modes that approve without asking a person. `ask` means a person decides
+   first; falling back to `monitor` would let the action run with nobody asked.
+3. **Expiry and the hooks:** when the file expires, its company enforcement
+   rules act in `monitor` until it is renewed. Nothing is blocked on stale
+   values, each match still writes a `would_deny` line, and the built-in checks
+   stay in `block`. This matches the session-start script, which tells the model
+   and the person that expired rules are not in force.
+4. **Plain strings in a version 2 list** are rejected. `migrate` turns a
+   version 1 file's strings into items with ids, so every rule has an id that
+   evidence and exceptions can name.
+5. **Hosts in phrases:** rule 7 in §6.3 is an error, not a lint warning. The
+   `enforcement` section stays out of prompts and server answers, so its values
+   cannot reach a model through a phrase either.
+6. **No rollout window for the built-in checks** in the first build: they stay
+   in `block`. Revisit if a pilot asks ([#93](https://github.com/catpilotai/catpilot-ai-guardrails/issues/93)).
+7. **Catpilot Plus:** settled with the maintainer; nothing in this note depends
+   on it.
