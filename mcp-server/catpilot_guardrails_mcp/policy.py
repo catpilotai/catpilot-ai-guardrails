@@ -3,6 +3,12 @@
 The overlay path and template hosts come from process configuration only,
 never from a tool argument, so a prompt cannot point the server at another
 file. Local file ownership is the trust boundary of this reference server.
+
+A version 2 file is validated whole, `enforcement` included, and the tools
+then see only its version 1 projection: each item's text, with no ids,
+aliases or `enforcement` (docs/spec/OVERLAY_V2.md §2.2). No answer can
+depend on an enforcement value, so a caller cannot learn one by guessing.
+`source.sha256` stays the SHA-256 of the whole file.
 """
 
 from __future__ import annotations
@@ -24,6 +30,12 @@ class PolicyState:
     reason: str
     overlay: dict | None = None
     source: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Every PolicyState, including one a host's policy_provider builds, holds
+        # the version 1 projection: the tools never see `enforcement`.
+        if isinstance(self.overlay, dict):
+            self.overlay = validate_overlay.v1_projection(self.overlay)
 
     @property
     def approved(self) -> bool:

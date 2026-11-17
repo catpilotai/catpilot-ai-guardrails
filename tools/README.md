@@ -75,13 +75,19 @@ python tools/validate_skill.py skills/catpilot-safe-building
 ## validate_overlay.py
 
 Offline validation of an organization overlay: the schema in
-`docs/spec/overlay.schema.json`, the expiry window, and a scan for anything
-that looks like a secret, a URL outside the allowlist, an email other than
-`owner`, an IP address, or an incident narrative. Whether the listed items are
-actually approved is the reviewer's call, not the validator's.
+`docs/spec/overlay.schema.json` (version 1) or `docs/spec/overlay.v2.schema.json`
+(version 2, chosen by `schema_version`), the expiry window, and a scan for
+anything that looks like a secret, a URL outside the allowlist, an email other
+than `owner`, an IP address, or an incident narrative. For version 2 it also
+checks ids, aliases and the `enforcement` section (`docs/spec/OVERLAY_V2.md`
+§6.3), and prints lint warnings that do not fail validation. Whether the listed
+items are actually approved is the reviewer's call, not the validator's.
 
 ```bash
 python tools/validate_overlay.py docs/spec/overlay.example.yaml --allow-host intranet.example.org
+python tools/validate_overlay.py docs/spec/overlay.v2.example.yaml
+# print a version 1 file as version 2; --output FILE writes a new file instead
+python tools/validate_overlay.py migrate docs/spec/overlay.example.yaml
 ```
 
 ## validate_evals.py

@@ -54,3 +54,6 @@ jobs:
 
       - name: Validate the synthetic overlay example
         run: python tools/validate_overlay.py docs/spec/overlay.example.yaml --allow-host intranet.example.org
+
+      - name: Validate the synthetic version 2 overlay example
+        run: python tools/validate_overlay.py docs/spec/overlay.v2.example.yaml

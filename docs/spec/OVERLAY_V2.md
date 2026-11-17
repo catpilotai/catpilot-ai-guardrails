@@ -1,7 +1,7 @@
 # Overlay version 2: design note
 
-**Status:** Approved on 2026-11-17 in [issue #92](https://github.com/catpilotai/catpilot-ai-guardrails/issues/92), with the decisions in §7. Not yet implemented: until the version 2 code merges, `schema_version: 1` is the only version the tools accept.
-**Companion to:** [`OVERLAY.md`](./OVERLAY.md) (version 1), [`overlay.schema.json`](./overlay.schema.json), [`overlay.example.yaml`](./overlay.example.yaml).
+**Status:** Approved on 2026-11-17 in [issue #92](https://github.com/catpilotai/catpilot-ai-guardrails/issues/92), with the decisions in §7. The first build's file format is implemented: every reader accepts `schema_version: 1` and `2`, `tools/validate_overlay.py` checks every rule in §6.3 and has `migrate`, and no bundle, paste block, company-checklist block, benchmark prompt or server answer carries `enforcement`. The `enforcement` section is validated only: no hook or check reads it, so no rule is enforced and nothing acts on a mode. Not yet implemented: `compile` and the hooks (§2.2), `check_plan` deciding by id or alias with `rule_id` and `matched_by`, ids in `list_approved` and evidence (§2.1), lint's table of each rule's effective mode per host (§2.3), and everything in §3.
+**Companion to:** [`OVERLAY.md`](./OVERLAY.md) (version 1), [`overlay.schema.json`](./overlay.schema.json), [`overlay.example.yaml`](./overlay.example.yaml). Version 2: [`overlay.v2.schema.json`](./overlay.v2.schema.json), [`overlay.v2.example.yaml`](./overlay.v2.example.yaml).
 
 The overlay is the company rules file. Version 1 is written to advise a model.
 Version 2 would let hooks, a pull-request check and `check_plan` match the
@@ -378,14 +378,22 @@ a public repository.
 First-build fields only. It is the file from §5.2 after a reviewer approved
 shorter ids (the generated ones kept as aliases where something already
 referred to them), one new service, and an `enforcement` section, with new
-review dates.
+review dates. It is [`overlay.v2.example.yaml`](./overlay.v2.example.yaml),
+and the tests check that the two match and that it validates.
+
+*Corrected when the first build was implemented, to follow §6.3:* the
+approved version of this example also had a `package_registry` rule and a
+`cloud_account` rule, which rule 4 rejects until their consumers ship, and
+review dates (2026-12-01 to 2027-06-01) that the expiry-window check rejects
+before 2026-12-01. They are shown after the example instead, and the dates are
+the approval date and six months later, the span the version 1 example uses.
 
 ```yaml
 schema_version: 2
 organization: "Example Org"
 owner: "security-review@example.org"
-reviewed_on: 2026-12-01
-expires_on: 2027-06-01
+reviewed_on: 2026-11-17
+expires_on: 2027-05-17
 
 data_classes:
   never_in_prompts:
@@ -444,11 +452,17 @@ enforcement:
       kind: deploy_host
       use_instead: hosting-app-platform
       values: ["apps.example.org", "*.apps.example.org"]
-    - id: package-registries        # enters the schema with its first consumer
+```
+
+When the `package_registry` and `cloud_account` kinds ship with their first
+consumers, the same file could add these two rules:
+
+```yaml
+    - id: package-registries
       kind: package_registry
       use_instead: service-package-mirror
       values: ["npm.example.org", "pypi.example.org/simple"]
-    - id: cloud-accounts            # enters the schema with its first consumer
+    - id: cloud-accounts
       kind: cloud_account
       mode: ask
       use_instead: hosting-cloud-subscription
@@ -457,10 +471,11 @@ enforcement:
 
 ### 5.2 The version 1 example, migrated
 
-What `migrate` would print for
-[`overlay.example.yaml`](./overlay.example.yaml). Only `schema_version` and
-the shape of each item change. The dates stay, and there is no `enforcement`
-section.
+What `migrate` prints for
+[`overlay.example.yaml`](./overlay.example.yaml)
+(`python tools/validate_overlay.py migrate docs/spec/overlay.example.yaml`),
+byte for byte; a test checks it. Only `schema_version` and the shape of each
+item change. The dates stay, and there is no `enforcement` section.
 
 ```yaml
 schema_version: 2
@@ -605,6 +620,13 @@ refusal of symlinks. Version 2 adds:
    differs by host (`ask` where no prompt is possible); a rule in `block` for
    a kind with no host verification note yet; and, in the next increment, an
    exception within 14 days of expiry.
+
+*How the first build reads two of these rules:* rule 4 accepts the first
+build's two kinds, `protected_branch` and `deploy_host` (§2.2), although their
+hook consumer lands in a later pull request; until then those rules are
+validated only. Rule 7 checks an id, alias or template kind for the value with
+each run of other characters as one hyphen (`apps.example.org` as
+`apps-example-org`), since an id cannot hold a dot.
 
 ## 7. Decisions (2026-11-17)
 

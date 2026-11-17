@@ -1,0 +1,72 @@
+# overlay.v2.example.yaml: a synthetic version 2 company rules file (docs/spec/OVERLAY_V2.md §5.1).
+# It is overlay.example.yaml after `migrate` (§5.2), then shorter ids (the generated ones kept as
+# aliases where something already referred to them), one new service, an enforcement section and
+# new review dates. Validate it with:
+#   python tools/validate_overlay.py docs/spec/overlay.v2.example.yaml
+# Every value below is fictional. Never commit a real rules file to a public repository.
+schema_version: 2
+organization: "Example Org"
+owner: "security-review@example.org"
+reviewed_on: 2026-11-17
+expires_on: 2027-05-17
+
+data_classes:
+  never_in_prompts:
+    - {id: data-cardholder, text: "Cardholder data and bank details", aliases: [data-cardholder-data-and-bank-details]}
+    - {id: data-government-ids, text: "Government identifiers", aliases: [data-government-identifiers]}
+    - {id: data-health-records, text: "Health records"}
+    - {id: data-employee-hr-records, text: "Employee HR records"}
+    - {id: data-credentials, text: "Passwords, keys, tokens, and sign-in codes", aliases: [data-passwords-keys-tokens-and-sign-in-codes]}
+  ok_with_approval:
+    - {id: data-customer-contacts, text: "Customer names and business email addresses"}
+  ok:
+    - {id: data-synthetic, text: "Made-up records with example.com addresses"}
+    - {id: data-published-product-info, text: "Published product information"}
+
+hosting:
+  approved:
+    - {id: hosting-app-platform, text: "Internal App Platform (company sign-in)", aliases: [hosting-internal-app-platform-company-sign-in]}
+    - {id: hosting-power-apps, text: "Power Apps in the company tenant"}
+    - {id: hosting-cloud-subscription, text: "The approved cloud subscription managed by IT"}
+  not_approved:
+    - {id: hosting-personal-cloud, text: "Personal cloud accounts"}
+    - {id: hosting-free-tier, text: "Free-tier hosting"}
+    - {id: hosting-unmanaged-vms, text: "Unmanaged virtual machines"}
+
+services:
+  approved:
+    - {id: service-llm-gateway, text: "The company LLM gateway"}
+    - {id: service-email, text: "The approved transactional email service"}
+    - {id: service-object-storage, text: "Internal object storage"}
+    - {id: service-package-mirror, text: "The internal package mirror"}
+  needs_review:
+    - {id: service-new-software, text: "Any new software service"}
+    - {id: service-new-model-endpoint, text: "Any new model endpoint"}
+    - {id: service-browser-extensions, text: "Browser extensions"}
+
+identity:
+  default: {id: identity-default, text: "Company sign-in, smallest named group that needs access"}
+  never:
+    - {id: identity-shared-passwords, text: "Shared passwords"}
+    - {id: identity-public-links, text: "Public links for internal tools"}
+
+review_triggers:
+  - {id: trigger-external-users, text: "External users"}
+  - {id: trigger-payments, text: "Payments or refunds"}
+  - {id: trigger-system-of-record-writes, text: "Writes to a system of record"}
+
+# Machine-only: never rendered into a prompt, never returned by the server.
+# This release validates these rules and nothing reads them yet. It accepts the
+# first build's two kinds, protected_branch and deploy_host; package_registry and
+# cloud_account enter the schema with their first consumer (OVERLAY_V2.md §2.2).
+enforcement:
+  default_mode: monitor
+  rules:
+    - id: protected-branches
+      kind: protected_branch
+      mode: block
+      values: ["main", "release/*", "hotfix/*"]
+    - id: deploy-hosts              # default_mode applies: monitor
+      kind: deploy_host
+      use_instead: hosting-app-platform
+      values: ["apps.example.org", "*.apps.example.org"]

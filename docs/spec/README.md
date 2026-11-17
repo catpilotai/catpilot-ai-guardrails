@@ -13,7 +13,7 @@
 | [`PACKAGING.md`](./PACKAGING.md) | Three tiers, bundler mechanics, deterministic output, distribution via `npx skills add`. |
 | [`V2_DIAGNOSTIC.md`](./V2_DIAGNOSTIC.md) | One-page postmortem on why v2.x of this repo got zero external traction, and what the rewrite changes. |
 | [`OVERLAY.md`](./OVERLAY.md) | Organization overlay: the open schema for company-specific values, the validator, private builds, and the seam with Catpilot Plus. JSON Schema at [`overlay.schema.json`](./overlay.schema.json); synthetic example at [`overlay.example.yaml`](./overlay.example.yaml). |
-| [`OVERLAY_V2.md`](./OVERLAY_V2.md) | Approved (2026-11-17, issue #92), not yet implemented: version 2 of the overlay (stable rule ids, a machine-only `enforcement` section, modes, `migrate`), with the decisions in its §7. |
+| [`OVERLAY_V2.md`](./OVERLAY_V2.md) | Approved (2026-11-17, issue #92), with the decisions in its §7: version 2 of the overlay (stable rule ids, a machine-only `enforcement` section, modes, `migrate`). The file format, validation and `migrate` are implemented; `enforcement` is validated only, since no hook or check reads it yet. JSON Schema at [`overlay.v2.schema.json`](./overlay.v2.schema.json); synthetic example at [`overlay.v2.example.yaml`](./overlay.v2.example.yaml). |
 | [`EVIDENCE.md`](./EVIDENCE.md) | Evidence events, schema version 1: the content-free line the hooks and the reference server write, its fields, the closed list of events, and how lines are written. JSON Schema at [`evidence-event.schema.json`](./evidence-event.schema.json). |
 | [`README.md`](./README.md) | This file. |
 

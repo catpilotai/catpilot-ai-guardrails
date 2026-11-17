@@ -1,17 +1,33 @@
-"""Validate an organization overlay offline. Standard library plus PyYAML.
+"""Validate an organization overlay (the company rules file) offline. Standard library plus PyYAML.
 
-Checks, in order: the schema in docs/spec/overlay.schema.json (implemented
-here without a jsonschema dependency), the expiry window, and a content scan
-for anything that looks like a secret, a URL outside the allowlist, an email
-address other than owner, an IP address, or an incident narrative.
+Two versions, dispatched on `schema_version`, and a file is checked only
+against its own version's rules:
+
+- version 1, docs/spec/overlay.schema.json and docs/spec/OVERLAY.md;
+- version 2, docs/spec/overlay.v2.schema.json and docs/spec/OVERLAY_V2.md:
+  every list item is an object with a stable `id` and its phrase as `text`,
+  and an optional machine-only `enforcement` section holds rules with a mode.
+
+Checks, in order: the schema (implemented here without a jsonschema
+dependency), the expiry window, and a content scan for anything that looks
+like a secret, a URL outside the allowlist, an email address other than
+owner, an IP address, or an incident narrative. In version 2 the secret scan
+also covers `enforcement`, and no deploy host may appear in a model-facing
+value.
 
 A passing overlay is structurally valid. The validator does not know whether
 the listed hosting or services are actually approved; a named reviewer does.
+In this release nothing reads `enforcement` and nothing acts on a mode: the
+rules are validated only.
+
+`python tools/validate_overlay.py migrate FILE` prints a version 1 file as
+version 2 (OVERLAY_V2.md §2.4).
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import ipaddress
 import re
@@ -62,6 +78,52 @@ TOP_REQUIRED = (
     "review_triggers",
 )
 TOP_ALLOWED = TOP_REQUIRED + ("templates", "intake_url")
+
+# ----------------------------------------------------------------- version 2 (OVERLAY_V2.md)
+
+SCHEMA_VERSIONS = (1, 2)
+TOP_ALLOWED_V2 = TOP_ALLOWED + ("enforcement",)
+# Ids and aliases share the grammar templates[].kind already uses (§2.1, §6.3 rule 3).
+ID_RE = KIND_RE
+ID_MAX = 64
+ALIASES_MAX = 5
+# The model-facing lists, in file order, with the prefix `migrate` gives their ids (§2.4).
+# identity.default is one item, between identity's prefix and identity.never.
+LISTS = (
+    ("data_classes", "never_in_prompts", "data"),
+    ("data_classes", "ok_with_approval", "data"),
+    ("data_classes", "ok", "data"),
+    ("hosting", "approved", "hosting"),
+    ("hosting", "not_approved", "hosting"),
+    ("services", "approved", "service"),
+    ("services", "needs_review", "service"),
+)
+MIGRATED_ID_MAX = 48
+
+MODES = ("monitor", "ask", "block")
+DEFAULT_MODE = "monitor"
+RULES_MAX = 50
+VALUES_MAX = 100
+# The closed list of rule kinds (§2.2). A kind enters the schema in the same pull
+# request as its first consumer (§6.3 rule 4); the first build carries these two.
+RULE_KINDS = ("protected_branch", "deploy_host", "package_registry", "cloud_account")
+ACCEPTED_KINDS = ("protected_branch", "deploy_host")
+# Allow-list kinds whose values must not appear in model-facing text (§6.3 rule 7).
+HOST_KINDS = ("deploy_host", "package_registry", "cloud_account")
+# Kinds with a host verification note for their consumer. None yet: no hook reads
+# enforcement in this release, so `block` on any kind draws a lint warning (§6.3 rule 9).
+HOST_VERIFIED_KINDS: tuple[str, ...] = ()
+# The approved lists `use_instead` may name (§6.3 rule 6).
+USE_INSTEAD_LISTS = (("hosting", "approved"), ("services", "approved"))
+
+_HOST_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_REGISTRY_PATH_RE = re.compile(r"[A-Za-z0-9._\-/]+")
+_CLOUD_ACCOUNT_RE = re.compile(
+    r"aws:[0-9]{12}"
+    r"|azure:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|gcp:[a-z][a-z0-9-]{5,29}"
+)
+_BRANCH_FORBIDDEN = set(" ~^:?*[\\")
 
 
 class OverlayError(ValueError):
@@ -114,20 +176,21 @@ def _object(value: object, label: str, required: tuple[str, ...]) -> dict:
     return value
 
 
-def validate_structure(data: object) -> dict:
-    """Schema-equivalent structural checks. Returns a normalized copy."""
-    if not isinstance(data, dict):
-        raise OverlayError("overlay: expected a YAML object")
-    extra = set(data) - set(TOP_ALLOWED)
+def _is_version(value: object, version: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == version
+
+
+def _top_fields(data: dict, allowed: tuple[str, ...]) -> None:
+    extra = set(data) - set(allowed)
     missing = set(TOP_REQUIRED) - set(data)
     if extra:
         raise OverlayError(f"overlay: unknown fields {sorted(extra)}; the schema allows nothing else")
     if missing:
         raise OverlayError(f"overlay: missing fields {sorted(missing)}")
-    schema_version = data["schema_version"]
-    if isinstance(schema_version, bool) or schema_version != 1:
-        raise OverlayError("schema_version: expected 1")
-    out: dict = {"schema_version": 1}
+
+
+def _header(data: dict, out: dict) -> None:
+    """organization, owner, intake_url and the dates: plain values in both versions."""
     org = _item(data["organization"], "organization")
     if len(org) > 80:
         raise OverlayError("organization: longer than 80 characters; display name only")
@@ -142,21 +205,15 @@ def validate_structure(data: object) -> dict:
     out["expires_on"] = _date(data["expires_on"], "expires_on")
     if out["expires_on"] <= out["reviewed_on"]:
         raise OverlayError("expires_on: must be after reviewed_on")
-    dc = _object(data["data_classes"], "data_classes", ("never_in_prompts", "ok_with_approval", "ok"))
-    out["data_classes"] = {k: _items(dc[k], f"data_classes.{k}") for k in ("never_in_prompts", "ok_with_approval", "ok")}
-    hosting = _object(data["hosting"], "hosting", ("approved", "not_approved"))
-    out["hosting"] = {k: _items(hosting[k], f"hosting.{k}") for k in ("approved", "not_approved")}
-    services = _object(data["services"], "services", ("approved", "needs_review"))
-    out["services"] = {k: _items(services[k], f"services.{k}") for k in ("approved", "needs_review")}
-    identity = _object(data["identity"], "identity", ("default", "never"))
-    out["identity"] = {"default": _item(identity["default"], "identity.default"), "never": _items(identity["never"], "identity.never")}
-    out["review_triggers"] = _items(data["review_triggers"], "review_triggers")
+
+
+def _templates(data: dict) -> list[dict]:
     templates = data.get("templates", [])
     if templates is None:
         templates = []
     if not isinstance(templates, list) or len(templates) > 20:
         raise OverlayError("templates: expected a list of at most 20 entries")
-    out["templates"] = []
+    out = []
     for i, entry in enumerate(templates):
         label = f"templates[{i}]"
         if not isinstance(entry, dict) or "kind" not in entry or set(entry) - {"kind", "location"}:
@@ -168,8 +225,323 @@ def validate_structure(data: object) -> dict:
         if "location" in entry:
             location = _item(entry["location"], f"{label}.location", max_len=500)
             normalized["location"] = location
-        out["templates"].append(normalized)
+        out.append(normalized)
     return out
+
+
+def validate_structure(data: object) -> dict:
+    """Schema-equivalent structural checks. Returns a normalized copy.
+
+    Dispatches on `schema_version`: 1 gets the version 1 rules, unchanged; 2
+    gets the version 2 rules; anything else is rejected.
+    """
+    if not isinstance(data, dict):
+        raise OverlayError("overlay: expected a YAML object")
+    if _is_version(data.get("schema_version"), 2):
+        return _validate_structure_v2(data)
+    return _validate_structure_v1(data)
+
+
+def _validate_structure_v1(data: dict) -> dict:
+    _top_fields(data, TOP_ALLOWED)
+    schema_version = data["schema_version"]
+    if isinstance(schema_version, bool) or schema_version != 1:
+        raise OverlayError("schema_version: expected 1 or 2")
+    out: dict = {"schema_version": 1}
+    _header(data, out)
+    dc = _object(data["data_classes"], "data_classes", ("never_in_prompts", "ok_with_approval", "ok"))
+    out["data_classes"] = {k: _items(dc[k], f"data_classes.{k}") for k in ("never_in_prompts", "ok_with_approval", "ok")}
+    hosting = _object(data["hosting"], "hosting", ("approved", "not_approved"))
+    out["hosting"] = {k: _items(hosting[k], f"hosting.{k}") for k in ("approved", "not_approved")}
+    services = _object(data["services"], "services", ("approved", "needs_review"))
+    out["services"] = {k: _items(services[k], f"services.{k}") for k in ("approved", "needs_review")}
+    identity = _object(data["identity"], "identity", ("default", "never"))
+    out["identity"] = {"default": _item(identity["default"], "identity.default"), "never": _items(identity["never"], "identity.never")}
+    out["review_triggers"] = _items(data["review_triggers"], "review_triggers")
+    out["templates"] = _templates(data)
+    return out
+
+
+# ----------------------------------------------------------------- version 2 structure
+
+
+class _Ids:
+    """Every id and alias in one file, with where it was defined (§6.3 rule 3)."""
+
+    def __init__(self) -> None:
+        self.where: dict[str, str] = {}
+
+    def add(self, value: object, label: str) -> str:
+        if not isinstance(value, str) or not ID_RE.fullmatch(value) or len(value) > ID_MAX:
+            raise OverlayError(
+                f"{label}: expected an id of lowercase letters, digits and single hyphens, at most {ID_MAX} characters"
+            )
+        if value in self.where:
+            raise OverlayError(f"{label}: {value!r} is already used at {self.where[value]}; ids and aliases are unique across the file")
+        self.where[value] = label
+        return value
+
+
+def _item_v2(value: object, label: str, ids: _Ids) -> dict:
+    if isinstance(value, str):
+        raise OverlayError(
+            f"{label}: a plain string is a version 1 item; in a version 2 file every item is an object with id and "
+            "text (convert a version 1 file with `validate_overlay.py migrate`)"
+        )
+    if not isinstance(value, dict):
+        raise OverlayError(f"{label}: expected an object with id, text and optional aliases")
+    extra = set(value) - {"id", "text", "aliases"}
+    missing = {"id", "text"} - set(value)
+    if extra:
+        raise OverlayError(f"{label}: unknown fields {sorted(extra)}")
+    if missing:
+        raise OverlayError(f"{label}: missing fields {sorted(missing)}")
+    out = {"id": ids.add(value["id"], f"{label}.id"), "text": _item(value["text"], f"{label}.text")}
+    aliases = value.get("aliases")
+    if aliases is not None:
+        if not isinstance(aliases, list) or len(aliases) > ALIASES_MAX:
+            raise OverlayError(f"{label}.aliases: expected a list of at most {ALIASES_MAX} former ids")
+        normalized = [ids.add(a, f"{label}.aliases[{i}]") for i, a in enumerate(aliases)]
+        if normalized:
+            out["aliases"] = normalized
+    return out
+
+
+def _items_v2(value: object, label: str, ids: _Ids) -> list[dict]:
+    if not isinstance(value, list) or not value:
+        raise OverlayError(f"{label}: expected a nonempty list of items")
+    if len(value) > LIST_MAX:
+        raise OverlayError(f"{label}: more than {LIST_MAX} items")
+    items = [_item_v2(v, f"{label}[{i}]", ids) for i, v in enumerate(value)]
+    texts = [item["text"] for item in items]
+    if len(set(texts)) != len(texts):
+        raise OverlayError(f"{label}: duplicate items")
+    return items
+
+
+def _validate_structure_v2(data: dict) -> dict:
+    _top_fields(data, TOP_ALLOWED_V2)
+    out: dict = {"schema_version": 2}
+    _header(data, out)
+    ids = _Ids()
+    dc = _object(data["data_classes"], "data_classes", ("never_in_prompts", "ok_with_approval", "ok"))
+    out["data_classes"] = {k: _items_v2(dc[k], f"data_classes.{k}", ids) for k in ("never_in_prompts", "ok_with_approval", "ok")}
+    hosting = _object(data["hosting"], "hosting", ("approved", "not_approved"))
+    out["hosting"] = {k: _items_v2(hosting[k], f"hosting.{k}", ids) for k in ("approved", "not_approved")}
+    services = _object(data["services"], "services", ("approved", "needs_review"))
+    out["services"] = {k: _items_v2(services[k], f"services.{k}", ids) for k in ("approved", "needs_review")}
+    identity = _object(data["identity"], "identity", ("default", "never"))
+    out["identity"] = {
+        "default": _item_v2(identity["default"], "identity.default", ids),
+        "never": _items_v2(identity["never"], "identity.never", ids),
+    }
+    out["review_triggers"] = _items_v2(data["review_triggers"], "review_triggers", ids)
+    out["templates"] = _templates(data)
+    if data.get("enforcement") is not None:
+        out["enforcement"] = _enforcement(data["enforcement"], out, ids)
+    return out
+
+
+def _mode(value: object, label: str) -> str:
+    if value not in MODES or not isinstance(value, str):
+        raise OverlayError(f"{label}: expected one of {', '.join(MODES)}")
+    return value
+
+
+def _enforcement(value: object, overlay: dict, ids: _Ids) -> dict:
+    """The machine-only section (§2.2, §6.3 rules 4 to 6). Error messages name a value's
+    position, never the value: a listed host or branch is not echoed anywhere."""
+    if not isinstance(value, dict):
+        raise OverlayError("enforcement: expected an object with rules and optional default_mode")
+    extra = set(value) - {"default_mode", "rules"}
+    if extra:
+        raise OverlayError(f"enforcement: unknown fields {sorted(extra)}")
+    if "rules" not in value:
+        raise OverlayError("enforcement: missing fields ['rules']")
+    out = {"default_mode": _mode(value["default_mode"], "enforcement.default_mode") if "default_mode" in value else DEFAULT_MODE}
+    rules = value["rules"]
+    if not isinstance(rules, list) or not 1 <= len(rules) <= RULES_MAX:
+        raise OverlayError(f"enforcement.rules: expected a list of 1 to {RULES_MAX} rules")
+    targets = set()
+    for group, key in USE_INSTEAD_LISTS:
+        for item in overlay[group][key]:
+            targets.add(item["id"])
+            targets.update(item.get("aliases", []))
+    out["rules"] = [_rule(rule, f"enforcement.rules[{i}]", ids, targets) for i, rule in enumerate(rules)]
+    return out
+
+
+def _rule(value: object, label: str, ids: _Ids, targets: set[str]) -> dict:
+    if not isinstance(value, dict):
+        raise OverlayError(f"{label}: expected an object with id, kind, values, and optional mode and use_instead")
+    extra = set(value) - {"id", "kind", "mode", "values", "use_instead"}
+    missing = {"id", "kind", "values"} - set(value)
+    if extra:
+        raise OverlayError(f"{label}: unknown fields {sorted(extra)}; a rule has no free text")
+    if missing:
+        raise OverlayError(f"{label}: missing fields {sorted(missing)}")
+    out = {"id": ids.add(value["id"], f"{label}.id")}
+    kind = value["kind"]
+    if not isinstance(kind, str) or kind not in RULE_KINDS:
+        raise OverlayError(f"{label}.kind: expected one of {', '.join(ACCEPTED_KINDS)}")
+    if kind not in ACCEPTED_KINDS:
+        raise OverlayError(
+            f"{label}.kind: {kind} enters the schema with its first consumer (OVERLAY_V2.md §2.2); "
+            f"this release accepts {', '.join(ACCEPTED_KINDS)}"
+        )
+    out["kind"] = kind
+    if "mode" in value:
+        out["mode"] = _mode(value["mode"], f"{label}.mode")
+    values = value["values"]
+    if not isinstance(values, list) or not 1 <= len(values) <= VALUES_MAX:
+        raise OverlayError(f"{label}.values: expected a list of 1 to {VALUES_MAX} values")
+    seen = set()
+    for j, entry in enumerate(values):
+        where = f"{label}.values[{j}]"
+        if not isinstance(entry, str):
+            raise OverlayError(f"{where}: expected a quoted string")
+        problem = value_problem(kind, entry)
+        if problem:
+            raise OverlayError(f"{where}: {problem}")
+        normalized = normalize_value(kind, entry)
+        if normalized in seen:
+            raise OverlayError(f"{where}: duplicates an earlier value of this rule")
+        seen.add(normalized)
+    out["values"] = list(values)
+    if "use_instead" in value:
+        target = value["use_instead"]
+        if not isinstance(target, str) or target not in targets:
+            raise OverlayError(f"{label}.use_instead: expected the id or an alias of an item in hosting.approved or services.approved")
+        out["use_instead"] = target
+    return out
+
+
+def _host_problem(value: str) -> str | None:
+    host = value[2:] if value.startswith("*.") else value
+    labels = host.split(".")
+    if (
+        len(host) > 253
+        or len(labels) < 2
+        or not all(_HOST_LABEL_RE.fullmatch(label) for label in labels)
+        or labels[-1].isdigit()
+    ):
+        return "expected a lowercase host name with at least one dot, optionally starting with *.; no scheme, port, path or credentials"
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    return "IP addresses are not allowed; list host names"
+
+
+def _branch_problem(value: str) -> str | None:
+    base = value[:-2] if value.endswith("/*") else value
+    bad = (
+        not base
+        or "*" in base
+        or any(c in _BRANCH_FORBIDDEN or c.isspace() or ord(c) < 32 or ord(c) == 127 for c in base)
+        or base.startswith(("-", "/"))
+        or base.endswith(("/", "."))
+        or ".." in base
+        or "//" in base
+        or "@{" in base
+        or base in ("@", "HEAD")
+        or any(part.startswith(".") or part.endswith(".lock") for part in base.split("/"))
+    )
+    if bad:
+        return "expected a Git branch name (no spaces, .., ~, ^, :, ?, [, \\ or leading -), with * only as a trailing /*"
+    return None
+
+
+def value_problem(kind: str, value: str) -> str | None:
+    """Why a value does not match its kind (§6.3 rule 5), or None. Never repeats the value."""
+    if kind == "protected_branch":
+        return _branch_problem(value)
+    if kind == "deploy_host":
+        return _host_problem(value)
+    if kind == "package_registry":
+        host, _, path = value.partition("/")
+        problem = _host_problem(host)
+        if problem:
+            return problem
+        if path and not _REGISTRY_PATH_RE.fullmatch(path):
+            return "expected a registry host name and an optional path of letters, digits, ., _, - and /; no scheme, query or credentials"
+        return None
+    if kind == "cloud_account":
+        if not _CLOUD_ACCOUNT_RE.fullmatch(value):
+            return "expected aws:<12 digits>, azure:<lowercase subscription GUID> or gcp:<project id>"
+        return None
+    return f"unknown kind {kind}"
+
+
+def normalize_value(kind: str, value: str) -> str:
+    """A value as uniqueness compares it (§6.3 rule 5): case folded for names that ignore case."""
+    if kind == "protected_branch":
+        return value
+    if kind == "package_registry":
+        return value.lower().rstrip("/")
+    return value.lower()
+
+
+# ----------------------------------------------------------------- views for consumers
+
+
+def model_facing(overlay: dict) -> dict:
+    """The parts of a validated overlay a model may see.
+
+    Version 1 is returned as it is. Version 2 loses `enforcement` (never
+    rendered, never returned: OVERLAY_V2.md §2.2) and every item's `aliases`
+    (no rules-block or bundle consumer: §4). Ids and text stay.
+    """
+    if not _is_version(overlay.get("schema_version"), 2):
+        return overlay
+    out = {key: copy.deepcopy(value) for key, value in overlay.items() if key != "enforcement"}
+    for _, item in _iter_items(out):
+        item.pop("aliases", None)
+    return out
+
+
+def v1_projection(overlay: dict) -> dict:
+    """A validated overlay in version 1's shape, for consumers written against it.
+
+    Version 1 is returned as it is. Version 2 becomes the version 1 overlay it
+    corresponds to: each item's `text` in place of the item, ids and aliases
+    dropped, no `enforcement`. It is what `validate_structure` returns for the
+    version 1 file `migrate` started from, so bundles, paste blocks and the
+    server answer the same for a file and its migration.
+    """
+    if not _is_version(overlay.get("schema_version"), 2):
+        return overlay
+
+    def texts(items: list[dict]) -> list[str]:
+        return [item["text"] for item in items]
+
+    out: dict = {"schema_version": 1, "organization": overlay["organization"], "owner": overlay["owner"]}
+    if "intake_url" in overlay:
+        out["intake_url"] = overlay["intake_url"]
+    out["reviewed_on"] = overlay["reviewed_on"]
+    out["expires_on"] = overlay["expires_on"]
+    out["data_classes"] = {k: texts(v) for k, v in overlay["data_classes"].items()}
+    out["hosting"] = {k: texts(v) for k, v in overlay["hosting"].items()}
+    out["services"] = {k: texts(v) for k, v in overlay["services"].items()}
+    out["identity"] = {"default": overlay["identity"]["default"]["text"], "never": texts(overlay["identity"]["never"])}
+    out["review_triggers"] = texts(overlay["review_triggers"])
+    out["templates"] = [dict(t) for t in overlay.get("templates", [])]
+    return out
+
+
+def _iter_items(overlay: dict):
+    """(label, item) for every model-facing item of a version 2 overlay, in file order."""
+    for group, key, _ in LISTS:
+        for i, item in enumerate(overlay[group][key]):
+            yield f"{group}.{key}[{i}]", item
+    yield "identity.default", overlay["identity"]["default"]
+    for i, item in enumerate(overlay["identity"]["never"]):
+        yield f"identity.never[{i}]", item
+    for i, item in enumerate(overlay["review_triggers"]):
+        yield f"review_triggers[{i}]", item
+
+
+# ----------------------------------------------------------------- content
 
 
 def _walk_strings(node: object, path: str = "overlay"):
@@ -200,15 +572,25 @@ def _validate_https_url(location: str, label: str, allowed_hosts: set[str], erro
         errors.append(f"{label}: host {parts.hostname!r} is not on the allowlist (pass --allow-host)")
 
 
+def _looks_like_secret(text: str) -> bool:
+    return any(pattern.search(text) for pattern in SECRET_PATTERNS)
+
+
 def validate_content(overlay: dict, allowed_hosts: set[str]) -> list[str]:
     """Return content errors: secrets, disallowed URLs, identifiers, narratives.
 
     A template's location and optional intake_url are validated directly (not by
     first finding something URL-shaped with URL_RE), because a value that is not
     URL-shaped at all is still not an https URL and must be rejected.
+
+    In version 2 the scan covers every model-facing value (texts, ids and
+    aliases); `enforcement` gets the secret scan only, since its values are
+    host and branch names checked by their kind (§6.3 rule 8), and none of its
+    host values may appear in a model-facing value (rule 7).
     """
     errors: list[str] = []
-    templates = overlay.get("templates", [])
+    model = {key: value for key, value in overlay.items() if key != "enforcement"}
+    templates = model.get("templates", [])
     allowed_url_paths = set()
     for i, template in enumerate(templates):
         location = template.get("location")
@@ -217,15 +599,13 @@ def validate_content(overlay: dict, allowed_hosts: set[str]) -> list[str]:
         label = f"overlay.templates[{i}].location"
         allowed_url_paths.add(label)
         _validate_https_url(location, label, allowed_hosts, errors)
-    if "intake_url" in overlay and overlay["intake_url"] is not None:
+    if "intake_url" in model and model["intake_url"] is not None:
         label = "overlay.intake_url"
         allowed_url_paths.add(label)
-        _validate_https_url(overlay["intake_url"], label, allowed_hosts, errors)
-    for path, text in _walk_strings(overlay):
-        for pattern in SECRET_PATTERNS:
-            if pattern.search(text):
-                errors.append(f"{path}: looks like a secret; overlays never contain credentials")
-                break
+        _validate_https_url(model["intake_url"], label, allowed_hosts, errors)
+    for path, text in _walk_strings(model):
+        if _looks_like_secret(text):
+            errors.append(f"{path}: looks like a secret; overlays never contain credentials")
         if path not in allowed_url_paths:
             for _ in URL_RE.findall(text):
                 errors.append(f"{path}: URLs are only allowed in templates[].location and intake_url")
@@ -241,6 +621,59 @@ def validate_content(overlay: dict, allowed_hosts: set[str]) -> list[str]:
             break
         if NARRATIVE_RE.search(text):
             errors.append(f"{path}: reads like an incident narrative; overlay values are lists of approved things, not stories")
+    enforcement = overlay.get("enforcement")
+    if enforcement:
+        for path, text in _walk_strings(enforcement, "overlay.enforcement"):
+            if _looks_like_secret(text):
+                errors.append(f"{path}: looks like a secret; overlays never contain credentials")
+        errors.extend(_enforcement_values_in_model_text(model, enforcement))
+    return errors
+
+
+def _needles(kind: str, value: str) -> list[str]:
+    """The forms of an allow-list value that must not appear in model-facing text."""
+    value = value.lower()
+    if value.startswith("*."):
+        value = value[2:]
+    needles = [value]
+    if kind == "package_registry" and "/" in value:
+        needles.append(value.split("/", 1)[0])
+    if kind == "cloud_account":
+        needles.append(value.split(":", 1)[1])
+    return needles
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def _enforcement_values_in_model_text(model: dict, enforcement: dict) -> list[str]:
+    """§6.3 rule 7, an error (decision 5): no deploy_host, package_registry or
+    cloud_account value in a model-facing phrase, id or alias, or in organization
+    or owner, ignoring case and a leading `*.`. An id cannot hold a dot, so an id,
+    alias or template kind is checked for the value with each run of other
+    characters as one hyphen, the form `migrate` would give it. templates[].location
+    and intake_url are exempt. The error names the rule, never the value."""
+    texts: list[tuple[str, str]] = [("overlay.organization", model["organization"]), ("overlay.owner", model["owner"])]
+    identifiers: list[tuple[str, str]] = []
+    for label, item in _iter_items(model):
+        texts.append((f"overlay.{label}.text", item["text"]))
+        identifiers.append((f"overlay.{label}.id", item["id"]))
+        identifiers.extend((f"overlay.{label}.aliases[{i}]", a) for i, a in enumerate(item.get("aliases", [])))
+    identifiers.extend((f"overlay.templates[{i}].kind", t["kind"]) for i, t in enumerate(model.get("templates", [])))
+    errors = []
+    for rule in enforcement["rules"]:
+        if rule["kind"] not in HOST_KINDS:
+            continue
+        needles = [n for value in rule["values"] for n in _needles(rule["kind"], value)]
+        slugs = [s for s in (_slug(n) for n in needles) if s]
+        message = f"names a value of enforcement rule {rule['id']!r}; enforcement values never appear in model-facing text"
+        for path, text in texts:
+            if any(n in text.lower() for n in needles):
+                errors.append(f"{path}: {message}")
+        for path, ident in identifiers:
+            if any(f"-{s}-" in f"-{ident}-" for s in slugs):
+                errors.append(f"{path}: {message}")
     return errors
 
 
@@ -251,6 +684,34 @@ def validate_expiry(overlay: dict, today: dt.date | None = None) -> list[str]:
     if overlay["reviewed_on"] > today:
         return [f"reviewed_on: {overlay['reviewed_on'].isoformat()} is in the future"]
     return []
+
+
+def lint_overlay(overlay: dict) -> list[str]:
+    """Warnings that do not fail validation (§6.3 rule 9). Each names a rule by id, never a value.
+
+    - `ask` has no prompt on Codex, in the pull-request check or in a run with
+      nobody to answer, and acts as `block` there (decision 2);
+    - `block` on a kind whose consumer has no host verification note yet.
+
+    Exceptions near expiry come with exceptions, in the next increment.
+    """
+    enforcement = overlay.get("enforcement")
+    if not enforcement:
+        return []
+    warnings = []
+    for i, rule in enumerate(enforcement["rules"]):
+        mode = rule.get("mode", enforcement["default_mode"])
+        where = f"enforcement.rules[{i}] ({rule['id']})"
+        if mode == "ask":
+            warnings.append(
+                f"{where}: mode ask differs by host; where no prompt is possible (Codex, the pull-request check, "
+                "a run with nobody to answer) it acts as block"
+            )
+        if mode == "block" and rule["kind"] not in HOST_VERIFIED_KINDS:
+            warnings.append(
+                f"{where}: mode block for kind {rule['kind']}, which has no host verification note yet; consider monitor first"
+            )
+    return warnings
 
 
 def load_overlay_file(path: Path) -> tuple[dict, bytes]:
@@ -267,15 +728,157 @@ def load_overlay_file(path: Path) -> tuple[dict, bytes]:
 
 
 def validate_overlay(data: object, allowed_hosts: set[str] | None = None, today: dt.date | None = None) -> tuple[dict, list[str]]:
-    """Return (normalized overlay, errors). Structural errors raise OverlayError."""
+    """Return (normalized overlay, errors). Structural errors raise OverlayError.
+
+    A version 2 result still holds `enforcement`. Give a renderer or the server
+    `model_facing()` or `v1_projection()` of it, never the result itself.
+    """
     overlay = validate_structure(data)
     errors = validate_expiry(overlay, today) + validate_content(overlay, allowed_hosts or set())
     return overlay, errors
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+# ----------------------------------------------------------------- migrate (§2.4)
+
+
+def derive_id(prefix: str, text: str, taken: set[str]) -> str:
+    """An id from a phrase, as OVERLAY_V2.md §2.4 says: the list's prefix, a hyphen,
+    the text lowercased with each run of other characters as one hyphen, cut at a
+    hyphen to at most 48 characters; a repeat gets -2, -3. Adds the id to `taken`.
+
+    Leading and trailing hyphens are dropped, since the id grammar has none. A first
+    word too long to fit is cut at 48 characters rather than dropped.
+    """
+    slug = _slug(text)
+    base = f"{prefix}-{slug}" if slug else prefix
+    if len(base) > MIGRATED_ID_MAX:
+        cut = base.rfind("-", 0, MIGRATED_ID_MAX + 1)
+        base = base[:cut] if cut > len(prefix) else base[:MIGRATED_ID_MAX].rstrip("-")
+    candidate, n = base, 2
+    while candidate in taken:
+        candidate, n = f"{base}-{n}", n + 1
+    taken.add(candidate)
+    return candidate
+
+
+def migrate(data: object) -> dict:
+    """A version 1 overlay as version 2 (OVERLAY_V2.md §2.4).
+
+    Sets `schema_version: 2`, turns each phrase into `{id, text}`, copies
+    everything else, and adds no `enforcement`. The dates stay: no value
+    changed. Deterministic. Raises OverlayError for a version 2 file, which
+    needs no migration, and for anything that is not a valid version 1 file.
+    """
+    if isinstance(data, dict) and _is_version(data.get("schema_version"), 2):
+        raise OverlayError("schema_version: the file is already version 2; migrate converts version 1 files only, so there is nothing to do")
+    source = validate_structure(data)
+    taken: set[str] = set()
+
+    def items(values: list[str], prefix: str) -> list[dict]:
+        return [{"id": derive_id(prefix, text, taken), "text": text} for text in values]
+
+    out: dict = {"schema_version": 2, "organization": source["organization"], "owner": source["owner"]}
+    if "intake_url" in source:
+        out["intake_url"] = source["intake_url"]
+    out["reviewed_on"] = source["reviewed_on"]
+    out["expires_on"] = source["expires_on"]
+    out["data_classes"] = {}
+    out["hosting"] = {}
+    out["services"] = {}
+    for group, key, prefix in LISTS:
+        out[group][key] = items(source[group][key], prefix)
+    default = items([source["identity"]["default"]], "identity")[0]
+    out["identity"] = {"default": default, "never": items(source["identity"]["never"], "identity")}
+    out["review_triggers"] = items(source["review_triggers"], "trigger")
+    out["templates"] = [dict(t) for t in source["templates"]]
+    _validate_structure_v2(out)  # a migrated file is a valid version 2 file
+    return out
+
+
+def _quoted(text: str) -> str:
+    return yaml.safe_dump(text, default_style='"', allow_unicode=True, width=1 << 30).rstrip("\n")
+
+
+def _plain(text: str) -> str:
+    """An identifier as a plain scalar when YAML reads it back as the same string."""
+    try:
+        if yaml.safe_load(f"{{k: {text}}}") == {"k": text}:
+            return text
+    except yaml.YAMLError:
+        pass
+    return _quoted(text)
+
+
+def _flow_item(item: dict) -> str:
+    return "{id: " + _plain(item["id"]) + ", text: " + _quoted(item["text"]) + "}"
+
+
+def migrate_text(data: object) -> str:
+    """`migrate(data)` as YAML, in the layout of OVERLAY_V2.md §5.2: one item per line. Comments are not carried over."""
+    overlay = migrate(data)
+    lines = ["schema_version: 2", f"organization: {_quoted(overlay['organization'])}", f"owner: {_quoted(overlay['owner'])}"]
+    if "intake_url" in overlay:
+        lines.append(f"intake_url: {_quoted(overlay['intake_url'])}")
+    lines += [f"reviewed_on: {overlay['reviewed_on'].isoformat()}", f"expires_on: {overlay['expires_on'].isoformat()}"]
+    for group in ("data_classes", "hosting", "services"):
+        lines += ["", f"{group}:"]
+        for key, items in overlay[group].items():
+            lines.append(f"  {key}:")
+            lines += [f"    - {_flow_item(item)}" for item in items]
+    lines += ["", "identity:", f"  default: {_flow_item(overlay['identity']['default'])}", "  never:"]
+    lines += [f"    - {_flow_item(item)}" for item in overlay["identity"]["never"]]
+    lines += ["", "review_triggers:"]
+    lines += [f"  - {_flow_item(item)}" for item in overlay["review_triggers"]]
+    if overlay["templates"]:
+        lines += ["", "templates:"]
+        for template in overlay["templates"]:
+            entry = "kind: " + _plain(template["kind"])
+            if "location" in template:
+                entry += ", location: " + _quoted(template["location"])
+            lines.append("  - {" + entry + "}")
+    return "\n".join(lines) + "\n"
+
+
+# ----------------------------------------------------------------- CLI
+
+
+def migrate_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="validate_overlay.py migrate",
+        description="Print a version 1 company rules file as version 2: each phrase becomes {id, text}; dates stay; no enforcement section; comments are not carried over.",
+    )
     parser.add_argument("overlay", type=Path)
+    parser.add_argument("--output", type=Path, help="write here instead of stdout; refused if the file exists")
+    args = parser.parse_args(argv)
+    try:
+        data, _ = load_overlay_file(args.overlay)
+        text = migrate_text(data)
+    except (OSError, OverlayError) as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 1
+    if args.output is None:
+        sys.stdout.write(text)
+    else:
+        try:
+            with open(args.output, "x", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+        except OSError as exc:
+            print(f"REFUSED: {args.output}: {exc.strerror or exc.__class__.__name__}; migrate never overwrites a file", file=sys.stderr)
+            return 1
+    print(
+        "migrated to schema_version 2: every phrase now has an id; reviewed_on and expires_on are unchanged; no enforcement "
+        "section was added; comments were not carried over. Validate the result before you use it.",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["migrate"]:
+        return migrate_main(argv[1:])
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("overlay", type=Path, help="the file to validate; `migrate FILE` converts a version 1 file instead")
     parser.add_argument("--allow-host", action="append", default=[], help="hostname allowed in templates[].location and intake_url (repeatable)")
     args = parser.parse_args(argv)
     try:
@@ -288,10 +891,19 @@ def main(argv: list[str] | None = None) -> int:
         for error in errors:
             print(f"INVALID: {error}", file=sys.stderr)
         return 1
-    print(
+    for warning in lint_overlay(overlay):
+        print(f"WARNING: {warning}", file=sys.stderr)
+    message = (
         f"OK: overlay for {overlay['organization']} is structurally valid; reviewed {overlay['reviewed_on']}, "
         f"expires {overlay['expires_on']}. Whether the listed items are actually approved is the reviewer's call."
     )
+    if overlay["schema_version"] == 2:
+        rules = len((overlay.get("enforcement") or {}).get("rules", []))
+        message += (
+            f" Version 2, {rules} enforcement rule{'' if rules == 1 else 's'}: validated only; in this release no hook or "
+            "check reads them and nothing acts on a mode."
+        )
+    print(message)
     return 0
 
 

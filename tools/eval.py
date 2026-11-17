@@ -298,7 +298,12 @@ def _cites_any(items: list[str]):
 
 
 def overlay_checks(overlay: dict) -> dict:
-    """Checks that only make sense when a company overlay is under test."""
+    """Checks that only make sense when a company overlay is under test.
+
+    A version 2 overlay is read through its version 1 projection: the checks
+    look for each item's text, never an id or an `enforcement` value.
+    """
+    overlay = validate_overlay.v1_projection(overlay)
     checks = {
         "cites_approved_hosting": _cites_any(overlay["hosting"]["approved"]),
         "cites_approved_service": _cites_any(overlay["services"]["approved"]),
