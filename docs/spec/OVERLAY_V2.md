@@ -203,7 +203,10 @@ does not soften a built-in deny.
 
 **Not checked on a host.** How Claude Code handles `ask` in each permission
 mode, and in a run with nobody to answer, needs a host check before `ask` is
-documented as working. An `ask` evidence line records that the person was
+documented as working. That includes the modes in which Claude Code approves
+actions without asking a person, such as auto mode and bypass permissions: if
+an `ask` is approved there with no person involved, `ask` must act as `block`
+in those modes. An `ask` evidence line records that the person was
 asked, not what they chose: a `PreToolUse` hook does not see the answer.
 
 ### 2.4 Version 1 stays valid; `migrate`
@@ -614,7 +617,7 @@ refusal of symlinks. Version 2 adds:
    warning for a company that wants the model to know a mirror's host name?
 6. **A rollout window for the built-in checks.** Should a version 2 file be
    able to put them in `monitor` until a fixed end date, for a monitor-first
-   rollout? This note leaves it out of the first build.
+   rollout ([#93](https://github.com/catpilotai/catpilot-ai-guardrails/issues/93))? This note leaves it out of the first build.
 7. **Catpilot Plus.** It serves overlay values for companies (`OVERLAY.md`
    §6). When it accepts version 2 files, and whether existing files are
    migrated for their owners, need agreeing before schema code merges.
