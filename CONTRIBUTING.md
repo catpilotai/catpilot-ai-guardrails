@@ -31,7 +31,7 @@ You found the community scratching post.
 
 - [ ] Read [`docs/spec/SKILL_FORMAT.md`](./docs/spec/SKILL_FORMAT.md): frontmatter shape, severity scale, body conventions, slots.
 - [ ] Edit `src/skills/<tier>/<id>/SKILL.md`, **not** the shipped bundle in `skills/` or the artifacts in `dist/`. The bundler regenerates both.
-- [ ] Install the hash-locked dependencies in an isolated environment: `python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.txt`.
+- [ ] Install the hash-locked dependencies in an isolated environment on Python 3.11 to 3.14: `python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.txt`.
 - [ ] Run `python tools/bundle.py --target all` to rebuild `skills/` and `dist/`.
 - [ ] Run `python tools/bundle.py --check` to confirm determinism. CI runs the same check and fails on drift in either tree.
 - [ ] Run `python tools/validate_skill.py` and `python -m unittest discover -s tests -v`. These validate structure and tooling, not model behavior.

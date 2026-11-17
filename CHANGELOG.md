@@ -6,6 +6,10 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 
 ## [Unreleased]
 
+### Changed
+
+- **The quickstart states and checks its Python range: 3.11 to 3.14.** On Python 3.15 the hash-locked, binary-only install failed with a resolver error, because PyYAML 6.0.3, the latest release, publishes no 3.15 wheel (and the pinned `pydantic-core` 2.46.5 has none either). The quickstart now checks the interpreter first and names a version to use instead. CI runs the offline suite on 3.14 as well as 3.11 and 3.13, and `tests/test_workflows.py` fails if the quickstart's stated range and the CI matrix drift apart. The lock is unchanged: every pinned compiled dependency already ships 3.14 wheels. 3.15 support waits on a PyYAML wheel.
+
 ### Fixed
 
 - **The destructive-operation hook missed common spellings of commands it covers.** It let through a shell command string given after an option cluster or a long option (`bash -lc 'rm -rf ~'`, `sh -ec ...`, `bash -euo pipefail -c ...`, `bash --login -c ...`; only a bare `-c` was read), commands behind `timeout`, `gtimeout`, `stdbuf`, `ionice`, `setsid`, or `unbuffer` (`timeout 60 git push --force origin main`), a recursive `rm` of a home directory by its absolute path (`/Users/<name>`, `/home/<name>`, the running user's home, and the credential directories under them), and `terraform -chdir=DIR apply|destroy -auto-approve`. OpenTofu (`tofu`) is now matched like `terraform`. The same shell parsing applies to a shell started inside a container (`docker compose exec db bash -lc "psql ..."`). Must-block and must-allow cases in `tests/test_destructive_hook.py`, plus a generated test that runs every must-block and must-allow case again inside `bash -lc`, `sh -ec`, and `timeout 60` and expects the same decision. Evidence labels are unchanged. Not run on a host: the tested-runtimes rows are unchanged.
