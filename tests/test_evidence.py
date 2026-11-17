@@ -108,10 +108,13 @@ class CapturedSyslog:
 
 
 def run_main(module, payload: str) -> tuple:
-    """A check's main() in this process, on one hook event: (exit code, stdout, stderr)."""
+    """A check's main() in this process, on one hook event: (exit code, stdout, stderr). main() reads
+    its --host from sys.argv, so the run gets the hook's own argument list, empty, as in the
+    Claude Code configurations, not the test runner's."""
     stdin = io.TextIOWrapper(io.BytesIO(payload.encode("utf-8")), encoding="utf-8")
     out, err = io.StringIO(), io.StringIO()
-    with mock.patch.object(sys, "stdin", stdin), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    with mock.patch.object(sys, "stdin", stdin), mock.patch.object(sys, "argv", [module.__name__]), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = module.main()
     return code, out.getvalue(), err.getvalue()
 

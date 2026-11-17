@@ -32,9 +32,9 @@ value for them, and are left out otherwise.
 | `schema_version` | all | `1`. A line without it was written before this schema. |
 | `event_id` | all | A random UUID, lowercase. Unique per line; it has no other meaning. |
 | `ts` | all | The time in UTC, to the second: `2026-11-16T15:04:05+00:00`. |
-| `source` | all | `claude-code-hook`, `mcp-server` or `session-start`. |
+| `source` | all | `claude-code-hook`, `mcp-server` or `session-start`. `claude-code-hook` names the hooks in `hooks/claude-code/` by the event format they read, on whichever tool runs them; `host` says which tool that was. |
 | `event` | all | One of the list in §3. |
-| `host` | hooks, session start | `claude-code` when the hook runs as a Claude Code `PreToolUse` hook. For the session-start script, `claude-code` or `codex`, from its `--host` argument; absent when that argument was missing or unknown. Absent when a harness calls the check, and on server lines: the server does not know which tool called it. Never the machine's hostname. |
+| `host` | hooks, session start | For a `PreToolUse` hook, `claude-code` or `codex`, from its `--host` argument, and `claude-code` with no argument, as in every configuration written before the argument existed; absent when the argument was malformed or named another tool. Hook lines written before the argument said `claude-code` on Codex too. For the session-start script, `claude-code` or `codex`, from its `--host` argument; absent when that argument was missing or unknown. Absent when a harness calls the check, and on server lines: the server does not know which tool called it. Never the machine's hostname. |
 | `session_id` | hooks, session start | The session id from the hook event, when it is an opaque id: 1 to 128 letters, digits, `.`, `_`, `:` or `-`. Any other value is left out. |
 | `session_source` | session start | How the session started, from the `SessionStart` event: `startup`, `resume`, `clear`, `compact` or `fork`. Absent when the event did not say, or said something else. |
 | `release` | server, session start | Server: the CalVer release of the guidance that answered, from `mcp-server/defaults/guidance.json`. Session start: the release the company rules bundle was built from, from its `company-checklist.json`, when it has this shape. The hooks have no release of their own yet and leave it out. |
@@ -101,7 +101,8 @@ also limits a session-start line's `event` and `label` to the values above.
 meaning or type, or the `event` list changes. Adding an optional field, or a
 value to any other list, keeps version 1. The `session-start` source, the
 `codex` host, and the `session_source`, `block_chars` and `block_lines` fields
-were added this way, so a session-start line is version 1 too. Validate a line
+were added this way, so a session-start line is version 1 too, and so is a
+hook line with `host` `codex`. Validate a line
 against the schema in the release that wrote it.
 
 ## 7. Not in version 1

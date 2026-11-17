@@ -225,7 +225,8 @@ stays the proof.
 Set `CATPILOT_EVIDENCE_LOG` to a file path in the hook's environment (the
 managed-settings example in `deploy/org/` does it on the command line) and each
 deny appends one JSON line: the schema version, a random event id, the time,
-the hook, the event (`deny`), the host (`claude-code`), the credential type,
+the hook, the event (`deny`), the host (`claude-code`, or `codex` with
+`--host codex`), the credential type,
 `private-key-block`, or destructive operation label, the tool, and the session
 id when it is an opaque id. Set `CATPILOT_EVIDENCE_SYSLOG=1` (or a `host:port`
 / socket path) to emit the same content-free JSON line to syslog. Never the
@@ -267,6 +268,34 @@ exits 0 and writes one evidence line. Details, dates and size budgets:
 [`session-start/README.md`](session-start/README.md). `deploy/org/install.sh
 --overlay` places it on both tools ([`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md#company-rules-at-session-start-on-claude-code)).
 Not run on a host.
+
+## Codex CLI
+
+Codex sends the same `PreToolUse` event for `Bash` (`tool_input.command`) and
+reads the same deny decision, so `pretooluse-secrets.py` and
+`pretooluse-destructive-ops.py` run there unchanged. Add `--host codex` to
+each command so their evidence lines say `codex`; without it they say
+`claude-code`. The argument changes the evidence label only, never the
+decision. A project-level example for `.codex/config.toml`, which Codex runs
+only after the folder and each hook are trusted in `/hooks`:
+
+```toml
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'python3 "/path/to/catpilot-ai-guardrails/hooks/claude-code/pretooluse-destructive-ops.py" --host codex'
+timeout = 30
+```
+
+Add the secret check the same way. Verified on Codex CLI 0.169.0 as
+project-level hooks on 2026-11-17, before `--host` existed
+([note](../evals/reports/2026.11.17-session-start-rules-verification.md)). The
+write check is not wired for Codex: its file edits arrive as `apply_patch`,
+whose input is a patch, not the `Write` and `Edit` fields the check reads.
+Managed Codex hooks through `/etc/codex/requirements.toml` are not set up by
+`deploy/org/install.sh` yet.
 
 ## Other hosts
 

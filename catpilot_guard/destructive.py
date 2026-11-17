@@ -68,7 +68,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from . import write_decision, write_reason
+from . import hook_host, write_decision, write_reason
 
 MAX_INPUT_BYTES = 1_048_576
 
@@ -575,7 +575,7 @@ def find_destructive_op(command: str, cwd: str | None = None) -> tuple[str, str]
 # Written by catpilot_guard/evidence.py when CATPILOT_EVIDENCE_LOG or CATPILOT_EVIDENCE_SYSLOG is set:
 # one line per deny or input error, with the hook, the tool, the operation label and the session id.
 HOOK_NAME = "pretooluse-destructive-ops"
-HOST = "claude-code"  # main() reads a Claude Code PreToolUse event; decide() called from a harness passes no host
+HOST = "claude-code"  # main()'s host with no --host (hook_host); decide() called from a harness passes no host
 
 
 def record_evidence(event: str, hook_event: object = None, host: str | None = None, **fields) -> None:
@@ -619,14 +619,15 @@ def decide(event: dict, host: str | None = None) -> dict:
 
 
 def main() -> int:
+    host = hook_host()  # the evidence label only, from --host; never the decision
     try:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:
             raise ValueError("hook input too large")
-        result = decide(json.loads(payload), HOST)
+        result = decide(json.loads(payload), host)
     except Exception:
         # Any failure blocks: an ordinary non-zero exit would let the host run the command.
-        record_evidence("input_error", host=HOST)
+        record_evidence("input_error", host=host)
         write_reason(
             "Catpilot destructive-operation check could not read the hook input, so the command was not allowed. "
             "Review the command and retry.")

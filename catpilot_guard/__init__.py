@@ -66,3 +66,32 @@ def _discard(stream) -> None:
             os.close(devnull)
     except Exception:
         pass
+
+
+# The tools a PreToolUse check can say it ran on, in its evidence lines. Both send the same
+# PreToolUse event shape for Bash (tool_input.command), so the decision does not depend on it.
+HOOK_HOSTS = ("claude-code", "codex")
+DEFAULT_HOOK_HOST = "claude-code"
+
+
+def hook_host(argv: list | None = None) -> str | None:
+    """The tool a PreToolUse check names in its evidence lines, from `--host claude-code|codex`.
+
+    No arguments: claude-code, the tool every configuration written before this option names.
+    `--host codex` or `--host=codex` (or claude-code): that tool. Anything else: None, so the
+    line leaves host out rather than name the wrong tool. Only the evidence label depends on
+    this; the decision never does, and it never raises.
+    """
+    try:
+        args = sys.argv[1:] if argv is None else list(argv)
+        if not args:
+            return DEFAULT_HOOK_HOST
+        if len(args) == 2 and args[0] == "--host":
+            value = args[1]
+        elif len(args) == 1 and isinstance(args[0], str) and args[0].startswith("--host="):
+            value = args[0][len("--host="):]
+        else:
+            return None
+        return value if value in HOOK_HOSTS else None
+    except Exception:
+        return None
