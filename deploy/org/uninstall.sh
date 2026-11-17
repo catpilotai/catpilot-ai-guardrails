@@ -4,9 +4,11 @@
 # <managed dir>/catpilot-guardrails/), the skills it installed, and the managed files only when they are
 # byte-for-byte what install.sh writes for the given server URL, with or without --overlay; a managed file you
 # have since edited or merged is left in place and named, so you can remove our keys by hand.
-# From an --overlay install it also removes /etc/codex/catpilot-guardrails/ (the Codex copy of the session-start
-# script and rules), /etc/codex/requirements.toml under the same byte-for-byte rule, and the marked
-# catpilot-company-rules section of the managed CLAUDE.md, deleting that file only when nothing else is in it.
+# It removes /etc/codex/catpilot-guardrails/ (the Codex hooks and their package, and from an --overlay install the
+# session-start script and rules) and /etc/codex/requirements.toml under the same byte-for-byte rule, with or
+# without the session-start hook. A tool's catpilot-guardrails/hooks/ stays while a kept managed file still runs
+# hooks from it. From an --overlay install it also removes the marked catpilot-company-rules
+# section of the managed CLAUDE.md, deleting that file only when nothing else is in it.
 #
 #   sudo deploy/org/uninstall.sh --server-url https://mcp.example.com/mcp
 set -euo pipefail
@@ -58,9 +60,11 @@ remove_if_ours() {
 SETTINGS_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" -e "s#/Library/Application Support/ClaudeCode#$CC_DIR#g" "$REPO/deploy/org/claude-code/managed-settings.json")"
 SETTINGS_WITH_RULES=""
 REQUIREMENTS_TOML=""
+REQUIREMENTS_NO_RULES=""
 if [ "$PYTHON_OK" -eq 1 ]; then
   SETTINGS_WITH_RULES="$(printf '%s\n' "$SETTINGS_JSON" | "$PYTHON_BIN" "$RULES_FILES" settings --cc-dir "$CC_DIR" 2>/dev/null)" || SETTINGS_WITH_RULES=""
   REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR" 2>/dev/null)" || REQUIREMENTS_TOML=""
+  REQUIREMENTS_NO_RULES="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR" --no-rules 2>/dev/null)" || REQUIREMENTS_NO_RULES=""
 fi
 remove_if_ours "$CC_DIR/managed-settings.json" \
   "remove the catpilot keys by hand: the hooks entries that run catpilot-guardrails/hooks/, SessionStart included, and managedMcpServers.catpilot-guardrails" \
@@ -70,8 +74,8 @@ remove_if_ours "$CC_DIR/managed-mcp.json" "remove the catpilot keys by hand" "$M
 CODEX_TOML="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/codex/managed_config.toml")"
 remove_if_ours "$CODEX_DIR/managed_config.toml" "remove the catpilot keys by hand" "$CODEX_TOML"
 remove_if_ours "$CODEX_DIR/requirements.toml" \
-  "remove by hand the [hooks] managed_dir that names catpilot-guardrails and the [[hooks.SessionStart]] entry that runs catpilot-company-rules.py" \
-  "$REQUIREMENTS_TOML"
+  "remove by hand the [hooks] managed_dir that names catpilot-guardrails, the [[hooks.PreToolUse]] entries that run catpilot-guardrails/hooks/, the [[hooks.SessionStart]] entry that runs catpilot-company-rules.py, and [features].hooks = true unless you want it" \
+  "$REQUIREMENTS_TOML" "$REQUIREMENTS_NO_RULES"
 
 # The managed CLAUDE.md: only the marked section is ours.
 if [ -e "$CC_DIR/CLAUDE.md" ] || [ -L "$CC_DIR/CLAUDE.md" ]; then
@@ -82,9 +86,28 @@ if [ -e "$CC_DIR/CLAUDE.md" ] || [ -L "$CC_DIR/CLAUDE.md" ]; then
   fi
 fi
 
-for d in "$CC_DIR/catpilot-guardrails" \
-         "$CODEX_DIR/catpilot-guardrails" \
-         "$CC_DIR"/.claude/skills/catpilot-safe-building* \
+# A managed file kept above may still run hooks from catpilot-guardrails/hooks/. Removing the scripts under it
+# would leave every command it covers running a missing file: python3 exits 2, which blocks every command or
+# file write on Claude Code and Codex, or the host skips a hook it cannot load. So that tool's hooks/ directory
+# stays while the file mentions catpilot-guardrails at all, however the path is spelled there (escaped slashes,
+# split quotes, a cd first): leaving files behind is the safe failure. The rest of catpilot-guardrails/ (the rules)
+# is removed.
+keep_hooks_for() {  # FILE
+  [ -e "$1" ] && grep -qF "catpilot-guardrails" "$1" 2>/dev/null
+}
+for d in "$CC_DIR/catpilot-guardrails" "$CODEX_DIR/catpilot-guardrails"; do
+  case "$d" in
+    "$CC_DIR/catpilot-guardrails") file="$CC_DIR/managed-settings.json" ;;
+    *) file="$CODEX_DIR/requirements.toml" ;;
+  esac
+  if [ -d "$d/hooks" ] && keep_hooks_for "$file"; then
+    find "$d" -mindepth 1 -maxdepth 1 ! -name hooks -exec rm -rf {} +
+    echo "kept    $d/hooks ($file, kept above, still runs hooks from it; remove those hook entries from $file, then run uninstall.sh again)"
+  elif [ -e "$d" ]; then
+    rm -rf "$d"; echo "removed $d"
+  fi
+done
+for d in "$CC_DIR"/.claude/skills/catpilot-safe-building* \
          "$CC_DIR/.claude/skills/catpilot-security-core" \
          "$CC_DIR/.claude/skills/catpilot-agentic-security" \
          "$CODEX_DIR"/skills/catpilot-safe-building* \

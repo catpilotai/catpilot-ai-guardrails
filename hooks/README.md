@@ -315,8 +315,9 @@ command = 'python3 "/path/to/catpilot-ai-guardrails/hooks/claude-code/pretooluse
 timeout = 30
 ```
 
-Managed Codex hooks through `/etc/codex/requirements.toml` are not set up by
-`deploy/org/install.sh` yet.
+`deploy/org/install.sh` sets the three up as managed Codex hooks in
+`/etc/codex/requirements.toml`, with `--host codex`
+([`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md#blocking-hooks-on-codex)).
 
 ## Other hosts
 

@@ -3,7 +3,9 @@
 # (the hooks and the catpilot_guard package they import from beside them), that the Python interpreter the
 # hook commands use can start, that each installed hook denies a harmless probe (AWS's documentation-only
 # example key, a force push to main) and lets an ordinary command through, and that managed-settings.json
-# actually runs each hook on the tools it covers. After an install with --overlay it also checks the company
+# actually runs each hook on the tools it covers. For Codex it checks the hook copies under
+# /etc/codex/catpilot-guardrails/hooks/, runs each on harmless probes in Codex's event shape (Bash, apply_patch),
+# and runs each PreToolUse command /etc/codex/requirements.toml declares. After an install with --overlay it also checks the company
 # rules at session start: the block and its sidecar on each tool and that their SHA-256 hashes match, the
 # marked section of the managed CLAUDE.md, the expiry date, the session-start script run directly for each
 # tool, and the SessionStart hook that managed-settings.json and /etc/codex/requirements.toml register, run
@@ -209,9 +211,32 @@ else
 fi
 echo
 
+# count_report: echo report lines from session_start_files.py and count them like check() and fail() do.
+count_report() {
+  local line
+  while IFS= read -r line; do
+    echo "$line"
+    case "$line" in
+      "present  "*) ok=$((ok+1)) ;;
+      MISSING*|INVALID*) missing=$((missing+1)) ;;
+      FAIL*) failed=$((failed+1)) ;;
+    esac
+  done
+}
+
 echo "Codex CLI (managed dir: $CODEX_DIR)"
 check "$CODEX_DIR/managed_config.toml"
 for s in "$CODEX_DIR"/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
+# The PreToolUse hooks requirements.toml declares, run directly and through a shell the way Codex would, with HOME
+# at the temporary directory and no evidence variable, so no evidence line is written anywhere real.
+if [ ! -f "$RULES_FILES" ]; then
+  fail "$RULES_FILES, which checks the Codex hooks, is not beside verify.sh: run verify.sh from a checkout"
+elif [ "$python_ok" -ne 1 ]; then
+  echo "skipped  Codex hooks (no working interpreter; see the FAIL line above)"
+else
+  count_report < <("$PYTHON_BIN" "$RULES_FILES" verify-codex-hooks --codex-dir "$CODEX_DIR" --home "$WORK/home" --timeout "$TIMEOUT_SECONDS" 2>&1 \
+                     || echo "FAIL     the Codex hook checks stopped with an error (above)")
+fi
 echo
 
 # Company rules at session start (install.sh --overlay). The checks and the runs are in session_start_files.py:
@@ -227,15 +252,8 @@ if [ ! -f "$RULES_FILES" ]; then
 elif [ "$python_ok" -ne 1 ]; then
   echo "skipped  no working interpreter (see the FAIL line above)"
 else
-  while IFS= read -r line; do
-    echo "$line"
-    case "$line" in
-      "present  "*) ok=$((ok+1)) ;;
-      MISSING*|INVALID*) missing=$((missing+1)) ;;
-      FAIL*) failed=$((failed+1)) ;;
-    esac
-  done < <("$PYTHON_BIN" "$RULES_FILES" verify --cc-dir "$CC_DIR" --codex-dir "$CODEX_DIR" --home "$WORK/home" --timeout "$TIMEOUT_SECONDS" 2>&1 \
-             || echo "FAIL     the session-start checks stopped with an error (above)")
+  count_report < <("$PYTHON_BIN" "$RULES_FILES" verify --cc-dir "$CC_DIR" --codex-dir "$CODEX_DIR" --home "$WORK/home" --timeout "$TIMEOUT_SECONDS" 2>&1 \
+                     || echo "FAIL     the session-start checks stopped with an error (above)")
 fi
 echo
 echo "Evidence log for this user"

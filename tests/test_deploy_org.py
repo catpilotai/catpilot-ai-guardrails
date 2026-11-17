@@ -162,7 +162,7 @@ class DeployOrgScriptTests(unittest.TestCase):
             verify = self._verify(env)
             self.assertNotEqual(verify.returncode, 0, verify.stdout)
             self.assertIn("FAIL     pretooluse-secrets.py did not deny", verify.stdout)
-            self.assertNotIn("denies   pretooluse-secrets.py", verify.stdout)
+            self.assertNotIn("denies   pretooluse-secrets.py:", verify.stdout)  # the Claude Code copy; the Codex copy prints "--host codex:"
             self.assertIn("denies   pretooluse-destructive-ops.py", verify.stdout)
 
     def test_verify_reports_managed_settings_that_do_not_run_the_hooks(self):
@@ -239,11 +239,13 @@ class DeployOrgScriptTests(unittest.TestCase):
                 timeout=15,
             )
             self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
-            # Edited file is preserved; private skill and instructions are removed
+            # Edited file is preserved; private skill and instructions are removed. The hooks it still runs stay,
+            # since removing them would leave every command it covers running a missing file.
             self.assertTrue(settings_path.exists())
             self.assertIn("kept", uninstall.stdout)
             self.assertEqual(list((cc_dir / ".claude" / "skills").glob("catpilot-safe-building-*")), [])
-            self.assertFalse((cc_dir / "catpilot-guardrails").exists())
+            self.assertEqual(sorted(p.name for p in (cc_dir / "catpilot-guardrails").iterdir()), ["hooks"])
+            self.assertTrue((cc_dir / "catpilot-guardrails" / "hooks" / "pretooluse-secrets.py").is_file())
 
     def _checkout_with_bytecode(self, tmp: Path) -> Path:
         """A copy of what install.sh reads, with bytecode planted in catpilot_guard/ that it must not copy."""
@@ -348,7 +350,7 @@ class DeployOrgScriptTests(unittest.TestCase):
                 self.assertIn(f"MISSING  {hooks}/catpilot_guard/{name}", verify.stdout)
             for hook_name in HOOK_NAMES:
                 self.assertIn(f"FAIL     {hook_name} exited 2", verify.stdout)
-                self.assertNotIn(f"denies   {hook_name}", verify.stdout)
+                self.assertNotIn(f"denies   {hook_name}:", verify.stdout)  # the Claude Code copy
             self.assertIn("load the catpilot_guard package", verify.stdout)
 
 
