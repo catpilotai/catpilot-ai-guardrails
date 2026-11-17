@@ -916,12 +916,21 @@ def verify_codex_hooks(codex_dir: Path, home: Path, timeout: int, prefer_tomllib
 
 # --- verify the company-rules hook ------------------------------------------------------------------------------
 
-# What a compiled rule's mode does on each tool (catpilot_guard/company_rules.py): Claude Code asks in its default
-# permission mode, which the probe event sets; Codex cannot ask, so ask denies there.
-EXPECTED_EFFECT = {
-    CLAUDE_CODE: {"block": "deny", "ask": "ask", "monitor": "none"},
-    CODEX: {"block": "deny", "ask": "deny", "monitor": "none"},
-}
+# What a compiled rule's mode does on each tool (catpilot_guard/company_rules.py): ask acts as block unless the hook's
+# command line has --ask; with it, Claude Code asks in its default permission mode, which the probe event sets. Codex
+# cannot ask, so ask denies there either way.
+ASKING_HOSTS = (CLAUDE_CODE,)
+
+
+def expected_effect(host: str, modes: list, ask_enabled: bool) -> str:
+    """The decision the hook gives when rules in these modes all match: the strictest wins."""
+    effects = {"deny" if m == "block" or (m == "ask" and not (ask_enabled and host in ASKING_HOSTS)) else "ask" if m == "ask"
+               else "none" for m in modes}
+    return "deny" if "deny" in effects else "ask" if "ask" in effects else "none"
+
+
+def has_ask_flag(command: str) -> bool:
+    return "--ask" in _split(command)
 EFFECT_WORDS = {"deny": "denies", "ask": "asks the person about", "none": "logs, without blocking,"}
 COMPANY_LOG = ".catpilot-guardrails/evidence.jsonl"  # where the registered command's own prefix sends evidence
 
@@ -970,20 +979,38 @@ def policy_errors(log: Path) -> list:
     return labels
 
 
+def branch_matches(value: str, branch: str) -> bool:
+    """catpilot_guard/policy.py's branch_matches, repeated so this helper imports only the standard library (a test
+    checks the two agree)."""
+    if not branch:
+        return False
+    if value.startswith("refs/heads/"):
+        value = value[len("refs/heads/"):]
+    if value.endswith("/*"):
+        prefix = value[:-1].casefold()
+        name = branch.casefold()
+        return name.startswith(prefix) and len(name) > len(prefix)
+    return value.casefold() == branch.casefold()
+
+
 def first_branch_probe(policy_file: Path):
-    """(rule id, mode, command, expired) for the policy's first protected_branch rule, or None. The command
-    force-pushes to a branch the rule covers; the caller never prints it."""
+    """(rule id, mode, command, expired, modes) for a force push to a branch the policy's first protected_branch rule
+    covers, or None. modes are the effective modes of every rule that covers that branch, the probed one included, so
+    the expected decision is the strictest of them, as the hook decides. The caller never prints the command."""
     try:
         data = json.loads(policy_file.read_text(encoding="utf-8"))
         expired = dt.date.fromisoformat(data["expires_on"]) < dt.date.today()
-        for rule in data["rules"]:
-            if rule["kind"] == "protected_branch":
-                value = rule["values"][0]
-                branch = value[:-1] + "catpilot-verify" if value.endswith("/*") else value
-                return rule["id"], rule["mode"], "git push --force origin %s" % shlex.quote(branch), expired
-    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        branch_rules = [rule for rule in data["rules"] if rule["kind"] == "protected_branch"]
+        if not branch_rules:
+            return None
+        first = branch_rules[0]
+        value = first["values"][0]
+        branch = value[:-1] + "catpilot-verify" if value.endswith("/*") else value
+        modes = ["monitor" if expired else rule["mode"] for rule in branch_rules
+                 if any(branch_matches(v, branch) for v in rule["values"])]
+        return first["id"], first["mode"], "git push --force origin %s" % shlex.quote(branch), expired, modes
+    except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
         return None
-    return None
 
 
 def company_commands(host: str, managed: Path, prefer_tomllib: bool):
@@ -1020,25 +1047,34 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
         root = Path(tree(str(managed)))
         policy_file = root / "policy" / POLICY_NAME
         if not policy_file.exists():
-            report.line("skipped", "company-rules hook for %s: no compiled policy at %s" % (host, policy_file))
+            managed_file = managed / ("managed-settings.json" if host == CLAUDE_CODE else "requirements.toml")
+            try:
+                registered = COMPANY_HOOK in managed_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                registered = False
+            if registered:
+                report.line("FAIL", "%s runs %s, and there is no compiled policy at %s: every command logs policy_error and "
+                            "no company rule applies; reinstall with a rules file that has enforcement rules, or remove "
+                            "that hook entry" % (managed_file, COMPANY_HOOK, policy_file))
+            else:
+                report.line("skipped", "company-rules hook for %s: no compiled policy at %s" % (host, policy_file))
             continue
         report.present(policy_file)
         hook = root / "hooks" / COMPANY_HOOK
         if not report.present(hook):
             continue
         probe = first_branch_probe(policy_file)
-        runs = [("ls", "none", "a harmless command", "lets through")]
+        runs = [("ls", [], "a harmless command")]
         if probe is not None:
-            rule_id, mode, command, expired = probe
-            effective = "monitor" if expired else mode
-            expected = EXPECTED_EFFECT[host][effective]
-            runs.append((command, expected,
-                         "a force push to a branch rule %s protects (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else ""),
-                         EFFECT_WORDS[expected]))
+            rule_id, mode, command, expired, modes = probe
+            runs.append((command, modes,
+                         "a force push to a branch rule %s protects (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
         else:
             report.line("note", "the %s policy has no protected_branch rule, so only a harmless command is probed" % host)
         log = home / ("verify-company-%s.jsonl" % host)
-        for command, expected, what, verb in runs:
+        for command, modes, what in runs:
+            expected = expected_effect(host, modes, ask_enabled=False)  # run directly, without --ask
+            verb = "lets through" if command == "ls" else EFFECT_WORDS[expected]
             env = clean_env(home)
             env["CATPILOT_EVIDENCE_LOG"] = str(log)
             try:
@@ -1077,7 +1113,9 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             if "CATPILOT_EVIDENCE_SYSLOG" in command:
                 report.line("skipped", "%s command for %s (it forwards evidence to syslog; check it in a session)" % (managed_file, COMPANY_HOOK))
                 continue
-            for probe_command, expected, what, verb in runs:
+            for probe_command, modes, what in runs:
+                expected = expected_effect(host, modes, has_ask_flag(command))
+                verb = "lets through" if probe_command == "ls" else EFFECT_WORDS[expected]
                 got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_command, home), home, timeout))
                 if got == expected:
                     report.line("wired", "%s runs %s, which %s %s" % (managed_file, COMPANY_HOOK, verb, what))

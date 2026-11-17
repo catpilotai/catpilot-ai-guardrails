@@ -208,7 +208,7 @@ def _item(value: object, label: str, max_len: int = ITEM_MAX) -> str:
         raise OverlayError(f"{label}: expected a nonempty phrase")
     if len(value) > max_len:
         raise OverlayError(f"{label}: longer than {max_len} characters; overlay values are short phrases")
-    if any(ord(c) < 32 for c in value):
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
         raise OverlayError(f"{label}: control characters are not allowed")
     return value
 
@@ -578,7 +578,14 @@ def _host_problem(value: str) -> str | None:
     return "IP addresses are not allowed; list host names"
 
 
+BRANCH_MAX = 255  # catpilot_guard/policy.py VALUE_MAX_CHARS: the hook refuses a longer value
+
+
 def _branch_problem(value: str) -> str | None:
+    if len(value) > BRANCH_MAX:
+        return f"expected a Git branch name of at most {BRANCH_MAX} characters"
+    if value.startswith("refs/"):
+        return "write the branch name without refs/heads/ (or any refs/ prefix): pushes are matched by branch name"
     base = value[:-2] if value.endswith("/*") else value
     bad = (
         not base
@@ -1115,14 +1122,31 @@ def compile_policy(overlay: dict, raw: bytes) -> dict | None:
 
 
 def policy_text(policy: dict) -> str:
-    """The policy as compile writes it: the same input gives byte-identical output (§6.2)."""
-    return json.dumps(policy, indent=2, sort_keys=True) + "\n"
+    """The policy as compile writes it: the same input gives byte-identical output (§6.2). UTF-8, not \\u escapes,
+    so a file of non-ASCII names stays within the size the hook reads."""
+    return json.dumps(policy, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def check_hook_reads(text: str) -> None:
+    """Refuse a policy the company-rules hook would not load (its own parser, catpilot_guard/policy.py), so that
+    compile never writes a file that leaves every company rule unenforced. Raises OverlayError."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from catpilot_guard import policy as hook_policy
+
+    try:
+        hook_policy.parse(text.encode("utf-8"))
+    except hook_policy.PolicyError:
+        raise OverlayError(
+            "compile: the company-rules hook would not load this policy (too large, or a value it cannot read); "
+            "nothing was written"
+        ) from None
 
 
 # What each mode does on each tool (§2.3, decision 2), for the table compile prints.
 HOST_EFFECTS = {
     "block": ("deny", "deny"),
-    "ask": ("ask the person; deny where nobody can answer", "deny (Codex cannot ask)"),
+    "ask": ("deny; asks the person only if the hook command has --ask", "deny (Codex cannot ask)"),
     "monitor": ("log would_deny only", "log would_deny only"),
 }
 
@@ -1180,7 +1204,9 @@ def compile_main(argv: list[str]) -> int:
         if policy is None:
             print("no enforcement rules in this file: nothing to compile, and no policy was written", file=sys.stderr)
             return 0
-        write_policy(args.out, policy_text(policy))
+        text = policy_text(policy)
+        check_hook_reads(text)
+        write_policy(args.out, text)
     except (OSError, OverlayError) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 1

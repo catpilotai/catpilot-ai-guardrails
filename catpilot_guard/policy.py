@@ -22,6 +22,7 @@ Nothing here prints or returns a value from the policy in an error. Standard lib
 from __future__ import annotations
 
 import datetime as dt
+import errno
 import json
 import os
 import re
@@ -87,27 +88,50 @@ def _writable_by_others(mode: int) -> bool:
     return bool(mode & (stat.S_IWGRP | stat.S_IWOTH))
 
 
-def check_location(path: Path, owner: int | None = None) -> None:
-    """Refuse a policy file anyone but the package's owner could have changed. Raises PolicyError."""
+def read_checked(path: Path, owner: int | None = None) -> bytes:
+    """The policy file's bytes, read from the same open file whose type, owner and mode were checked.
+
+    The final path component is opened without following a symlink, and the checks run on the open descriptor,
+    so the file cannot be swapped between the check and the read. Its directory must also have the expected owner
+    and be writable by no one else. Raises PolicyError for anything anyone but the package's owner could have changed.
+    """
     if not path.is_absolute():
         raise PolicyError("bad-arguments")
     try:
-        info = os.lstat(path)
+        expected = package_owner() if owner is None else owner
+        parent = os.stat(path.parent)
     except FileNotFoundError:
         raise PolicyError("missing") from None
     except OSError:
         raise PolicyError("unreadable") from None
-    if not stat.S_ISREG(info.st_mode):  # a symlink, a directory, a device
+    if parent.st_uid != expected or _writable_by_others(parent.st_mode):
         raise PolicyError("wrong-owner")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        parent = os.stat(path.parent)
-        expected = package_owner() if owner is None else owner
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        raise PolicyError("missing") from None
+    except OSError as exc:
+        # ELOOP: the final component is a symlink, which O_NOFOLLOW refuses.
+        raise PolicyError("wrong-owner" if exc.errno == errno.ELOOP else "unreadable") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):  # a directory, a device, a FIFO
+            raise PolicyError("wrong-owner")
+        if info.st_uid != expected or _writable_by_others(info.st_mode):
+            raise PolicyError("wrong-owner")
+        chunks, size = [], 0
+        while size <= MAX_POLICY_BYTES:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        return b"".join(chunks)
     except OSError:
         raise PolicyError("unreadable") from None
-    if info.st_uid != expected or parent.st_uid != expected:
-        raise PolicyError("wrong-owner")
-    if _writable_by_others(info.st_mode) or _writable_by_others(parent.st_mode):
-        raise PolicyError("wrong-owner")
+    finally:
+        os.close(fd)
 
 
 def _string(value: object, longest: int) -> str:
@@ -172,14 +196,7 @@ def parse(raw: bytes) -> Policy:
 
 def load(path: str | Path, owner: int | None = None) -> Policy:
     """The policy at path, after the location checks. Raises PolicyError with a label from ERROR_LABELS."""
-    path = Path(path)
-    check_location(path, owner)
-    try:
-        with open(path, "rb") as handle:
-            raw = handle.read(MAX_POLICY_BYTES + 1)
-    except OSError:
-        raise PolicyError("unreadable") from None
-    return parse(raw)
+    return parse(read_checked(Path(path), owner))
 
 
 def branch_matches(value: str, branch: str) -> bool:
@@ -190,6 +207,8 @@ def branch_matches(value: str, branch: str) -> bool:
     """
     if not branch:
         return False
+    if value.startswith("refs/heads/"):  # the validator refuses this form; a push destination is read without it
+        value = value[len("refs/heads/"):]
     if value.endswith("/*"):
         prefix = value[:-1].casefold()
         name = branch.casefold()

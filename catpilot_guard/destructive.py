@@ -31,7 +31,9 @@ Scope, stated exactly:
         dd to a raw block device; a force push (--force, -f, --force-with-lease,
         or a +refspec) or a deletion aimed at main, master, trunk, production,
         prod, staging, develop, or release/*, including a bare `git push -f`
-        while the checked-out branch is one of those; git push --mirror
+        while the checked-out branch is one of those; git push --mirror, --all
+        or --branches with a force or --prune, and a forced or pruned refspec
+        pattern (an option's value, as in -o ci.skip, is not read as the remote)
       * unconfirmed database or cache wipes: `prisma db push --accept-data-loss`,
         `prisma migrate reset --force`, `rails`/`rake` `db:drop`/`db:reset`/
         `db:schema:load`/`db:structure:load`, Django `flush --noinput`,
@@ -327,10 +329,17 @@ def current_branch(cwd: str) -> str | None:
         return None
 
 
+# git push options that take their value as the next argument.
+PUSH_VALUE_OPTIONS = {"--push-option", "--repo", "--receive-pack", "--exec"}
+
+
 def git_push_rewrites(args: list[str], cwd: str) -> tuple[bool, list[str | None]] | None:
     """What a `git` command's push would rewrite or delete: None when it is not a push, else (mirror, branches).
 
-    `args` are git's arguments without its name. mirror is True for `--mirror`, which rewrites every branch.
+    `args` are git's arguments without its name. mirror is True when the push can rewrite or delete every branch:
+    `--mirror`; `--all` or `--branches` with a force or `--prune`; and a refspec whose destination is a pattern
+    (`refs/heads/*`) with a force, a `+`, `--prune` or `--delete`. Options that take a value (`-o`/`--push-option`,
+    `--repo`, `--receive-pack`, `--exec`) take it, so the value is not read as the remote.
     branches are the destination branches a force push (--force, -f, --force-with-lease, --force-if-includes or a
     +refspec), a deletion (--delete, -d, or an empty source `:branch`) aims at, with refs/heads/ stripped and HEAD
     read as the checked-out branch ("" when that is unknown). A bare force push, with no refspec, adds the
@@ -348,35 +357,55 @@ def git_push_rewrites(args: list[str], cwd: str) -> tuple[bool, list[str | None]
             index += 1
     if index >= len(args) or args[index] != "push":
         return None
-    force = delete = mirror = False
+    force = delete = mirror = every = prune = False
     positional: list[str] = []
-    for arg in args[index + 1:]:
+    rest = args[index + 1:]
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        i += 1
         if arg in ("--force", "--force-if-includes") or arg.startswith("--force-with-lease"):
             force = True
         elif arg == "--mirror":
             mirror = True
+        elif arg in ("--all", "--branches"):
+            every = True
+        elif arg == "--prune":
+            prune = True
         elif arg in ("--delete", "-d"):
             delete = True
+        elif arg in PUSH_VALUE_OPTIONS:
+            i += 1  # its value is the next argument
         elif arg.startswith("--"):
             continue
         elif arg.startswith("-") and len(arg) > 1:
-            force = force or "f" in arg[1:]
-            delete = delete or "d" in arg[1:]
+            for position, letter in enumerate(arg[1:], start=1):
+                if letter == "o":  # -o takes a value: the rest of the cluster, or the next argument
+                    if position == len(arg) - 1:
+                        i += 1
+                    break
+                force = force or letter == "f"
+                delete = delete or letter == "d"
         else:
             positional.append(arg)
+    mirror = mirror or (every and (force or prune))
     branches: list[str | None] = []
     if not mirror:
         for spec in positional[1:]:
             plus = spec.startswith("+")
             spec = spec.lstrip("+")
             source, _, destination = spec.partition(":") if ":" in spec else (spec, "", spec)
+            if "*" in destination and (delete or plus or force or prune):
+                mirror = True  # a pattern can rewrite or delete every branch it covers
+                branches = []
+                break
             if not (delete or plus or force or (":" in spec and source == "")):
                 continue
             destination = destination[len("refs/heads/"):] if destination.startswith("refs/heads/") else destination
             if destination == "HEAD":
                 destination = current_branch(repo) or ""
             branches.append(destination)
-        if force and len(positional) <= 1:
+        if not mirror and force and len(positional) <= 1:
             branches.append(current_branch(repo))
     return mirror, branches
 

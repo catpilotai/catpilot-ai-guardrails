@@ -116,7 +116,7 @@ class PolicyFormatTests(unittest.TestCase):
         self.assertNotIn("deploy_host", pol.ENFORCED_KINDS)
 
     def test_branch_values_match_like_the_built_in_check(self):
-        cases = [("main", "main", True), ("main", "MAIN", True), ("main", "mainline", False), ("main", "", False),
+        cases = [("refs/heads/deploy", "deploy", True),("main", "main", True), ("main", "MAIN", True), ("main", "mainline", False), ("main", "", False),
                  ("release/*", "release/2026.11", True), ("release/*", "release/a/b", True), ("release/*", "release/", False),
                  ("release/*", "release", False), ("release/*", "prerelease/x", False), ("Hotfix/*", "hotfix/x", True)]
         for value, branch, expected in cases:
@@ -173,6 +173,15 @@ class PolicyLocationTests(unittest.TestCase):
         link.symlink_to(self.file)
         self.assertLabel("wrong-owner", link)
 
+    def test_a_fifo_is_refused_without_blocking(self):
+        fifo = self.dir / "fifo.json"
+        os.mkfifo(fifo, 0o644)
+        self.assertLabel("wrong-owner", fifo)
+
+    def test_the_bytes_read_are_from_the_file_checked(self):
+        # read_checked opens without following a final symlink and checks the open descriptor.
+        self.assertEqual(pol.read_checked(self.file, os.getuid()), self.file.read_bytes())
+
     def test_the_expected_owner_is_the_package_owner(self):
         self.assertEqual(pol.package_owner(), os.stat(ROOT / "catpilot_guard").st_uid)
 
@@ -186,11 +195,13 @@ class DecisionTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def decide(self, command, rules=None, host="claude-code", mode="default", expires="2099-01-01", cwd=None):
-        return cr.decide(bash(command, mode, cwd), host, parsed(rules, expires))
+    def decide(self, command, rules=None, host="claude-code", mode="default", expires="2099-01-01", cwd=None, ask=False):
+        return cr.decide(bash(command, mode, cwd), host, parsed(rules, expires), ask_enabled=ask)
 
     def test_block_denies_a_force_push_or_deletion_of_a_listed_branch(self):
         for command in ("git push --force origin main", "git push -f origin release/2026.11", "git push origin +HEAD:release/x",
+                        "git push -o ci.skip --force origin main", "git push --force --all origin",
+                        "git push --force origin 'refs/heads/*:refs/heads/*'",
                         "git push origin --delete release/x", "git push origin :main", "git push --mirror origin",
                         "git push --force-with-lease origin %s/a" % BRANCH_MARKER, 'bash -lc "git push -f origin main"',
                         "cd repo && sudo git push --force origin MAIN"):
@@ -220,12 +231,19 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(result, {})
         self.assertEqual([(e, f["rule_id"], f["mode"]) for e, _, f in self.lines], [("would_deny", "protected-branches", "monitor")])
 
-    def test_ask_asks_on_claude_code_where_a_person_answers(self):
+    def test_with_the_ask_flag_claude_code_asks_where_a_person_answers(self):
         for mode in cr.ASK_PERMISSION_MODES:
             with self.subTest(permission_mode=mode):
-                result = self.decide("git push --force origin main", [branch_rule(mode="ask")], mode=mode)
+                result = self.decide("git push --force origin main", [branch_rule(mode="ask")], mode=mode, ask=True)
                 self.assertEqual(effect(result), "ask")
                 self.assertIn("Approve only if this is intended", result["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_without_the_ask_flag_ask_acts_as_block_everywhere(self):
+        # A program that approves (claude -p with a permission-prompt tool, an SDK callback) sends the same event as a
+        # person's session, so asking is the administrator's opt-in on the root-owned command line (decision 2).
+        for mode in cr.ASK_PERMISSION_MODES:
+            with self.subTest(permission_mode=mode):
+                self.assertEqual(effect(self.decide("git push --force origin main", [branch_rule(mode="ask")], mode=mode)), "deny")
 
     def test_ask_acts_as_block_where_nobody_can_be_asked(self):
         cases = [("codex", None), ("claude-code", "bypassPermissions"), ("claude-code", "dontAsk"), ("claude-code", "auto"),
@@ -233,7 +251,7 @@ class DecisionTests(unittest.TestCase):
         for host, mode in cases:
             with self.subTest(host=host, permission_mode=mode):
                 self.lines.clear()
-                result = self.decide("git push --force origin main", [branch_rule(mode="ask")], host=host, mode=mode)
+                result = self.decide("git push --force origin main", [branch_rule(mode="ask")], host=host, mode=mode, ask=True)
                 self.assertEqual(effect(result), "deny")
                 self.assertIn("nobody can be asked here", result["hookSpecificOutput"]["permissionDecisionReason"])
                 self.assertEqual([(e, f["mode"]) for e, _, f in self.lines], [("deny", "ask")])
@@ -254,7 +272,7 @@ class DecisionTests(unittest.TestCase):
     def test_the_strictest_effect_wins_and_each_rule_writes_a_line(self):
         rules = [branch_rule("watch-main", "monitor", ("main",)), branch_rule("ask-main", "ask", ("main",)),
                  branch_rule("block-main", "block", ("main",))]
-        result = self.decide("git push --force origin main", rules)
+        result = self.decide("git push --force origin main", rules, ask=True)
         self.assertEqual(effect(result), "deny")
         reason = result["hookSpecificOutput"]["permissionDecisionReason"]
         self.assertIn("`block-main`", reason)
@@ -262,7 +280,7 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual([(e, f["rule_id"]) for e, _, f in self.lines],
                          [("would_deny", "watch-main"), ("deny", "ask-main"), ("deny", "block-main")])
         self.lines.clear()
-        result = self.decide("git push --force origin main", rules[:2])
+        result = self.decide("git push --force origin main", rules[:2], ask=True)
         self.assertEqual(effect(result), "ask")
         self.assertEqual([e for e, _, _ in self.lines], ["would_deny", "ask"])
 
@@ -295,15 +313,17 @@ class DecisionTests(unittest.TestCase):
 class ArgumentTests(unittest.TestCase):
     def test_parse_args(self):
         cases = [
-            (["--policy", "/p.json"], ("claude-code", "/p.json", True)),
-            (["--host", "codex", "--policy", "/p.json"], ("codex", "/p.json", True)),
-            (["--host=codex", "--policy=/p.json"], ("codex", "/p.json", True)),
-            (["--host", "codex"], ("codex", None, False)),
-            (["--host", "other", "--policy", "/p.json"], (None, "/p.json", False)),
-            (["--policy", "/a", "--policy", "/b"], ("claude-code", "/a", False)),
-            (["--surprise", "x", "--policy", "/p.json"], ("claude-code", "/p.json", False)),
-            (["--policy"], (None, None, False)),
-            ([], ("claude-code", None, False)),
+            (["--policy", "/p.json"], ("claude-code", "/p.json", True, False)),
+            (["--host", "codex", "--policy", "/p.json"], ("codex", "/p.json", True, False)),
+            (["--host=codex", "--policy=/p.json"], ("codex", "/p.json", True, False)),
+            (["--policy", "/p.json", "--ask"], ("claude-code", "/p.json", True, True)),
+            (["--ask", "--policy", "/p.json", "--ask"], ("claude-code", "/p.json", False, True)),
+            (["--host", "codex"], ("codex", None, False, False)),
+            (["--host", "other", "--policy", "/p.json"], (None, "/p.json", False, False)),
+            (["--policy", "/a", "--policy", "/b"], ("claude-code", "/a", False, False)),
+            (["--surprise", "x", "--policy", "/p.json"], ("claude-code", "/p.json", False, False)),
+            (["--policy"], (None, None, False, False)),
+            ([], ("claude-code", None, False, False)),
         ]
         for argv, expected in cases:
             with self.subTest(argv=argv):
@@ -391,7 +411,7 @@ class HookProcessTests(unittest.TestCase):
         self.policy.write_text(json.dumps(policy_dict([branch_rule(), branch_rule("watch", "monitor", ("stable",)),
                                                        branch_rule("confirm", "ask", ("trunk",))])), encoding="utf-8")
         for command in ("git push -f origin main", "git push -f origin stable", "git push -f origin trunk"):
-            self.run_hook(bash(command), "--policy", str(self.policy))
+            self.run_hook(bash(command), "--policy", str(self.policy), "--ask")
         self.run_hook(bash("ls"), "--policy", str(self.tmp / "absent"))
         schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
         events = []
@@ -457,7 +477,7 @@ class CompileTests(unittest.TestCase):
         self.rules.write_text(self.rules.read_text(encoding="utf-8").replace("mode: block", "mode: ask"), encoding="utf-8")
         code, out, _ = self.compile()
         self.assertEqual(code, 0)
-        self.assertIn("protected-branches | protected_branch | ask | ask the person; deny where nobody can answer | deny (Codex cannot ask)", out)
+        self.assertIn("protected-branches | protected_branch | ask | deny; asks the person only if the hook command has --ask | deny (Codex cannot ask)", out)
 
     def test_no_enforcement_writes_nothing(self):
         text = self.rules.read_text(encoding="utf-8")
@@ -473,6 +493,33 @@ class CompileTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertFalse(self.out.exists())
         self.assertNotIn(vo.EXAMPLE_SALT, err)
+
+    def test_values_the_hook_cannot_read_are_refused_before_compile(self):
+        cases = {
+            "a branch over 255 characters": ('"%s/*"' % BRANCH_MARKER, '"%s"' % ("b" * 256)),
+            "a refs/heads/ value": ('"%s/*"' % BRANCH_MARKER, '"refs/heads/deploy"'),
+            "DEL in a phrase": ('"Internal App Platform (company sign-in)"', '"Internal App Platform\x7f"'),
+        }
+        original = self.rules.read_text(encoding="utf-8")
+        for label, (old, new) in cases.items():
+            with self.subTest(case=label):
+                self.assertIn(old, original)
+                self.rules.write_text(original.replace(old, new, 1), encoding="utf-8")
+                code, _, err = self.compile()
+                self.assertEqual(code, 1, err)
+                self.assertFalse(self.out.exists())
+        self.rules.write_text(original, encoding="utf-8")
+
+    def test_compile_refuses_what_the_hook_would_not_load(self):
+        with self.assertRaises(vo.OverlayError):
+            vo.check_hook_reads(json.dumps(policy_dict()) + " " * pol.MAX_POLICY_BYTES)
+        vo.check_hook_reads(json.dumps(policy_dict()))
+
+    def test_non_ascii_names_are_written_as_utf8(self):
+        self.rules.write_text(self.rules.read_text(encoding="utf-8").replace('"main", ', '"main", "gr\u00fcn", '), encoding="utf-8")
+        code, _, err = self.compile()
+        self.assertEqual(code, 0, err)
+        self.assertIn("grün".encode("utf-8"), self.out.read_bytes())
 
     def test_a_symlinked_output_is_refused(self):
         target = self.tmp / "elsewhere.json"
@@ -533,6 +580,23 @@ class DeployTests(unittest.TestCase):
         self.assertFalse((self.codex / "requirements.toml").exists())
         self.assertFalse((self.cc / "catpilot-guardrails").exists())
 
+    def test_verify_expects_the_strictest_of_overlapping_rules(self):
+        text = self.rules.read_text(encoding="utf-8").replace(
+            "  rules:\n", '  rules:\n    - {id: trial-branches, kind: protected_branch, mode: monitor, values: ["hotfix/*"]}\n', 1)
+        self.rules.write_text(text, encoding="utf-8")
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        verify = self.run_script("verify.sh")
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+        self.assertIn("denies a force push to a branch rule trial-branches protects (monitor)", verify.stdout)
+
+    def test_verify_fails_a_registered_hook_without_a_policy(self):
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        for managed in (self.cc, self.codex):
+            (managed / "catpilot-guardrails" / "policy" / "company-policy.json").unlink()
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("and there is no compiled policy at", verify.stdout)
+
     def test_verify_fails_on_a_policy_the_hook_refuses(self):
         self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
         os.chmod(self.cc / "catpilot-guardrails" / "policy" / "company-policy.json", 0o666)
@@ -553,6 +617,22 @@ class DeployTests(unittest.TestCase):
         self.assertNotIn("pretooluse-company-rules", (self.cc / "managed-settings.json").read_text(encoding="utf-8"))
         self.assertNotIn("pretooluse-company-rules", (self.codex / "requirements.toml").read_text(encoding="utf-8"))
         self.assertIn("this rules file has no enforcement rules", proc.stdout)
+
+    def test_verify_matches_branches_as_the_hook_does(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("session_start_files_for_branches", ORG / "session_start_files.py")
+        helper = importlib.util.module_from_spec(spec)
+        previous = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(helper)
+        finally:
+            sys.dont_write_bytecode = previous
+        for value in ("main", "MAIN", "release/*", "refs/heads/deploy", "a/b/*"):
+            for branch in ("main", "release/x", "release", "deploy", "a/b/c", "a/b/", ""):
+                with self.subTest(value=value, branch=branch):
+                    self.assertEqual(helper.branch_matches(value, branch), pol.branch_matches(value, branch))
 
     def test_requirements_refuses_enforce_without_rules(self):
         proc = subprocess.run([sys.executable, str(ORG / "session_start_files.py"), "requirements", "--codex-dir", "/etc/codex",

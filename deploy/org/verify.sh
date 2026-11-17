@@ -261,8 +261,9 @@ echo
 # company-rules hook on each tool, run directly and as the managed file registers it, with HOME at the temporary
 # directory, so no evidence line is written anywhere real.
 echo "Company enforcement rules (the company-rules hook)"
-if [ ! -e "$CC_DIR/catpilot-guardrails/policy/company-policy.json" ] && [ ! -e "$CODEX_DIR/catpilot-guardrails/policy/company-policy.json" ]; then
-  echo "skipped  no compiled company policy on either tool (install.sh --overlay places one when the rules file has enforcement rules)"
+if [ ! -e "$CC_DIR/catpilot-guardrails/policy/company-policy.json" ] && [ ! -e "$CODEX_DIR/catpilot-guardrails/policy/company-policy.json" ] \
+   && ! grep -qs pretooluse-company-rules "$CC_DIR/managed-settings.json" "$CODEX_DIR/requirements.toml"; then
+  echo "skipped  no compiled company policy and no company-rules hook on either tool (install.sh --overlay places them when the rules file has enforcement rules)"
 elif [ ! -f "$RULES_FILES" ]; then
   fail "a company policy is installed, and $RULES_FILES, which checks it, is not beside verify.sh: run verify.sh from a checkout"
 elif [ "$python_ok" -ne 1 ]; then

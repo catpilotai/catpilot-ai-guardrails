@@ -178,7 +178,10 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   `release/*` (exact branch names, so `feature/main-fix` is fine), a bare
   `git push --force` while one of those is checked out (read from
   `.git/HEAD`, and blocked when the branch cannot be read), a deletion of one
-  of those branches, and `git push --mirror`.
+  of those branches, and `git push --mirror`, `--all` or `--branches` with a
+  force or `--prune`, and a forced or pruned refspec pattern
+  (`refs/heads/*:refs/heads/*`). An option's value (`-o ci.skip`,
+  `--push-option`, `--repo`) is not read as the remote.
 - Database and cache resets: `prisma db push --accept-data-loss`, `prisma
   migrate reset --force`, `rails`/`rake` `db:drop`, `db:reset`,
   `db:schema:load`, and `db:structure:load`, Django `flush --noinput`,
@@ -240,8 +243,14 @@ python3 "/path/to/hooks/pretooluse-company-rules.py" --host claude-code --policy
 | Mode | Claude Code | Codex | Evidence |
 | --- | --- | --- | --- |
 | `block` | Deny | Deny | `deny` |
-| `ask` | Ask the person, in the `default`, `acceptEdits` and `plan` permission modes; deny in any other mode, since those approve without a person or have nobody to answer | Deny: Codex does not support `ask` | `ask`, or `deny` where it acted as `block` |
+| `ask` | Deny, unless the hook's command line has `--ask`. With it, ask the person in the `default`, `acceptEdits` and `plan` permission modes, and deny in any other mode, since those approve without a person or have nobody to answer | Deny: Codex does not support `ask` | `ask`, or `deny` where it acted as `block` |
 | `monitor` | No decision | No decision | `would_deny` |
+
+`ask` is opt-in because the hook cannot tell a person from a program: a
+`claude -p` run with a permission-prompt tool, or an Agent SDK callback that
+approves, sends the same event as an interactive session, and `ask` means a
+person decides first (decision 2). Add `--ask` to the root-owned command only
+after a host check shows a person answers on your machines.
 
 When several rules match one command, the strictest effect wins and each rule
 writes its own evidence line. After the file's `expires_on`, every company
@@ -255,9 +264,12 @@ blocked on stale values, and each match still writes `would_deny`.
   deletes (`--delete`, `-d`, or `:branch`) a branch a value covers, a bare
   force push while such a branch is checked out, and `git push --mirror`.
   Pushes are read exactly as the destructive-operation check reads them,
-  through the same wrappers and `bash -c` bodies. A value ending in `/*`
-  covers every branch under the prefix; case is ignored. An ordinary push is
-  not a match.
+  through the same wrappers and `bash -c` bodies, so `--all` or `--branches`
+  with a force or `--prune`, and a forced refspec pattern
+  (`refs/heads/*:refs/heads/*`), match every rule. A value ending in `/*`
+  covers every branch under the prefix; case is ignored. A value is a branch
+  name: the validator refuses a `refs/` prefix and names longer than 255
+  characters. An ordinary push is not a match.
 - Kind `deploy_host`: validated and compiled, and not acted on yet. `compile`
   and the validator say so.
 - The reason names the rule ids and the approved alternative, never a listed

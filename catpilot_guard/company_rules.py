@@ -14,11 +14,15 @@ Scope, stated exactly:
     (destructive.git_push_rewrites), through the same wrappers and `bash -c` bodies. A value ending in `/*`
     covers every branch under that prefix; case is ignored, as in the built-in check.
   - Kind deploy_host: accepted in the policy and not acted on yet.
-  - Modes (§2.3): block denies. ask has Claude Code ask the person, and acts as block wherever nobody can be
-    asked (decision 2): on Codex, which does not support ask, on an unknown host, and in a Claude Code
-    permission mode other than default, acceptEdits or plan, since the other modes approve without asking a
-    person or run with nobody to answer. monitor decides nothing and writes a would_deny line. When several
-    rules match, the strictest effect wins and each rule writes its own line.
+  - Modes (§2.3): block denies. monitor decides nothing and writes a would_deny line. ask acts as block unless
+    the hook's own command line has --ask (decision 2: ask means a person decides first). A Claude Code run with
+    a program that approves (`claude -p` with a permission-prompt tool, an Agent SDK canUseTool callback) sends
+    the same event as an interactive session, so the hook cannot tell that nobody was asked; an administrator
+    adds --ask to the root-owned command once a host check shows a person answers there. With --ask, Claude Code
+    asks the person in the default, acceptEdits and plan permission modes; other modes approve without asking a
+    person or run with nobody to answer, so ask still acts as block there, as it does on Codex, which does not
+    support ask, and on an unknown host. When several rules match, the strictest effect wins and each rule
+    writes its own line.
   - After the policy's expires_on, every company rule acts in monitor until the file is renewed (decision 3).
   - A deny or ask reason names the rule ids and the approved alternative (use_instead_text), never a listed
     value, and never repeats the command.
@@ -50,24 +54,31 @@ CLAUDE_CODE = "claude-code"
 # any mode added later) approve without asking or run with nobody to answer, so ask acts as block there.
 ASK_PERMISSION_MODES = ("default", "acceptEdits", "plan")
 OPTIONS = ("--host", "--policy")
+ASK_FLAG = "--ask"  # a flag, not an option: it takes no value
 WHAT = {
     "protected_branch": "this push force-pushes to or deletes a branch the company protects",
 }
 
 
 def parse_args(argv: list) -> tuple:
-    """(host, policy path, ok). Each option at most once, as `--name value` or `--name=value`; no --host means
-    claude-code, as for the other hooks. ok is False for an unknown, repeated or valueless option, a host other
-    than HOOK_HOSTS (host is then None), or no --policy. Values are never printed."""
+    """(host, policy path, ok, ask). Each option at most once, as `--name value` or `--name=value`, and the flag
+    --ask at most once; no --host means claude-code, as for the other hooks. ok is False for an unknown, repeated
+    or valueless option, a host other than HOOK_HOSTS (host is then None), or no --policy. Values are never printed."""
     values: dict = {}
     ok = True
+    ask = False
     i = 0
     while i < len(argv):
+        if str(argv[i]) == ASK_FLAG:
+            ok = ok and not ask
+            ask = True
+            i += 1
+            continue
         name, sep, value = str(argv[i]).partition("=")
         i += 1
         if not sep:
             if i >= len(argv):
-                return None, None, False
+                return None, None, False, False
             value = str(argv[i])
             i += 1
         if name not in OPTIONS or name in values:
@@ -80,7 +91,7 @@ def parse_args(argv: list) -> tuple:
     policy_path = values.get("--policy")
     if not policy_path:
         ok = False
-    return host, policy_path, ok
+    return host, policy_path, ok, ask
 
 
 def record_evidence(event: str, hook_event: object = None, host: str | None = None, **fields) -> None:
@@ -117,8 +128,9 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy) -> li
     return fired
 
 
-def can_ask(host: str | None, event: dict) -> bool:
-    return host == CLAUDE_CODE and event.get("permission_mode") in ASK_PERMISSION_MODES
+def can_ask(host: str | None, event: dict, ask_enabled: bool = False) -> bool:
+    """Whether to return ask: only with --ask, and on Claude Code only in a mode where a person answers."""
+    return ask_enabled and host == CLAUDE_CODE and event.get("permission_mode") in ASK_PERMISSION_MODES
 
 
 def reason_for(effect: str, deciding: list) -> str:
@@ -137,7 +149,7 @@ def reason_for(effect: str, deciding: list) -> str:
     return "%s: %s.%s If this exact command is intentional, run it yourself in your own terminal." % (names, what, use)
 
 
-def decide(event: dict, host: str | None, policy: policy_module.Policy | None, today=None) -> dict:
+def decide(event: dict, host: str | None, policy: policy_module.Policy | None, today=None, ask_enabled: bool = False) -> dict:
     if not isinstance(event, dict):
         raise ValueError("hook event must be an object")
     if event.get("tool_name") != "Bash":
@@ -154,7 +166,7 @@ def decide(event: dict, host: str | None, policy: policy_module.Policy | None, t
     if not fired:
         return {}
     expired = policy.expired(today)
-    asking = can_ask(host, event)
+    asking = can_ask(host, event, ask_enabled)
     effects = []
     for rule in fired:
         mode = "monitor" if expired else rule.mode
@@ -191,7 +203,7 @@ def load_policy(event: dict, host: str | None, path: str | None, ok: bool):
 
 
 def main() -> int:
-    host, path, ok = parse_args(sys.argv[1:])
+    host, path, ok, ask_enabled = parse_args(sys.argv[1:])
     try:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:
@@ -200,7 +212,7 @@ def main() -> int:
         if not isinstance(event, dict):
             raise ValueError("hook event must be an object")
         policy = load_policy(event, host, path, ok) if event.get("tool_name") == "Bash" else None
-        result = decide(event, host, policy)
+        result = decide(event, host, policy, ask_enabled=ask_enabled)
     except Exception:
         # Any failure to read the event blocks: an ordinary non-zero exit would let the host run the command.
         record_evidence("input_error", host=host)
