@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code PreToolUse hook on Write, Edit, MultiEdit, and NotebookEdit: deny content that adds a literal credential or private-key block.
+"""PreToolUse hook on Claude Code's Write, Edit, MultiEdit, and NotebookEdit and Codex's apply_patch: deny content that adds a literal credential or private-key block.
 
 The check is catpilot_guard/write_secrets.py. This file is a shim at the path settings name. It
 looks for the catpilot_guard/ package next to itself (the layout deploy/org/install.sh places),

@@ -112,7 +112,11 @@ environment variable reference (`os.environ["AWS_ACCESS_KEY_ID"]`) or
   PEM private-key header (RSA, EC, DSA, OPENSSH, ENCRYPTED, and PGP PRIVATE
   KEY BLOCK variants) or a literal credential matching the 27 patterns in
   `catpilot_guard/secrets.py`.
-- Not covered: file reads, prompts, other tools, other hosts, and files a
+- Not covered: a credential the edit completes from text already in the
+  file (only added text is checked, for `Edit` and `apply_patch` alike: a
+  value added under an existing `password =` line, or a key body added
+  under an existing PEM header), file reads, prompts, other tools, other
+  hosts, and files a
   person edits themselves.
 - Failure behavior: if the hook cannot parse its input, the input is over
   1 MiB, the `catpilot_guard` package or its `secrets` module is missing, or
@@ -298,8 +302,19 @@ project-level hooks on 2026-11-17, before `--host` existed
 Codex sends file edits as `apply_patch`, with the patch in
 `tool_input.command`, whichever of `apply_patch`, `Edit` or `Write` the
 matcher names. `pretooluse-write-secrets.py` reads the lines the patch adds,
-so add it with `matcher = "^apply_patch$"` and `--host codex`. Not verified
-on a host.
+split on newlines the way Codex's own patch parser splits them. Not verified
+on a host:
+
+```toml
+[[hooks.PreToolUse]]
+matcher = "^apply_patch$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'python3 "/path/to/catpilot-ai-guardrails/hooks/claude-code/pretooluse-write-secrets.py" --host codex'
+timeout = 30
+```
+
 Managed Codex hooks through `/etc/codex/requirements.toml` are not set up by
 `deploy/org/install.sh` yet.
 

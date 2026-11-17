@@ -180,9 +180,6 @@ class WriteHookTests(unittest.TestCase):
             gate_file_write(None)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 def patch(*body: str) -> str:
     """A Codex apply_patch patch from its lines."""
@@ -263,3 +260,33 @@ class CodexApplyPatchTests(unittest.TestCase):
             text = log.read_text(encoding="utf-8")
             for fragment in ("SYNTHETIC-NOT-A-KEY", "secret-dir", "key.pem", "BEGIN RSA"):
                 self.assertNotIn(fragment, text)
+
+    def test_line_separators_codex_does_not_split_on_hide_nothing(self):
+        # Codex splits a patch on "\n" only; these are ordinary characters inside a line it writes.
+        for sep in ("\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            for hidden in ('GITHUB_TOKEN="' + SYNTHETIC_GITHUB_TOKEN + '"', KEY_BLOCK.splitlines()[0]):
+                with self.subTest(sep=repr(sep), hidden=hidden[:12]):
+                    self.assert_denied(run_hook(codex_event(patch("*** Add File: notes.md", "+# note" + sep + hidden))))
+                    self.assert_denied(run_hook(codex_event(patch("*** Update File: a.py", "@@", " x = 1", "+y = 2" + sep + hidden))))
+
+    def test_crlf_patches(self):
+        crlf = lambda text: text.replace("\n", "\r\n")
+        self.assert_denied(run_hook(codex_event(crlf(patch("*** Add File: k.pem", *KEY_LINES)))))
+        self.assert_no_decision(run_hook(codex_event(crlf(patch("*** Add File: notes.md", "+# Notes", "+hello")))))
+
+    def test_a_moved_file_with_an_added_key_is_denied(self):
+        self.assert_denied(run_hook(codex_event(patch("*** Update File: old.txt", "*** Move to: new.pem", "@@", " header", *KEY_LINES))))
+
+    def test_added_lines_are_not_joined_across_text_the_patch_keeps(self):
+        # In the file these two added lines are separated by the context line, so together they are not a token.
+        self.assert_no_decision(run_hook(codex_event(patch(
+            "*** Update File: docs.md", "@@", "+See Authorization: Bearer", " unrelated", "+some_long_identifier_name_here"))))
+
+    def test_an_oversized_patch_exits_two(self):
+        proc = run_hook(codex_event(patch("*** Add File: big.txt", "+" + "a" * 1_100_000)))
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.stdout, "")
+
+
+if __name__ == "__main__":
+    unittest.main()

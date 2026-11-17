@@ -81,7 +81,7 @@ PATCH_FILE_HEADER = re.compile(r"\*\*\* (?:Add|Update|Delete) File: ")
 
 
 def patch_added_text(patch: str) -> list[str]:
-    """The text a Codex patch adds, one string per file section.
+    """The text a Codex patch adds, one string per run of added lines.
 
     In Codex's patch format (*** Begin Patch, *** Add File: / *** Update File: /
     *** Delete File:, @@ hunks, *** End Patch) every added line starts with "+",
@@ -90,14 +90,34 @@ def patch_added_text(patch: str) -> list[str]:
     around the patch (a heredoc, or missing Begin and End markers) hides nothing.
     Removed and context lines are not added text: deleting a key is not a write
     of one.
+
+    Lines are split the way Codex's own parser splits them, on "\n" only, with
+    a "\r" before it dropped. Python's str.splitlines() would also split on
+    "\r", form feed, U+2028 and other separators that Codex writes into the file
+    as ordinary characters, so text after one of them would be checked as a line
+    of its own, without its "+", and skipped.
+
+    Added lines are joined only while they stay next to each other in the
+    resulting file: a context line, a hunk header, a file header or anything
+    else starts a new run, so a pattern cannot match across text the patch
+    leaves in between. Removed lines do not end a run: they are gone from the
+    file, and the added lines on either side of them become neighbours.
     """
-    sections: list[list[str]] = [[]]
-    for line in patch.splitlines():
-        if PATCH_FILE_HEADER.match(line):
-            sections.append([])
-        elif line.startswith("+"):
-            sections[-1].append(line[1:])
-    return ["\n".join(lines) + "\n" for lines in sections if lines]
+    runs: list[list[str]] = []
+    current: list[str] | None = None
+    for line in patch.split("\n"):
+        if line.endswith("\r"):
+            line = line[:-1]
+        if line.startswith("+"):
+            if current is None:
+                current = []
+                runs.append(current)
+            current.append(line[1:])
+        elif line.startswith("-") and not line.startswith("---") and current is not None:
+            continue
+        else:
+            current = None
+    return ["\n".join(lines) + "\n" for lines in runs]
 
 
 def added_text(tool_name: str, tool_input: object) -> list[str] | None:
