@@ -212,6 +212,7 @@ else
   echo "none yet: it appears after the first denied command or write"
 fi
 echo
-echo "$ok present, $missing missing, $failed failed. Next: start Claude Code and run /status (expect 'Enterprise managed settings'),"
-echo "then claude mcp list, then the test prompts in docs/DEPLOY_ORG.md."
+echo "$ok present, $missing missing, $failed failed. Next: start Claude Code and run /status. 'Setting sources' must name the"
+echo "file, as '(file)' or '(remote + file, merged)'. If 'Skipped sources' lists the file, the hooks are not running: see"
+echo "docs/DEPLOY_ORG.md. Then claude mcp list, then the test prompts in docs/DEPLOY_ORG.md."
 [ "$missing" -eq 0 ] && [ "$failed" -eq 0 ]
