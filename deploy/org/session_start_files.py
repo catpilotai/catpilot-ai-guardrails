@@ -3,10 +3,13 @@
 verify.sh and uninstall.sh. Advice, not enforcement: SessionStart cannot block on either host, and a
 CLAUDE.md shapes what the model does without enforcing anything.
 
-  settings --cc-dir DIR            read managed-settings.json on stdin, print it with the SessionStart hook added
-  requirements --codex-dir DIR [--no-rules]
+  settings --cc-dir DIR [--enforce]
+                                   read managed-settings.json on stdin, print it with the SessionStart hook added,
+                                   and with --enforce the company-rules PreToolUse hook too
+  requirements --codex-dir DIR [--no-rules] [--enforce]
                                    print the requirements.toml that declares the managed Codex hooks: the
-                                   PreToolUse checks always, and the SessionStart hook unless --no-rules
+                                   PreToolUse checks always, the SessionStart hook unless --no-rules, and the
+                                   company-rules PreToolUse hook with --enforce
   claude-md-place --block FILE --target FILE
                                    put the block in the managed CLAUDE.md between the marker comments: create the
                                    file, or replace only the marked section; a file without the markers is left
@@ -17,6 +20,10 @@ CLAUDE.md shapes what the model does without enforcing anything.
   verify-codex-hooks --codex-dir DIR --home DIR [--timeout SECONDS]
                                    verify.sh's checks of the managed Codex PreToolUse hooks: the files, each hook run
                                    directly on harmless probes, and each requirements.toml command run through a shell
+  verify-company-rules --cc-dir DIR --codex-dir DIR --home DIR [--timeout SECONDS]
+                                   verify.sh's checks of the company-rules hook on each tool with a compiled policy:
+                                   the files and their ownership, the policy loading, a probe for its first
+                                   protected_branch rule, and the hook as the managed file registers it
 
 What each host reads, from the vendors' documentation (read on 2026-11-16):
   Claude Code  the managed CLAUDE.md in the managed directory, /Library/Application Support/ClaudeCode/CLAUDE.md
@@ -68,7 +75,11 @@ CODEX_MATCHER_NAMES = {"Bash": ("Bash",), "apply_patch": ("apply_patch", "Edit",
 # [features] written as a dotted key or an inline table, which the minimal reader does not read.
 _FEATURES_ELSEWHERE = re.compile(r"^\s*([\"']?)features\1\s*(?:\.|=)", re.MULTILINE)
 CODEX_HOOK_FILES = tuple(name for _, _, names in CODEX_PRETOOLUSE for name in names)
-CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence")
+CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence", "policy", "company_rules")
+# The company-rules hook and the compiled policy it reads (install.sh --overlay, when the rules file has enforcement
+# rules). The policy sits under the tool's tree, root-owned like the hooks; the hook takes its path on its command line.
+COMPANY_HOOK = "pretooluse-company-rules.py"
+POLICY_NAME = "company-policy.json"
 # A managed directory is written into a double-quoted shell word and a TOML literal string, so it may hold none
 # of the characters either would read specially.
 UNSAFE_PATH = re.compile("[\"'\\\\$`\x00-\x1f\x7f]")
@@ -103,6 +114,15 @@ def hook_command(managed_dir: str, host: str) -> str:
     return '%s python3 "%s" --host %s' % (EVIDENCE_PREFIX, script, host)
 
 
+def policy_path(managed_dir: str) -> str:
+    return "%s/policy/%s" % (tree(checked_dir(managed_dir)), POLICY_NAME)
+
+
+def company_hook_command(managed_dir: str, host: str) -> str:
+    script = "%s/hooks/%s" % (tree(checked_dir(managed_dir)), COMPANY_HOOK)
+    return '%s python3 "%s" --host %s --policy "%s"' % (EVIDENCE_PREFIX, script, host, policy_path(managed_dir))
+
+
 def session_start_group(cc_dir: str) -> dict:
     return {
         "matcher": MATCHER,
@@ -110,11 +130,20 @@ def session_start_group(cc_dir: str) -> dict:
     }
 
 
-def settings_with_session_start(base: str, cc_dir: str) -> str:
-    """managed-settings.json with the SessionStart group appended to hooks, in the template's own layout."""
+def settings_with_session_start(base: str, cc_dir: str, enforce: bool = False) -> str:
+    """managed-settings.json with the SessionStart group appended to hooks, in the template's own layout, and with
+    enforce, a PreToolUse group on Bash that runs the company-rules hook with the compiled policy."""
     data = json.loads(base)
     if not isinstance(data, dict) or not isinstance(data.setdefault("hooks", {}), dict):
         raise UsageError("managed-settings.json must be a JSON object whose hooks key is an object")
+    if enforce:
+        pretooluse = data["hooks"].setdefault("PreToolUse", [])
+        if not isinstance(pretooluse, list):
+            raise UsageError("hooks.PreToolUse in managed-settings.json must be a list")
+        pretooluse.append({
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": company_hook_command(cc_dir, CLAUDE_CODE), "timeout": TIMEOUT_SECONDS}],
+        })
     groups = data["hooks"].setdefault("SessionStart", [])
     if not isinstance(groups, list):
         raise UsageError("hooks.SessionStart in managed-settings.json must be a list")
@@ -127,9 +156,10 @@ def codex_pretooluse_command(codex_dir: str, filename: str) -> str:
     return '%s python3 "%s" --host %s' % (EVIDENCE_PREFIX, script, CODEX)
 
 
-def requirements_toml(codex_dir: str, rules: bool = True) -> str:
+def requirements_toml(codex_dir: str, rules: bool = True, enforce: bool = False) -> str:
     """The requirements.toml install.sh writes: the blocking PreToolUse hooks always, the session-start hook with
-    the company rules (install.sh --overlay) only."""
+    the company rules (install.sh --overlay) only, and the company-rules hook when the rules file has enforcement
+    rules (enforce)."""
     managed_dir = tree(checked_dir(codex_dir)) + "/hooks"
     lines = [
         "# Catpilot Guardrails, written by deploy/org/install.sh: managed Codex hooks.",
@@ -143,6 +173,11 @@ def requirements_toml(codex_dir: str, rules: bool = True) -> str:
             "# SessionStart (install.sh --overlay): the company rules as developer context. Advice, not enforcement:",
             "# SessionStart cannot block.",
         ]
+    if enforce:
+        lines += [
+            "# PreToolUse company rules (install.sh --overlay, when the rules file has enforcement rules): the company's",
+            "# own rules from the compiled policy, in monitor, ask or block. Codex cannot ask, so ask acts as block.",
+        ]
     lines += ["", "[features]", "hooks = true", "", "[hooks]", 'managed_dir = "%s"' % managed_dir]
     for matcher, _, names in CODEX_PRETOOLUSE:
         lines += ["", "[[hooks.PreToolUse]]", 'matcher = "%s"' % matcher]
@@ -154,6 +189,17 @@ def requirements_toml(codex_dir: str, rules: bool = True) -> str:
                 "command = '%s'" % codex_pretooluse_command(codex_dir, name),
                 "timeout = %d" % TIMEOUT_SECONDS,
             ]
+    if enforce:
+        lines += [
+            "",
+            "[[hooks.PreToolUse]]",
+            'matcher = "^Bash$"',
+            "",
+            "[[hooks.PreToolUse.hooks]]",
+            'type = "command"',
+            "command = '%s'" % company_hook_command(codex_dir, CODEX),
+            "timeout = %d" % TIMEOUT_SECONDS,
+        ]
     if rules:
         lines += [
             "",
@@ -868,6 +914,179 @@ def verify_codex_hooks(codex_dir: Path, home: Path, timeout: int, prefer_tomllib
     return 0
 
 
+# --- verify the company-rules hook ------------------------------------------------------------------------------
+
+# What a compiled rule's mode does on each tool (catpilot_guard/company_rules.py): Claude Code asks in its default
+# permission mode, which the probe event sets; Codex cannot ask, so ask denies there.
+EXPECTED_EFFECT = {
+    CLAUDE_CODE: {"block": "deny", "ask": "ask", "monitor": "none"},
+    CODEX: {"block": "deny", "ask": "deny", "monitor": "none"},
+}
+EFFECT_WORDS = {"deny": "denies", "ask": "asks the person about", "none": "logs, without blocking,"}
+COMPANY_LOG = ".catpilot-guardrails/evidence.jsonl"  # where the registered command's own prefix sends evidence
+
+
+def company_event(host: str, command: str, cwd: Path) -> str:
+    event = {"session_id": "catpilot-verify", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+             "tool_input": {"command": command}, "cwd": str(cwd)}
+    if host == CLAUDE_CODE:
+        event["permission_mode"] = "default"
+    return json.dumps(event)
+
+
+def company_decision(result) -> str:
+    """"deny", "ask", "none" (the empty decision) or a sentence saying what went wrong."""
+    if isinstance(result, str):
+        return result
+    if result.returncode != 0:
+        return "exited %d instead of returning a decision (2 means it could not read the event or load the catpilot_guard package)" % result.returncode
+    try:
+        output = json.loads(result.stdout)
+    except ValueError:
+        return "printed no JSON decision"
+    if output == {}:
+        return "none"
+    try:
+        found = output["hookSpecificOutput"]["permissionDecision"]
+    except (TypeError, KeyError):
+        found = None
+    return found if found in ("deny", "ask") else "printed something other than a deny, an ask or the empty decision"
+
+
+def policy_errors(log: Path) -> list:
+    """The labels of the policy_error lines in an evidence log verify itself pointed the hook at."""
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    labels = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and entry.get("event") == "policy_error" and entry.get("hook") == "pretooluse-company-rules":
+            labels.append(str(entry.get("label")))
+    return labels
+
+
+def first_branch_probe(policy_file: Path):
+    """(rule id, mode, command, expired) for the policy's first protected_branch rule, or None. The command
+    force-pushes to a branch the rule covers; the caller never prints it."""
+    try:
+        data = json.loads(policy_file.read_text(encoding="utf-8"))
+        expired = dt.date.fromisoformat(data["expires_on"]) < dt.date.today()
+        for rule in data["rules"]:
+            if rule["kind"] == "protected_branch":
+                value = rule["values"][0]
+                branch = value[:-1] + "catpilot-verify" if value.endswith("/*") else value
+                return rule["id"], rule["mode"], "git push --force origin %s" % shlex.quote(branch), expired
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return None
+    return None
+
+
+def company_commands(host: str, managed: Path, prefer_tomllib: bool):
+    """(matcher, command) for each registration of the company-rules hook in the tool's managed file, the file, and
+    a sentence when the file cannot be read."""
+    if host == CLAUDE_CODE:
+        path = managed / "managed-settings.json"
+        try:
+            groups = (json.loads(path.read_text(encoding="utf-8")).get("hooks") or {}).get("PreToolUse")
+        except (OSError, ValueError, AttributeError):
+            return [], path, "%s cannot be read as JSON" % path
+    else:
+        path = managed / "requirements.toml"
+        try:
+            requirements, _ = read_toml(path, prefer_tomllib)
+            groups = (requirements.get("hooks") or {}).get("PreToolUse")
+        except (OSError, ValueError, AttributeError):
+            return [], path, "%s cannot be read as TOML" % path
+    found = []
+    for group in groups if isinstance(groups, list) else []:
+        for handler in (group.get("hooks") or []) if isinstance(group, dict) else []:
+            command = handler.get("command") if isinstance(handler, dict) else None
+            if isinstance(command, str) and COMPANY_HOOK in command:
+                found.append((group.get("matcher"), command))
+    return found, path, None
+
+
+def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, prefer_tomllib: bool = True) -> int:
+    """For each tool with a compiled policy: the files, the hook run directly on a harmless command and on a probe
+    for the first protected_branch rule, and the hook as the tool's managed file registers it. A policy the hook
+    refuses (wrong owner, writable by others, malformed) shows as a policy_error line, which is a FAIL here."""
+    report = Report()
+    for host, managed in ((CLAUDE_CODE, cc_dir), (CODEX, codex_dir)):
+        root = Path(tree(str(managed)))
+        policy_file = root / "policy" / POLICY_NAME
+        if not policy_file.exists():
+            report.line("skipped", "company-rules hook for %s: no compiled policy at %s" % (host, policy_file))
+            continue
+        report.present(policy_file)
+        hook = root / "hooks" / COMPANY_HOOK
+        if not report.present(hook):
+            continue
+        probe = first_branch_probe(policy_file)
+        runs = [("ls", "none", "a harmless command", "lets through")]
+        if probe is not None:
+            rule_id, mode, command, expired = probe
+            effective = "monitor" if expired else mode
+            expected = EXPECTED_EFFECT[host][effective]
+            runs.append((command, expected,
+                         "a force push to a branch rule %s protects (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else ""),
+                         EFFECT_WORDS[expected]))
+        else:
+            report.line("note", "the %s policy has no protected_branch rule, so only a harmless command is probed" % host)
+        log = home / ("verify-company-%s.jsonl" % host)
+        for command, expected, what, verb in runs:
+            env = clean_env(home)
+            env["CATPILOT_EVIDENCE_LOG"] = str(log)
+            try:
+                result = subprocess.run([sys.executable, str(hook), "--host", host, "--policy", str(policy_file)],
+                                        input=company_event(host, command, home), capture_output=True, encoding="utf-8",
+                                        errors="replace", timeout=timeout, env=env, cwd=str(home))
+            except subprocess.TimeoutExpired:
+                result = "did not finish within the %ds hook timeout" % timeout
+            except OSError as exc:
+                result = "could not start (%s)" % exc.__class__.__name__
+            got = company_decision(result)
+            if got == expected:
+                word = "passes" if command == "ls" else {"deny": "denies", "ask": "asks", "none": "logs"}[expected]
+                report.line(word, "%s --host %s %s %s" % (COMPANY_HOOK, host, verb, what))
+            else:
+                report.line("FAIL", "%s --host %s: expected it to %s %s, got %s" % (COMPANY_HOOK, host, expected, what, got))
+        for label in sorted(set(policy_errors(log))):
+            report.line("FAIL", "the company-rules hook for %s could not use its policy (%s); it applies no company rule "
+                        "until this is fixed: the policy and its directory must be owned like the hooks and writable only "
+                        "by their owner" % (host, label))
+        entries, managed_file, problem = company_commands(host, managed, prefer_tomllib)
+        if problem:
+            report.line("INVALID", problem)
+            continue
+        if not entries:
+            report.line("FAIL", "%s does not run %s, so the company rules are compiled but not enforced on %s" % (managed_file, COMPANY_HOOK, host))
+            continue
+        registered_log = home / COMPANY_LOG
+        try:
+            registered_log.unlink()  # this tool's runs only: the other tool's lines must not count against it
+        except OSError:
+            pass
+        for matcher, command in entries:
+            if not covers(matcher, "Bash", anchored=(host == CLAUDE_CODE)):
+                report.line("FAIL", "%s runs %s under a matcher that does not cover Bash" % (managed_file, COMPANY_HOOK))
+            if "CATPILOT_EVIDENCE_SYSLOG" in command:
+                report.line("skipped", "%s command for %s (it forwards evidence to syslog; check it in a session)" % (managed_file, COMPANY_HOOK))
+                continue
+            for probe_command, expected, what, verb in runs:
+                got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_command, home), home, timeout))
+                if got == expected:
+                    report.line("wired", "%s runs %s, which %s %s" % (managed_file, COMPANY_HOOK, verb, what))
+                else:
+                    report.line("FAIL", "%s command for %s: expected it to %s %s, got %s" % (managed_file, COMPANY_HOOK, expected, what, got))
+            for label in sorted(set(policy_errors(registered_log))):
+                report.line("FAIL", "%s runs %s with a policy it could not use (%s)" % (managed_file, COMPANY_HOOK, label))
+    return 0
+
 def _split(command: str) -> list:
     try:
         return shlex.split(command)
@@ -880,9 +1099,11 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="action")
     p = sub.add_parser("settings")
     p.add_argument("--cc-dir", required=True)
+    p.add_argument("--enforce", action="store_true", help="also the company-rules hook (a compiled policy)")
     p = sub.add_parser("requirements")
     p.add_argument("--codex-dir", required=True)
     p.add_argument("--no-rules", action="store_true", help="without the session-start hook (no --overlay)")
+    p.add_argument("--enforce", action="store_true", help="also the company-rules hook (a compiled policy)")
     p = sub.add_parser("claude-md-place")
     p.add_argument("--block", required=True, type=Path)
     p.add_argument("--target", required=True, type=Path)
@@ -897,12 +1118,19 @@ def main(argv=None) -> int:
     p.add_argument("--codex-dir", required=True, type=Path)
     p.add_argument("--home", required=True, type=Path)
     p.add_argument("--timeout", type=int, default=TIMEOUT_SECONDS)
+    p = sub.add_parser("verify-company-rules")
+    p.add_argument("--cc-dir", required=True, type=Path)
+    p.add_argument("--codex-dir", required=True, type=Path)
+    p.add_argument("--home", required=True, type=Path)
+    p.add_argument("--timeout", type=int, default=TIMEOUT_SECONDS)
     args = parser.parse_args(argv)
     try:
         if args.action == "settings":
-            print(settings_with_session_start(sys.stdin.read(), args.cc_dir))
+            print(settings_with_session_start(sys.stdin.read(), args.cc_dir, enforce=args.enforce))
         elif args.action == "requirements":
-            print(requirements_toml(args.codex_dir, rules=not args.no_rules))
+            if args.no_rules and args.enforce:
+                raise UsageError("--enforce comes with the company rules: it cannot be combined with --no-rules")
+            print(requirements_toml(args.codex_dir, rules=not args.no_rules, enforce=args.enforce))
         elif args.action == "claude-md-place":
             return place_claude_md(args.block, args.target)
         elif args.action == "claude-md-remove":
@@ -911,6 +1139,8 @@ def main(argv=None) -> int:
             return verify(args.cc_dir, args.codex_dir, args.home, args.timeout)
         elif args.action == "verify-codex-hooks":
             return verify_codex_hooks(args.codex_dir, args.home, args.timeout)
+        elif args.action == "verify-company-rules":
+            return verify_company_rules(args.cc_dir, args.codex_dir, args.home, args.timeout)
         else:
             parser.print_usage(sys.stderr)
             return 2

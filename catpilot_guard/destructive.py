@@ -327,7 +327,16 @@ def current_branch(cwd: str) -> str | None:
         return None
 
 
-def _git_finding(args: list[str], cwd: str) -> bool:
+def git_push_rewrites(args: list[str], cwd: str) -> tuple[bool, list[str | None]] | None:
+    """What a `git` command's push would rewrite or delete: None when it is not a push, else (mirror, branches).
+
+    `args` are git's arguments without its name. mirror is True for `--mirror`, which rewrites every branch.
+    branches are the destination branches a force push (--force, -f, --force-with-lease, --force-if-includes or a
+    +refspec), a deletion (--delete, -d, or an empty source `:branch`) aims at, with refs/heads/ stripped and HEAD
+    read as the checked-out branch ("" when that is unknown). A bare force push, with no refspec, adds the
+    checked-out branch, or None when it is detached or there is no repository. The built-in check
+    (_git_finding) and the company-rules hook (catpilot_guard/company_rules.py) both read pushes this way.
+    """
     index, repo = 0, cwd
     while index < len(args) and args[index].startswith("-"):
         if args[index] == "-C" and index + 1 < len(args):
@@ -338,7 +347,7 @@ def _git_finding(args: list[str], cwd: str) -> bool:
         else:
             index += 1
     if index >= len(args) or args[index] != "push":
-        return False
+        return None
     force = delete = mirror = False
     positional: list[str] = []
     for arg in args[index + 1:]:
@@ -355,23 +364,29 @@ def _git_finding(args: list[str], cwd: str) -> bool:
             delete = delete or "d" in arg[1:]
         else:
             positional.append(arg)
-    if mirror:
-        return True
-    for spec in positional[1:]:
-        plus = spec.startswith("+")
-        spec = spec.lstrip("+")
-        source, _, destination = spec.partition(":") if ":" in spec else (spec, "", spec)
-        destination = destination[len("refs/heads/"):] if destination.startswith("refs/heads/") else destination
-        if destination == "HEAD":
-            destination = current_branch(repo) or ""
-        if not PROTECTED_BRANCH.match(destination):
-            continue
-        if delete or plus or force or (":" in spec and source == ""):
-            return True
-    if force and len(positional) <= 1:
-        branch = current_branch(repo)
-        return branch is None or bool(PROTECTED_BRANCH.match(branch))
-    return False
+    branches: list[str | None] = []
+    if not mirror:
+        for spec in positional[1:]:
+            plus = spec.startswith("+")
+            spec = spec.lstrip("+")
+            source, _, destination = spec.partition(":") if ":" in spec else (spec, "", spec)
+            if not (delete or plus or force or (":" in spec and source == "")):
+                continue
+            destination = destination[len("refs/heads/"):] if destination.startswith("refs/heads/") else destination
+            if destination == "HEAD":
+                destination = current_branch(repo) or ""
+            branches.append(destination)
+        if force and len(positional) <= 1:
+            branches.append(current_branch(repo))
+    return mirror, branches
+
+
+def _git_finding(args: list[str], cwd: str) -> bool:
+    push = git_push_rewrites(args, cwd)
+    if push is None:
+        return False
+    mirror, branches = push
+    return mirror or any(branch is None or PROTECTED_BRANCH.match(branch) for branch in branches)
 
 
 def _kubectl_finding(args: list[str]) -> bool:

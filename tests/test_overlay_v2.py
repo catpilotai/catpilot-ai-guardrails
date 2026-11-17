@@ -656,22 +656,34 @@ class Rule9LintTests(V2Case):
     def test_monitor_rules_draw_no_warning(self):
         def all_monitor(d):
             d["enforcement"]["rules"][0]["mode"] = "monitor"
+            del d["enforcement"]["rules"][1]
         self.assertEqual(vo.lint_overlay(vo.validate_structure(self.mutated(all_monitor))), [])
         self.assertEqual(vo.lint_overlay(vo.validate_structure(load(EXAMPLE_V1))), [])
 
+    def test_a_kind_no_hook_acts_on_draws_a_warning(self):
+        warnings = vo.lint_overlay(vo.validate_structure(self.data))
+        self.assertIn(
+            "enforcement.rules[1] (deploy-hosts): kind deploy_host is validated and compiled, and no hook acts on it in this release",
+            warnings)
+        # It replaces the mode warnings for that rule: ask on a kind nothing enforces says only that.
+        data = self.mutated(lambda d: d["enforcement"]["rules"][1].update(mode="ask"))
+        self.assertEqual([w for w in vo.lint_overlay(vo.validate_structure(data)) if "(deploy-hosts)" in w],
+                         ["enforcement.rules[1] (deploy-hosts): kind deploy_host is validated and compiled, and no hook acts on it in this release"])
+
     def test_ask_and_unverified_block_warn_without_failing_validation(self):
         def modes(d):
-            d["enforcement"]["rules"][1]["mode"] = "ask"
+            d["enforcement"]["rules"].append({"id": "more-branches", "kind": "protected_branch", "mode": "ask", "values": ["stable"]})
         data = self.mutated(modes)
         self.assertValid(data)
         warnings = vo.lint_overlay(vo.validate_structure(data))
-        self.assertEqual(len(warnings), 2)
+        self.assertEqual(len(warnings), 3)
         self.assertIn("(protected-branches): mode block for kind protected_branch", warnings[0])
-        self.assertIn("(deploy-hosts): mode ask differs by host", warnings[1])
-        self.assertIn("acts as block", warnings[1])
+        self.assertIn("(deploy-hosts): kind deploy_host is validated and compiled", warnings[1])
+        self.assertIn("(more-branches): mode ask differs by host", warnings[2])
+        self.assertIn("acts as block", warnings[2])
         # default_mode applies to a rule with no mode of its own.
-        data = self.mutated(lambda d: d["enforcement"].update(default_mode="ask"))
-        self.assertTrue(any("(deploy-hosts): mode ask" in w for w in vo.lint_overlay(vo.validate_structure(data))))
+        data = self.mutated(lambda d: (d["enforcement"].update(default_mode="ask"), d["enforcement"]["rules"][0].pop("mode")))
+        self.assertTrue(any("(protected-branches): mode ask" in w for w in vo.lint_overlay(vo.validate_structure(data))))
 
     def test_the_cli_prints_warnings_and_still_passes(self):
         out, err = io.StringIO(), io.StringIO()
@@ -680,7 +692,7 @@ class Rule9LintTests(V2Case):
         self.assertEqual(code, 0, err.getvalue())
         self.assertIn("WARNING: enforcement.rules[0] (protected-branches)", err.getvalue())
         self.assertIn("OK: overlay for Example Org", out.getvalue())
-        self.assertIn("2 enforcement rules: validated only", out.getvalue())
+        self.assertIn("2 enforcement rules: `compile` writes them as the policy the company-rules hook reads", out.getvalue())
         for value in ("release/*", "hotfix/*", "apps.example.org", TEST_SALT):
             self.assertNotIn(value, out.getvalue() + err.getvalue())
 

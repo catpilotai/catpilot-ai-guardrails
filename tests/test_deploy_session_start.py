@@ -431,7 +431,7 @@ class SessionStartDeployTests(unittest.TestCase):
         self.assertTrue(settings.exists())
         self.assertTrue(requirements.exists())
         self.assertIn(f"kept    {settings} (edited since install; remove the catpilot keys by hand: the hooks entries that run "
-                      "catpilot-guardrails/hooks/, SessionStart included", uninstall.stdout)
+                      "catpilot-guardrails/hooks/, SessionStart and the company-rules hook included", uninstall.stdout)
         self.assertIn(f"kept    {requirements} (edited since install; remove by hand the [hooks] managed_dir", uninstall.stdout)
         self.assertFalse((self.cc / "CLAUDE.md").exists())
         # The kept files still run hooks from these directories, so they stay until those entries are removed.

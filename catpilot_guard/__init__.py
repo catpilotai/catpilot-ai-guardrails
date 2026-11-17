@@ -3,6 +3,8 @@
   secrets        a literal credential in a shell command
   write_secrets  a literal credential or private-key block in a file write or edit
   destructive    a high-blast-radius shell command
+  company_rules  the company's own enforcement rules, from the compiled policy that policy.py reads
+                 (tools/validate_overlay.py compile), in monitor, ask or block
 
 Each module reads one Claude Code PreToolUse event on stdin in main() and prints a deny
 decision or nothing. The files in hooks/claude-code/ are thin shims that run main(), and

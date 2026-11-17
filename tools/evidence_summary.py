@@ -4,7 +4,8 @@
 Reads one or more files written by CATPILOT_EVIDENCE_LOG from the Claude Code
 hooks (pretooluse-secrets, pretooluse-write-secrets, pretooluse-destructive-ops; entries
 from before the write hook's rename, logged as pretooluse-write-private-key, are counted
-under its new name)
+under its new name), the company-rules hook (pretooluse-company-rules: deny, ask and
+would_deny per rule id, and policy errors by label)
 and the reference MCP server (get_guidance, check_plan, get_template, list_approved).
 
 Because the evidence log never records command text, file paths, file content,
@@ -38,6 +39,8 @@ def summarize_lines(lines: list[str]) -> dict[str, Any]:
     hook_denials_by_tool: Counter[str] = Counter()
     hook_input_errors: Counter[str] = Counter()
     unique_sessions: set[str] = set()
+    company_by_rule: dict[str, Counter[str]] = {}
+    company_policy_errors: Counter[str] = Counter()
 
     mcp_calls_by_tool: Counter[str] = Counter()
     mcp_errors: Counter[str] = Counter()
@@ -80,16 +83,22 @@ def summarize_lines(lines: list[str]) -> dict[str, Any]:
 
         source = entry.get("source")
         if source == "claude-code-hook":
-            # Hook sessions only: session-start lines carry a session id on every session, denial or not.
+            event = entry.get("event")
+            # Hook sessions with a denial, an ask or an input error. Session-start lines carry a session id on every
+            # session, and the company-rules hook's would_deny and policy_error lines block nothing.
             sid = entry.get("session_id")
-            if isinstance(sid, str) and sid:
+            if isinstance(sid, str) and sid and event not in ("would_deny", "policy_error"):
                 unique_sessions.add(sid)
             hook = str(entry.get("hook") or "unknown")
             hook = HOOK_ALIASES.get(hook, hook)
-            event = entry.get("event")
+            rule_id = entry.get("rule_id")
+            if event in ("deny", "ask", "would_deny") and isinstance(rule_id, str) and rule_id:
+                company_by_rule.setdefault(rule_id, Counter())[event] += 1
+            elif event == "policy_error":
+                company_policy_errors[str(entry.get("label") or "unknown")] += 1
             if event == "deny":
                 hook_denials_by_hook[hook] += 1
-                label = str(entry.get("label") or "unknown")
+                label = str(entry.get("label") or (f"company rule {rule_id}" if isinstance(rule_id, str) and rule_id else "unknown"))
                 hook_denials_by_label[label] += 1
                 tool = str(entry.get("tool") or "unknown")
                 hook_denials_by_tool[tool] += 1
@@ -142,6 +151,13 @@ def summarize_lines(lines: list[str]) -> dict[str, Any]:
             "denials_by_tool": dict(sorted(hook_denials_by_tool.items())),
             "input_errors_by_hook": dict(sorted(hook_input_errors.items())),
         },
+        "company_rules": {
+            "by_rule": {
+                rule: {event: counts.get(event, 0) for event in ("deny", "ask", "would_deny")}
+                for rule, counts in sorted(company_by_rule.items())
+            },
+            "policy_errors": dict(sorted(company_policy_errors.items())),
+        },
         "mcp_server": {
             "total_calls": sum(mcp_calls_by_tool.values()),
             "calls_by_tool": dict(sorted(mcp_calls_by_tool.items())),
@@ -185,6 +201,22 @@ def render_markdown(summary: dict[str, Any]) -> str:
         out += ["", "| Denials by pattern / label | Count |", "| --- | --- |"]
         for label, count in hooks["denials_by_label"].items():
             out.append(f"| `{label}` | {count} |")
+    company = summary["company_rules"]
+    if company["by_rule"] or company["policy_errors"]:
+        out += [
+            "",
+            "## Company rules (`pretooluse-company-rules`)",
+            "",
+            "`would_deny` counts what a rule in monitor mode, or an expired rules file, would have blocked.",
+        ]
+        if company["by_rule"]:
+            out += ["", "| Rule | deny | ask | would_deny |", "| --- | --- | --- | --- |"]
+            for rule, counts in company["by_rule"].items():
+                out.append(f"| `{rule}` | {counts['deny']} | {counts['ask']} | {counts['would_deny']} |")
+        if company["policy_errors"]:
+            out += ["", "| Policy errors (no company rule applied) | Count |", "| --- | --- |"]
+            for label, count in company["policy_errors"].items():
+                out.append(f"| `{label}` | {count} |")
     out += [
         "",
         "## Guidance lookups (`mcp-server`)",

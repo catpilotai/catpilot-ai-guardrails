@@ -35,9 +35,9 @@ except ImportError:  # Windows has no fcntl: each line is still one write, witho
     fcntl = None
 
 SCHEMA_VERSION = 1
-# The closed list. Written today: deny and input_error (hooks), lookup (server), and rules_delivered,
-# rules_expired and policy_error (the session-start script). ask and would_deny are reserved for the
-# company-rules hooks; see docs/spec/EVIDENCE.md.
+# The closed list. Written today: deny and input_error (hooks), ask, would_deny and policy_error (the
+# company-rules hook), lookup (server), and rules_delivered, rules_expired and policy_error (the session-start
+# script); see docs/spec/EVIDENCE.md.
 EVENTS = ("rules_delivered", "rules_expired", "deny", "ask", "would_deny", "policy_error", "input_error", "lookup")
 MODES = ("monitor", "ask", "block")
 

@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from catpilot_guard import destructive, evidence, secrets, write_secrets
+from catpilot_guard import company_rules, destructive, evidence, secrets, write_secrets
 from tools import evidence_summary
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -212,7 +212,8 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(props["mode"]["enum"], list(evidence.MODES))
         self.assertEqual(props["source"]["enum"], [evidence.HOOK_SOURCE, evidence.SERVER_SOURCE, evidence.SESSION_START_SOURCE])
         self.assertEqual(props["host"]["enum"], [evidence.CLAUDE_CODE, evidence.CODEX])
-        self.assertEqual(props["hook"]["enum"], [module.HOOK_NAME for module in CHECKS.values()])
+        # The company-rules hook is not in CHECKS: it needs a policy to decide (tests/test_company_rules.py).
+        self.assertEqual(props["hook"]["enum"], [module.HOOK_NAME for module in CHECKS.values()] + [company_rules.HOOK_NAME])
         for name, (pattern, longest) in evidence.CHECKED.items():
             with self.subTest(field=name):
                 # The writer refuses exactly what the schema refuses.

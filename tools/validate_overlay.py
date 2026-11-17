@@ -20,12 +20,15 @@ both versions.
 
 A passing overlay is structurally valid. The validator does not know whether
 the listed hosting or services are actually approved; a named reviewer does.
-In this release nothing reads `enforcement` and nothing acts on a mode: the
-rules are validated only.
 
 `python tools/validate_overlay.py migrate FILE` prints a version 1 file as
 version 2 (OVERLAY_V2.md §2.4). `python tools/validate_overlay.py salt FILE`
 sets a new random `salt` in a version 2 file, changing no other line.
+`python tools/validate_overlay.py compile FILE --out POLICY` validates the file
+and writes `enforcement` as the JSON policy the company-rules hook reads
+(catpilot_guard/company_rules.py), with each rule's mode resolved. In this
+release the hook acts on `protected_branch` rules; `deploy_host` rules are
+validated and compiled, and nothing acts on them yet.
 """
 
 from __future__ import annotations
@@ -33,10 +36,14 @@ from __future__ import annotations
 import argparse
 import copy
 import datetime as dt
+import hashlib
 import ipaddress
+import json
+import os
 import re
 import secrets
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -115,9 +122,16 @@ RULE_KINDS = ("protected_branch", "deploy_host", "package_registry", "cloud_acco
 ACCEPTED_KINDS = ("protected_branch", "deploy_host")
 # Allow-list kinds whose values must not appear in model-facing text (§6.3 rule 7).
 HOST_KINDS = ("deploy_host", "package_registry", "cloud_account")
-# Kinds with a host verification note for their consumer. None yet: no hook reads
-# enforcement in this release, so `block` on any kind draws a lint warning (§6.3 rule 9).
+# Kinds a hook acts on in this release, through the compiled policy (`compile`) and the
+# company-rules hook (catpilot_guard/company_rules.py). A rule of another accepted kind is
+# validated and compiled, and nothing acts on it yet.
+ENFORCED_KINDS = ("protected_branch",)
+# Kinds with a host verification note for their consumer. None yet, so `block` on any kind
+# draws a lint warning until a host check records one (§6.3 rule 9).
 HOST_VERIFIED_KINDS: tuple[str, ...] = ()
+# The compiled policy's format (catpilot_guard/policy.py reads it).
+POLICY_FORMAT = "catpilot-company-policy"
+POLICY_FORMAT_VERSION = 1
 # The approved lists `use_instead` may name (§6.3 rule 6).
 USE_INSTEAD_LISTS = (("hosting", "approved"), ("services", "approved"))
 
@@ -827,7 +841,9 @@ def lint_overlay(overlay: dict) -> list[str]:
 
     - `ask` has no prompt on Codex, in the pull-request check or in a run with
       nobody to answer, and acts as `block` there (decision 2);
-    - `block` on a kind whose consumer has no host verification note yet.
+    - `block` on a kind whose consumer has no host verification note yet;
+    - a kind no hook acts on in this release (ENFORCED_KINDS), in place of the
+      two above, since its mode does nothing yet.
 
     Exceptions near expiry come with exceptions, in the next increment.
     """
@@ -838,6 +854,10 @@ def lint_overlay(overlay: dict) -> list[str]:
     for i, rule in enumerate(enforcement["rules"]):
         mode = rule.get("mode", enforcement["default_mode"])
         where = f"enforcement.rules[{i}] ({rule['id']})"
+        if rule["kind"] not in ENFORCED_KINDS:
+            # Its mode does nothing yet, so this is the one thing to say about it.
+            warnings.append(f"{where}: kind {rule['kind']} is validated and compiled, and no hook acts on it in this release")
+            continue
         if mode == "ask":
             warnings.append(
                 f"{where}: mode ask differs by host; where no prompt is possible (Codex, the pull-request check, "
@@ -1055,6 +1075,128 @@ def migrate_main(argv: list[str]) -> int:
     return 0
 
 
+# ----------------------------------------------------------------- compile (§2.2)
+
+
+def compile_policy(overlay: dict, raw: bytes) -> dict | None:
+    """The JSON policy the company-rules hook reads, for a validated overlay; None without enforcement rules.
+
+    Each rule keeps its id, kind and values, gets its mode resolved (its own, else
+    default_mode), and has use_instead resolved to the approved item's text. The policy
+    also carries the file's expires_on and the SHA-256 of its bytes. Nothing else from
+    the file is copied: no other list, no owner, no salt.
+    """
+    enforcement = overlay.get("enforcement")
+    if not enforcement:
+        return None
+    texts = {}
+    for group, key in USE_INSTEAD_LISTS:
+        for item in overlay[group][key]:
+            for name in [item["id"], *item.get("aliases", [])]:
+                texts[name] = item["text"]
+    rules = []
+    for rule in enforcement["rules"]:
+        out = {
+            "id": rule["id"],
+            "kind": rule["kind"],
+            "mode": rule.get("mode", enforcement["default_mode"]),
+            "values": list(rule["values"]),
+        }
+        if "use_instead" in rule:
+            out["use_instead_text"] = texts[rule["use_instead"]]
+        rules.append(out)
+    return {
+        "format": POLICY_FORMAT,
+        "format_version": POLICY_FORMAT_VERSION,
+        "source_sha256": hashlib.sha256(raw).hexdigest(),
+        "expires_on": overlay["expires_on"].isoformat(),
+        "rules": rules,
+    }
+
+
+def policy_text(policy: dict) -> str:
+    """The policy as compile writes it: the same input gives byte-identical output (§6.2)."""
+    return json.dumps(policy, indent=2, sort_keys=True) + "\n"
+
+
+# What each mode does on each tool (§2.3, decision 2), for the table compile prints.
+HOST_EFFECTS = {
+    "block": ("deny", "deny"),
+    "ask": ("ask the person; deny where nobody can answer", "deny (Codex cannot ask)"),
+    "monitor": ("log would_deny only", "log would_deny only"),
+}
+
+
+def effective_modes(policy: dict) -> list[str]:
+    """One line per rule: id, kind, mode, and what it does on Claude Code and on Codex. Never a value."""
+    lines = ["rule | kind | mode | Claude Code | Codex"]
+    for rule in policy["rules"]:
+        if rule["kind"] in ENFORCED_KINDS:
+            claude_code, codex = HOST_EFFECTS[rule["mode"]]
+        else:
+            claude_code = codex = "not enforced in this release"
+        lines.append(f"{rule['id']} | {rule['kind']} | {rule['mode']} | {claude_code} | {codex}")
+    return lines
+
+
+def write_policy(path: Path, text: str) -> None:
+    """Write the policy beside its destination and move it into place, mode 644. A symlink is refused."""
+    if path.is_symlink():
+        raise OverlayError(f"{path}: symlinks are not allowed")
+    directory = path.parent if str(path.parent) else Path(".")
+    fd, temporary = tempfile.mkstemp(prefix=".catpilot-policy.", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def compile_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="validate_overlay.py compile",
+        description="Validate a company rules file and write the JSON policy the company-rules hook reads: the "
+        "enforcement rules with their modes resolved, expires_on and the file's SHA-256. A file without enforcement "
+        "rules writes nothing. Prints each rule's effect per tool; never prints a listed value.",
+    )
+    parser.add_argument("overlay", type=Path)
+    parser.add_argument("--out", type=Path, required=True, help="where to write the policy (replaced if present)")
+    parser.add_argument("--allow-host", action="append", default=[], help="hostname allowed in templates[].location and intake_url (repeatable)")
+    args = parser.parse_args(argv)
+    try:
+        data, raw = load_overlay_file(args.overlay)
+        overlay, errors = validate_overlay(data, set(args.allow_host))
+        if errors:
+            for error in errors:
+                print(f"INVALID: {error}", file=sys.stderr)
+            return 1
+        policy = compile_policy(overlay, raw)
+        if policy is None:
+            print("no enforcement rules in this file: nothing to compile, and no policy was written", file=sys.stderr)
+            return 0
+        write_policy(args.out, policy_text(policy))
+    except (OSError, OverlayError) as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 1
+    for warning in lint_overlay(overlay):
+        print(f"WARNING: {warning}", file=sys.stderr)
+    for line in effective_modes(policy):
+        print(line)
+    count = len(policy["rules"])
+    print(
+        f"compiled {count} enforcement rule{'' if count == 1 else 's'}, expiring {policy['expires_on']}, to {args.out}. "
+        "Install it root-owned, mode 644, where the company-rules hook's --policy names it.",
+        file=sys.stderr,
+    )
+    return 0
+
+
 _SALT_LINE = re.compile(r"^salt:(?P<value>[^\r\n]*?)(?P<comment>[ \t]+#[^\r\n]*)?(?P<cr>\r?)$", re.MULTILINE)
 _ENFORCEMENT_LINE = re.compile(r"^enforcement:", re.MULTILINE)
 
@@ -1123,8 +1265,10 @@ def main(argv: list[str] | None = None) -> int:
         return migrate_main(argv[1:])
     if argv[:1] == ["salt"]:
         return salt_main(argv[1:])
+    if argv[:1] == ["compile"]:
+        return compile_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("overlay", type=Path, help="the file to validate; `migrate FILE` converts a version 1 file and `salt FILE` sets a new salt instead")
+    parser.add_argument("overlay", type=Path, help="the file to validate; `migrate FILE` converts a version 1 file, `salt FILE` sets a new salt, and `compile FILE --out POLICY` writes the hook's policy instead")
     parser.add_argument("--allow-host", action="append", default=[], help="hostname allowed in templates[].location and intake_url (repeatable)")
     args = parser.parse_args(argv)
     try:
@@ -1146,8 +1290,8 @@ def main(argv: list[str] | None = None) -> int:
     if overlay["schema_version"] == 2:
         rules = len((overlay.get("enforcement") or {}).get("rules", []))
         message += (
-            f" Version 2, {rules} enforcement rule{'' if rules == 1 else 's'}: validated only; in this release no hook or "
-            "check reads them and nothing acts on a mode."
+            f" Version 2, {rules} enforcement rule{'' if rules == 1 else 's'}: `compile` writes them as the policy the "
+            "company-rules hook reads, which acts on protected_branch rules in this release."
         )
     print(message)
     return 0
