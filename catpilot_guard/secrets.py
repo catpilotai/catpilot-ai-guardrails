@@ -38,6 +38,8 @@ from pathlib import Path
 import re
 import sys
 
+from . import write_decision, write_reason
+
 MAX_INPUT_BYTES = 1_048_576
 
 # (label, compiled pattern). Patterns are conservative on length and charset
@@ -253,14 +255,11 @@ def main() -> int:
         # Any failure, not only malformed input, blocks: a hook that crashes with an
         # ordinary non-zero exit would let the host run the command.
         record_evidence("input_error")
-        print(
+        write_reason(
             "Catpilot secret check could not read the hook input, so the command was not allowed. "
-            "Review the command and retry.",
-            file=sys.stderr,
-        )
+            "Review the command and retry.")
         return 2
-    print(json.dumps(result))
-    return 0
+    return write_decision(result)
 
 
 if __name__ == "__main__":

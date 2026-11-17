@@ -206,7 +206,8 @@ Text inside quotes is not a command, so `echo "rm -rf /"` and
 ## When a hook cannot start
 
 Each hook fails closed once Python is running: malformed input, a missing
-`catpilot_guard` package, or an internal error exits 2, which blocks. Before
+`catpilot_guard` package, an internal error, or a decision it cannot write
+(for example, the host closed the pipe) exits 2, which blocks. Before
 that point it cannot. If the `python3` in the hook command is missing, is the
 macOS Command Line Tools stub on a machine without the tools, or is older than
 3.8, the command exits with another code, which Claude Code treats as a

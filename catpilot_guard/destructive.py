@@ -69,6 +69,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import write_decision, write_reason
+
 MAX_INPUT_BYTES = 1_048_576
 
 # --- whole-command signatures (cloud and infrastructure CLIs) -------------------------------
@@ -649,14 +651,11 @@ def main() -> int:
     except Exception:
         # Any failure blocks: an ordinary non-zero exit would let the host run the command.
         record_evidence("input_error")
-        print(
+        write_reason(
             "Catpilot destructive-operation check could not read the hook input, so the command was not allowed. "
-            "Review the command and retry.",
-            file=sys.stderr,
-        )
+            "Review the command and retry.")
         return 2
-    print(json.dumps(result))
-    return 0
+    return write_decision(result)
 
 
 if __name__ == "__main__":
