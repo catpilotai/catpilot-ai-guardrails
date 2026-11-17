@@ -18,7 +18,8 @@ writes the shipped `company-checklist` target, and is re-exported here with
 `load_overlay` reads back the overlay YAML a `Sandbox` for arm C, D, or F points
 at, for the deterministic values-cited scanners in `scanners.py`, which need
 its actual approved-hosting, approved-service, and contact entries to check
-an answer against.
+an answer against. A version 2 file comes back as its version 1 projection:
+item texts only, no ids and no `enforcement`.
 
 Nothing is written inside the repository: the project directory is a system
 temporary directory the caller owns and removes.
@@ -34,6 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import yaml
+
+from tools import validate_overlay
 
 # Re-exported from the shared renderer. Arm E plants CHECKLIST_INSTRUCTION, the
 # cheap-baseline counterpart to arm D's instruction, in the same file and the
@@ -268,14 +271,26 @@ def load_overlay(overlay_file: Path | None) -> dict | None:
     read or does not parse as a mapping -- callers treat that the same as "no
     overlay", not as an error: a missing overlay means nothing was configured
     to be cited yet, which is exactly what an empty policy would also mean.
+
+    A version 1 file comes back as parsed. A version 2 file comes back as its
+    version 1 projection (`validate_overlay.v1_projection`), or None when it
+    does not validate: the scanners read phrases, and `enforcement` stays out
+    of a run's evidence.
     """
     if overlay_file is None:
         return None
     try:
-        data = yaml.safe_load(Path(overlay_file).read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+        data = validate_overlay.parse_yaml(Path(overlay_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError, yaml.YAMLError):  # a duplicate key is an OverlayError, a ValueError
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema_version") == 2:
+        try:
+            return validate_overlay.v1_projection(validate_overlay.validate_structure(data))
+        except validate_overlay.OverlayError:
+            return None
+    return data
 
 
 def snapshot(project: Path) -> dict[str, str]:

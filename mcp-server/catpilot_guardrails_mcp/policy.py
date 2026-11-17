@@ -3,6 +3,12 @@
 The overlay path and template hosts come from process configuration only,
 never from a tool argument, so a prompt cannot point the server at another
 file. Local file ownership is the trust boundary of this reference server.
+
+A version 2 file is validated whole, `enforcement` included, and the tools
+then see only its version 1 projection: each item's text, with no ids,
+aliases or `enforcement` (docs/spec/OVERLAY_V2.md §2.2). No answer can
+depend on an enforcement value, so a caller cannot learn one by guessing.
+`source.sha256` stays the SHA-256 of the whole file.
 """
 
 from __future__ import annotations
@@ -25,6 +31,12 @@ class PolicyState:
     overlay: dict | None = None
     source: dict = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # Every PolicyState, including one a host's policy_provider builds, holds
+        # the version 1 projection: the tools never see `enforcement`.
+        if isinstance(self.overlay, dict):
+            self.overlay = validate_overlay.v1_projection(self.overlay)
+
     @property
     def approved(self) -> bool:
         return self.status == "approved"
@@ -45,7 +57,9 @@ def load_policy(path: str | None, allowed_hosts: set[str] | None = None, now: dt
         overlay = validate_overlay.validate_structure(data)
     except FileNotFoundError:
         return PolicyState("missing", "The configured overlay file does not exist.")
-    except (OSError, validate_overlay.OverlayError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
+        # OverlayError is a ValueError. The others are a backstop: a file nested too deeply to
+        # parse, or an impossible date, is an invalid policy, never an exception out of a tool.
         return PolicyState("invalid", f"The configured overlay did not validate: {exc.__class__.__name__}.")
     today = now or dt.date.today()
     source = {

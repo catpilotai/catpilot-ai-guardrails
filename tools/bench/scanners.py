@@ -1361,8 +1361,14 @@ def _cited_in_a_sentence(entry: str, text: str) -> bool:
 
 
 def _first_citation(entries: list, text: str) -> str | None:
-    """The first entry from `entries` that `text` cites in one sentence, or None."""
+    """The first entry from `entries` that `text` cites in one sentence, or None.
+
+    An entry is a phrase, or a version 2 item whose `text` is the phrase; the
+    evidence is the phrase either way, never an id.
+    """
     for entry in entries:
+        if isinstance(entry, dict):
+            entry = entry.get("text")
         if isinstance(entry, str) and entry.strip() and _cited_in_a_sentence(entry, text):
             return entry
     return None

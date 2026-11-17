@@ -2,7 +2,7 @@
 
 **Status:** Active. Schema: [`overlay.schema.json`](./overlay.schema.json). Example: [`overlay.example.yaml`](./overlay.example.yaml).
 **Companion to:** [`SKILL_FORMAT.md`](./SKILL_FORMAT.md) (slots) and [`PACKAGING.md`](./PACKAGING.md) (private builds).
-**Next version:** [`OVERLAY_V2.md`](./OVERLAY_V2.md) describes `schema_version: 2` (stable rule ids, a machine-only `enforcement` section and a mode per enforcement rule), approved on 2026-11-17; it is not implemented yet, and this file describes the only version the tools accept.
+**Next version:** [`OVERLAY_V2.md`](./OVERLAY_V2.md) describes `schema_version: 2` (stable rule ids, a machine-only `enforcement` section and a mode per enforcement rule), approved on 2026-11-17. The tools now accept both versions: schema [`overlay.v2.schema.json`](./overlay.v2.schema.json), example [`overlay.v2.example.yaml`](./overlay.v2.example.yaml), and `python tools/validate_overlay.py migrate FILE` converts a version 1 file. Version 1 files stay valid unchanged and render exactly as before; this file describes version 1. Version 2's `enforcement` section is validated only: nothing reads it yet.
 
 ---
 

@@ -54,3 +54,10 @@ jobs:
 
       - name: Validate the synthetic overlay example
         run: python tools/validate_overlay.py docs/spec/overlay.example.yaml --allow-host intranet.example.org
+
+      - name: Validate the synthetic version 2 overlay example with its own salt
+        # The shipped salt is published, so the validator rejects it by design.
+        run: |
+          cp docs/spec/overlay.v2.example.yaml "$RUNNER_TEMP/overlay.v2.yaml"
+          python tools/validate_overlay.py salt "$RUNNER_TEMP/overlay.v2.yaml"
+          python tools/validate_overlay.py "$RUNNER_TEMP/overlay.v2.yaml"

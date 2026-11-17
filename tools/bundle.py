@@ -31,7 +31,8 @@ Slots and overlays (docs/spec/OVERLAY.md):
   - Component bodies may contain {{slot}} markers. The public build renders
     every slot from the generic defaults in the tier's bundle.toml. A private
     build (--overlay) renders them from a validated organization overlay and
-    writes outside this repository (--private-out).
+    writes outside this repository (--private-out). A version 2 overlay
+    renders each item's text, never its id or `enforcement`.
   - The public build refuses to run if an overlay-shaped YAML file exists
     under src/, skills/, or dist/.
 
@@ -395,7 +396,13 @@ def render_slots(text: str, values: dict | None, where: str) -> str:
 
 
 def overlay_slot_values(overlay: dict, defaults: dict) -> dict:
-    """Merge validated overlay values over the tier defaults. Additive only."""
+    """Merge validated overlay values over the tier defaults. Additive only.
+
+    Slots render each item's text only (OVERLAY_V2.md §2.1): a version 2
+    overlay is read through its version 1 projection, with no ids, aliases or
+    `enforcement`, so the skill text is the same as for the version 1 file.
+    """
+    overlay = validate_overlay.v1_projection(overlay)
     values = dict(defaults)
     values["owner"] = overlay["owner"]
     values["organization"] = overlay["organization"]
@@ -424,7 +431,12 @@ def overlay_slot_values(overlay: dict, defaults: dict) -> dict:
 
 
 def overlay_values_block(overlay: dict) -> str:
-    """Compact company-values paragraph for paste-size targets built from an overlay."""
+    """Compact company-values paragraph for paste-size targets built from an overlay.
+
+    Reads a version 2 overlay through its version 1 projection, as the slots do.
+    """
+    overlay = validate_overlay.v1_projection(overlay)
+
     def join(items: list[str]) -> str:
         return "; ".join(i.rstrip(".") for i in items)
     return (
@@ -903,7 +915,13 @@ def build_tier(
     values = dict(cfg["slots"]) if cfg.get("slots") else None
     overlay_meta = None
     bundle_name = cfg["name"]
+    # What a model may see of the rules file: the company-checklist block shows
+    # the model-facing parts (ids and text in version 2); every other output is
+    # rendered from the version 1 projection. Neither holds `enforcement`.
+    checklist_overlay = None
     if overlay is not None:
+        checklist_overlay = validate_overlay.model_facing(overlay)
+        overlay = validate_overlay.v1_projection(overlay)
         if values is None:
             raise ValueError(f"{tier_dir}: this tier has no slots, so an overlay cannot be applied")
         values = overlay_slot_values(overlay, values)
@@ -969,13 +987,13 @@ def build_tier(
             hosts_dir = dist_root / f"{bundle_name}-hosts"
             if hosts_dir.exists():
                 shutil.rmtree(hosts_dir)
-            block = company_checklist.render(overlay, overlay_bytes or b"")
+            block = company_checklist.render(checklist_overlay, overlay_bytes or b"")
             targets_module.render_all(
                 cfg, skills, rendered_bodies, rendered, hosts_dir, [t for t in enabled if t != "web"],
                 manifest_json=manifest_json,
                 bundle_name=bundle_name, values_block=overlay_values_block(overlay), install_source=install_source or "<your private repository>",
                 company_checklist=block,
-                company_checklist_sidecar=company_checklist.sidecar(overlay, overlay_bytes or b"", block, cfg["version"]),
+                company_checklist_sidecar=company_checklist.sidecar(checklist_overlay, overlay_bytes or b"", block, cfg["version"]),
             )
     return bundle_dir
 

@@ -15,6 +15,10 @@ as one.
 Beside the block, a private build writes `company-checklist.json`, the
 sidecar from `sidecar()`: what the session-start script
 (`catpilot_guard/session_start.py`) needs at run time, and no rule text.
+
+A version 2 rules file renders only its model-facing parts
+(`validate_overlay.model_facing`): ids and text, never `enforcement` and
+never aliases. A version 1 file renders exactly as before.
 """
 
 from __future__ import annotations
@@ -63,7 +67,9 @@ def validated_company_overlay(overlay_file: Path) -> tuple[dict, bytes]:
     overlay, errors = validate_overlay.validate_overlay(data, hosts)
     if errors:
         raise ValueError("company overlay did not validate: " + "; ".join(errors))
-    return overlay, raw
+    # Only the model-facing parts leave this function: a version 2 file's
+    # enforcement section never reaches a renderer or a benchmark arm.
+    return validate_overlay.model_facing(overlay), raw
 
 
 def render(overlay: dict, raw: bytes) -> str:
@@ -76,8 +82,13 @@ def render(overlay: dict, raw: bytes) -> str:
     information than the server. The source hash identifies the exact input
     without exposing its local path. No trailing newline: a file that holds
     the block adds one.
+
+    A version 2 mapping is reduced to its model-facing parts first, so a
+    caller that passes the full validated file still renders no
+    `enforcement` value. The printed hash is still the whole source file's:
+    it names the exact reviewed input, as the sidecar and evidence do.
     """
-    policy_yaml = yaml.safe_dump(overlay, sort_keys=False, allow_unicode=True).rstrip("\n")
+    policy_yaml = yaml.safe_dump(validate_overlay.model_facing(overlay), sort_keys=False, allow_unicode=True).rstrip("\n")
     return (
         CHECKLIST_INSTRUCTION
         + "\n\n## Company policy\n\n"
@@ -111,6 +122,11 @@ def sidecar(overlay: dict, raw: bytes, block: str, release: str | None) -> str:
     from. It checks both hashes against the block, so a block and sidecar
     from different builds are refused. Deterministic: sorted keys, no
     timestamps, one final newline.
+
+    `policy_sha256` is the SHA-256 of the whole source file, `enforcement`
+    included, for both versions: one hash names one reviewed file in the
+    block, the sidecar, the server's evidence and, later, the compiled hook
+    policy (OVERLAY_V2.md §2.2). No other value comes from `enforcement`.
     """
     document = {
         "schema_version": SIDECAR_SCHEMA_VERSION,
