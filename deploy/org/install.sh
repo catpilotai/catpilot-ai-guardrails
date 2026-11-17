@@ -8,7 +8,8 @@
 #     [--overlay /private/path/overlay.yaml] [--allow-host intranet.example.org]
 #
 # What it does, and nothing else:
-#   Claude Code  hooks copied to <managed dir>/catpilot-guardrails/hooks/, managed-settings.json written
+#   Claude Code  hooks copied to <managed dir>/catpilot-guardrails/hooks/, with the catpilot_guard package they run
+#                beside them in hooks/catpilot_guard/ (its .py files only), managed-settings.json written
 #                from deploy/org/claude-code/managed-settings.json with the server URL substituted (only
 #                when no managed-settings.json exists; otherwise it prints the JSON for you to merge),
 #                skills copied to <managed dir>/.claude/skills/<name>/; with --managed-mcp-json, the fixed-set
@@ -88,6 +89,13 @@ cp "$REPO/hooks/claude-code/pretooluse-secrets.py" \
    "$REPO/hooks/claude-code/pretooluse-destructive-ops.py" \
    "$CC_DIR/catpilot-guardrails/hooks/"
 chmod 644 "$CC_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $CC_DIR/catpilot-guardrails/hooks/"
+# The hooks are shims that import catpilot_guard from beside themselves. Copy its .py files only, so no
+# __pycache__ or .pyc from the checkout comes along, and replace any earlier copy, so a module a newer
+# release dropped does not linger.
+GUARD_DIR="$CC_DIR/catpilot-guardrails/hooks/catpilot_guard"
+rm -rf "$GUARD_DIR"; mkdir -p "$GUARD_DIR"
+cp "$REPO"/catpilot_guard/*.py "$GUARD_DIR/"
+chmod 755 "$GUARD_DIR"; chmod 644 "$GUARD_DIR/"*.py; echo "package $GUARD_DIR/"
 
 if [ -n "$PRIVATE_TMP" ]; then
   HOSTS_DIR="$(find "$PRIVATE_TMP" -maxdepth 1 -type d -name 'catpilot-safe-building-*-hosts' | head -n 1)"

@@ -19,30 +19,22 @@ tools, and not a claim about any path that bypasses your gate. Test it in your
 loop with a documentation-only key such as AKIAIOSFODNN7EXAMPLE, and write down
 which tool calls go through the gate and which do not.
 
-Standard library only. The checks themselves live in ../claude-code/ so the
-hooks and the harness gates cannot drift apart.
+Standard library only. The checks themselves live in the catpilot_guard package
+at the repository root, which the Claude Code hooks also run, so the hooks and
+the harness gates cannot drift apart.
 """
 
 from __future__ import annotations
 
-import importlib.util
+import sys
 from pathlib import Path
 
-_HOOK_DIR = Path(__file__).resolve().parent.parent / "claude-code"
-_HOOK = _HOOK_DIR / "pretooluse-secrets.py"
-_WRITE_HOOK = _HOOK_DIR / "pretooluse-write-secrets.py"
-
-
-def _load_module(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-_hook = _load_module("catpilot_pretooluse_secrets", _HOOK)
-_write_hook = _load_module("catpilot_pretooluse_write_secrets", _WRITE_HOOK)
+try:
+    from catpilot_guard import secrets as _hook, write_secrets as _write_hook
+except ImportError:
+    # Run as a script (python hooks/harness/secret_gate.py), the repository root is not on the path.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from catpilot_guard import secrets as _hook, write_secrets as _write_hook
 
 
 def gate_shell_command(command: str) -> str | None:
@@ -111,8 +103,6 @@ def gate_write_tool_call(tool_name: str, tool_input: dict, field: str = "content
 
 
 if __name__ == "__main__":
-    import sys
-
     reason = gate_shell_command(" ".join(sys.argv[1:]))
     print(reason or "allowed: no literal credential found")
     sys.exit(2 if reason else 0)

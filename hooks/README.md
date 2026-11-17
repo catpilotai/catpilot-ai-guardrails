@@ -10,13 +10,23 @@ enforcement for that path only. Everything else in the repository is advice.
 | `claude-code/pretooluse-write-secrets.py` (formerly `pretooluse-write-private-key.py`, kept as a compatibility entry point) | Claude Code | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, PreToolUse | Denies file content that contains a PEM private-key header or a literal credential matching the secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input, a missing sibling file, or any internal error. | Claude Code 2.1.312, 2026-10-27, under both file names: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 | `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` tool, PreToolUse | Parses the command like a shell and denies a high-blast-radius operation (partial cloud-config resets, auto-approved infrastructure destroys, `kubectl delete` of a namespace or with `--all`, a recursive delete of root, a system directory, home, a credential directory, or a bare variable, a force push or deletion aimed at a protected branch, credential exfiltration pipes) with the safer alternative. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 
+Each file in `claude-code/` is a thin shim. The check itself is a module of the
+standard-library package [`catpilot_guard/`](../catpilot_guard/) at the repository
+root: `secrets.py`, `write_secrets.py`, and `destructive.py`. A shim looks for
+`catpilot_guard/` next to itself (the layout `deploy/org/install.sh` places), then at
+the repository root two levels up (a checkout), and runs the module's `main()`. If
+the package is missing or cannot be imported, the shim exits 2, which blocks. The
+host verifications in the table ran each hook as a self-contained script; the shim
+layout has not been run on a host.
+
 ## Claude Code: literal credentials in shell commands
 
 ### Install
 
-1. Copy `claude-code/pretooluse-secrets.py` somewhere stable, or reference it
-   from a clone of this repository. Python 3.8 or later is required; the
-   script uses only the standard library.
+1. Copy `claude-code/pretooluse-secrets.py` and the `catpilot_guard/` directory
+   from the repository root somewhere stable, side by side, or reference the
+   hook from a clone of this repository, where it finds the package at the root.
+   Python 3.8 or later is required; the code uses only the standard library.
 2. Add the hook to your user settings (`~/.claude/settings.json`) or a
    project's `.claude/settings.json`. `claude-code/settings.example.json` is
    the exact shape; replace the absolute path.
@@ -37,10 +47,11 @@ instead; it runs.
 - Not covered: prompts, other tools, MCP servers, commands you type yourself,
   subprocesses spawned by scripts the agent already had permission to run, and
   any host other than Claude Code.
-- Failure behavior: if the hook cannot parse its input, it exits 2 and the
-  host blocks the command. If the hook is not configured, disabled, or times
-  out, the host's own rules apply and nothing here protects the path. A hook
-  that is not running is not a control.
+- Failure behavior: if the hook cannot parse its input or cannot load the
+  `catpilot_guard` package, it exits 2 and the host blocks the command. If the
+  hook is not configured, disabled, or times out, the host's own rules apply
+  and nothing here protects the path. A hook that is not running is not a
+  control.
 
 ### False positives
 
@@ -59,19 +70,20 @@ URLs with embedded passwords, bearer tokens, and literal `api_key`,
 quoted form (`password="value"`) and the unquoted CLI/env-assignment form
 (`--password=value`, mysql/mysqldump/mariadb's attached `-pvalue`,
 `PGPASSWORD=value`), plus a JSON-style quoted key (`"password": "value"`).
-Read the script; it is short.
+Read `catpilot_guard/secrets.py`; it is short.
 
 ## Claude Code: literal credentials and private-key blocks in file writes
 
 ### Install
 
 1. The hooks come from the same `claude-code/settings.example.json`. Copy
-   `claude-code/pretooluse-write-secrets.py` and `claude-code/pretooluse-secrets.py`
-   (it loads the credential patterns from there) somewhere stable, side by side,
-   or reference them from a clone of this repository. Settings that still point
-   at `pretooluse-write-private-key.py` keep working: that file now runs
-   `pretooluse-write-secrets.py`. Python 3.8 or later is
-   required; the script uses only the standard library.
+   `claude-code/pretooluse-write-secrets.py` and the `catpilot_guard/` directory
+   (the write check loads the credential patterns from its `secrets` module)
+   somewhere stable, side by side, or reference the hook from a clone of this
+   repository. Settings that still point at `pretooluse-write-private-key.py`
+   keep working: that file runs `pretooluse-write-secrets.py`, so keep both
+   files together. Python 3.8 or later is required; the code uses only the
+   standard library.
 2. Add the hook to your user settings (`~/.claude/settings.json`) or a
    project's `.claude/settings.json`, matcher
    `Write|Edit|MultiEdit|NotebookEdit`. `claude-code/settings.example.json`
@@ -96,14 +108,14 @@ environment variable reference (`os.environ["AWS_ACCESS_KEY_ID"]`) or
   configured and the host reports it loaded, when that content contains a
   PEM private-key header (RSA, EC, DSA, OPENSSH, ENCRYPTED, and PGP PRIVATE
   KEY BLOCK variants) or a literal credential matching the 27 patterns in
-  `pretooluse-secrets.py`.
+  `catpilot_guard/secrets.py`.
 - Not covered: file reads, prompts, other tools, other hosts, and files a
   person edits themselves.
 - Failure behavior: if the hook cannot parse its input, the input is over
-  1 MiB, `pretooluse-secrets.py` is missing beside it, or anything else goes
-  wrong, it exits 2 and the host blocks the write. If the hook is not
-  configured, disabled, or times out, the host's own rules apply and
-  nothing here protects the path. A hook that is not running is not a
+  1 MiB, the `catpilot_guard` package or its `secrets` module is missing, or
+  anything else goes wrong, it exits 2 and the host blocks the write. If the
+  hook is not configured, disabled, or times out, the host's own rules apply
+  and nothing here protects the path. A hook that is not running is not a
   control.
 
 ### False positives
@@ -184,20 +196,21 @@ Text inside quotes is not a command, so `echo "rm -rf /"` and
 - Not covered: a deliberately disguised command (`eval`, base64, a variable
   holding the verb), commands a script runs internally, prompts, other tools,
   and any host other than Claude Code. It stops accidents, not an adversary.
-- Failure behavior: malformed input or any internal error exits 2 and the host
-  blocks the command. It does not need the other hook files beside it (they
-  are loaded only for optional syslog).
+- Failure behavior: malformed input, a missing `catpilot_guard` package, or any
+  internal error exits 2 and the host blocks the command. It needs the package
+  beside it, but not the other hook files or the package's `secrets` module,
+  which it imports only for optional syslog.
 - The way past a false positive is a person running the command in their own
   terminal; there is no flag the agent can add.
 
 ## When a hook cannot start
 
-Each hook fails closed once Python is running: malformed input or an internal
-error exits 2, which blocks. Before that point it cannot. If the `python3` in
-the hook command is missing, is the macOS Command Line Tools stub on a machine
-without the tools, or is older than 3.8, the command exits with another code,
-which Claude Code treats as a non-blocking error: the command or write goes
-ahead unchecked. `deploy/org/verify.sh` checks the interpreter, runs each
+Each hook fails closed once Python is running: malformed input, a missing
+`catpilot_guard` package, or an internal error exits 2, which blocks. Before
+that point it cannot. If the `python3` in the hook command is missing, is the
+macOS Command Line Tools stub on a machine without the tools, or is older than
+3.8, the command exits with another code, which Claude Code treats as a
+non-blocking error: the command or write goes ahead unchecked. `deploy/org/verify.sh` checks the interpreter, runs each
 installed hook on harmless probes, and runs each hook command in
 `managed-settings.json` the same way. Run it as a normal user on each machine
 after install and after an OS or Python upgrade. It cannot see Claude Code's
@@ -223,6 +236,7 @@ The same checks are available as functions for any Python loop you control:
 `gate_file_write`, `gate_write_tool_call`) and
 `hooks/harness/destructive_gate.py` (`gate_destructive_command`,
 `gate_destructive_tool_call`), documented in [`harness/README.md`](harness/README.md).
+Both import the checks from `catpilot_guard`, the same code the hooks run.
 The harness owns its tool boundary, so a gate it enforces is enforcement on
 that path; a skill it loads is still advice.
 

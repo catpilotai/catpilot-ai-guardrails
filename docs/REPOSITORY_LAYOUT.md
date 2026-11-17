@@ -23,11 +23,14 @@ skills/                     # shipped bundles (CalVer, generated)
     SKILL.md
     references/<component>.md
 dist/2026.09.18/            # per-host artifacts (generated): zip, paste blocks, web page
+catpilot_guard/             # the hook checks as a standard-library package (Python 3.8+), one module per check:
+                            # secrets.py, write_secrets.py, destructive.py
 hooks/README.md             # install steps and exact coverage for every hook and gate
 hooks/claude-code/          # the three PreToolUse hooks (credentials in Bash, credentials in file writes,
-                            # destructive commands), the former write hook's name kept as an entry point,
-                            # and example settings
-hooks/harness/              # the same checks as functions for your own agent loop, plus outbound-URL and file-path gates
+                            # destructive commands) as thin shims that run catpilot_guard, the former write
+                            # hook's name kept as an entry point, and example settings
+hooks/harness/              # the same checks as functions for your own agent loop, imported from catpilot_guard,
+                            # plus outbound-URL and file-path gates
 mcp-server/                 # reference MCP server: four read-only tools over the checkpoints and an overlay
 deploy/                     # Azure and Cloudflare scripts for hosting the reference server, notes on Catpilot's instance, and verify.sh
   org/                      # install.sh, verify.sh, uninstall.sh and templates for the Claude Code and Codex managed locations
@@ -46,7 +49,7 @@ tools/
 docs/spec/                  # format, packaging, overlay specs; V2 postmortem
 frameworks/                 # long-form framework guides, kept as reference and not packaged as skills
 evals/                      # cases.json, scenarios/, retired scenarios, reference examples, reports/
-tests/                      # unit tests for the bundler, validators, hooks, gates, server, deployment scripts, and runner
+tests/                      # unit tests for the bundler, validators, hooks and their package, gates, server, deployment scripts, and runner
 ```
 
 `tools/bundle.py` reads source components, aggregates frontmatter (severity = max, control mappings = sorted union, `applies_to` = union with `any` collapse), fills `{{slot}}` markers from the tier's defaults, concatenates bodies in lexicographic order, and writes the shipped bundle. `--target all` renders the per-host artifacts into `dist/<release>/`. CI runs `python tools/bundle.py --check` on PRs affecting bundle inputs or outputs; if `skills/` or `dist/` drifts from `src/skills/`, the build fails with a unified diff.
