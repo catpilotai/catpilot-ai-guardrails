@@ -13,6 +13,7 @@
 | [`PACKAGING.md`](./PACKAGING.md) | Three tiers, bundler mechanics, deterministic output, distribution via `npx skills add`. |
 | [`V2_DIAGNOSTIC.md`](./V2_DIAGNOSTIC.md) | One-page postmortem on why v2.x of this repo got zero external traction, and what the rewrite changes. |
 | [`OVERLAY.md`](./OVERLAY.md) | Organization overlay: the open schema for company-specific values, the validator, private builds, and the seam with Catpilot Plus. JSON Schema at [`overlay.schema.json`](./overlay.schema.json); synthetic example at [`overlay.example.yaml`](./overlay.example.yaml). |
+| [`OVERLAY_V2.md`](./OVERLAY_V2.md) | Proposed, not implemented: version 2 of the overlay (stable rule ids, a machine-only `enforcement` section, modes, `migrate`), for review in issue #92. |
 | [`README.md`](./README.md) | This file. |
 
 ## How the format and packaging fit together
