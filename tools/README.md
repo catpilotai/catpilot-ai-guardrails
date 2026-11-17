@@ -31,6 +31,9 @@ when an overlay-shaped file is inside `src/`, `skills/`, or `dist/`.
 The bundler also generates `mcp-server/defaults/guidance.json` for the reference
 MCP server from the same sources; `--check` reports drift in it.
 
+A private build also writes `company-checklist.md` beside the per-host blocks;
+see `company_checklist.py` below.
+
 ## targets.py
 
 Renderers used by `bundle.py --target`: the Claude.ai zip, paste-ready
@@ -38,6 +41,19 @@ instruction blocks for ChatGPT, Copilot Studio, Lovable, Bolt, Replit, and v0,
 `AGENTS.md` and `copilot-instructions.md` blocks, the Microsoft 365 declarative
 agent manifest stub, and the standalone web page. Deterministic; fixed zip
 timestamps; fails the build if a paste block exceeds 8,000 characters.
+
+The `company-checklist` target is private only. A private build writes it as
+`company-checklist.md`; the public build never does, and
+`bundle.py --target company-checklist` without `--overlay` is refused.
+
+## company_checklist.py
+
+The company checklist block: a short checklist plus a company's validated
+rules, as YAML with the rules file's SHA-256. One renderer serves two uses.
+Benchmark condition F plants the block in the project's `CLAUDE.md` or
+`AGENTS.md`. A private build writes the same text, with a final newline, to
+`company-checklist.md`. A wording change here changes condition F, so review
+it as one.
 
 ## validate_skill.py
 

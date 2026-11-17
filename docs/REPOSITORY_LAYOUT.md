@@ -35,6 +35,7 @@ deploy/                     # Azure and Cloudflare scripts for hosting the refer
 tools/
   bundle.py                 # deterministic bundler: --target all, --overlay, --check
   targets.py                # per-host renderers
+  company_checklist.py      # company checklist block: benchmark condition F and the private company-checklist.md target
   validate_skill.py         # skill directory validator
   validate_overlay.py       # organization overlay validator
   validate_evals.py         # cases.json validator

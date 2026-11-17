@@ -10,8 +10,10 @@ without a consultation instruction** tests that workflow without activation;
 **D, skill explicitly activated with company rules through
 the server and instruction** tests the complete workflow. **E, generic
 checklist** and **F, company checklist** test written guidance with generic or
-company facts. Predeclare the pair that answers the question and preserve its
-condition names in the report.
+company facts. The text of **F, company checklist** comes from the shipped
+renderer, `tools/company_checklist.py`, which also writes a private build's
+`company-checklist.md`. Predeclare the pair that answers the question and
+preserve its condition names in the report.
 
 The standard comparison is **A, no guidance**, **B-installed, skill installed**,
 **B-activated, skill installed and explicitly activated**, and **D, skill
