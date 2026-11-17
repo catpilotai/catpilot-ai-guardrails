@@ -462,7 +462,8 @@ class ErrorTests(Base):
         self.assertEqual(condition["then"]["properties"]["label"]["enum"], list(session_start.ERROR_LABELS))
         self.assertEqual(condition["then"]["properties"]["event"]["enum"], ["rules_delivered", "rules_expired", "policy_error"])
         self.assertEqual(SCHEMA["properties"]["session_source"]["enum"], list(session_start.START_SOURCES))
-        self.assertEqual(SCHEMA["properties"]["host"]["enum"], list(session_start.HOSTS))
+        # The session-start script runs on Claude Code and Codex; the PreToolUse hooks also on Copilot CLI.
+        self.assertEqual(SCHEMA["properties"]["host"]["enum"], list(session_start.HOSTS) + ["copilot-cli"])
         self.assertEqual((session_start.CLAUDE_CODE, session_start.CODEX), (evidence.CLAUDE_CODE, evidence.CODEX))
         self.assertEqual(
             SCHEMA["properties"]["release"]["pattern"],

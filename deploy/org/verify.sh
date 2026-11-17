@@ -23,6 +23,7 @@ case "$(uname -s)" in
 esac
 CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
 CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
+COPILOT_DIR="${CATPILOT_COPILOT_DIR:-/etc/github-copilot}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 RULES_FILES="$(cd "$(dirname "$0")" && pwd)/session_start_files.py"
 HOOK_DIR="$CC_DIR/catpilot-guardrails/hooks"
@@ -239,6 +240,21 @@ else
 fi
 echo
 
+# Copilot CLI policy hooks, run directly in Copilot's event shape and through a shell as the policy file declares
+# them, with HOME at the temporary directory and no evidence variable.
+echo "GitHub Copilot CLI (policy dir: $COPILOT_DIR/policy.d)"
+if [ ! -e "$COPILOT_DIR/policy.d/catpilot-guardrails.json" ] && [ ! -e "$COPILOT_DIR/catpilot-guardrails" ]; then
+  echo "skipped  no Copilot CLI policy hooks installed"
+elif [ ! -f "$RULES_FILES" ]; then
+  fail "$RULES_FILES, which checks the Copilot CLI hooks, is not beside verify.sh: run verify.sh from a checkout"
+elif [ "$python_ok" -ne 1 ]; then
+  echo "skipped  Copilot CLI hooks (no working interpreter; see the FAIL line above)"
+else
+  count_report < <("$PYTHON_BIN" "$RULES_FILES" verify-copilot-hooks --copilot-dir "$COPILOT_DIR" --home "$WORK/home" --timeout "$TIMEOUT_SECONDS" 2>&1 \
+                     || echo "FAIL     the Copilot CLI hook checks stopped with an error (above)")
+fi
+echo
+
 # Company rules at session start (install.sh --overlay). The checks and the runs are in session_start_files.py:
 # each run gets a SessionStart event on stdin, HOME pointed at the temporary directory and no evidence variable,
 # so no evidence line is written anywhere real.
@@ -262,14 +278,15 @@ echo
 # directory, so no evidence line is written anywhere real.
 echo "Company enforcement rules (the company-rules hook)"
 if [ ! -e "$CC_DIR/catpilot-guardrails/policy/company-policy.json" ] && [ ! -e "$CODEX_DIR/catpilot-guardrails/policy/company-policy.json" ] \
-   && ! grep -qs pretooluse-company-rules "$CC_DIR/managed-settings.json" "$CODEX_DIR/requirements.toml"; then
-  echo "skipped  no compiled company policy and no company-rules hook on either tool (install.sh --overlay places them when the rules file has enforcement rules)"
+   && [ ! -e "$COPILOT_DIR/catpilot-guardrails/policy/company-policy.json" ] \
+   && ! grep -qs pretooluse-company-rules "$CC_DIR/managed-settings.json" "$CODEX_DIR/requirements.toml" "$COPILOT_DIR"/policy.d/*.json; then
+  echo "skipped  no compiled company policy and no company-rules hook on any tool (install.sh --overlay places them when the rules file has enforcement rules)"
 elif [ ! -f "$RULES_FILES" ]; then
   fail "a company policy is installed, and $RULES_FILES, which checks it, is not beside verify.sh: run verify.sh from a checkout"
 elif [ "$python_ok" -ne 1 ]; then
   echo "skipped  no working interpreter (see the FAIL line above)"
 else
-  count_report < <("$PYTHON_BIN" "$RULES_FILES" verify-company-rules --cc-dir "$CC_DIR" --codex-dir "$CODEX_DIR" --home "$WORK/home" --timeout "$TIMEOUT_SECONDS" 2>&1 \
+  count_report < <("$PYTHON_BIN" "$RULES_FILES" verify-company-rules --cc-dir "$CC_DIR" --codex-dir "$CODEX_DIR" --copilot-dir "$COPILOT_DIR" --home "$WORK/home" --timeout "$TIMEOUT_SECONDS" 2>&1 \
                      || echo "FAIL     the company-rules checks stopped with an error (above)")
 fi
 echo

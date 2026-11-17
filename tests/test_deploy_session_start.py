@@ -97,6 +97,7 @@ class SessionStartDeployTests(unittest.TestCase):
                 "CATPILOT_ALLOW_NONROOT": "1",
                 "CATPILOT_CC_DIR": str(self.cc),
                 "CATPILOT_CODEX_DIR": str(self.codex),
+                "CATPILOT_COPILOT_DIR": str(self.tmp / "copilot"),
                 "PYTHON_BIN": sys.executable,
                 "HOME": str(self.home),
             }
@@ -438,7 +439,7 @@ class SessionStartDeployTests(unittest.TestCase):
         for managed_dir, kept in ((self.cc, settings), (self.codex, requirements)):
             self.assertTrue((managed_dir / "catpilot-guardrails" / "hooks").is_dir(), managed_dir)
             self.assertFalse((managed_dir / "catpilot-guardrails" / "instructions").exists(), managed_dir)
-            self.assertIn(f"kept    {managed_dir / 'catpilot-guardrails' / 'hooks'} ({kept}, kept above, still runs hooks from it", uninstall.stdout)
+            self.assertIn(f"kept    {managed_dir / 'catpilot-guardrails' / 'hooks'} ({kept} still runs hooks from it", uninstall.stdout)
 
     def test_reinstalling_without_overlay_leaves_earlier_rules_alone_and_says_so(self):
         self.install()

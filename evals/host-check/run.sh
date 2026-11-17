@@ -347,7 +347,7 @@ codex_probe() {
 # The root environment for install.sh and uninstall.sh: sudo resets the environment, so the overrides are named.
 # PYTHONDONTWRITEBYTECODE keeps the build, run as root, from writing root-owned __pycache__ into the checkout.
 ROOT_ENV=("PYTHON_BIN=$PY_PATH" "PYTHONDONTWRITEBYTECODE=1")
-for v in CATPILOT_CC_DIR CATPILOT_CODEX_DIR CATPILOT_ALLOW_NONROOT; do
+for v in CATPILOT_CC_DIR CATPILOT_CODEX_DIR CATPILOT_COPILOT_DIR CATPILOT_ALLOW_NONROOT; do
   if printenv "$v" > /dev/null 2>&1; then ROOT_ENV+=("$v=$(printenv "$v")"); fi
 done
 

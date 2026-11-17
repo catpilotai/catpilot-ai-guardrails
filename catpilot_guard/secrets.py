@@ -33,7 +33,7 @@ import json
 import re
 import sys
 
-from . import hook_host, write_decision, write_reason
+from . import decision_for_host, event_for_host, hook_host, write_decision, write_reason
 
 MAX_INPUT_BYTES = 1_048_576
 
@@ -198,12 +198,12 @@ def decide(event: dict, host: str | None = None) -> dict:
 
 
 def main() -> int:
-    host = hook_host()  # the evidence label only, from --host; never the decision
+    host = hook_host()  # from --host: the evidence label, and Copilot CLI's event shape; never the decision
     try:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:
             raise ValueError("hook input too large")
-        result = decide(json.loads(payload), host)
+        result = decide(event_for_host(json.loads(payload), host), host)
     except Exception:
         # Any failure, not only malformed input, blocks: a hook that crashes with an
         # ordinary non-zero exit would let the host run the command.
@@ -212,7 +212,7 @@ def main() -> int:
             "Catpilot secret check could not read the hook input, so the command was not allowed. "
             "Review the command and retry.")
         return 2
-    return write_decision(result)
+    return write_decision(decision_for_host(result, host))
 
 
 if __name__ == "__main__":

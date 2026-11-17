@@ -20,7 +20,14 @@ CLAUDE.md shapes what the model does without enforcing anything.
   verify-codex-hooks --codex-dir DIR --home DIR [--timeout SECONDS]
                                    verify.sh's checks of the managed Codex PreToolUse hooks: the files, each hook run
                                    directly on harmless probes, and each requirements.toml command run through a shell
-  verify-company-rules --cc-dir DIR --codex-dir DIR --home DIR [--timeout SECONDS]
+  copilot-policy --copilot-dir DIR [--enforce]
+                                   print the Copilot CLI policy hook file install.sh writes to <DIR>/policy.d/: the
+                                   three checks as PreToolUse hooks, and the company-rules hook with --enforce
+  verify-copilot-hooks --copilot-dir DIR --home DIR [--timeout SECONDS]
+                                   verify.sh's checks of the Copilot CLI policy hooks: the files, the policy file's
+                                   owner and mode, each hook run directly on harmless probes in Copilot's event shape,
+                                   and each command the policy file declares run through a shell
+  verify-company-rules --cc-dir DIR --codex-dir DIR --home DIR [--copilot-dir DIR] [--timeout SECONDS]
                                    verify.sh's checks of the company-rules hook on each tool with a compiled policy:
                                    the files and their ownership, the policy loading, a probe for its first
                                    protected_branch rule, and the hook as the managed file registers it
@@ -90,6 +97,23 @@ ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 CLAUDE_CODE = "claude-code"
 CODEX = "codex"
+COPILOT = "copilot-cli"
+
+# GitHub Copilot CLI policy hooks (docs.github.com/en/copilot/reference/hooks-reference, read on 2026-11-17): JSON
+# files in /etc/github-copilot/policy.d/, owned by root and writable by no one else, loaded before user and project
+# hooks; people cannot turn them off with disableAllHooks, and they run whatever the folder's trust state. Under the
+# Claude-style event name PreToolUse, Copilot sends the Claude Code event shape with Claude tool names (bash and
+# powershell as Bash, create as Write, edit, str_replace_editor and apply_patch as Edit) and matches a |-separated
+# matcher against those names or the runtime name; write_bash and write_powershell, input to a running shell, keep
+# their runtime names. A hook that times out lets the call run, so the timeout is Copilot's default of 30 seconds.
+COPILOT_POLICY_NAME = "catpilot-guardrails.json"
+COPILOT_SHELL_MATCHER = "Bash|write_bash|write_powershell"
+COPILOT_PRETOOLUSE = (
+    (COPILOT_SHELL_MATCHER, ("Bash", "write_bash"), ("pretooluse-secrets.py", "pretooluse-destructive-ops.py")),
+    ("Write|Edit", ("Write", "Edit"), ("pretooluse-write-secrets.py",)),
+)
+COPILOT_HOOK_FILES = tuple(name for _, _, names in COPILOT_PRETOOLUSE for name in names)
+COPILOT_TIMEOUT_SECONDS = 30
 
 
 class UsageError(Exception):
@@ -121,6 +145,29 @@ def policy_path(managed_dir: str) -> str:
 def company_hook_command(managed_dir: str, host: str) -> str:
     script = "%s/hooks/%s" % (tree(checked_dir(managed_dir)), COMPANY_HOOK)
     return '%s python3 "%s" --host %s --policy "%s"' % (EVIDENCE_PREFIX, script, host, policy_path(managed_dir))
+
+
+def copilot_command(copilot_dir: str, filename: str, enforce_policy: bool = False) -> str:
+    script = "%s/hooks/%s" % (tree(checked_dir(copilot_dir)), filename)
+    command = '%s python3 "%s" --host %s' % (EVIDENCE_PREFIX, script, COPILOT)
+    if enforce_policy:
+        command += ' --policy "%s"' % policy_path(copilot_dir)
+    return command
+
+
+def copilot_policy_json(copilot_dir: str, enforce: bool = False) -> str:
+    """The policy hook file install.sh writes to <copilot dir>/policy.d/: the three checks, and with enforce the
+    company-rules hook with the compiled policy."""
+    entries = []
+    for matcher, _, names in COPILOT_PRETOOLUSE:
+        for name in names:
+            entries.append({"type": "command", "matcher": matcher, "bash": copilot_command(copilot_dir, name),
+                            "timeoutSec": COPILOT_TIMEOUT_SECONDS})
+    if enforce:
+        entries.append({"type": "command", "matcher": COPILOT_SHELL_MATCHER,
+                        "bash": copilot_command(copilot_dir, COMPANY_HOOK, enforce_policy=True),
+                        "timeoutSec": COPILOT_TIMEOUT_SECONDS})
+    return json.dumps({"version": 1, "hooks": {"PreToolUse": entries}}, indent=2)
 
 
 def session_start_group(cc_dir: str) -> dict:
@@ -917,9 +964,9 @@ def verify_codex_hooks(codex_dir: Path, home: Path, timeout: int, prefer_tomllib
 # --- verify the company-rules hook ------------------------------------------------------------------------------
 
 # What a compiled rule's mode does on each tool (catpilot_guard/company_rules.py): ask acts as block unless the hook's
-# command line has --ask; with it, Claude Code asks in its default permission mode, which the probe event sets. Codex
-# cannot ask, so ask denies there either way.
-ASKING_HOSTS = (CLAUDE_CODE,)
+# command line has --ask; with it, Claude Code asks in its default permission mode, which the probe event sets, and the
+# hook returns ask on Copilot CLI for Copilot to settle. Codex cannot ask, so ask denies there either way.
+ASKING_HOSTS = (CLAUDE_CODE, COPILOT)
 
 
 def expected_effect(host: str, modes: list, ask_enabled: bool) -> str:
@@ -938,13 +985,16 @@ COMPANY_LOG = ".catpilot-guardrails/evidence.jsonl"  # where the registered comm
 def company_event(host: str, command: str, cwd: Path) -> str:
     event = {"session_id": "catpilot-verify", "hook_event_name": "PreToolUse", "tool_name": "Bash",
              "tool_input": {"command": command}, "cwd": str(cwd)}
+    if host == COPILOT:
+        event["timestamp"] = dt.datetime.now(dt.timezone.utc).isoformat()
     if host == CLAUDE_CODE:
         event["permission_mode"] = "default"
     return json.dumps(event)
 
 
-def company_decision(result) -> str:
-    """"deny", "ask", "none" (the empty decision) or a sentence saying what went wrong."""
+def company_decision(result, copilot: bool = False) -> str:
+    """"deny", "ask", "none" (the empty decision) or a sentence saying what went wrong. For Copilot CLI a deny or an
+    ask must also carry the top-level permissionDecision, the field Copilot's documentation lists."""
     if isinstance(result, str):
         return result
     if result.returncode != 0:
@@ -959,6 +1009,8 @@ def company_decision(result) -> str:
         found = output["hookSpecificOutput"]["permissionDecision"]
     except (TypeError, KeyError):
         found = None
+    if found in ("deny", "ask") and copilot and output.get("permissionDecision") != found:
+        return "decided without the top-level permissionDecision Copilot CLI reads (is --host copilot-cli missing?)"
     return found if found in ("deny", "ask") else "printed something other than a deny, an ask or the empty decision"
 
 
@@ -1016,6 +1068,15 @@ def first_branch_probe(policy_file: Path):
 def company_commands(host: str, managed: Path, prefer_tomllib: bool):
     """(matcher, command) for each registration of the company-rules hook in the tool's managed file, the file, and
     a sentence when the file cannot be read."""
+    if host == COPILOT:
+        path = managed / "policy.d" / COPILOT_POLICY_NAME
+        try:
+            entries = (json.loads(path.read_text(encoding="utf-8")).get("hooks") or {}).get("PreToolUse")
+        except (OSError, ValueError, AttributeError):
+            return [], path, "%s cannot be read as JSON" % path
+        found = [(entry.get("matcher"), entry.get("bash")) for entry in (entries if isinstance(entries, list) else [])
+                 if isinstance(entry, dict) and isinstance(entry.get("bash"), str) and COMPANY_HOOK in entry["bash"]]
+        return found, path, None
     if host == CLAUDE_CODE:
         path = managed / "managed-settings.json"
         try:
@@ -1038,16 +1099,19 @@ def company_commands(host: str, managed: Path, prefer_tomllib: bool):
     return found, path, None
 
 
-def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, prefer_tomllib: bool = True) -> int:
+def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, prefer_tomllib: bool = True,
+                         copilot_dir: Path | None = None) -> int:
     """For each tool with a compiled policy: the files, the hook run directly on a harmless command and on a probe
     for the first protected_branch rule, and the hook as the tool's managed file registers it. A policy the hook
     refuses (wrong owner, writable by others, malformed) shows as a policy_error line, which is a FAIL here."""
     report = Report()
-    for host, managed in ((CLAUDE_CODE, cc_dir), (CODEX, codex_dir)):
+    tools = [(CLAUDE_CODE, cc_dir), (CODEX, codex_dir)] + ([(COPILOT, copilot_dir)] if copilot_dir is not None else [])
+    for host, managed in tools:
         root = Path(tree(str(managed)))
         policy_file = root / "policy" / POLICY_NAME
         if not policy_file.exists():
-            managed_file = managed / ("managed-settings.json" if host == CLAUDE_CODE else "requirements.toml")
+            managed_file = (managed / "policy.d" / COPILOT_POLICY_NAME if host == COPILOT
+                            else managed / ("managed-settings.json" if host == CLAUDE_CODE else "requirements.toml"))
             try:
                 registered = COMPANY_HOOK in managed_file.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -1085,7 +1149,7 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
                 result = "did not finish within the %ds hook timeout" % timeout
             except OSError as exc:
                 result = "could not start (%s)" % exc.__class__.__name__
-            got = company_decision(result)
+            got = company_decision(result, copilot=(host == COPILOT))
             if got == expected:
                 word = "passes" if command == "ls" else {"deny": "denies", "ask": "asks", "none": "logs"}[expected]
                 report.line(word, "%s --host %s %s %s" % (COMPANY_HOOK, host, verb, what))
@@ -1108,21 +1172,138 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
         except OSError:
             pass
         for matcher, command in entries:
-            if not covers(matcher, "Bash", anchored=(host == CLAUDE_CODE)):
+            if not (copilot_covers(matcher, "Bash") if host == COPILOT else covers(matcher, "Bash", anchored=(host == CLAUDE_CODE))):
                 report.line("FAIL", "%s runs %s under a matcher that does not cover Bash" % (managed_file, COMPANY_HOOK))
+            if host == COPILOT and "--host copilot-cli" not in command and "--host=copilot-cli" not in command:
+                report.line("FAIL", "%s runs %s without --host copilot-cli, so its decisions lack the fields Copilot CLI reads" % (managed_file, COMPANY_HOOK))
             if "CATPILOT_EVIDENCE_SYSLOG" in command:
                 report.line("skipped", "%s command for %s (it forwards evidence to syslog; check it in a session)" % (managed_file, COMPANY_HOOK))
                 continue
             for probe_command, modes, what in runs:
                 expected = expected_effect(host, modes, has_ask_flag(command))
                 verb = "lets through" if probe_command == "ls" else EFFECT_WORDS[expected]
-                got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_command, home), home, timeout))
+                got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_command, home), home, timeout),
+                                       copilot=(host == COPILOT))
                 if got == expected:
                     report.line("wired", "%s runs %s, which %s %s" % (managed_file, COMPANY_HOOK, verb, what))
                 else:
                     report.line("FAIL", "%s command for %s: expected it to %s %s, got %s" % (managed_file, COMPANY_HOOK, expected, what, got))
             for label in sorted(set(policy_errors(registered_log))):
                 report.line("FAIL", "%s runs %s with a policy it could not use (%s)" % (managed_file, COMPANY_HOOK, label))
+    return 0
+
+# --- verify the Copilot CLI policy hooks --------------------------------------------------------------------------
+
+COPILOT_PROBES = {
+    "pretooluse-secrets.py": (("Bash", {"command": "export AWS_ACCESS_KEY_ID=%s && echo ok" % _DOC_KEY}, "a command carrying AWS's documentation example key"),
+                              ("Bash", {"command": "ls"}, "ls")),
+    "pretooluse-destructive-ops.py": (("Bash", {"command": "git push --force origin main"}, "git push --force origin main"),
+                                      ("Bash", {"command": "ls"}, "ls")),
+    "pretooluse-write-secrets.py": (("Write", {"path": "probe.env", "file_text": "AWS_ACCESS_KEY_ID=%s\n" % _DOC_KEY}, "a new file holding AWS's documentation example key"),
+                                    ("Write", {"path": "notes.md", "file_text": "# Notes\n"}, "a harmless new file")),
+}
+
+
+def copilot_event(tool: str, tool_input: dict, cwd: Path) -> str:
+    """A PreToolUse event in the shape Copilot CLI sends for the PascalCase event name."""
+    return json.dumps({"hook_event_name": "PreToolUse", "session_id": "catpilot-verify",
+                       "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "cwd": str(cwd),
+                       "tool_name": tool, "tool_input": tool_input})
+
+
+def copilot_decision(result) -> str:
+    """Like decision(), and a deny must also carry the top-level permissionDecision Copilot documents."""
+    got = decision(result)
+    if got == "deny":
+        try:
+            if json.loads(result.stdout).get("permissionDecision") != "deny":
+                return "denied without the top-level permissionDecision Copilot CLI reads"
+        except (ValueError, AttributeError):
+            return "printed no JSON decision"
+    return got
+
+
+def copilot_covers(matcher, tool: str) -> bool:
+    """Copilot's Claude-format matcher for PascalCase PreToolUse: empty, * or ** match every tool; a name or
+    |-separated names match by equality; anything else is a regex anchored at both ends."""
+    if matcher in (None, "", "*", "**"):
+        return True
+    if not isinstance(matcher, str):
+        return False
+    tokens = matcher.split("|")
+    if all(re.fullmatch(r"[A-Za-z0-9_]+", token) for token in tokens):
+        return tool in tokens
+    try:
+        return re.fullmatch(matcher, tool) is not None
+    except re.error:
+        return False
+
+
+def verify_copilot_hooks(copilot_dir: Path, home: Path, timeout: int) -> int:
+    report = Report()
+    hooks_dir = Path(tree(str(copilot_dir))) / "hooks"
+    for name in COPILOT_HOOK_FILES:
+        report.present(hooks_dir / name)
+    for module in CODEX_HOOK_MODULES + ("copilot",):
+        report.present(hooks_dir / "catpilot_guard" / (module + ".py"))
+    tools_of = {name: tools for _, tools, names in COPILOT_PRETOOLUSE for name in names}
+    for name in COPILOT_HOOK_FILES:
+        script = hooks_dir / name
+        if not script.exists():
+            continue
+        for (tool, tool_input, what), expected in zip(COPILOT_PROBES[name], ("deny", "none")):
+            got = copilot_decision(run_hook([sys.executable, str(script), "--host", COPILOT], copilot_event(tool, tool_input, home), home, timeout))
+            if got == expected:
+                report.line("denies" if expected == "deny" else "passes", "%s --host copilot-cli: %s" % (name, what))
+            elif got in ("deny", "none"):
+                report.line("FAIL", "%s --host copilot-cli %s %s" % (name, "did not deny" if expected == "deny" else "denied", what))
+            else:
+                report.line("FAIL", "%s --host copilot-cli %s on %s" % (name, got, what))
+    policy_file = Path(str(copilot_dir)) / "policy.d" / COPILOT_POLICY_NAME
+    if not report.present(policy_file):
+        return 0
+    info = policy_file.stat()
+    if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        message = "%s must be owned by root and writable by no one else; Copilot CLI does not load a policy file otherwise" % policy_file
+        report.line("note" if os.environ.get("CATPILOT_ALLOW_NONROOT") == "1" else "FAIL", message)
+    try:
+        data = json.loads(policy_file.read_text(encoding="utf-8"))
+        entries = data["hooks"]["PreToolUse"]
+        if data.get("version") != 1 or not isinstance(entries, list):
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError):
+        report.line("INVALID", "%s is not a version 1 hook file with a PreToolUse list" % policy_file)
+        return 0
+    camel = (data.get("hooks") or {}).get("preToolUse")
+    if isinstance(camel, list) and any(isinstance(e, dict) and "catpilot-guardrails" in str(e.get("bash", "")) for e in camel):
+        report.line("FAIL", "%s registers Catpilot hooks under preToolUse; they read the PreToolUse event shape" % policy_file)
+    for name in COPILOT_HOOK_FILES:
+        mine = [entry for entry in entries if isinstance(entry, dict) and name in str(entry.get("bash", ""))]
+        if not mine:
+            report.line("FAIL", "%s does not run %s at PreToolUse" % (policy_file, name))
+            continue
+        (probe_tool, probe_input, what), (harmless_tool, harmless_input, harmless_what) = COPILOT_PROBES[name]
+        for entry in mine:
+            command = entry["bash"]
+            for tool in tools_of[name]:
+                if not copilot_covers(entry.get("matcher"), tool):
+                    report.line("FAIL", "%s runs %s under a matcher that does not cover %s" % (policy_file, name, tool))
+            if "--host copilot-cli" not in command and "--host=copilot-cli" not in command:
+                report.line("FAIL", "%s runs %s without --host copilot-cli, so it cannot read Copilot's file edits" % (policy_file, name))
+            seconds = entry.get("timeoutSec", entry.get("timeout", COPILOT_TIMEOUT_SECONDS))
+            if not isinstance(seconds, (int, float)) or seconds < TIMEOUT_SECONDS:
+                report.line("note", "%s gives %s a timeout under %ds; Copilot CLI lets a call run when a hook times out" % (policy_file, name, TIMEOUT_SECONDS))
+            if "CATPILOT_EVIDENCE_SYSLOG" in command:
+                report.line("skipped", "%s command for %s (it forwards evidence to syslog; check it in a session)" % (policy_file, name))
+                continue
+            got = copilot_decision(run_hook(["bash", "-c", command], copilot_event(probe_tool, probe_input, home), home, timeout))
+            passed = copilot_decision(run_hook(["bash", "-c", command], copilot_event(harmless_tool, harmless_input, home), home, timeout))
+            if got == "deny" and passed == "none":
+                report.line("wired", "%s runs %s at PreToolUse and it denies its probe" % (policy_file, name))
+            elif got == "deny":
+                report.line("FAIL", "%s command for %s %s on %s" % (policy_file, name, "denied" if passed == "deny" else passed, harmless_what))
+            else:
+                report.line("FAIL", "%s command for %s %s on %s" % (policy_file, name, "did not deny" if got == "none" else got, what))
     return 0
 
 def _split(command: str) -> list:
@@ -1159,6 +1340,14 @@ def main(argv=None) -> int:
     p = sub.add_parser("verify-company-rules")
     p.add_argument("--cc-dir", required=True, type=Path)
     p.add_argument("--codex-dir", required=True, type=Path)
+    p.add_argument("--copilot-dir", type=Path)
+    p.add_argument("--home", required=True, type=Path)
+    p.add_argument("--timeout", type=int, default=TIMEOUT_SECONDS)
+    p = sub.add_parser("copilot-policy")
+    p.add_argument("--copilot-dir", required=True)
+    p.add_argument("--enforce", action="store_true", help="also the company-rules hook (a compiled policy)")
+    p = sub.add_parser("verify-copilot-hooks")
+    p.add_argument("--copilot-dir", required=True, type=Path)
     p.add_argument("--home", required=True, type=Path)
     p.add_argument("--timeout", type=int, default=TIMEOUT_SECONDS)
     args = parser.parse_args(argv)
@@ -1178,7 +1367,11 @@ def main(argv=None) -> int:
         elif args.action == "verify-codex-hooks":
             return verify_codex_hooks(args.codex_dir, args.home, args.timeout)
         elif args.action == "verify-company-rules":
-            return verify_company_rules(args.cc_dir, args.codex_dir, args.home, args.timeout)
+            return verify_company_rules(args.cc_dir, args.codex_dir, args.home, args.timeout, copilot_dir=args.copilot_dir)
+        elif args.action == "copilot-policy":
+            print(copilot_policy_json(args.copilot_dir, enforce=args.enforce))
+        elif args.action == "verify-copilot-hooks":
+            return verify_copilot_hooks(args.copilot_dir, args.home, args.timeout)
         else:
             parser.print_usage(sys.stderr)
             return 2

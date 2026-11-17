@@ -48,6 +48,7 @@ SERVER_SOURCE = "mcp-server"
 SESSION_START_SOURCE = "session-start"
 CLAUDE_CODE = "claude-code"
 CODEX = "codex"
+COPILOT_CLI = "copilot-cli"
 
 LOCK_WAIT_SECONDS = 0.5
 

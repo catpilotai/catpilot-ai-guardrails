@@ -211,7 +211,7 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(props["event"]["enum"], list(evidence.EVENTS))
         self.assertEqual(props["mode"]["enum"], list(evidence.MODES))
         self.assertEqual(props["source"]["enum"], [evidence.HOOK_SOURCE, evidence.SERVER_SOURCE, evidence.SESSION_START_SOURCE])
-        self.assertEqual(props["host"]["enum"], [evidence.CLAUDE_CODE, evidence.CODEX])
+        self.assertEqual(props["host"]["enum"], [evidence.CLAUDE_CODE, evidence.CODEX, evidence.COPILOT_CLI])
         # The company-rules hook is not in CHECKS: it needs a policy to decide (tests/test_company_rules.py).
         self.assertEqual(props["hook"]["enum"], [module.HOOK_NAME for module in CHECKS.values()] + [company_rules.HOOK_NAME])
         for name, (pattern, longest) in evidence.CHECKED.items():

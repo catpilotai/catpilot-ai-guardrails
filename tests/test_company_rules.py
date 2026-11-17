@@ -547,7 +547,7 @@ class DeployTests(unittest.TestCase):
         self.rules.write_text(text, encoding="utf-8")
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("CATPILOT_EVIDENCE")}
         self.env.update(CATPILOT_ALLOW_NONROOT="1", CATPILOT_CC_DIR=str(self.cc), CATPILOT_CODEX_DIR=str(self.codex),
-                        PYTHON_BIN=sys.executable, HOME=str(self.home))
+                        CATPILOT_COPILOT_DIR=str(self.tmp / "copilot"), PYTHON_BIN=sys.executable, HOME=str(self.home))
 
     def tearDown(self):
         self._tmp.cleanup()
