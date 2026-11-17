@@ -261,9 +261,18 @@ enables targets today.
 | `web` | `web/safe-ai-building.html` | Source for `catpilot.ai/safe-ai-building`; ported into the site, not served as-is. |
 
 The paste targets are a condensed rendering (`tools/targets.py`): the coaching
-preamble plus, per component, the first question, the safe alternatives, and
-the stop triggers. The bundler fails if the condensed text exceeds 8,000
-characters. Every artifact's first line carries the bundle version. The zip
+preamble plus, per component, the first question, the first three safe
+alternatives, and the first three stop triggers. The public build fails if the
+condensed text exceeds 8,000 characters less 300 for the header line. A
+private build (§10) adds a paragraph of company values, so when the text is too
+long it leaves out items one at a time until it fits: stop triggers after the
+first, then safe alternatives after the first, each from the deepest position
+and from the last checkpoint back. Every checkpoint keeps its question, first
+safe alternative and first stop trigger, and the rules `tests/test_targets.py`
+requires stay in every paste block while any checkpoint has a second stop
+trigger to give up. A private build fails only when the company values leave
+no room even then; the error says how many characters to cut from the
+overlay's lists. Every artifact's first line carries the bundle version. The zip
 uses fixed timestamps derived from the CalVer date, so rebuilding produces
 identical bytes. A `README.md` in the release directory says where each file
 goes.

@@ -167,12 +167,45 @@ def preamble_digest(preamble: str) -> tuple[str, list[str], str]:
 
 def condensed(cfg: dict, digests: list[dict], preamble_rendered: str, release: str, *, max_do: int = 3, max_stop: int = 3, values_block: str | None = None, name: str | None = None) -> str:
     """The paste-size rendering: coaching preamble, then per component the first
-    question, up to max_do safe alternatives, and up to max_stop stop triggers."""
+    question, up to max_do safe alternatives, and up to max_stop stop triggers.
+
+    The public build must fit as written. A private build also carries the
+    company values, whose length the skill authors do not control, so when the
+    text is too long it leaves out items one at a time until it fits: first the
+    stop triggers after the first, then the safe alternatives after the first,
+    each from the deepest position and from the last checkpoint back. The safe
+    alternatives go last because the rules the paste blocks must keep sit there
+    (tests/test_targets.py), and the company's own review triggers stand in
+    for some of the stop triggers. Every checkpoint keeps its question, its
+    first safe alternative, and its first stop trigger."""
+    budget = PASTE_LIMIT - PASTE_HEADROOM
+    keep = [{"do": min(max_do, len(d["do"])), "stop": min(max_stop, len(d["stop"]))} for d in digests]
+    text = _condensed_text(cfg, digests, preamble_rendered, release, keep, values_block, name)
+    if values_block:
+        for kind in ("stop", "do"):
+            while len(text) > budget and any(k[kind] > 1 for k in keep):
+                deepest = max(k[kind] for k in keep)
+                for k in reversed(keep):
+                    if k[kind] == deepest:
+                        k[kind] -= 1
+                        text = _condensed_text(cfg, digests, preamble_rendered, release, keep, values_block, name)
+                        if len(text) <= budget:
+                            break
+        if len(text) > budget:
+            values = len(values_block.strip())
+            raise ValueError(
+                f"condensed guidance is {len(text)} characters even with one safe alternative and one stop trigger per checkpoint; "
+                f"the paste limit is {PASTE_LIMIT} minus {PASTE_HEADROOM} of header room, and the company values take {values}. "
+                f"Shorten the overlay's lists by at least {len(text) - budget} characters."
+            )
+    if len(text) > budget:
+        raise ValueError(f"condensed guidance is {len(text)} characters; the paste limit is {PASTE_LIMIT} minus {PASTE_HEADROOM} of header room. Tighten the component bullets.")
+    return text
+
+
+def _condensed_text(cfg: dict, digests: list[dict], preamble_rendered: str, release: str, keep: list[dict], values_block: str | None, name: str | None) -> str:
     lede, bullets, notice = preamble_digest(preamble_rendered)
     name = name or cfg["name"]
-    if values_block:
-        # Company values take room; keep two safe alternatives per checkpoint.
-        max_do = min(max_do, 2)
     out = [
         f"Catpilot safe building guidance for an AI assistant ({name} {release}, {REPO_URL}). "
         "Advisory: it shapes what the assistant says. It does not monitor, block, review, or approve anything.",
@@ -184,18 +217,15 @@ def condensed(cfg: dict, digests: list[dict], preamble_rendered: str, release: s
     ]
     if values_block:
         out += [values_block.strip(), ""]
-    for n, d in enumerate(digests, 1):
+    for n, (d, k) in enumerate(zip(digests, keep), 1):
         out.append(f"{n}. {d['title']}")
         out.append(f"Ask: {d['ask']}")
-        out.append("Do: " + " ".join(item.rstrip(".") + "." for item in d["do"][:max_do]))
-        out.append("Stop and ask a human if: " + "; ".join(item.rstrip(".") for item in d["stop"][:max_stop]) + ".")
+        out.append("Do: " + " ".join(item.rstrip(".") + "." for item in d["do"][:k["do"]]))
+        out.append("Stop and ask a human if: " + "; ".join(item.rstrip(".") for item in d["stop"][:k["stop"]]) + ".")
         out.append("")
     if notice and not values_block:
         out.append(notice)
-    text = "\n".join(out).rstrip() + "\n"
-    if len(text) > PASTE_LIMIT - PASTE_HEADROOM:
-        raise ValueError(f"condensed guidance is {len(text)} characters; the paste limit is {PASTE_LIMIT} minus {PASTE_HEADROOM} of header room. Tighten the component bullets.")
-    return text
+    return "\n".join(out).rstrip() + "\n"
 
 
 def _md_header(name: str, release: str, where: str) -> str:
