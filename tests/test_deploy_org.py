@@ -286,7 +286,7 @@ class DeployOrgScriptTests(unittest.TestCase):
 
             verify = self._verify(env)
             self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
-            for name in ("__init__.py", "secrets.py", "write_secrets.py", "destructive.py", "evidence.py"):
+            for name in ("__init__.py", "secrets.py", "write_secrets.py", "destructive.py", "evidence.py", "session_start.py"):
                 self.assertIn(f"present  {package}/{name}", verify.stdout)
             for hook_name in HOOK_NAMES:
                 self.assertIn(f"denies   {hook_name}", verify.stdout)
@@ -344,7 +344,7 @@ class DeployOrgScriptTests(unittest.TestCase):
 
             verify = self._verify(env)
             self.assertNotEqual(verify.returncode, 0, verify.stdout)
-            for name in ("__init__.py", "secrets.py", "write_secrets.py", "destructive.py", "evidence.py"):
+            for name in ("__init__.py", "secrets.py", "write_secrets.py", "destructive.py", "evidence.py", "session_start.py"):
                 self.assertIn(f"MISSING  {hooks}/catpilot_guard/{name}", verify.stdout)
             for hook_name in HOOK_NAMES:
                 self.assertIn(f"FAIL     {hook_name} exited 2", verify.stdout)

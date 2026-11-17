@@ -19,6 +19,17 @@
 #   With --overlay: validates and builds the private company bundle and host blocks into a temporary directory
 #                outside the repository, then installs the private safe-building bundle and places the rendered
 #                company CLAUDE.md and AGENTS.md blocks under <managed dir>/catpilot-guardrails/instructions/.
+#                It also puts the company rules in front of the model at session start (advice, not enforcement):
+#     Claude Code  the rules block, company-checklist.md, in the managed CLAUDE.md between the lines
+#                  <!-- catpilot-company-rules:begin --> and <!-- catpilot-company-rules:end -->: the file is
+#                  created when absent; when it has those markers, only the marked section is replaced; without
+#                  them it is left alone and the section is printed for you to merge. A SessionStart hook,
+#                  hooks/catpilot-company-rules.py --host claude-code, goes into managed-settings.json (in the
+#                  JSON written or printed above) and reports at each session start whether the rules are current.
+#     Codex CLI    the same script, the catpilot_guard package and the rules under /etc/codex/catpilot-guardrails/,
+#                  and /etc/codex/requirements.toml declaring the script as a managed SessionStart hook
+#                  (--host codex) that gives the model the block (only when absent; otherwise printed to merge).
+#                With no --overlay, nothing about session-start rules is placed or registered.
 # It does not touch user settings, does not restart anything, and does not send anything anywhere.
 # Windows paths differ and are not handled here; see docs/DEPLOY_ORG.md.
 set -euo pipefail
@@ -51,8 +62,10 @@ case "$(uname -s)" in
 esac
 CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
 CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
+RULES_FILES="$REPO/deploy/org/session_start_files.py"
 
 PRIVATE_TMP=""
+HOSTS_DIR=""
 cleanup() { [ -n "$PRIVATE_TMP" ] && rm -rf "$PRIVATE_TMP" || true; }
 trap cleanup EXIT
 
@@ -61,7 +74,43 @@ if [ -n "$OVERLAY_FILE" ]; then
   PRIVATE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/catpilot-private-bundle.XXXXXX")"
   PYTHON_BIN="${PYTHON_BIN:-python3}"
   "$PYTHON_BIN" "$REPO/tools/bundle.py" --overlay "$OVERLAY_FILE" --private-out "$PRIVATE_TMP" ${ALLOW_HOSTS[@]+"${ALLOW_HOSTS[@]}"}
+  HOSTS_DIR="$(find "$PRIVATE_TMP" -maxdepth 1 -type d -name 'catpilot-safe-building-*-hosts' | head -n 1)"
+  for f in company-checklist.md company-checklist.json; do
+    [ -n "$HOSTS_DIR" ] && [ -f "$HOSTS_DIR/$f" ] || { echo "the private build wrote no $f, which the session-start hooks read" >&2; exit 2; }
+  done
 fi
+
+# The managed files are generated before anything is written, so a value that cannot be written safely stops
+# the install before it changes anything on the machine.
+SETTINGS_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" -e "s#/Library/Application Support/ClaudeCode#$CC_DIR#g" "$REPO/deploy/org/claude-code/managed-settings.json")"
+CODEX_TOML="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/codex/managed_config.toml")"
+REQUIREMENTS_TOML=""
+if [ -n "$HOSTS_DIR" ]; then
+  # The SessionStart hook is added to the parsed settings and written out as JSON, never spliced into the text.
+  SETTINGS_JSON="$(printf '%s\n' "$SETTINGS_JSON" | "$PYTHON_BIN" "$RULES_FILES" settings --cc-dir "$CC_DIR")"
+  REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR")"
+fi
+
+# install_package HOOKS_DIR: the catpilot_guard package the hook scripts import from beside them. Its .py files
+# only, so no __pycache__ or .pyc from the checkout comes along, replacing any earlier copy, so a module a newer
+# release dropped does not linger.
+install_package() {
+  local dir="$1/catpilot_guard"
+  rm -rf "$dir"; mkdir -p "$dir"
+  cp "$REPO"/catpilot_guard/*.py "$dir/"
+  chmod 755 "$dir"; chmod 644 "$dir/"*.py; echo "package $dir/"
+}
+
+# install_rules MANAGED_DIR: the session-start script and the two files it reads, under catpilot-guardrails/.
+install_rules() {
+  local root="$1/catpilot-guardrails"
+  mkdir -p "$root/hooks" "$root/instructions"
+  cp "$REPO/hooks/session-start/catpilot-company-rules.py" "$root/hooks/"
+  cp "$HOSTS_DIR/company-checklist.md" "$HOSTS_DIR/company-checklist.json" "$root/instructions/"
+  chmod 755 "$root" "$root/hooks" "$root/instructions"
+  chmod 644 "$root/hooks/catpilot-company-rules.py" "$root/instructions/company-checklist.md" "$root/instructions/company-checklist.json"
+  echo "rules   $root/ (hooks/catpilot-company-rules.py, instructions/company-checklist.md and .json)"
+}
 
 install_skill() {  # $1 = destination root
   local name; for name in ${SKILLS//,/ }; do
@@ -89,27 +138,24 @@ cp "$REPO/hooks/claude-code/pretooluse-secrets.py" \
    "$REPO/hooks/claude-code/pretooluse-destructive-ops.py" \
    "$CC_DIR/catpilot-guardrails/hooks/"
 chmod 644 "$CC_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $CC_DIR/catpilot-guardrails/hooks/"
-# The hooks are shims that import catpilot_guard from beside themselves. Copy its .py files only, so no
-# __pycache__ or .pyc from the checkout comes along, and replace any earlier copy, so a module a newer
-# release dropped does not linger.
-GUARD_DIR="$CC_DIR/catpilot-guardrails/hooks/catpilot_guard"
-rm -rf "$GUARD_DIR"; mkdir -p "$GUARD_DIR"
-cp "$REPO"/catpilot_guard/*.py "$GUARD_DIR/"
-chmod 755 "$GUARD_DIR"; chmod 644 "$GUARD_DIR/"*.py; echo "package $GUARD_DIR/"
+# The hooks are shims that import catpilot_guard from beside themselves.
+install_package "$CC_DIR/catpilot-guardrails/hooks"
 
-if [ -n "$PRIVATE_TMP" ]; then
-  HOSTS_DIR="$(find "$PRIVATE_TMP" -maxdepth 1 -type d -name 'catpilot-safe-building-*-hosts' | head -n 1)"
-  if [ -n "$HOSTS_DIR" ]; then
-    mkdir -p "$CC_DIR/catpilot-guardrails/instructions"
-    for f in CLAUDE.md AGENTS.md chatgpt-project-instructions.md copilot-agent-instructions.md; do
-      [ -f "$HOSTS_DIR/$f" ] && cp "$HOSTS_DIR/$f" "$CC_DIR/catpilot-guardrails/instructions/$f"
-    done
-    chmod 644 "$CC_DIR/catpilot-guardrails/instructions/"* 2>/dev/null || true
-    echo "blocks  $CC_DIR/catpilot-guardrails/instructions/"
-  fi
+if [ -n "$HOSTS_DIR" ]; then
+  mkdir -p "$CC_DIR/catpilot-guardrails/instructions"
+  for f in CLAUDE.md AGENTS.md chatgpt-project-instructions.md copilot-agent-instructions.md; do
+    [ -f "$HOSTS_DIR/$f" ] && cp "$HOSTS_DIR/$f" "$CC_DIR/catpilot-guardrails/instructions/$f"
+  done
+  chmod 644 "$CC_DIR/catpilot-guardrails/instructions/"* 2>/dev/null || true
+  echo "blocks  $CC_DIR/catpilot-guardrails/instructions/"
+  # Company rules at session start: the block in the managed CLAUDE.md, a status from the SessionStart hook.
+  install_rules "$CC_DIR"
+  "$PYTHON_BIN" "$RULES_FILES" claude-md-place --block "$CC_DIR/catpilot-guardrails/instructions/company-checklist.md" --target "$CC_DIR/CLAUDE.md"
+elif [ -e "$CC_DIR/catpilot-guardrails/instructions/company-checklist.json" ] || [ -e "$CODEX_DIR/catpilot-guardrails/instructions/company-checklist.json" ]; then
+  echo "note    company rules at session start from an earlier --overlay install are still in place, unchanged;"
+  echo "        install with --overlay to update them, or run uninstall.sh to remove them"
 fi
 
-SETTINGS_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" -e "s#/Library/Application Support/ClaudeCode#$CC_DIR#g" "$REPO/deploy/org/claude-code/managed-settings.json")"
 if [ -e "$CC_DIR/managed-settings.json" ]; then
   echo "exists  $CC_DIR/managed-settings.json (not overwritten); merge these keys into it:"; echo "$SETTINGS_JSON"
 else
@@ -125,15 +171,25 @@ if [ "$MANAGED_MCP_JSON" -eq 1 ]; then
   fi
 fi
 
-# Codex CLI: managed defaults, skills
+# Codex CLI: managed defaults, skills; with --overlay, the session-start hook and the requirements that declare it
 mkdir -p "$CODEX_DIR"
-CODEX_TOML="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/codex/managed_config.toml")"
 if [ -e "$CODEX_DIR/managed_config.toml" ]; then
   echo "exists  $CODEX_DIR/managed_config.toml (not overwritten); merge this into it:"; echo "$CODEX_TOML"
 else
   printf '%s\n' "$CODEX_TOML" > "$CODEX_DIR/managed_config.toml"; chmod 644 "$CODEX_DIR/managed_config.toml"; echo "policy  $CODEX_DIR/managed_config.toml"
 fi
 install_skill "$CODEX_DIR/skills"
+if [ -n "$HOSTS_DIR" ]; then
+  # A copy of its own, so each tool reads only from its own managed directory. The script and its package go in
+  # hooks/, the managed_dir that requirements.toml names; Codex loads managed hooks only when that directory exists.
+  install_rules "$CODEX_DIR"
+  install_package "$CODEX_DIR/catpilot-guardrails/hooks"
+  if [ -e "$CODEX_DIR/requirements.toml" ]; then
+    echo "exists  $CODEX_DIR/requirements.toml (not overwritten); merge this into it, keeping one [hooks] table:"; echo "$REQUIREMENTS_TOML"
+  else
+    printf '%s\n' "$REQUIREMENTS_TOML" > "$CODEX_DIR/requirements.toml"; chmod 644 "$CODEX_DIR/requirements.toml"; echo "policy  $CODEX_DIR/requirements.toml"
+  fi
+fi
 
 echo
 echo "Done. Verify on this machine as a normal user: deploy/org/verify.sh, then the checks in docs/DEPLOY_ORG.md."

@@ -37,7 +37,8 @@ hooks/session-start/        # SessionStart hook for Claude Code and Codex: print
                             # that they expired or could not be loaded; a shim that runs catpilot_guard
 mcp-server/                 # reference MCP server: four read-only tools over the checkpoints and an overlay
 deploy/                     # Azure and Cloudflare scripts for hosting the reference server, notes on Catpilot's instance, and verify.sh
-  org/                      # install.sh, verify.sh, uninstall.sh and templates for the Claude Code and Codex managed locations
+  org/                      # install.sh, verify.sh, uninstall.sh and templates for the Claude Code and Codex managed locations,
+                            # and session_start_files.py, which writes, checks and removes the session-start rules files
 .claude-plugin/             # skills-only plugin manifest and one-entry marketplace
 tools/
   bundle.py                 # deterministic bundler: --target all, --overlay, --check

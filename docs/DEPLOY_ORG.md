@@ -11,6 +11,7 @@ Central deployment puts the same files on every machine from a source the user c
 - A skill is still guidance the model reads. Centrally deployed, it is guidance the model reads on every machine.
 - The three `PreToolUse` hooks are still the only enforcement, on Claude Code only, on the `Bash` and file-write paths only. Centrally deployed, they are enforcement the user cannot switch off, which is the difference that matters for a control.
 - The server still answers lookups the model chooses to make. Centrally deployed, it is reachable from every session, and with your overlay loaded it answers with your company's approved options instead of generic defaults.
+- The company rules at session start (`install.sh --overlay`) are advice too: the model has your rules in front of it from the first prompt, without a lookup, and nothing blocks on them.
 - ChatGPT and Claude.ai have no hook surface. On those hosts the honest story is coaching plus the vendor's own admin controls.
 
 The overlay is the piece that carries your company's facts, and it is the piece to author first: approved hosting, approved services, data classes, the identity rule, review triggers, and who to ask, with a reviewer date and an expiry date ([`docs/spec/OVERLAY.md`](spec/OVERLAY.md)). Run the reference server yourself with `CATPILOT_OVERLAY_FILE` pointing at it, behind your own gateway ([`mcp-server/README.md`](../mcp-server/README.md), [`deploy/README.md`](../deploy/README.md)). The public endpoint at `mcp.catpilot.ai` serves generic defaults only and never a company overlay, so every example below uses `https://mcp.example.com/mcp` as a placeholder for your server.
@@ -24,13 +25,14 @@ Everything an administrator places is under [`deploy/org/`](../deploy/org/):
 | `claude-code/managed-settings.json` | All three hooks, with the evidence log turned on per user, and the server provided through `managedMcpServers` alongside whatever servers users already have |
 | `claude-code/managed-mcp.json` | The stricter alternative for the server: a fixed set, and users cannot add others |
 | `codex/managed_config.toml` | The server as a managed default for Codex CLI |
-| `install.sh` | Places all of it on one macOS or Linux machine as root, with your server URL substituted: the hooks and the `catpilot_guard` package they run go to `<managed dir>/catpilot-guardrails/hooks/` (the package as `hooks/catpilot_guard/`, its `.py` files only, never `__pycache__` or `.pyc`); refuses to overwrite a managed file that already exists and prints what to merge instead; `--managed-mcp-json` also writes the fixed-set `managed-mcp.json` |
-| `verify.sh` | Checks as a normal user: the files are present, including each module of the `catpilot_guard` package beside the hooks; the `python3` the hook commands use starts and is 3.8 or later; each installed hook, run directly, denies a harmless probe and lets `ls` through; `managed-settings.json` runs each hook on the tools it covers; and the evidence log's last line. Writes nothing outside a temporary directory and no evidence line; exits non-zero on any failure |
-| `uninstall.sh` | Removes exactly what `install.sh` placed, including the `catpilot_guard` package beside the hooks; leaves a managed file alone if it was edited since |
+| `install.sh` | Places all of it on one macOS or Linux machine as root, with your server URL substituted: the hooks and the `catpilot_guard` package they run go to `<managed dir>/catpilot-guardrails/hooks/` (the package as `hooks/catpilot_guard/`, its `.py` files only, never `__pycache__` or `.pyc`); refuses to overwrite a managed file that already exists and prints what to merge instead; `--managed-mcp-json` also writes the fixed-set `managed-mcp.json`; `--overlay` also places the company rules at session start on both tools (below) |
+| `verify.sh` | Checks as a normal user: the files are present, including each module of the `catpilot_guard` package beside the hooks; the `python3` the hook commands use starts and is 3.8 or later; each installed hook, run directly, denies a harmless probe and lets `ls` through; `managed-settings.json` runs each hook on the tools it covers; after `--overlay`, the company rules at session start (below); and the evidence log's last line. Writes nothing outside a temporary directory and no evidence line; exits non-zero on any failure |
+| `uninstall.sh` | Removes exactly what `install.sh` placed, including the `catpilot_guard` package beside the hooks and, after `--overlay`, the session-start files and the marked section of the managed `CLAUDE.md`; leaves a managed file alone if it was edited since |
+| `session_start_files.py` | The standard-library helper the three scripts share for the session-start pieces: it adds the `SessionStart` hook to the parsed settings JSON, writes `requirements.toml`, places and removes the marked `CLAUDE.md` section, and runs `verify.sh`'s session-start checks |
 
 The skills come from [`skills/`](../skills/) in a checkout of the release you are deploying; the install script copies them. Pin the release: the files are deterministic per release and the [`CHANGELOG.md`](../CHANGELOG.md) says what changed.
 
-**Company rules at session start: not placed yet.** [`hooks/session-start/catpilot-company-rules.py`](../hooks/session-start/README.md) is a `SessionStart` hook for Claude Code and Codex. It reads the `company-checklist.md` block and its `company-checklist.json` sidecar from a private build (`tools/bundle.py --overlay`). When the rules are current, it gives Codex the whole block as developer context and gives Claude Code a one-line status, since a managed `CLAUDE.md` is to carry the block there. When they expired, or cannot be loaded or checked, it says so and names who to ask. It writes one evidence line either way. It is advice, not enforcement: `SessionStart` cannot block on either host. `install.sh`, `verify.sh` and `uninstall.sh` do not place the hook, the block or the sidecar yet; the next release does. Not run on a host.
+**Company rules at session start.** With `--overlay`, `install.sh` also puts your reviewed rules in front of the model when a session starts on Claude Code and Codex, with no skill, server or lookup involved: the rules block (`company-checklist.md` from the private build) and its sidecar (`company-checklist.json`: owner, dates, hashes), read by [`hooks/session-start/catpilot-company-rules.py`](../hooks/session-start/README.md). Claude Code gets the block from the managed `CLAUDE.md` and a one-line status from a `SessionStart` hook; Codex gets the block from a managed `SessionStart` hook. When the rules have expired, or cannot be loaded or checked, each tool gets a notice that says so and names who to ask, instead of the rules. It is advice, not enforcement: `SessionStart` cannot block on either host, and a `CLAUDE.md` shapes what the model does without enforcing anything. Without `--overlay`, nothing about it is placed or registered: a hook with no rules to read would print "could not be loaded" in every session. Details for [Claude Code](#company-rules-at-session-start-on-claude-code) and [Codex](#company-rules-at-session-start-on-codex). Not verified on a host.
 
 ## Claude Code
 
@@ -44,7 +46,7 @@ Claude Code reads an admin-managed settings file above every user, project, and 
 
 Delivery options, from the vendor's [managed settings](https://code.claude.com/docs/en/managed-settings) page: the `managed-settings.json` file in that directory, an MDM profile (macOS managed preferences domain `com.anthropic.claudecode`, or the `Settings` value under `HKLM\SOFTWARE\Policies\ClaudeCode` on Windows), or server-managed settings from the claude.ai admin console. The file and the MDM profile reach local sessions; cloud sessions read only server-managed settings.
 
-**What the example file carries.** `deploy/org/claude-code/managed-settings.json` registers the three hooks from a root-owned copy under `<managed dir>/catpilot-guardrails/hooks/` (a hook the user can edit is not a control; each hook file is a shim that runs the root-owned `catpilot_guard/` package placed beside it, and exits 2, which blocks, if the package is missing), sets `CATPILOT_EVIDENCE_LOG` on each hook command so denials are recorded under the user's home, and provides the server through `managedMcpServers`, which adds it to every user's session without removing servers they configured themselves. To lock the server set instead, deploy `managed-mcp.json` in the same directory (`install.sh --managed-mcp-json`); then only the servers it lists load, and `claude mcp add` refuses others. On Claude Code 2.1.241 the `managedMcpServers` key in the managed settings file did not load the server in Catpilot's check (the hooks and skills from the same file and directory did), while `managed-mcp.json` in the same directory did: `claude mcp list` showed only that server, connected, and a session completed a lookup through it. Until a newer version is checked, provide the server through `managed-mcp.json` or through a `.mcp.json` committed to your template repositories ([`mcp-server/host-configs/`](../mcp-server/host-configs/)). `allowManagedHooksOnly: true` and `allowManagedPermissionRulesOnly: true` are available if you want the managed file to be the only source of hooks or permission rules; the example leaves them out.
+**What the example file carries.** `deploy/org/claude-code/managed-settings.json` registers the three hooks from a root-owned copy under `<managed dir>/catpilot-guardrails/hooks/` (a hook the user can edit is not a control; each hook file is a shim that runs the root-owned `catpilot_guard/` package placed beside it, and exits 2, which blocks, if the package is missing), sets `CATPILOT_EVIDENCE_LOG` on each hook command so denials are recorded under the user's home, and provides the server through `managedMcpServers`, which adds it to every user's session without removing servers they configured themselves. To lock the server set instead, deploy `managed-mcp.json` in the same directory (`install.sh --managed-mcp-json`); then only the servers it lists load, and `claude mcp add` refuses others. On Claude Code 2.1.241 the `managedMcpServers` key in the managed settings file did not load the server in Catpilot's check (the hooks and skills from the same file and directory did), while `managed-mcp.json` in the same directory did: `claude mcp list` showed only that server, connected, and a session completed a lookup through it. Until a newer version is checked, provide the server through `managed-mcp.json` or through a `.mcp.json` committed to your template repositories ([`mcp-server/host-configs/`](../mcp-server/host-configs/)). `allowManagedHooksOnly: true` and `allowManagedPermissionRulesOnly: true` are available if you want the managed file to be the only source of hooks or permission rules; the example leaves them out. With `--overlay`, `install.sh` adds one more hook to the file it writes or prints, a `SessionStart` status hook for the company rules ([below](#company-rules-at-session-start-on-claude-code)).
 
 **Skills.** Two central routes. A skill placed at `<managed dir>/.claude/skills/<name>/SKILL.md` loads for every user of the machine; the install script puts the chosen skills there (`--skills`, default `safe-building,security-core`; add `agentic-security` where people build agent loops). Alternatively, an organization owner uploads the skill once in claude.ai (below), and Claude Code v2.1.273 and later syncs the skills enabled for a signed-in claude.ai account into terminal sessions (`syncClaudeAiSkills`, on by default; not for API-key sessions). The repository route, `.claude/skills/` committed to your template repositories, still works and needs no admin rights.
 
@@ -84,6 +86,57 @@ Claude Code reads this key only from the highest-ranked source, so it has no eff
 
 Do not move the hooks into the claude.ai managed settings instead. They would then apply on every machine in the organization, and on a machine without the hook files, `python3` cannot open the script and exits 2, which blocks every command and file write.
 
+### Company rules at session start on Claude Code
+
+With `--overlay`, `install.sh` puts your reviewed rules in front of the model in every Claude Code session on the machine. Advice, not enforcement: the vendor's own documentation calls a `CLAUDE.md` guidance that shapes Claude's behavior, not a hard enforcement layer, and a `SessionStart` hook cannot block. Not verified on a host ([status](#verification-status)).
+
+```bash
+sudo deploy/org/install.sh --server-url https://mcp.example.com/mcp --overlay /private/path/rules.yaml
+```
+
+**How the rules arrive.** Two pieces, from the same private build:
+
+- **The block, in the managed `CLAUDE.md`.** `company-checklist.md` goes into `/Library/Application Support/ClaudeCode/CLAUDE.md` on macOS and `/etc/claude-code/CLAUDE.md` on Linux and WSL, the managed policy location in the vendor's [memory documentation](https://code.claude.com/docs/en/memory#deploy-organization-wide-claude-md). Claude Code loads that file in every session on the machine, in any directory, ahead of user and project `CLAUDE.md` files, and `claudeMdExcludes` cannot exclude it. The block sits between two lines, `<!-- catpilot-company-rules:begin -->` and `<!-- catpilot-company-rules:end -->`. Claude Code strips block-level HTML comments before a `CLAUDE.md` reaches the model, so the markers cost no context.
+  - No managed `CLAUDE.md` yet: `install.sh` creates one holding only the marked section.
+  - One with the markers: only the text between them is replaced. The rest of the file, its mode and its owner stay as they were. This is the one change `install.sh` makes to a managed file that already exists. The marked text is ours, and replacing it is what keeps a renewed rules file from leaving last quarter's rules in front of the model while the status hook reports the new ones.
+  - One without the markers, with markers that are not one begin line followed by one end line, or a symbolic link: left alone. `install.sh` prints the section, markers included, for you to add.
+- **A status at each session start.** `managed-settings.json` gets a `SessionStart` hook that runs `catpilot-company-rules.py --host claude-code` after a session starts, resumes, is cleared, compacted or forked, with the same `CATPILOT_EVIDENCE_LOG` prefix as the other hooks. The script checks the block against its sidecar and the expiry date, and gives the model one line, "Company rules from `<owner>`, reviewed `<date>`, valid until `<date>`, are current.", not the block a second time. It is part of the JSON `install.sh` writes, or prints for you to merge when the file exists:
+
+```json
+{
+  "matcher": "startup|resume|clear|compact|fork",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "CATPILOT_EVIDENCE_LOG=\"$HOME/.catpilot-guardrails/evidence.jsonl\" python3 \"/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/catpilot-company-rules.py\" --host claude-code",
+      "timeout": 10
+    }
+  ]
+}
+```
+
+The script, the `catpilot_guard` package and the two rules files live under `<managed dir>/catpilot-guardrails/` (`hooks/catpilot-company-rules.py`, `instructions/company-checklist.md` and `.json`), root-owned like the other hooks.
+
+**Why the file, not the `claudeMd` key.** Claude Code also accepts the text of a managed `CLAUDE.md` as a `claudeMd` string in managed settings ([settings reference](https://code.claude.com/docs/en/settings-reference#claudemd)). This package uses the file, for three reasons from the vendor's documentation (read 2026-11-16):
+
+1. `claudeMd` is a key in the managed settings file, so it goes wherever the file goes. When claude.ai managed settings also apply, the file is skipped by default ([above](#when-your-organization-also-uses-claudeai-managed-settings)), and even under `"merge"`, a `claudeMd` that claude.ai sets replaces the file's, because Claude Code takes such a key from the highest-ranked source that sets it. The managed `CLAUDE.md` is not a settings source: the managed-source precedence rules do not mention it, and the memory documentation describes it as applying to every user on the machine, with no condition on managed settings. By the documentation, the rules then still reach the model where the file's hooks are skipped. Not verified.
+2. The block is Markdown with a fenced YAML list. As a file it stays readable and diffable; as `claudeMd` it is one escaped JSON string.
+3. `install.sh` never overwrites a `managed-settings.json` that exists. With `claudeMd`, each renewal of the rules would mean merging a new escaped string by hand, and `uninstall.sh` could no longer recognize the file as its own. With the marked section, a renewal replaces that section only, and the settings file does not change when the rules do.
+
+An MDM-only fleet could deliver `claudeMd` in the configuration profile instead. That route is not built or verified here.
+
+**What a session should show.** Not verified; from the vendor's documentation. `/context all` lists the managed `CLAUDE.md` under **Memory files**. `/hooks` lists the `SessionStart` hook and its command, from the managed settings. `/status` must show the file under `Setting sources`, as for the other hooks. The check that matters is a question in a session: [Check the rules in a session](#check-the-company-rules-in-a-session).
+
+**On expiry.** The block stays in `CLAUDE.md` until you install a renewed rules file; the hook does the date check. From the day after `expires_on`, by the machine's local date, the hook prints, to the model and as a warning the person sees: "The company rules expired on `<date>` and are not in force. The company rules in the instruction file are out of date and must not be relied on. Ask `<owner>` for current rules." If the block or its sidecar is missing, unreadable or from different builds, it prints that the company rules could not be loaded and are unknown. To renew, have the updated rules file reviewed and run `install.sh --overlay` again: it replaces the marked section and both copies of the rules.
+
+**With claude.ai managed settings.** The same precedence applies to the status hook as to the others: without `"managedSourcesBehavior": "merge"`, Claude Code skips the file and nothing checks the expiry date, while the managed `CLAUDE.md` still delivers the block, expired or not. Set the key as [above](#when-your-organization-also-uses-claudeai-managed-settings).
+
+**What this does not reach.**
+
+- Cloud sessions, which read server-managed settings only, and Claude.ai, which has no hooks and no managed `CLAUDE.md`: use the uploaded skill, the paste block or the connector there.
+- A session started with `--bare` (`CLAUDE_CODE_SIMPLE=1`) or with `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`: neither loads the managed `CLAUDE.md`.
+- A session in `--safe-mode`: it does not load the managed `CLAUDE.md` but still runs managed hooks, so the status line can say the rules are current while the block is not in context.
+
 ## Claude.ai
 
 For people who never open a terminal. An organization owner on a Team or Enterprise plan uploads `catpilot-safe-building.zip` from the [latest release](https://github.com/catpilotai/catpilot-ai-guardrails/releases/latest) under **Organization settings → Skills**. It then appears in every member's skills list with a team indicator; members can toggle it off. Skills require the organization's "Code execution and file creation" setting to be on. There is no hook surface and no evidence log on this host; what the organization gets is the coaching text in every member's conversations, and, on Claude Code v2.1.273 and later, the same skill synced into terminal sessions signed in with a claude.ai account.
@@ -103,13 +156,68 @@ Codex CLI reads administrator-managed configuration above the user's `~/.codex/c
 
 Precedence, highest first: MDM, cloud-delivered requirements from the ChatGPT admin console, the system `requirements.toml`, the user's `config.toml`, command-line overrides. Verified on 0.154.0 (2026-09-20): with the files placed by `install.sh` and a temporary home holding no skills and no server config, Codex listed both skills from `/etc/codex/skills` and completed `list_approved` through the server named in `/etc/codex/managed_config.toml`; the user-level equivalents (`~/.agents/skills/`, `mcp_servers` in `config.toml`) were verified the same day ([verification note](../evals/reports/2026.09.20-org-deployment-verification.md)). The MDM keys are documented by the vendor and named by the binary; not exercised.
 
-**What the example file carries.** `deploy/org/codex/managed_config.toml` provides the server as `mcp_servers.catpilot_guardrails.url`. The skill goes to `/etc/codex/skills/catpilot-safe-building/` (and `catpilot-security-core/` for engineers), where Codex discovers it for every user alongside `~/.agents/skills` and each repository's `.agents/skills`. A `requirements.toml` can additionally constrain approval policies, sandbox modes, and MCP server allowlists; that is your policy, not this package's, and no example is shipped.
+**What the example file carries.** `deploy/org/codex/managed_config.toml` provides the server as `mcp_servers.catpilot_guardrails.url`. The skill goes to `/etc/codex/skills/catpilot-safe-building/` (and `catpilot-security-core/` for engineers), where Codex discovers it for every user alongside `~/.agents/skills` and each repository's `.agents/skills`. A `requirements.toml` can additionally constrain approval policies, sandbox modes, and MCP server allowlists; that is your policy, not this package's. The only `requirements.toml` this package writes holds one managed `SessionStart` hook for the company rules, and only with `--overlay` ([below](#company-rules-at-session-start-on-codex)).
 
 **Repository route.** For teams that cannot touch `/etc`, append `dist/<release>/AGENTS.md` to the `AGENTS.md` of your template repositories, and commit `.agents/skills/catpilot-safe-building/` there. Codex reads `AGENTS.md` up to `project_doc_max_bytes`; the shipped block is under 8,000 characters.
 
 **Confirm it on one machine.** Codex emits no load event for skills, so the signals are the ones the [tested-runtimes table](REFERENCE.md#tested-runtimes) records: the model naming the skill when asked what guidance it has, input token usage rising when it reads the skill, and `mcp_tool_call` in the transcript when it calls `list_approved`. Run `codex` in an empty directory and ask: "What guidance skills do you have available, by name? Then call the catpilot_guardrails tool list_approved with category hosting and tell me the first item."
 
-**What this does not reach.** Codex has no hook that this package ships, so there is no enforcement and no local evidence on this host; the server-side evidence log (below) records the lookups.
+**What this does not reach.** The only Codex hook this package ships is the session-start rules hook below, which is advice, so there is no enforcement on this host. Its evidence lines are the only local evidence; the server-side evidence log (below) records the lookups.
+
+### Company rules at session start on Codex
+
+With `--overlay`, `install.sh` declares a managed `SessionStart` hook that gives Codex the whole rules block as developer context after a session starts, resumes, is cleared, compacted or forked. Advice, not enforcement: `SessionStart` cannot block. Not verified on a host ([status](#verification-status)).
+
+**What `install.sh` places.**
+
+- `/etc/codex/catpilot-guardrails/hooks/catpilot-company-rules.py` and, beside it, the `catpilot_guard` package (`hooks/catpilot_guard/`, its `.py` files only);
+- `/etc/codex/catpilot-guardrails/instructions/company-checklist.md` and `company-checklist.json`;
+- `/etc/codex/requirements.toml`, only when there is none; otherwise it prints this for you to merge, keeping one `[hooks]` table:
+
+```toml
+[hooks]
+managed_dir = "/etc/codex/catpilot-guardrails/hooks"
+
+[[hooks.SessionStart]]
+matcher = "startup|resume|clear|compact|fork"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/catpilot-company-rules.py" --host codex'
+timeout = 10
+```
+
+The files are root-owned, mode 644, in directories with mode 755, like the Claude Code copies. Codex loads managed hooks from `[hooks]` in `requirements.toml` when `managed_dir` is an absolute path that exists, and its documentation asks for absolute script paths under that directory; Codex does not distribute the scripts itself ([hooks documentation](https://learn.chatgpt.com/docs/hooks#managed-hooks-in-local-codex), read 2026-11-16). Managed hooks are trusted by policy: nobody is asked to review them, and `/hooks` cannot disable them. When the rules are current, the script prints the block as `additionalContext`, which Codex adds as developer context.
+
+**One copy per tool.** On a machine with both tools, Codex gets its own copy of the script, the package and the rules under `/etc/codex/`, rather than a path into Claude Code's managed directory. Each tool then reads only from its own managed location, a fleet that deploys one tool gets a self-contained tree, and removing one tool's directory does not break the other. `install.sh` writes both copies from one build, and `verify.sh` fails when they differ.
+
+**Left to you.** Two requirements would change more than this hook, so `install.sh` sets neither; add them to `requirements.toml` if your policy wants them:
+
+- `allow_managed_hooks_only = true` skips every user, project, session and plugin hook and keeps only managed ones. It would switch off people's own hooks.
+- `[features]` with `hooks = true` keeps hooks on for someone who turned them off in their own `config.toml`. Without it, a person who sets `hooks = false` does not get the rules at session start.
+
+If your `requirements.toml` already has a `[hooks]` table with its own `managed_dir`, keep that one and copy `catpilot-guardrails/` under it, adjusting the command's path; `verify.sh` notes a script outside `managed_dir`. `uninstall.sh` then leaves the file and the copy to you.
+
+**Precedence.** `/etc/codex/requirements.toml` is the lowest-ranked requirements source: requirements from ChatGPT's Agent Security and the macOS MDM key `requirements_toml_base64` rank above it. The vendor documents that hooks in requirements have field-specific composition rules, without spelling them out for this case ([managed configuration](https://learn.chatgpt.com/docs/enterprise/managed-configuration#locations-and-precedence)). On a machine that also receives cloud or MDM requirements, check `/hooks` in a session.
+
+**Size.** By default Codex gives the model only a preview of a hook's context above about 2,500 tokens. The example block is about 600 tokens. When yours is over the budget, the script says so on stderr and still prints it all; raise `additionalContextLimit` on the `[[hooks.SessionStart.hooks]]` entry. `uninstall.sh` then keeps the edited file and names it.
+
+**What a session should show.** Not verified; from the vendor's documentation. `/hooks` lists the `SessionStart` hook as managed. Then [check the rules in a session](#check-the-company-rules-in-a-session).
+
+**On expiry.** From the day after `expires_on`, by the machine's local date, Codex gets no rules. The script prints "The company rules expired on `<date>` and are not in force. Ask `<owner>` for current rules." as developer context and as a warning the person sees. A missing or mismatched file prints that the company rules could not be loaded and are unknown.
+
+**What this does not reach.** Codex cloud tasks, and Work with Local computer access, whose cloud orchestration supports only MCP hooks; ChatGPT; and, unless you pin `[features] hooks = true`, a person who turned hooks off.
+
+## Check the company rules in a session
+
+`verify.sh` runs the session-start script and each registered command directly, so, as with the hooks, only a session shows that a tool loads them. The check is a session with no skill, no MCP server and no project instruction file, so that only the rules at session start can answer. On a test machine, install with `--skills ""` (no skills) and a server URL that does not resolve, such as `https://mcp.invalid/mcp`, from a test copy of your rules with one distinctive value, so an answer from the rules cannot be a guess. Start each tool in an empty directory, with a configuration directory that holds only its sign-in (`CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex), and confirm with `/mcp` and `/skills` that nothing else is loaded. Then:
+
+1. Claude Code: run `/status`, `/context all` and `/hooks` (above). Codex: run `/hooks`.
+2. Ask each tool: "Which hosting does my company approve, and who do I ask?" The answer should name the approved hosting and the owner from your rules file.
+3. Make the rules expired: in each tool's `company-checklist.json`, after keeping a copy, set `reviewed_on` and `expires_on` to dates in the past. The block's hash does not cover the sidecar, so the hashes still match and the script reports the rules as expired. `verify.sh` now fails with the expiry. A new session in each tool shows the expired notice, and asked the same question, the model should say the rules expired and name the owner. Put the copies back, or run `install.sh --overlay` again.
+4. `tail ~/.catpilot-guardrails/evidence.jsonl` shows a `rules_delivered` line per session with `host` `claude-code` or `codex`, then `rules_expired` lines, with no rule text.
+
+Record the version of each tool, the date and the transcript under `evals/reports/` to move the rows below to verified.
 
 ## ChatGPT
 
@@ -131,28 +239,30 @@ On an individual plan only route 3 and a private custom GPT are available; they 
 
 ## The evidence log
 
-The three hooks and the server can append one JSON line per event to a local file named by `CATPILOT_EVIDENCE_LOG`. Off unless the variable is set; the public endpoint never sets it. A logging failure never changes a decision or an answer. Every line follows one versioned schema, [`spec/EVIDENCE.md`](spec/EVIDENCE.md), with the JSON Schema beside it. Lines written before schema version 1 have no `schema_version`; they use the same keys, and `tools/evidence_summary.py` reads them alone or mixed with new ones.
+The three hooks, the session-start hook and the server can append one JSON line per event to a local file named by `CATPILOT_EVIDENCE_LOG`. Off unless the variable is set; the public endpoint never sets it. A logging failure never changes a decision, an answer or what the session-start hook prints. Every line follows one versioned schema, [`spec/EVIDENCE.md`](spec/EVIDENCE.md), with the JSON Schema beside it. Lines written before schema version 1 have no `schema_version`; they use the same keys, and `tools/evidence_summary.py` reads them alone or mixed with new ones.
 
 What a line carries, and what it never carries:
 
 | Source | Recorded | Never recorded |
 | --- | --- | --- |
-| Every line | `schema_version`, a random `event_id`, the time (`ts`), `source`, and `event` from a closed list (`deny`, `input_error` and `lookup` are written today) | the machine's hostname, the person's name or account |
+| Every line | `schema_version`, a random `event_id`, the time (`ts`), `source`, and `event` from a closed list (`deny`, `input_error`, `lookup`, `rules_delivered`, `rules_expired` and `policy_error` are written today) | the machine's hostname, the person's name or account |
 | `pretooluse-secrets` | hook, `deny` or `input_error`, `host` `claude-code`, tool `Bash`, the credential type (`label`), the session id when it is an opaque id | the command, the matched text |
 | `pretooluse-write-secrets` (logged as `pretooluse-write-private-key` before the rename) | hook, `deny` or `input_error`, `host` `claude-code`, the tool (`Write`, `Edit`, ...), the credential type or `private-key-block`, the session id when it is an opaque id | the file path, the content |
 | `pretooluse-destructive-ops` | hook, `deny` or `input_error`, `host` `claude-code`, tool `Bash`, the operation type (`label`), the session id when it is an opaque id | the command |
+| `session-start` (`catpilot-company-rules.py`, on Claude Code and Codex) | `rules_delivered`, `rules_expired` or `policy_error`; `host` `claude-code` or `codex`; how the session started (`session_source`: `startup`, `resume`, `clear`, `compact` or `fork`); the session id when it is an opaque id; on `rules_delivered` and `rules_expired`, the SHA-256 of the company rules file (`policy_sha256`) and the release; on `rules_delivered`, the block's size (`block_chars`, `block_lines`); on `policy_error`, a fixed `label` saying why (`missing`, `unreadable`, `malformed`, `hash-mismatch`, `bad-arguments` or `internal-error`) | the rules' text, the owner, the dates, any path, anything else from the hook event |
 | `mcp-server` | `lookup`, release, tool, `policy_status`, `unknown_policy`, the SHA-256 of the company rules file whenever one was read (`policy_sha256`), the enumerated argument (`topic`, `category`, `kind`, or `invalid`), and for `check_plan` the `outcome`, `ask_a_human`, and the *names* of the fields the caller supplied | the description, data classes, hosting, services, any value from the company rules file, or any other value |
 
 `rule_id` and `mode` are defined in the schema for company rules enforced by the hooks; nothing writes them yet.
 
 ```json
 {"event": "deny", "event_id": "5b0f3c1e-8f2a-4d7b-9c41-0e6a2d9f7b13", "hook": "pretooluse-secrets", "host": "claude-code", "label": "AWS access key ID", "schema_version": 1, "session_id": "…", "source": "claude-code-hook", "tool": "Bash", "ts": "2026-11-16T15:04:05+00:00"}
+{"block_chars": 2369, "block_lines": 55, "event": "rules_delivered", "event_id": "d315489c-c591-4142-96de-79e1fa77e387", "host": "codex", "policy_sha256": "…", "release": "2026.09.18", "schema_version": 1, "session_id": "…", "session_source": "startup", "source": "session-start", "ts": "2026-11-16T15:05:02+00:00"}
 {"ask_a_human": true, "error": null, "event": "lookup", "event_id": "a3e9d0b4-6c1f-4e52-8b7a-2f4d6c8e0a91", "fields": ["audience", "data_classes"], "outcome": "requires_review", "policy_sha256": "…", "policy_status": "approved", "release": "2026.09.18", "schema_version": 1, "source": "mcp-server", "tool": "check_plan", "ts": "2026-11-16T15:06:11+00:00", "unknown_policy": false}
 ```
 
-Turn it on: for the hooks, the managed settings example sets it on each hook command (`CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl"`), so each user's denials land in their own home directory, where your device-management or endpoint tooling can collect the file. For the server, set the variable in the service's environment when you run it yourself. There is no upload, no rotation, and no aggregation in this package; ship the files to whatever you already use.
+Turn it on: for the hooks, the managed settings example sets it on each hook command (`CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl"`), so each user's denials land in their own home directory, where your device-management or endpoint tooling can collect the file. The session-start hook commands that `install.sh --overlay` registers carry the same prefix on both tools, so a person's `rules_delivered` and `rules_expired` lines land in the same file. For the server, set the variable in the service's environment when you run it yourself. There is no upload, no rotation, and no aggregation in this package; ship the files to whatever you already use.
 
-What a pilot report reads from it: denials per hook per day (the hooks were in force and did something), lookups per tool per day and how many returned `unknown_policy: false` (the overlay was reachable and answered), and `check_plan` outcomes over time. What it cannot tell you: what the person asked, what the model wrote, or whether advice was followed. Those come from the person, or from a benchmark.
+What a pilot report reads from it: denials per hook per day (the hooks were in force and did something), session starts per tool with the rules current, expired or not loaded (and which rules file, by hash), lookups per tool per day and how many returned `unknown_policy: false` (the overlay was reachable and answered), and `check_plan` outcomes over time. What it cannot tell you: what the person asked, what the model wrote, or whether advice was followed. Those come from the person, or from a benchmark.
 
 ## Verification status
 
@@ -170,6 +280,9 @@ What a pilot report reads from it: denials per hook per day (the hooks were in f
 | ChatGPT, workspace plugin | the manifest ships and is verified as a plugin in Claude Code; the workspace import needs a Business, Enterprise, or Edu administrator | 2026-09-20 | Catpilot (manifest only) |
 | ChatGPT, shared GPT | not yet verified; needs a Business, Enterprise, or Edu workspace | | |
 | ChatGPT, the block as instructions on an individual plan | verified on a ChatGPT Pro account with the block pasted into the chat: the shared-password scenario was declined with the reason, company sign-in for the named group proposed, and a message to the IT/security owner drafted ([note](../evals/reports/2026.09.20-org-deployment-verification.md)); Project and GPT instructions carry the same text and were not separately run | 2026-09-20 | Basil ran it; Catpilot recorded |
+| Claude Code, company rules in the managed `CLAUDE.md` (`install.sh --overlay`) | not verified. `tests/test_deploy_session_start.py` places, checks and removes the marked section in temporary directories; no Claude Code session has loaded it | | |
+| Claude Code, `SessionStart` status hook through the managed settings file | not verified. The tests run the registered command line through a shell and check its output and evidence line; no Claude Code session has run it | | |
+| Codex CLI, `SessionStart` hook through `/etc/codex/requirements.toml` | not verified. The tests run the declared command line through a shell and check its output and evidence line; no Codex session has run it | | |
 | Evidence log, hooks and server | unit and stdio contract tests in `tests/` | 2026-09-20 | Catpilot |
 
 A row moves to "verified" when a person has run the steps on a real machine and recorded the transcript or screenshot under `evals/reports/`, the same standard as the tested-runtimes table.
