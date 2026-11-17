@@ -32,16 +32,16 @@ request), and the tools, their descriptions, and their answers stay the same.
 from __future__ import annotations
 
 import argparse
-import json
-import logging
-import logging.handlers
 import os
+import re
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The repository root, for catpilot_guard's shared evidence writer. Appended, so it shadows nothing installed.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(REPO_ROOT))
 
 from catpilot_guardrails_mcp import content, policy, tools  # noqa: E402
 from catpilot_guardrails_mcp.content import CATEGORIES, TEMPLATE_KINDS, TOPICS  # noqa: E402
@@ -65,72 +65,44 @@ READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotent
 
 # The rules for one tool call: given the call's context, the policy state to answer with.
 PolicyProvider = Callable[[Context], policy.PolicyState]
-# Where one tool call's evidence goes: the tool, its result, the enumerated fields, and the context.
+# Where one tool call's evidence goes: the tool, its result, the content-free fields (the enumerated
+# argument, check_plan's outcome and field names, and `policy_sha256`), and the context.
 EvidenceSink = Callable[[str, dict[str, Any], dict[str, Any], Context], None]
 
 
-# Optional evidence log. When CATPILOT_EVIDENCE_LOG names a file, every tool call appends one JSON
-# line: the time, the release, the tool, the enumerated argument (topic, category, kind), and for
-# check_plan the outcome, whether it asked for a human, and the names of the fields the caller
-# supplied. When CATPILOT_EVIDENCE_SYSLOG is set, the same content-free JSON line is sent to syslog.
-# Never the description, the data classes, or any other free text. Off unless set; the public
-# endpoint does not set it. A logging failure never changes an answer.
-EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
-SYSLOG_ENV = "CATPILOT_EVIDENCE_SYSLOG"
-
-
-def _emit_syslog(payload_json: str, spec: str) -> None:
-    address: str | tuple[str, int] = ("localhost", 514)
-    if spec not in ("1", "true", "yes"):
-        if ":" in spec and not spec.startswith("/"):
-            host, port_s = spec.rsplit(":", 1)
-            address = (host, int(port_s))
-        else:
-            address = spec
-    elif sys.platform == "darwin" and Path("/var/run/syslog").exists():
-        address = "/var/run/syslog"
-    elif Path("/dev/log").exists():
-        address = "/dev/log"
-    handler = logging.handlers.SysLogHandler(address=address)
-    try:
-        record = logging.LogRecord(
-            name="catpilot-guardrails", level=logging.INFO, pathname="", lineno=0,
-            msg=f"catpilot-guardrails: {payload_json}", args=(), exc_info=None,
-        )
-        handler.emit(record)
-    finally:
-        handler.close()
+# Optional evidence log, written by catpilot_guard/evidence.py (schema in docs/spec/EVIDENCE.md). When
+# CATPILOT_EVIDENCE_LOG names a file, every tool call appends one `lookup` line: the time, the release,
+# the tool, the enumerated argument (topic, category, kind), the SHA-256 of the overlay whenever one was
+# read, and for check_plan the outcome, whether it asked for a human, and the names of the fields the
+# caller supplied. When CATPILOT_EVIDENCE_SYSLOG is set, the same content-free JSON line is sent to
+# syslog. Never the description, the data classes, a value from the overlay, or any other free text.
+# Off unless set; the public endpoint does not set it. A logging failure never changes an answer.
+SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 def _evidence(tool: str, result: dict[str, Any], fields: dict[str, Any], ctx: Context | None = None) -> None:
-    path = os.environ.get(EVIDENCE_ENV, "").strip()
-    syslog_spec = os.environ.get(SYSLOG_ENV, "").strip()
-    if not path and not syslog_spec:
-        return
-    line: dict[str, Any] = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "source": "mcp-server",
-        "release": GUIDANCE["release"],
-        "tool": tool,
-        "error": result.get("error"),
-        "policy_status": result.get("policy_status"),
-        "unknown_policy": result.get("unknown_policy"),
-    }
-    line.update({k: v for k, v in fields.items() if v is not None})
-    serialized = json.dumps(line, sort_keys=True)
-    if path:
-        try:
-            target = Path(os.path.expanduser(path))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with open(target, "a", encoding="utf-8") as fh:
-                fh.write(serialized + "\n")
-        except Exception:
-            pass
-    if syslog_spec:
-        try:
-            _emit_syslog(serialized, syslog_spec)
-        except Exception:
-            pass
+    try:
+        # Imported here: a missing or broken writer is a logging failure, not a failed answer.
+        from catpilot_guard import evidence
+
+        line: dict[str, Any] = {
+            "release": GUIDANCE["release"],
+            "tool": tool,
+            "error": result.get("error"),
+            "policy_status": result.get("policy_status"),
+            "unknown_policy": result.get("unknown_policy"),
+        }
+        line.update({k: v for k, v in fields.items() if v is not None})
+        evidence.record("lookup", evidence.SERVER_SOURCE, line)
+    except Exception:
+        pass
+
+
+def _policy_sha256(state: object) -> str | None:
+    """The SHA-256 of the overlay file behind a call, whenever one was read and parsed; None otherwise."""
+    source = getattr(state, "source", None)
+    digest = source.get("sha256") if isinstance(source, dict) else None
+    return digest if isinstance(digest, str) and SHA256.fullmatch(digest) else None
 
 
 def _enumerated(value: str, allowed) -> str:
@@ -168,8 +140,9 @@ def create_server(
         Returns what to ask, how to name the risk, the safe alternative, when to stop and ask a human,
         and the relevant company values when a current approved overlay is configured.
         """
-        result = tools.get_guidance(topic, GUIDANCE, rules(ctx))
-        record("get_guidance", result, {"topic": _enumerated(topic, TOPICS)}, ctx)
+        state = rules(ctx)
+        result = tools.get_guidance(topic, GUIDANCE, state)
+        record("get_guidance", result, {"topic": _enumerated(topic, TOPICS), "policy_sha256": _policy_sha256(state)}, ctx)
         return result
 
     @server.tool(annotations=READ_ONLY, structured_output=True)
@@ -230,8 +203,9 @@ def create_server(
         given (the company's contact when it publishes one) and offer to draft the message. Advisory: a
         missing field returns `unknown`, not a pass, and no outcome here approves or blocks anything.
         """
+        state = rules(ctx)
         result = tools.check_plan(
-            description, GUIDANCE, rules(ctx), data_classes, data_provenance, audience, hosting,
+            description, GUIDANCE, state, data_classes, data_provenance, audience, hosting,
             services, write_access, data_types, credential_references,
         )
         supplied = {
@@ -241,6 +215,7 @@ def create_server(
         record("check_plan", result, {
             "outcome": result.get("outcome"), "ask_a_human": result.get("ask_a_human"),
             "fields": sorted(name for name, value in supplied.items() if value is not None),
+            "policy_sha256": _policy_sha256(state),
         }, ctx)
         return result
 
@@ -252,8 +227,9 @@ def create_server(
         Returns a generic starting point and constraints, and the company's approved starting point as a
         reference when its overlay names one. Never downloads or executes anything.
         """
-        result = tools.get_template(kind, TEMPLATES, GUIDANCE, rules(ctx))
-        record("get_template", result, {"kind": _enumerated(kind, TEMPLATE_KINDS)}, ctx)
+        state = rules(ctx)
+        result = tools.get_template(kind, TEMPLATES, GUIDANCE, state)
+        record("get_template", result, {"kind": _enumerated(kind, TEMPLATE_KINDS), "policy_sha256": _policy_sha256(state)}, ctx)
         return result
 
     @server.tool(annotations=READ_ONLY, structured_output=True)
@@ -264,8 +240,9 @@ def create_server(
         false and the items are the company's. Otherwise unknown_policy is true and the items are generic defaults
         that must not be presented as the company's policy.
         """
-        result = tools.list_approved(category, GUIDANCE, rules(ctx))
-        record("list_approved", result, {"category": _enumerated(category, CATEGORIES)}, ctx)
+        state = rules(ctx)
+        result = tools.list_approved(category, GUIDANCE, state)
+        record("list_approved", result, {"category": _enumerated(category, CATEGORIES), "policy_sha256": _policy_sha256(state)}, ctx)
         return result
 
     return server

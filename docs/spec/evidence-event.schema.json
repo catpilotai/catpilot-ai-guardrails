@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/catpilotai/catpilot-ai-guardrails/docs/spec/evidence-event.schema.json",
+  "title": "Catpilot evidence event",
+  "description": "One line of the evidence log written by the Claude Code hooks and the reference MCP server, schema version 1. Content-free: every value is a fixed label, an enumerated value, an opaque id or a hash. Never a command, a file path, file content, a prompt, a plan description, or a value from the company rules file. See docs/spec/EVIDENCE.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "ts", "source", "event"],
+  "properties": {
+    "schema_version": {"const": 1, "description": "The version of this schema. A line without it was written before version 1."},
+    "event_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "A random UUID for this line, written in lowercase. Unique per line; carries no meaning."
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$",
+      "description": "When the line was written, in UTC to the second (2026-11-16T15:04:05+00:00)."
+    },
+    "source": {
+      "enum": ["claude-code-hook", "mcp-server"],
+      "description": "The component that wrote the line: one of the hooks, or the reference MCP server."
+    },
+    "host": {
+      "enum": ["claude-code"],
+      "description": "The AI tool the event came from, when the writer knows it: claude-code for a hook run as a Claude Code PreToolUse hook. Absent when unknown: the server does not know which tool called it, and a check called from a harness does not say. Never the machine's hostname."
+    },
+    "event": {
+      "enum": ["rules_delivered", "rules_expired", "deny", "ask", "would_deny", "policy_error", "input_error", "lookup"],
+      "description": "What happened. Written today: deny and input_error (hooks), lookup (server). The others are reserved for the company-rules hooks and the session-start script."
+    },
+    "rule_id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "The id of the company rule that decided, when one did (docs/spec/OVERLAY_V2.md). Not written yet."
+    },
+    "mode": {
+      "enum": ["monitor", "ask", "block"],
+      "description": "The mode of the company rule that decided (docs/spec/OVERLAY_V2.md §2.3). Not written yet; the built-in checks have no mode."
+    },
+    "policy_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the company rules file's bytes, whenever one was read and parsed. The server writes it; the hooks load no rules file yet."
+    },
+    "release": {
+      "type": "string",
+      "pattern": "^[0-9]{4}\\.[0-9]{2}(\\.[0-9]{2})?(-[0-9]+)?$",
+      "description": "The CalVer release of the writer's content. The server writes the release of its guidance (mcp-server/defaults/guidance.json); the hooks have no release of their own yet and leave it out."
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+      "description": "The host's session id from the hook event, when it is an opaque identifier of this shape; otherwise absent."
+    },
+    "hook": {
+      "enum": ["pretooluse-secrets", "pretooluse-write-secrets", "pretooluse-destructive-ops"],
+      "description": "Which hook wrote the line. Lines written before the write hook's rename say pretooluse-write-private-key; they have no schema_version."
+    },
+    "tool": {
+      "enum": ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "get_guidance", "check_plan", "get_template", "list_approved"],
+      "description": "For a hook, the host tool it checked. For the server, the MCP tool that was called."
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "A hook's fixed label for what it matched: a credential type, private-key-block, or a destructive-operation type. Never the matched text."
+    },
+    "error": {
+      "enum": ["invalid-input", "unknown-category", "unknown-kind", "unknown-topic", null],
+      "description": "Server: the tool's error code, or null when it answered."
+    },
+    "policy_status": {
+      "enum": ["none", "approved", "expired", "not-yet-valid", "invalid", "missing", null],
+      "description": "Server: the state of the company rules file for this call, or null when the tool returned an error."
+    },
+    "unknown_policy": {
+      "type": ["boolean", "null"],
+      "description": "Server: true when no current approved company values were available, or null when the tool returned an error."
+    },
+    "topic": {
+      "enum": ["data-in-prompts", "access", "hosting", "sharing", "credentials", "third-party", "untrusted-input", "review", "invalid"],
+      "description": "Server, get_guidance: the topic asked for, or invalid."
+    },
+    "category": {
+      "enum": ["hosting", "services", "data-classes", "contacts", "invalid"],
+      "description": "Server, list_approved: the category asked for, or invalid."
+    },
+    "kind": {
+      "enum": ["internal-lookup-tool", "form-to-spreadsheet", "dashboard", "document-summarizer", "chatbot-over-docs", "invalid"],
+      "description": "Server, get_template: the template kind asked for, or invalid."
+    },
+    "outcome": {
+      "enum": ["permitted", "requires_review", "prohibited", "unknown"],
+      "description": "Server, check_plan: the outcome, absent when the tool returned an error."
+    },
+    "ask_a_human": {
+      "type": "boolean",
+      "description": "Server, check_plan: whether the answer said to ask a human."
+    },
+    "fields": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"enum": ["audience", "credential_references", "data_classes", "data_provenance", "data_types", "hosting", "services", "write_access"]},
+      "description": "Server, check_plan: the names of the fields the caller supplied, sorted. Never their values."
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"source": {"const": "claude-code-hook"}}},
+      "then": {"required": ["hook"]}
+    },
+    {
+      "if": {"properties": {"source": {"const": "mcp-server"}}},
+      "then": {"required": ["tool", "release", "error", "policy_status", "unknown_policy"]}
+    }
+  ]
+}

@@ -2,5 +2,7 @@
 *
 !requirements-dev.txt
 !tools/validate_overlay.py
+!catpilot_guard/
 !mcp-server/
+catpilot_guard/**/__pycache__
 mcp-server/**/__pycache__

@@ -30,11 +30,6 @@ Standard library only. Python 3.8+.
 from __future__ import annotations
 
 import json
-import logging
-import logging.handlers
-import os
-from datetime import datetime, timezone
-from pathlib import Path
 import re
 import sys
 
@@ -123,65 +118,22 @@ LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.do
 MIN_CREDENTIAL_LENGTH = 6
 
 
-# Optional evidence log. When CATPILOT_EVIDENCE_LOG names a file, each deny appends one JSON
-# line: the time, the hook, the decision, and the credential type. When CATPILOT_EVIDENCE_SYSLOG
-# is set (to "1", "true", or a host:port / socket path), the same content-free JSON line is
-# emitted to syslog. Never the command, never the matched text. Off unless set; a logging
-# failure never changes the decision, because this function swallows every error.
-EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
-SYSLOG_ENV = "CATPILOT_EVIDENCE_SYSLOG"
+# Optional evidence log, written by catpilot_guard/evidence.py when CATPILOT_EVIDENCE_LOG or
+# CATPILOT_EVIDENCE_SYSLOG is set: one content-free line per deny or input error, with the hook, the
+# tool, the credential type and the session id. Never the command, never the matched text.
 HOOK_NAME = "pretooluse-secrets"
+HOST = "claude-code"  # main() reads a Claude Code PreToolUse event; decide() called from a harness passes no host
 
 
-def emit_syslog(payload_json: str, spec: str) -> None:
-    address: str | tuple[str, int] = ("localhost", 514)
-    if spec not in ("1", "true", "yes"):
-        if ":" in spec and not spec.startswith("/"):
-            host, port_s = spec.rsplit(":", 1)
-            address = (host, int(port_s))
-        else:
-            address = spec
-    elif sys.platform == "darwin" and Path("/var/run/syslog").exists():
-        address = "/var/run/syslog"
-    elif Path("/dev/log").exists():
-        address = "/dev/log"
-    handler = logging.handlers.SysLogHandler(address=address)
+def record_evidence(event: str, hook_event: object = None, host: str | None = None, **fields) -> None:
+    """One evidence line through the shared writer, imported here so that a missing or broken writer is a
+    logging failure: it never changes the decision, and nothing here raises."""
     try:
-        record = logging.LogRecord(
-            name="catpilot-guardrails", level=logging.INFO, pathname="", lineno=0,
-            msg=f"catpilot-guardrails: {payload_json}", args=(), exc_info=None,
-        )
-        handler.emit(record)
-    finally:
-        handler.close()
+        from . import evidence
 
-
-def record_evidence(event: str, **fields) -> None:
-    path = os.environ.get(EVIDENCE_ENV, "").strip()
-    syslog_spec = os.environ.get(SYSLOG_ENV, "").strip()
-    if not path and not syslog_spec:
-        return
-    line = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "claude-code-hook", "hook": HOOK_NAME, "event": event}
-    line.update({k: v for k, v in fields.items() if v is not None})
-    serialized = json.dumps(line, sort_keys=True)
-    if path:
-        try:
-            target = Path(os.path.expanduser(path))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with open(target, "a", encoding="utf-8") as fh:
-                fh.write(serialized + "\n")
-        except Exception:
-            pass
-    if syslog_spec:
-        try:
-            emit_syslog(serialized, syslog_spec)
-        except Exception:
-            pass
-
-
-def session_id_of(event: object) -> str | None:
-    sid = event.get("session_id") if isinstance(event, dict) else None
-    return sid if isinstance(sid, str) and 0 < len(sid) <= 128 else None
+        evidence.record_hook_event(HOOK_NAME, event, hook_event, host, **fields)
+    except Exception:
+        pass
 
 
 def _is_placeholder_value(value: str) -> bool:
@@ -215,7 +167,7 @@ def find_credential(command: str):
     return None
 
 
-def decide(event: dict) -> dict:
+def decide(event: dict, host: str | None = None) -> dict:
     if not isinstance(event, dict):
         raise ValueError("hook event must be an object")
     if event.get("tool_name") != "Bash":
@@ -229,7 +181,7 @@ def decide(event: dict) -> dict:
     label = find_credential(command)
     if label is None:
         return {}
-    record_evidence("deny", tool="Bash", label=label, session_id=session_id_of(event))
+    record_evidence("deny", event, host, tool="Bash", label=label)
     reason = (
         f"Catpilot secret check: this command appears to contain a literal credential ({label}). "
         "Keep the value out of the command: reference it from an environment variable or a secret "
@@ -250,11 +202,11 @@ def main() -> int:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:
             raise ValueError("hook input too large")
-        result = decide(json.loads(payload))
+        result = decide(json.loads(payload), HOST)
     except Exception:
         # Any failure, not only malformed input, blocks: a hook that crashes with an
         # ordinary non-zero exit would let the host run the command.
-        record_evidence("input_error")
+        record_evidence("input_error", host=HOST)
         write_reason(
             "Catpilot secret check could not read the hook input, so the command was not allowed. "
             "Review the command and retry.")

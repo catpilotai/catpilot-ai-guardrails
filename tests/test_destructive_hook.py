@@ -338,7 +338,7 @@ class DestructiveHookTests(unittest.TestCase):
             alone = Path(tmp) / "pretooluse-destructive-ops.py"
             alone.write_text(HOOK.read_text())
             # The hook is a shim over catpilot_guard. Give it the package's destructive module only: no other
-            # hook file, and no secrets module (it is imported only for optional syslog).
+            # hook file, no secrets module, and no evidence writer (imported only to write evidence).
             (Path(tmp) / "catpilot_guard").mkdir()
             for name in ("__init__.py", "destructive.py"):
                 (Path(tmp) / "catpilot_guard" / name).write_text((ROOT / "catpilot_guard" / name).read_text())

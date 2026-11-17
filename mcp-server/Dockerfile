@@ -10,6 +10,7 @@ COPY requirements-dev.txt ./
 RUN python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.txt
 
 COPY tools/validate_overlay.py tools/validate_overlay.py
+COPY catpilot_guard/ catpilot_guard/
 COPY mcp-server/ mcp-server/
 
 RUN useradd --system --uid 10001 --no-create-home app

@@ -1,7 +1,7 @@
 """Catpilot PreToolUse hook for Claude Code: block high-blast-radius destructive CLI commands.
 
 hooks/claude-code/pretooluse-destructive-ops.py runs this module's main(); hooks/harness/destructive_gate.py
-calls decide(). It imports the sibling secrets module only when syslog is configured.
+calls decide(). It needs no other check module; it imports catpilot_guard/evidence.py only to write evidence.
 
 Scope, stated exactly:
   - Runs only for the Bash tool (the matcher in settings selects it).
@@ -66,7 +66,6 @@ import os
 import re
 import shlex
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import write_decision, write_reason
@@ -573,47 +572,24 @@ def find_destructive_op(command: str, cwd: str | None = None) -> tuple[str, str]
 
 
 # --- evidence (content-free) ---------------------------------------------------------------
-EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
-SYSLOG_ENV = "CATPILOT_EVIDENCE_SYSLOG"
+# Written by catpilot_guard/evidence.py when CATPILOT_EVIDENCE_LOG or CATPILOT_EVIDENCE_SYSLOG is set:
+# one line per deny or input error, with the hook, the tool, the operation label and the session id.
 HOOK_NAME = "pretooluse-destructive-ops"
+HOST = "claude-code"  # main() reads a Claude Code PreToolUse event; decide() called from a harness passes no host
 
 
-def _emit_syslog(serialized: str, spec: str) -> None:
-    """Syslog through the sibling secrets module, imported only when syslog is configured."""
-    from . import secrets as module
+def record_evidence(event: str, hook_event: object = None, host: str | None = None, **fields) -> None:
+    """One evidence line through the shared writer, imported here so that a missing or broken writer is a
+    logging failure: it never changes the decision, and nothing here raises."""
+    try:
+        from . import evidence
 
-    module.emit_syslog(serialized, spec)
-
-
-def record_evidence(event: str, **fields) -> None:
-    path = os.environ.get(EVIDENCE_ENV, "").strip()
-    syslog_spec = os.environ.get(SYSLOG_ENV, "").strip()
-    if not path and not syslog_spec:
-        return
-    line = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "claude-code-hook", "hook": HOOK_NAME, "event": event}
-    line.update({k: v for k, v in fields.items() if v is not None})
-    serialized = json.dumps(line, sort_keys=True)
-    if path:
-        try:
-            target = Path(os.path.expanduser(path))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with open(target, "a", encoding="utf-8") as fh:
-                fh.write(serialized + "\n")
-        except Exception:
-            pass
-    if syslog_spec:
-        try:
-            _emit_syslog(serialized, syslog_spec)
-        except Exception:
-            pass
+        evidence.record_hook_event(HOOK_NAME, event, hook_event, host, **fields)
+    except Exception:
+        pass
 
 
-def session_id_of(event: object) -> str | None:
-    sid = event.get("session_id") if isinstance(event, dict) else None
-    return sid if isinstance(sid, str) and 0 < len(sid) <= 128 else None
-
-
-def decide(event: dict) -> dict:
+def decide(event: dict, host: str | None = None) -> dict:
     if not isinstance(event, dict):
         raise ValueError("hook event must be an object")
     if event.get("tool_name") != "Bash":
@@ -628,7 +604,7 @@ def decide(event: dict) -> dict:
     if found is None:
         return {}
     label, remediation = found
-    record_evidence("deny", tool="Bash", label=label, session_id=session_id_of(event))
+    record_evidence("deny", event, host, tool="Bash", label=label)
     reason = (
         f"Catpilot destructive-operation check: this command matches a high-blast-radius pattern ({label}). "
         f"{remediation} If this exact command is intentional, run it yourself in your own terminal."
@@ -647,10 +623,10 @@ def main() -> int:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:
             raise ValueError("hook input too large")
-        result = decide(json.loads(payload))
+        result = decide(json.loads(payload), HOST)
     except Exception:
         # Any failure blocks: an ordinary non-zero exit would let the host run the command.
-        record_evidence("input_error")
+        record_evidence("input_error", host=HOST)
         write_reason(
             "Catpilot destructive-operation check could not read the hook input, so the command was not allowed. "
             "Review the command and retry.")

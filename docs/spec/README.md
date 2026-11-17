@@ -14,6 +14,7 @@
 | [`V2_DIAGNOSTIC.md`](./V2_DIAGNOSTIC.md) | One-page postmortem on why v2.x of this repo got zero external traction, and what the rewrite changes. |
 | [`OVERLAY.md`](./OVERLAY.md) | Organization overlay: the open schema for company-specific values, the validator, private builds, and the seam with Catpilot Plus. JSON Schema at [`overlay.schema.json`](./overlay.schema.json); synthetic example at [`overlay.example.yaml`](./overlay.example.yaml). |
 | [`OVERLAY_V2.md`](./OVERLAY_V2.md) | Proposed, not implemented: version 2 of the overlay (stable rule ids, a machine-only `enforcement` section, modes, `migrate`), for review in issue #92. |
+| [`EVIDENCE.md`](./EVIDENCE.md) | Evidence events, schema version 1: the content-free line the hooks and the reference server write, its fields, the closed list of events, and how lines are written. JSON Schema at [`evidence-event.schema.json`](./evidence-event.schema.json). |
 | [`README.md`](./README.md) | This file. |
 
 ## How the format and packaging fit together
