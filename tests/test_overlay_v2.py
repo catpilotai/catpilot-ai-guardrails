@@ -8,7 +8,10 @@ import copy
 import datetime as dt
 import io
 import json
+import os
+import random
 import re
+import secrets
 import tempfile
 import unittest
 from pathlib import Path
@@ -93,8 +96,8 @@ class ExampleTests(V2Case):
         self.assertEqual(yaml.safe_load(note_example("### 5.1")), load(EXAMPLE_V2))
 
     def test_the_shipped_example_is_rejected_only_for_its_published_salt(self):
-        message = self.assertStructureRejects(load(EXAMPLE_V2), "salt: this is the published example's salt")
-        self.assertIn("secrets.token_hex(16)", message)
+        message = self.assertStructureRejects(load(EXAMPLE_V2), "salt: it is the published example's salt or close to it")
+        self.assertIn("validate_overlay.py salt FILE", message)
         self.assertNotIn(vo.EXAMPLE_SALT, message)
 
     def test_the_note_s_migrated_example_validates(self):
@@ -367,8 +370,8 @@ class Rule8SecretScanTests(V2Case):
 
 class Rule10SaltTests(V2Case):
     def test_a_fresh_salt_passes_and_stays_out_of_every_view(self):
-        for salt in (TEST_SALT, "0" * 31 + "1", "ab" * 64):
-            with self.subTest(salt=salt):
+        for salt in (TEST_SALT, vo.new_salt(), secrets.token_hex(64)):
+            with self.subTest(length=len(salt)):
                 self.assertValid(self.mutated(lambda d: d.update(salt=salt)))
         overlay = vo.validate_structure(self.data)
         self.assertEqual(overlay["salt"], TEST_SALT)
@@ -383,7 +386,7 @@ class Rule10SaltTests(V2Case):
     def test_a_missing_short_or_published_salt_is_rejected_without_echoing_it(self):
         cases = {
             "missing": (lambda d: d.pop("salt"), "required when enforcement is present"),
-            "published": (lambda d: d.update(salt=vo.EXAMPLE_SALT), "published example's salt"),
+            "published": (lambda d: d.update(salt=vo.EXAMPLE_SALT), "published example's salt or close to it"),
             "31 characters": (lambda d: d.update(salt="c0ffee" * 5 + "c"), "32 to 128 lowercase hex"),
             "129 characters": (lambda d: d.update(salt="c0ffee" * 21 + "c0f"), "32 to 128 lowercase hex"),
             "uppercase": (lambda d: d.update(salt="C0FFEE" * 6), "32 to 128 lowercase hex"),
@@ -394,14 +397,119 @@ class Rule10SaltTests(V2Case):
         for label, (mutate, fragment) in cases.items():
             with self.subTest(case=label):
                 message = self.assertStructureRejects(self.mutated(mutate), fragment)
-                self.assertIn("secrets.token_hex(16)", message)
+                self.assertIn("validate_overlay.py salt FILE", message)
                 self.assertNotIn("c0ffee", message.lower())
                 self.assertNotIn(vo.EXAMPLE_SALT, message)
+
+    # Each weak salt below trips the named check first; none is echoed back.
+    WEAK = {
+        "the example with one digit changed": (vo.EXAMPLE_SALT[:7] + "0" + vo.EXAMPLE_SALT[8:], "published example's salt or close to it"),
+        "the example's first half, then random": (vo.EXAMPLE_SALT[:16] + "9e1c4a7f2b6d0e8c" + TEST_SALT, "published example's salt or close to it"),
+        "half the example's digits": ("".join(c if i % 2 else "5f0c9a1e7d3b4c2a"[i // 2] for i, c in enumerate(vo.EXAMPLE_SALT)), "published example's salt or close to it"),
+        "a repeated word": ("deadbeef" * 4, "repeats a pattern"),
+        "a repeated pair, 128 long": ("ab" * 64, "repeats a pattern"),
+        "a repeat with period half the length": ("9e1c4a7f2b6d0e8c" * 2, "repeats a pattern"),
+        "all zeros and a one": ("0" * 31 + "1", "fewer than 8 different hex digits"),
+        "seven digits": ("1357913579b1d3579bd1357913b5d79b", "fewer than 8 different hex digits"),
+        "an ascending run of 8": ("9e1c4a7f2b6d0e8c3a5f" + "3456789a" + "c1e0", "run of 8 or more consecutive hex digits"),
+        "a descending run of 8": ("9e1c4a7f2b6d0e8c3a5f" + "fedcba98" + "1e30", "run of 8 or more consecutive hex digits"),
+    }
+
+    def test_weak_salts_are_rejected_without_echoing_them(self):
+        for label, (salt, fragment) in self.WEAK.items():
+            with self.subTest(case=label):
+                self.assertTrue(vo.SALT_RE.fullmatch(salt), salt)
+                message = self.assertStructureRejects(self.mutated(lambda d: d.update(salt=salt)), fragment)
+                self.assertIn("validate_overlay.py salt FILE", message)
+                self.assertNotIn(salt[:12], message)
+
+    def test_the_checks_pass_random_salts(self):
+        # The checks catch hand-made salts; they must not reject real ones. Seeded, so the run is
+        # repeatable; at these thresholds a random salt fails about once in 10^7 (validate_overlay.py).
+        rng = random.Random(20261117)
+        for length in (32, 64):
+            rejected = [salt for salt in ("".join(rng.choice("0123456789abcdef") for _ in range(length)) for _ in range(10000))
+                        if vo.salt_problem(salt)]
+            self.assertEqual(rejected, [], f"{len(rejected)} random {length}-character salts rejected")
+        self.assertIsNone(vo.salt_problem(vo.new_salt()))
 
     def test_the_secret_scan_covers_the_salt(self):
         overlay = vo.validate_structure(self.data)
         overlay["salt"] = "AKIAIOSFODNN7EXAMPLE"  # past the structural check, as a future reader might hand it over
         self.assertIn("overlay.salt: looks like a secret; overlays never contain credentials", vo.validate_content(overlay, set()))
+
+
+class SaltCommandTests(unittest.TestCase):
+    """`validate_overlay.py salt FILE` sets a new random salt and changes no other line."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+
+    def run_salt(self, path: Path) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = vo.main(["salt", str(path)])
+        return code, out.getvalue(), err.getvalue()
+
+    def assertOnlySaltChanged(self, before: str, after: str):
+        old = [line for line in before.splitlines() if not line.startswith("salt:")]
+        new = [line for line in after.splitlines() if not line.startswith("salt:")]
+        self.assertEqual([line for line in new if line], [line for line in old if line])
+
+    def test_replaces_the_published_salt_and_the_file_then_validates(self):
+        path = self.dir / "rules.yaml"
+        before = EXAMPLE_V2.read_text(encoding="utf-8")
+        path.write_text(before, encoding="utf-8")
+        code, out, err = self.run_salt(path)
+        self.assertEqual(code, 0, err)
+        after = path.read_text(encoding="utf-8")
+        self.assertEqual(len(after.splitlines()), len(before.splitlines()))
+        self.assertOnlySaltChanged(before, after)
+        salt = yaml.safe_load(after)["salt"]
+        self.assertIsNone(vo.salt_problem(salt))
+        self.assertEqual(len(salt), 64)
+        self.assertNotIn(salt, out + err)
+        _, errors = vo.validate_overlay(vo.load_overlay_file(path)[0], today=TODAY)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.run_salt(path)[0], 0)
+        self.assertNotEqual(yaml.safe_load(path.read_text(encoding="utf-8"))["salt"], salt)
+
+    def test_adds_a_salt_before_enforcement_or_at_the_end(self):
+        text = EXAMPLE_V2.read_text(encoding="utf-8")
+        without = "\n".join(line for line in text.splitlines() if not line.startswith("salt:")) + "\n"
+        no_enforcement = without.split("\n# Machine-only: never rendered")[0].rstrip("\n")  # no final newline either
+        for label, before in (("before enforcement", without), ("at the end", no_enforcement), ("crlf", without.replace("\n", "\r\n"))):
+            with self.subTest(case=label):
+                path = self.dir / f"{label.replace(' ', '-')}.yaml"
+                path.write_bytes(before.encode("utf-8"))
+                self.assertEqual(self.run_salt(path)[0], 0)
+                after = path.read_bytes().decode("utf-8")
+                self.assertOnlySaltChanged(before, after)
+                self.assertIsNone(vo.salt_problem(vo.parse_yaml(after)["salt"]))
+                if label == "crlf":
+                    self.assertNotIn("\n", after.replace("\r\n", ""))
+                if label == "before enforcement":
+                    self.assertLess(after.index("\nsalt:"), after.index("\nenforcement:"))
+
+    def test_refuses_version_1_symlinks_and_salts_it_cannot_edit_in_one_line(self):
+        v1 = self.dir / "v1.yaml"
+        v1.write_bytes(EXAMPLE_V1.read_bytes())
+        link = self.dir / "link.yaml"
+        link.symlink_to(EXAMPLE_V2)
+        folded = self.dir / "folded.yaml"
+        folded.write_text(EXAMPLE_V2.read_text(encoding="utf-8").replace(
+            f'salt: "{vo.EXAMPLE_SALT}"', 'salt: >-\n  9e1c4a7f2b6d0e8c\n  5f0c9a1e7d3b4c2a'), encoding="utf-8")
+        for path, fragment in ((v1, "only a version 2 file has a salt"), (link, "symlinks are not allowed"), (folded, "set it by hand")):
+            before = path.read_bytes()
+            with self.subTest(file=path.name):
+                code, _, err = self.run_salt(path)
+                self.assertEqual(code, 1)
+                self.assertIn("REFUSED", err)
+                self.assertIn(fragment, err)
+                self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(os.readlink(link), str(EXAMPLE_V2))
 
 
 class NullTests(V2Case):
@@ -471,6 +579,27 @@ class DuplicateKeyTests(unittest.TestCase):
         text = EXAMPLE_V1.read_text(encoding="utf-8")
         self.assertDuplicate(text + 'owner: "someone-else@example.org"\n', "overlay.owner")
         self.assertDuplicate(text.replace("  ok:\n", "  ok:\n    - \"Synthetic data\"\n  ok:\n", 1), "overlay.data_classes.ok")
+
+    def test_merge_keys_are_refused(self):
+        anchors = 'x-a: &a {mode: block}\nx-b: &b {mode: monitor}\n'
+        cases = {
+            "two merge keys": (anchors + "rule: {<<: *a, <<: *b, id: rule-c}\n", "overlay.<a key>.<<"),
+            "a list of merges": (anchors + "rule: {<<: [*a, *b], id: rule-c}\n", "overlay.<a key>.<<"),
+            "a merge beside an explicit key": (anchors + "rule:\n  <<: *a\n  mode: ask\n", "overlay.<a key>.<<"),
+        }
+        for label, (text, where) in cases.items():
+            with self.subTest(case=label), self.assertRaises(vo.OverlayError) as caught:
+                self.load_text(text)
+            self.assertIn(f"{where}: YAML merge keys are not allowed in a rules file", str(caught.exception))
+        # Inside a real version 2 rule, and in a version 1 file.
+        v2 = EXAMPLE_V2.read_text(encoding="utf-8").replace("      mode: block\n", "      <<: {mode: monitor}\n      mode: block\n")
+        with self.assertRaises(vo.OverlayError) as caught:
+            self.load_text(v2)
+        self.assertIn("overlay.enforcement.rules[0].<<: YAML merge keys", str(caught.exception))
+        v1 = EXAMPLE_V1.read_text(encoding="utf-8").replace("hosting:\n", "hosting:\n  <<: {approved: [\"Elsewhere\"]}\n", 1)
+        with self.assertRaises(vo.OverlayError) as caught:
+            self.load_text(v1)
+        self.assertIn("overlay.hosting.<<: YAML merge keys", str(caught.exception))
 
     def test_files_without_duplicates_load_as_before(self):
         for path in (EXAMPLE_V1, EXAMPLE_V2):

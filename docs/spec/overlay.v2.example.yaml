@@ -5,7 +5,8 @@
 # public repository.
 #
 # As shipped it does not validate: its salt is the published example value, which the
-# validator rejects. Copy it outside any public repository, give it your own salt, then:
+# validator rejects. Copy it outside any public repository, set your own salt, validate:
+#   python tools/validate_overlay.py salt /private/path/rules.yaml
 #   python tools/validate_overlay.py /private/path/rules.yaml
 schema_version: 2
 organization: "Example Org"
@@ -59,8 +60,8 @@ review_triggers:
   - {id: trigger-system-of-record-writes, text: "Writes to a system of record"}
 
 # Machine-only: a random value that keeps the file's SHA-256, which a model sees, from
-# confirming guessed enforcement values. Required with enforcement. Make your own with
-#   python3 -c 'import secrets; print(secrets.token_hex(16))'
+# confirming guessed enforcement values. Required with enforcement. Set your own with
+#   python tools/validate_overlay.py salt FILE
 # This example value is public, so the validator rejects it.
 salt: "0123456789abcdef0123456789abcdef"
 

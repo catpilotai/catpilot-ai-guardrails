@@ -392,7 +392,7 @@ review dates (2026-12-01 to 2027-06-01) that the expiry-window check rejects
 before 2026-12-01. They are shown after the example instead, and the dates are
 the approval date and six months later, the span the version 1 example uses.
 The example also gained a `salt` after approval (§6.3 rule 10). Its value is
-published here, so the validator rejects it: replace it before use.
+published here, so the validator rejects it: replace it with `python tools/validate_overlay.py salt FILE`.
 
 ```yaml
 schema_version: 2
@@ -446,8 +446,8 @@ review_triggers:
   - {id: trigger-payments, text: "Payments or refunds"}
   - {id: trigger-system-of-record-writes, text: "Writes to a system of record"}
 
-# Machine-only. Required with enforcement; make your own with
-#   python3 -c 'import secrets; print(secrets.token_hex(16))'
+# Machine-only. Required with enforcement; set your own with
+#   python tools/validate_overlay.py salt FILE
 # This published value is rejected.
 salt: "0123456789abcdef0123456789abcdef"
 
@@ -638,16 +638,25 @@ refusal of symlinks. Version 2 adds:
    a kind with no host verification note yet; and, in the next increment, an
    exception within 14 days of expiry.
 10. A file with `enforcement` has a top-level `salt`: a quoted string of 32 to
-    128 lowercase hex characters, chosen at random (`python3 -c 'import secrets; print(secrets.token_hex(16))'`) and never the
-    published example's value. Without it, the whole-file hash a model sees
-    would let anyone with the rules block test guesses at enforcement values
-    offline (§6.1). `salt` is machine-only: never rendered, never returned,
-    never in an error message.
+    128 lowercase hex characters, chosen at random. Without it, the whole-file
+    hash a model sees would let anyone with the rules block test guesses at
+    enforcement values offline (§6.1). `python tools/validate_overlay.py salt FILE` is the way to set one: it
+    writes a 64-character salt from `secrets.token_hex(32)` and changes no
+    other line. The validator rejects a salt within a Hamming distance of half
+    its length of the published example's (over the shorter length), one that
+    repeats a pattern (a period of at most half its length), one with fewer
+    than 8 different hex digits, and one with a run of 8 or more consecutive
+    ascending or descending hex digits (`01234567`, `fedcba98`). These checks
+    catch common mistakes; they do not measure randomness. They are set so a
+    random salt of 32 characters or more is rejected about once in 10^7.
+    `salt` is machine-only: never rendered, never returned, never in an error
+    message.
 
 *Added after approval:* rule 10, and two readings of the rules as written.
 Rule 3 also counts template kinds, since templates keep `kind` as their id
 (§2.1). A key that appears twice in one mapping is refused in both versions,
-since YAML would otherwise keep only the last one.
+since YAML would otherwise keep only the last one, and so is a YAML merge key
+(`<<`), which would change values just as quietly.
 
 *How the first build reads two of these rules:* rule 4 accepts the first
 build's two kinds, `protected_branch` and `deploy_host` (§2.2), although their

@@ -58,6 +58,6 @@ jobs:
       - name: Validate the synthetic version 2 overlay example with its own salt
         # The shipped salt is published, so the validator rejects it by design.
         run: |
-          salt="$(python -c 'import secrets; print(secrets.token_hex(16))')"
-          sed "s/^salt: .*/salt: \"$salt\"/" docs/spec/overlay.v2.example.yaml > "$RUNNER_TEMP/overlay.v2.yaml"
+          cp docs/spec/overlay.v2.example.yaml "$RUNNER_TEMP/overlay.v2.yaml"
+          python tools/validate_overlay.py salt "$RUNNER_TEMP/overlay.v2.yaml"
           python tools/validate_overlay.py "$RUNNER_TEMP/overlay.v2.yaml"

@@ -15,7 +15,8 @@ owner, an IP address, or an incident narrative. In version 2 the secret scan
 also covers `enforcement`, no deploy host may appear in a model-facing value,
 and a file with `enforcement` carries a random `salt`, so the file's SHA-256,
 which a model sees, cannot confirm a guessed enforcement value. A key that
-appears twice in one mapping is refused in both versions.
+appears twice in one mapping, and a YAML merge key (`<<`), are refused in
+both versions.
 
 A passing overlay is structurally valid. The validator does not know whether
 the listed hosting or services are actually approved; a named reviewer does.
@@ -23,7 +24,8 @@ In this release nothing reads `enforcement` and nothing acts on a mode: the
 rules are validated only.
 
 `python tools/validate_overlay.py migrate FILE` prints a version 1 file as
-version 2 (OVERLAY_V2.md §2.4).
+version 2 (OVERLAY_V2.md §2.4). `python tools/validate_overlay.py salt FILE`
+sets a new random `salt` in a version 2 file, changing no other line.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ import copy
 import datetime as dt
 import ipaddress
 import re
+import secrets
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -134,7 +137,15 @@ _BRANCH_FORBIDDEN = set(" ~^:?*[\\")
 SALT_RE = re.compile(r"[0-9a-f]{32,128}")
 # The salt in docs/spec/overlay.v2.example.yaml and OVERLAY_V2.md §5.1: published, so never valid.
 EXAMPLE_SALT = "0123456789abcdef0123456789abcdef"
-SALT_HOW = "make one with: python3 -c 'import secrets; print(secrets.token_hex(16))'"
+SALT_HOW = "set a new one with: python tools/validate_overlay.py salt FILE"
+# Checks that catch a hand-made salt. They do not measure randomness. The thresholds are
+# set so a salt from `secrets.token_hex(16)` or longer is essentially never rejected: at
+# 32 characters, fewer than 8 different digits happens about 4 times in 10^8 and a run of
+# 8 about once in 10^7. (Fewer than 10 digits, or a run of 6, would reject about 1 in
+# 10^4 and 1 in 3 x 10^4 genuinely random salts.)
+SALT_MIN_DISTINCT = 8
+SALT_MAX_RUN = 7
+_HEX = "0123456789abcdef"
 # Every field name the schemas define. A duplicate-key error names a key only when it is
 # one of these, so an arbitrary key (inside enforcement, say) is never repeated back.
 FIELD_NAMES = frozenset(
@@ -382,9 +393,38 @@ def _salt(value: object) -> str:
     """§6.3 rule 10. Messages never repeat the value."""
     if not isinstance(value, str) or not SALT_RE.fullmatch(value):
         raise OverlayError(f"salt: expected a quoted string of 32 to 128 lowercase hex characters; {SALT_HOW}")
-    if value == EXAMPLE_SALT:
-        raise OverlayError(f"salt: this is the published example's salt, so it hides nothing; {SALT_HOW}")
+    problem = salt_problem(value)
+    if problem:
+        raise OverlayError(f"salt: {problem}, so it may not hide the enforcement values; {SALT_HOW}")
     return value
+
+
+def salt_problem(value: str) -> str | None:
+    """Why a well-formed salt looks hand-made, or None. Catches common mistakes; does not measure randomness."""
+    shorter = min(len(value), len(EXAMPLE_SALT))
+    if sum(a != b for a, b in zip(value, EXAMPLE_SALT)) <= shorter / 2:
+        return "it is the published example's salt or close to it"
+    n = len(value)
+    if any(all(value[i] == value[i + period] for i in range(n - period)) for period in range(1, n // 2 + 1)):
+        return "it repeats a pattern"
+    if len(set(value)) < SALT_MIN_DISTINCT:
+        return f"it uses fewer than {SALT_MIN_DISTINCT} different hex digits"
+    up = down = 1
+    for a, b in zip(value, value[1:]):
+        step = _HEX.index(b) - _HEX.index(a)
+        up = up + 1 if step == 1 else 1
+        down = down + 1 if step == -1 else 1
+        if max(up, down) > SALT_MAX_RUN:
+            return f"it has a run of {SALT_MAX_RUN + 1} or more consecutive hex digits"
+    return None
+
+
+def new_salt() -> str:
+    """A salt from `secrets.token_hex(32)` that passes `salt_problem`, which it all but always does first time."""
+    while True:
+        value = secrets.token_hex(32)
+        if salt_problem(value) is None:
+            return value
 
 
 def _mode(value: object, label: str) -> str:
@@ -769,12 +809,14 @@ def lint_overlay(overlay: dict) -> list[str]:
 
 
 def parse_yaml(text: str) -> object:
-    """`yaml.safe_load`, refusing a key that appears twice in one mapping.
+    """`yaml.safe_load`, refusing a key that appears twice in one mapping, and merge keys.
 
     PyYAML keeps the last of two equal keys, so a second `enforcement:` block
-    or a second `values:` in a rule would silently replace the first. The
-    error names the key's path, and the key only when it is a schema field.
-    Raises OverlayError for a duplicate, and what safe_load raises otherwise.
+    or a second `values:` in a rule would silently replace the first. A merge
+    key (`<<: *anchor`) changes values the same quiet way, so it is refused
+    too. The error names the key's path, and the key only when it is a
+    schema field. Raises OverlayError for either, and what safe_load raises
+    otherwise.
     """
     node = yaml.compose(text, Loader=yaml.SafeLoader)
     if node is not None:
@@ -790,8 +832,8 @@ def _check_duplicate_keys(node: yaml.Node, path: str, loader: yaml.SafeLoader, v
         keys = []
         for key_node, value_node in node.value:
             if key_node.tag == "tag:yaml.org,2002:merge":
-                _check_duplicate_keys(value_node, path, loader, visited)
-                continue
+                # A merge key would let a value arrive silently from elsewhere, and a rules file has no use for one.
+                raise OverlayError(f"{path}.<<: YAML merge keys are not allowed in a rules file; write each value out")
             key = loader.construct_object(key_node, deep=True)
             where = f"{path}.{key}" if isinstance(key, str) and key in FIELD_NAMES else f"{path}.<a key>"
             try:
@@ -971,12 +1013,73 @@ def migrate_main(argv: list[str]) -> int:
     return 0
 
 
+_SALT_LINE = re.compile(r"^salt:[^\r\n]*$", re.MULTILINE)
+_ENFORCEMENT_LINE = re.compile(r"^enforcement:", re.MULTILINE)
+
+
+def set_salt_text(text: str, salt: str) -> str:
+    """`text` with its top-level `salt:` line replaced, or one added before `enforcement:` (else at the end).
+
+    A plain text edit: no other line changes. Raises OverlayError when the result does not read
+    back as the same file with only the salt changed (a salt written over several lines, say).
+    """
+    line = f'salt: "{salt}"'
+    newline = "\r\n" if "\r\n" in text else "\n"
+    found = _SALT_LINE.findall(text)
+    if len(found) == 1:
+        edited = _SALT_LINE.sub(line, text)
+    elif not found:
+        place = _ENFORCEMENT_LINE.search(text)
+        if place:
+            edited = text[: place.start()] + line + newline + newline + text[place.start():]
+        else:
+            edited = text + ("" if not text or text.endswith("\n") else newline) + line + newline
+    else:
+        raise OverlayError("salt: more than one top-level salt line; keep one")
+    before = parse_yaml(text)
+    try:
+        after = parse_yaml(edited)
+    except (yaml.YAMLError, ValueError, RecursionError):
+        after = None
+    if not isinstance(before, dict) or not isinstance(after, dict) or after.get("salt") != salt or {k: v for k, v in after.items() if k != "salt"} != {
+        k: v for k, v in before.items() if k != "salt"
+    }:
+        raise OverlayError("salt: could not set the salt with a one-line edit; set it by hand")
+    return edited
+
+
+def salt_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="validate_overlay.py salt",
+        description="Set a new random salt in a version 2 company rules file, changing no other line. The salt is never printed.",
+    )
+    parser.add_argument("overlay", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        data, raw = load_overlay_file(args.overlay)  # refuses a symlink
+        if not isinstance(data, dict) or not _is_version(data.get("schema_version"), 2):
+            raise OverlayError("salt: only a version 2 file has a salt; convert a version 1 file with `migrate` first")
+        edited = set_salt_text(raw.decode("utf-8"), new_salt())
+        with open(args.overlay, "w", encoding="utf-8", newline="") as handle:
+            handle.write(edited)
+    except (OSError, OverlayError) as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"{args.overlay}: set a new random salt. The file's SHA-256 changes, so rebuild and redeploy anything built from it.",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["migrate"]:
         return migrate_main(argv[1:])
+    if argv[:1] == ["salt"]:
+        return salt_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("overlay", type=Path, help="the file to validate; `migrate FILE` converts a version 1 file instead")
+    parser.add_argument("overlay", type=Path, help="the file to validate; `migrate FILE` converts a version 1 file and `salt FILE` sets a new salt instead")
     parser.add_argument("--allow-host", action="append", default=[], help="hostname allowed in templates[].location and intake_url (repeatable)")
     args = parser.parse_args(argv)
     try:

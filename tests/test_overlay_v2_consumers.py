@@ -55,7 +55,7 @@ CANARIES = (
     "canary-host-7e8f",  # a deploy host, canary-host-7e8f.example.net
     "canary-wild-0a1b",  # a wildcard deploy host, *.canary-wild-0a1b.example.net
     "canary-alias-2f4e",  # use_instead, an alias only enforcement refers to
-    "c0a5a17c0a5a17c0a5a17c0a5a17c0a5",  # the salt
+    "ca7a1b9e3d5f0c8264e1f7b2d9a0c3e5",  # the salt
 )
 STRUCTURE = ("protected_branch", "deploy_host", "default_mode", "use_instead")
 
@@ -72,7 +72,7 @@ def canary_overlay() -> dict:
     data["reviewed_on"] = TODAY - dt.timedelta(days=1)
     data["expires_on"] = TODAY + dt.timedelta(days=30)
     data["hosting"]["approved"][0]["aliases"].append("canary-alias-2f4e")
-    data["salt"] = "c0a5a17c0a5a17c0a5a17c0a5a17c0a5"
+    data["salt"] = "ca7a1b9e3d5f0c8264e1f7b2d9a0c3e5"
     data["enforcement"] = {
         "default_mode": "monitor",
         "rules": [
@@ -304,7 +304,7 @@ class SaltedHashTests(unittest.TestCase):
         def rebuild(salt: str) -> bytes:
             return template.replace(published, f'salt: "{salt}"').encode("utf-8")
 
-        secret = secrets.token_hex(16)
+        secret = validate_overlay.new_salt()
         target = hashlib.sha256(rebuild(secret)).hexdigest()  # what the block, the sidecar and the server show
         data = validate_overlay.parse_yaml(rebuild(secret).decode("utf-8"))
         _, errors = validate_overlay.validate_overlay(data, today=dt.date(2026, 11, 17))
@@ -445,7 +445,7 @@ class Version1UnchangedTests(unittest.TestCase):
     def test_the_example_block_and_its_v2_counterpart_fit_the_line_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
             v2 = Path(tmp) / "rules.yaml"
-            v2.write_text(EXAMPLE_V2.read_text(encoding="utf-8").replace(validate_overlay.EXAMPLE_SALT, secrets.token_hex(16)), encoding="utf-8")
+            v2.write_text(EXAMPLE_V2.read_text(encoding="utf-8").replace(validate_overlay.EXAMPLE_SALT, validate_overlay.new_salt()), encoding="utf-8")
             for path, day in ((EXAMPLE_V1, V1_DAY), (v2, dt.date(2026, 11, 17))):
                 with self.subTest(example=path.name), pinned(day):
                     lines = company_checklist.company_checklist_instruction(path).splitlines()
