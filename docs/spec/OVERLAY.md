@@ -2,7 +2,7 @@
 
 **Status:** Active. Schema: [`overlay.schema.json`](./overlay.schema.json). Example: [`overlay.example.yaml`](./overlay.example.yaml).
 **Companion to:** [`SKILL_FORMAT.md`](./SKILL_FORMAT.md) (slots) and [`PACKAGING.md`](./PACKAGING.md) (private builds).
-**Next version:** [`OVERLAY_V2.md`](./OVERLAY_V2.md) proposes `schema_version: 2` (stable rule ids, a machine-only `enforcement` section and a mode per enforcement rule); it is not implemented, and this file describes the only version the tools accept.
+**Next version:** [`OVERLAY_V2.md`](./OVERLAY_V2.md) describes `schema_version: 2` (stable rule ids, a machine-only `enforcement` section and a mode per enforcement rule), approved on 2026-11-17; it is not implemented yet, and this file describes the only version the tools accept.
 
 ---
 
