@@ -57,7 +57,7 @@ sudo deploy/org/install.sh --server-url https://mcp.example.com/mcp
 **Confirm it on one machine before the fleet.** As a normal user on that machine:
 
 1. `deploy/org/verify.sh` prints what is present, checks that `python3` starts (a hook that cannot start is a non-blocking error to Claude Code, so commands would run unchecked; it names the macOS Command Line Tools stub when that is what `python3` resolves to), runs each installed hook on harmless probes (AWS's documentation example key, `git push --force origin main`, `ls`), and runs each hook command in `managed-settings.json` the same way, so a hooks block that was never merged shows up as a failure. It exits non-zero on any failure. It runs the hooks directly, not through Claude Code, whose own `PATH` can differ from your shell's, so the session steps below are still the proof.
-2. Start Claude Code and run `/status`. The `Setting sources` line must list `Enterprise managed settings (file)`; with an MDM profile it says `(plist)` or `(HKLM)`. If the line is missing, the file is not where Claude Code looks, or it failed to parse; `claude doctor` lists dropped entries.
+2. Start Claude Code and run `/status`. The `Setting sources` line must list `Enterprise managed settings (file)`; with an MDM profile it says `(plist)` or `(HKLM)`. If the line is missing, the file is not where Claude Code looks, or it failed to parse; `claude doctor` lists dropped entries. If it says `(remote)` and a `Skipped sources` line lists `Enterprise managed settings (file)`, the hooks are not running: see [below](#when-your-organization-also-uses-claudeai-managed-settings).
 3. `claude mcp list` shows `catpilot-guardrails`.
 4. Ask for a command that contains AWS's documentation-only example key: `export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE && echo ok`. It is denied with a reason that names the credential type and does not echo the value. Ask for the same command with `$AWS_ACCESS_KEY_ID`; it runs.
 5. Ask it to write a file whose content starts with `-----BEGIN RSA PRIVATE KEY-----` and a synthetic body. The write is denied.
@@ -67,6 +67,20 @@ sudo deploy/org/install.sh --server-url https://mcp.example.com/mcp
 The vendor documents a testing variable, `CLAUDE_CODE_MANAGED_SETTINGS_PATH`, that points Claude Code at a managed file outside the system path. In Catpilot's check on 2.1.241 (2026-09-20) it did not take effect; through the system path, the same file's hooks ran and the same directory's skills loaded. The system path is the only route this page relies on. Note that the managed file applies to every Claude Code session on the machine, the desktop app included, until `uninstall.sh` removes it.
 
 **What this does not reach.** Cloud sessions (server-managed settings only), the desktop app's own connectors (governed from claude.ai organization settings), and any tool other than Claude Code.
+
+### When your organization also uses claude.ai managed settings
+
+People may sign in to Claude Code with your claude.ai Team or Enterprise organization, and that organization may set anything under **Organization settings > Claude Code > Managed settings**. If so, Claude Code receives those settings from claude.ai as well as reading the file. By default it applies only the highest-ranked managed source and skips the rest without a warning. The claude.ai settings rank above the file ([vendor's precedence rules](https://code.claude.com/docs/en/managed-settings#how-claude-code-combines-managed-sources)). The hooks in the file then never run, while `verify.sh` still passes, because it runs the hooks directly. Only `/status` shows it: `Setting sources` says `Enterprise managed settings (remote)`, and `Skipped sources` lists `Enterprise managed settings (file)`.
+
+To apply both, an organization owner adds one key to the claude.ai managed settings:
+
+```json
+"managedSourcesBehavior": "merge"
+```
+
+Claude Code reads this key only from the highest-ranked source, so it has no effect in the file, and it needs Claude Code 2.1.242 or later. With it, the hooks from the file are added to any hooks set in claude.ai, and `/status` shows `Enterprise managed settings (remote + file, merged)`. On a machine with no managed settings file or MDM profile, it changes nothing. The vendor advises merging only when every lower source is under an administrator's control; the file `install.sh` writes is root-owned. Verified on Claude Code 2.1.326 on 2026-11-16 ([note](../evals/reports/2026.11.16-managed-hooks-verification.md)).
+
+Do not move the hooks into the claude.ai managed settings instead. They would then apply on every machine in the organization, and on a machine without the hook files, `python3` cannot open the script and exits 2, which blocks every command and file write.
 
 ## Claude.ai
 
