@@ -90,7 +90,7 @@ fi
 SETTINGS_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" -e "s#/Library/Application Support/ClaudeCode#$CC_DIR#g" "$REPO/deploy/org/claude-code/managed-settings.json")"
 CODEX_TOML="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/codex/managed_config.toml")"
 "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1 || {
-  echo "$PYTHON_BIN did not run as Python 3.8 or later; it writes /etc/codex/requirements.toml, and the hooks need it too." >&2
+  echo "$PYTHON_BIN did not run as Python 3.8 or later; it writes /etc/codex/requirements.toml. (The hooks run python3 from each person's PATH; verify.sh checks that one.)" >&2
   echo "Set PYTHON_BIN to one, for example: sudo PYTHON_BIN=/opt/homebrew/bin/python3 $0 ..." >&2
   exit 2
 }
@@ -203,7 +203,7 @@ chmod 755 "$CODEX_DIR/catpilot-guardrails" "$CODEX_DIR/catpilot-guardrails/hooks
 chmod 644 "$CODEX_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $CODEX_DIR/catpilot-guardrails/hooks/"
 install_package "$CODEX_DIR/catpilot-guardrails/hooks"
 [ -n "$HOSTS_DIR" ] && install_rules "$CODEX_DIR"
-if [ -e "$CODEX_DIR/requirements.toml" ]; then
+if [ -e "$CODEX_DIR/requirements.toml" ] || [ -L "$CODEX_DIR/requirements.toml" ]; then
   echo "exists  $CODEX_DIR/requirements.toml (not overwritten); merge this into it, keeping one [features] and one [hooks] table:"; echo "$REQUIREMENTS_TOML"
 else
   printf '%s\n' "$REQUIREMENTS_TOML" > "$CODEX_DIR/requirements.toml"; chmod 644 "$CODEX_DIR/requirements.toml"; echo "policy  $CODEX_DIR/requirements.toml"

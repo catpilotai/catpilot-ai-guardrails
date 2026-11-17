@@ -6,7 +6,8 @@
 # have since edited or merged is left in place and named, so you can remove our keys by hand.
 # It removes /etc/codex/catpilot-guardrails/ (the Codex hooks and their package, and from an --overlay install the
 # session-start script and rules) and /etc/codex/requirements.toml under the same byte-for-byte rule, with or
-# without the session-start hook. From an --overlay install it also removes the marked catpilot-company-rules
+# without the session-start hook. A tool's catpilot-guardrails/hooks/ stays while a kept managed file still runs
+# hooks from it. From an --overlay install it also removes the marked catpilot-company-rules
 # section of the managed CLAUDE.md, deleting that file only when nothing else is in it.
 #
 #   sudo deploy/org/uninstall.sh --server-url https://mcp.example.com/mcp
@@ -85,9 +86,26 @@ if [ -e "$CC_DIR/CLAUDE.md" ] || [ -L "$CC_DIR/CLAUDE.md" ]; then
   fi
 fi
 
-for d in "$CC_DIR/catpilot-guardrails" \
-         "$CODEX_DIR/catpilot-guardrails" \
-         "$CC_DIR"/.claude/skills/catpilot-safe-building* \
+# A managed file kept above may still run hooks from catpilot-guardrails/hooks/. Removing the scripts under it
+# would leave every command it covers running a missing file: python3 exits 2, which blocks every command or
+# file write on Claude Code and Codex, or the host skips a hook it cannot load. So that tool's hooks/ directory
+# stays until the file no longer names it; the rest of catpilot-guardrails/ (the rules) is removed.
+keep_hooks_for() {  # FILE DIR
+  [ -e "$1" ] && grep -qF "$2/hooks/" "$1" 2>/dev/null
+}
+for d in "$CC_DIR/catpilot-guardrails" "$CODEX_DIR/catpilot-guardrails"; do
+  case "$d" in
+    "$CC_DIR/catpilot-guardrails") file="$CC_DIR/managed-settings.json" ;;
+    *) file="$CODEX_DIR/requirements.toml" ;;
+  esac
+  if [ -d "$d/hooks" ] && keep_hooks_for "$file" "$d"; then
+    find "$d" -mindepth 1 -maxdepth 1 ! -name hooks -exec rm -rf {} +
+    echo "kept    $d/hooks ($file, kept above, still runs hooks from it; remove those hook entries from $file, then run uninstall.sh again)"
+  elif [ -e "$d" ]; then
+    rm -rf "$d"; echo "removed $d"
+  fi
+done
+for d in "$CC_DIR"/.claude/skills/catpilot-safe-building* \
          "$CC_DIR/.claude/skills/catpilot-security-core" \
          "$CC_DIR/.claude/skills/catpilot-agentic-security" \
          "$CODEX_DIR"/skills/catpilot-safe-building* \

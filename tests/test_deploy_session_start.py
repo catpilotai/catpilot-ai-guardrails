@@ -434,7 +434,11 @@ class SessionStartDeployTests(unittest.TestCase):
                       "catpilot-guardrails/hooks/, SessionStart included", uninstall.stdout)
         self.assertIn(f"kept    {requirements} (edited since install; remove by hand the [hooks] managed_dir", uninstall.stdout)
         self.assertFalse((self.cc / "CLAUDE.md").exists())
-        self.assertFalse((self.codex / "catpilot-guardrails").exists())
+        # The kept files still run hooks from these directories, so they stay until those entries are removed.
+        for managed_dir, kept in ((self.cc, settings), (self.codex, requirements)):
+            self.assertTrue((managed_dir / "catpilot-guardrails" / "hooks").is_dir(), managed_dir)
+            self.assertFalse((managed_dir / "catpilot-guardrails" / "instructions").exists(), managed_dir)
+            self.assertIn(f"kept    {managed_dir / 'catpilot-guardrails' / 'hooks'} ({kept}, kept above, still runs hooks from it", uninstall.stdout)
 
     def test_reinstalling_without_overlay_leaves_earlier_rules_alone_and_says_so(self):
         self.install()

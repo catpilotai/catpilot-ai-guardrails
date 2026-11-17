@@ -63,6 +63,10 @@ CODEX_PRETOOLUSE = (
     ("^Bash$", "Bash", ("pretooluse-secrets.py", "pretooluse-destructive-ops.py")),
     ("^apply_patch$", "apply_patch", ("pretooluse-write-secrets.py",)),
 )
+# Names a matcher may use for a tool: for file edits, Codex also matches Edit and Write and still reports apply_patch.
+CODEX_MATCHER_NAMES = {"Bash": ("Bash",), "apply_patch": ("apply_patch", "Edit", "Write")}
+# [features] written as a dotted key or an inline table, which the minimal reader does not read.
+_FEATURES_ELSEWHERE = re.compile(r"^\s*features\s*(?:\.|=)", re.MULTILINE)
 CODEX_HOOK_FILES = tuple(name for _, _, names in CODEX_PRETOOLUSE for name in names)
 CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence")
 # A managed directory is written into a double-quoted shell word and a TOML literal string, so it may hold none
@@ -682,7 +686,10 @@ def verify(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, today=None, 
             return 0
         print("         (read with %s)" % reader)
         features = requirements.get("features") if isinstance(requirements, dict) else None
-        if isinstance(features, dict) and features.get("hooks") is False:
+        if reader != "tomllib" and _FEATURES_ELSEWHERE.search(requirements_path.read_bytes().decode("utf-8", "replace")):
+            report.line("FAIL", "%s sets features as a dotted key or an inline table, which this reader cannot read; run "
+                        "verify.sh with PYTHON_BIN set to Python 3.11 or later" % requirements_path)
+        elif isinstance(features, dict) and features.get("hooks") is False:
             report.line("FAIL", "%s sets [features].hooks = false, which turns every hook off" % requirements_path)
         managed_dir = req_hooks.get("managed_dir") if isinstance(req_hooks, dict) else None
         if not isinstance(managed_dir, str) or not os.path.isabs(managed_dir):
@@ -804,7 +811,11 @@ def verify_codex_hooks(codex_dir: Path, home: Path, timeout: int, prefer_tomllib
         return 0
     print("         (read with %s)" % reader)
     features = requirements.get("features") if isinstance(requirements, dict) else None
-    if isinstance(features, dict) and features.get("hooks") is False:
+    if reader != "tomllib" and _FEATURES_ELSEWHERE.search(requirements_path.read_bytes().decode("utf-8", "replace")):
+        report.line("FAIL", "%s sets features as a dotted key or an inline table, which this reader cannot read, so it "
+                    "cannot tell whether hooks are turned off; run verify.sh with PYTHON_BIN set to Python 3.11 or later"
+                    % requirements_path)
+    elif isinstance(features, dict) and features.get("hooks") is False:
         report.line("FAIL", "%s sets [features].hooks = false, which turns every hook off" % requirements_path)
     elif not (isinstance(features, dict) and features.get("hooks") is True):
         report.line("note", "%s does not pin [features].hooks = true, so a person who turns hooks off in their own "
@@ -827,8 +838,9 @@ def verify_codex_hooks(codex_dir: Path, home: Path, timeout: int, prefer_tomllib
             continue
         tool = tool_of[name]
         tool_probe, command_probe, what = CODEX_PROBES[name][0]
+        harmless_tool, harmless_command, harmless_what = CODEX_PROBES[name][1]
         for matcher, command in mine:
-            if not covers(matcher, tool, anchored=False):
+            if not any(covers(matcher, alias, anchored=False) for alias in CODEX_MATCHER_NAMES[tool]):
                 report.line("FAIL", "requirements.toml runs %s under a matcher that does not cover %s" % (name, tool))
             if "--host codex" not in command and "--host=codex" not in command:
                 report.line("note", "requirements.toml runs %s without --host codex, so its evidence lines say claude-code" % name)
@@ -841,8 +853,14 @@ def verify_codex_hooks(codex_dir: Path, home: Path, timeout: int, prefer_tomllib
                 report.line("skipped", "requirements.toml command for %s (it forwards evidence to syslog; check it in a session)" % name)
                 continue
             got = decision(run_hook(["bash", "-c", command], codex_event(tool_probe, command_probe, home), home, timeout))
-            if got == "deny":
+            passed = decision(run_hook(["bash", "-c", command], codex_event(harmless_tool, harmless_command, home), home, timeout))
+            if got == "deny" and passed == "none":
                 report.line("wired", "requirements.toml runs %s at PreToolUse and it denies its probe" % name)
+            elif got == "deny":
+                if passed == "deny":
+                    report.line("FAIL", "requirements.toml command for %s denied %s, which it must let through" % (name, harmless_what))
+                else:
+                    report.line("FAIL", "requirements.toml command for %s %s on %s" % (name, passed, harmless_what))
             elif got == "none":
                 report.line("FAIL", "requirements.toml command for %s did not deny %s" % (name, what))
             else:

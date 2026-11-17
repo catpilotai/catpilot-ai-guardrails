@@ -239,11 +239,13 @@ class DeployOrgScriptTests(unittest.TestCase):
                 timeout=15,
             )
             self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
-            # Edited file is preserved; private skill and instructions are removed
+            # Edited file is preserved; private skill and instructions are removed. The hooks it still runs stay,
+            # since removing them would leave every command it covers running a missing file.
             self.assertTrue(settings_path.exists())
             self.assertIn("kept", uninstall.stdout)
             self.assertEqual(list((cc_dir / ".claude" / "skills").glob("catpilot-safe-building-*")), [])
-            self.assertFalse((cc_dir / "catpilot-guardrails").exists())
+            self.assertEqual(sorted(p.name for p in (cc_dir / "catpilot-guardrails").iterdir()), ["hooks"])
+            self.assertTrue((cc_dir / "catpilot-guardrails" / "hooks" / "pretooluse-secrets.py").is_file())
 
     def _checkout_with_bytecode(self, tmp: Path) -> Path:
         """A copy of what install.sh reads, with bytecode planted in catpilot_guard/ that it must not copy."""

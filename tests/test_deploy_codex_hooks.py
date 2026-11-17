@@ -12,7 +12,9 @@ whichever of apply_patch, Edit or Write the matcher names.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -189,8 +191,44 @@ class CodexManagedHookTests(unittest.TestCase):
         text = self.requirements.read_text(encoding="utf-8")
         self.requirements.write_text(text.replace("hooks = true", "hooks = false"), encoding="utf-8")
         self.assert_verify_fails(f"FAIL     {self.requirements} sets [features].hooks = false, which turns every hook off")
-        self.requirements.write_text(text.replace('matcher = "^apply_patch$"', 'matcher = "^Write$"'), encoding="utf-8")
+        self.requirements.write_text(text.replace('matcher = "^apply_patch$"', 'matcher = "^Bash$"'), encoding="utf-8")
         self.assert_verify_fails("FAIL     requirements.toml runs pretooluse-write-secrets.py under a matcher that does not cover apply_patch")
+
+    def test_verify_accepts_the_matcher_names_codex_documents_for_file_edits(self):
+        self.install()
+        text = self.requirements.read_text(encoding="utf-8")
+        for matcher in ("^Write$", "Edit|Write", "^(apply_patch|Edit)$"):
+            with self.subTest(matcher=matcher):
+                self.requirements.write_text(text.replace('matcher = "^apply_patch$"', 'matcher = "%s"' % matcher), encoding="utf-8")
+                verify = self.run_script("verify.sh")
+                self.assertEqual(verify.returncode, 0, verify.stdout)
+                self.assertNotIn("does not cover apply_patch", verify.stdout)
+
+    def test_the_minimal_reader_fails_on_features_it_cannot_read(self):
+        self.install()
+        text = self.requirements.read_text(encoding="utf-8").replace("[features]\nhooks = true\n\n", "")
+        for features in ("features.hooks = false\n", "features = { hooks = false }\n"):
+            with self.subTest(features=features):
+                self.requirements.write_text(features + text, encoding="utf-8")
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    helper.verify_codex_hooks(self.codex, self.home, 10, prefer_tomllib=False)
+                self.assertIn("sets features as a dotted key or an inline table, which this reader cannot read", out.getvalue())
+                if tomllib is not None:
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        helper.verify_codex_hooks(self.codex, self.home, 10)
+                    self.assertIn("sets [features].hooks = false, which turns every hook off", out.getvalue())
+
+    def test_verify_fails_a_registered_command_that_denies_everything(self):
+        self.install()
+        deny_all = self.tmp / "deny-all.sh"
+        deny_all.write_text('#!/bin/sh\ncat >/dev/null\necho \'{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"x"}}\'\n', encoding="utf-8")
+        deny_all.chmod(0o755)
+        text = self.requirements.read_text(encoding="utf-8")
+        self.requirements.write_text(text.replace(self.command("pretooluse-destructive-ops.py"),
+                                                  f'"{deny_all}" # pretooluse-destructive-ops.py'), encoding="utf-8")
+        self.assert_verify_fails("FAIL     requirements.toml command for pretooluse-destructive-ops.py denied ls, which it must let through")
 
     def test_verify_fails_on_a_missing_hook_or_package_module(self):
         self.install()
@@ -231,6 +269,38 @@ class CodexManagedHookTests(unittest.TestCase):
 
     # --- uninstall -----------------------------------------------------------------------------------------------
 
+    def test_uninstall_keeps_the_hooks_a_kept_requirements_file_still_runs(self):
+        for label, env in (("edited file", None), ("no working python", dict(self.env, PYTHON_BIN="/usr/bin/false"))):
+            with self.subTest(label):
+                self.install()
+                if env is None:
+                    self.requirements.write_text(self.requirements.read_text(encoding="utf-8") + "# ours\n", encoding="utf-8")
+                uninstall = self.run_script("uninstall.sh", "--server-url", URL, env=env)
+                self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
+                self.assertTrue(self.requirements.exists())
+                for name in HOOK_FILES:
+                    self.assertTrue((self.hooks / name).is_file(), name)
+                self.assertIn(f"kept    {self.hooks} ({self.requirements}, kept above, still runs hooks from it", uninstall.stdout)
+                # The declared commands still run their hooks.
+                data = parse_toml(self.requirements.read_text(encoding="utf-8"))
+                command = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+                proc = subprocess.run(["/bin/sh", "-c", command], input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
+                                      env=self.env, capture_output=True, text=True, timeout=30)
+                self.assertEqual((proc.returncode, proc.stdout.strip()), (0, "{}"))
+                # Once the file is gone, a second uninstall removes the directory.
+                self.requirements.unlink()
+                uninstall = self.run_script("uninstall.sh", "--server-url", URL)
+                self.assertFalse((self.codex / "catpilot-guardrails").exists())
+
+    def test_a_dangling_symlink_at_requirements_is_not_written_through(self):
+        self.codex.mkdir(parents=True)
+        target = self.tmp / "elsewhere.toml"
+        self.requirements.symlink_to(target)
+        proc = self.install()
+        self.assertFalse(target.exists())
+        self.assertTrue(self.requirements.is_symlink())
+        self.assertIn(f"exists  {self.requirements} (not overwritten)", proc.stdout)
+
     def test_uninstall_removes_the_hooks_and_requirements_and_keeps_an_edited_file(self):
         self.install()
         uninstall = self.run_script("uninstall.sh", "--server-url", URL)
@@ -245,7 +315,7 @@ class CodexManagedHookTests(unittest.TestCase):
         self.assertTrue(self.requirements.exists())
         self.assertIn(f"kept    {self.requirements} (edited since install; remove by hand the [hooks] managed_dir that names "
                       "catpilot-guardrails, the [[hooks.PreToolUse]] entries", uninstall.stdout)
-        self.assertFalse((self.codex / "catpilot-guardrails").exists())
+        self.assertTrue((self.hooks / "pretooluse-secrets.py").exists(), "the kept file still runs it")
 
     # --- the generated file ----------------------------------------------------------------------------------------
 
