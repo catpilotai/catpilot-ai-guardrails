@@ -208,7 +208,7 @@ Text inside quotes is not a command, so `echo "rm -rf /"` and
 
 - Covered: commands the agent runs through the `Bash` tool, as above.
 - Not covered: a deliberately disguised command (`eval`, base64, a variable
-  holding the verb), commands a script runs internally, prompts, other tools,
+  holding the verb, ANSI-C quoting such as `bash -c $'ls\nrm -rf ~'`), commands a script runs internally, prompts, other tools,
   and any host other than Claude Code. It stops accidents, not an adversary.
 - Failure behavior: malformed input, a missing `catpilot_guard` package, or any
   internal error exits 2 and the host blocks the command. It needs the package
