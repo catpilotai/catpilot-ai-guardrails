@@ -31,7 +31,7 @@ import json
 import re
 import sys
 
-from . import write_decision, write_reason
+from . import hook_host, write_decision, write_reason
 
 PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----")
 MAX_INPUT = 1_048_576
@@ -59,7 +59,7 @@ def secrets_module():
 # CATPILOT_EVIDENCE_SYSLOG is set: one content-free line per deny or input error, with the hook, the
 # tool, the credential type and the session id. Never the file path, never the content.
 HOOK_NAME = "pretooluse-write-secrets"
-HOST = "claude-code"  # main() reads a Claude Code PreToolUse event; inspect_event() called from a harness passes no host
+HOST = "claude-code"  # main()'s host with no --host (hook_host); inspect_event() called from a harness passes no host
 
 
 def record_evidence(event: str, hook_event: object = None, host: str | None = None, **fields) -> None:
@@ -136,15 +136,16 @@ def inspect_event(event: object, host: str | None = None) -> dict:
 
 
 def main() -> int:
+    host = hook_host()  # the evidence label only, from --host; never the decision
     try:
         payload = sys.stdin.buffer.read(MAX_INPUT + 1)
         if len(payload) > MAX_INPUT:
             raise ValueError("hook input too large")
-        result = inspect_event(json.loads(payload), HOST)
+        result = inspect_event(json.loads(payload), host)
     except Exception:
         # Any failure (malformed input, a missing sibling module, an unexpected error)
         # blocks: an ordinary non-zero exit would let the host perform the write.
-        record_evidence("input_error", host=HOST)
+        record_evidence("input_error", host=host)
         write_reason("Catpilot write check unavailable: invalid input or an internal error. Review the write before retrying.")
         return 2
     return write_decision(result)

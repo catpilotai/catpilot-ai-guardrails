@@ -21,11 +21,11 @@
     },
     "source": {
       "enum": ["claude-code-hook", "mcp-server", "session-start"],
-      "description": "The component that wrote the line: one of the Claude Code hooks, the reference MCP server, or the session-start script, which runs on Claude Code and Codex."
+      "description": "The component that wrote the line: one of the PreToolUse hooks in hooks/claude-code/ (named for the event format they read, on whichever tool runs them; host says which), the reference MCP server, or the session-start script, which runs on Claude Code and Codex."
     },
     "host": {
       "enum": ["claude-code", "codex"],
-      "description": "The AI tool the event came from, when the writer knows it: claude-code for a hook run as a Claude Code PreToolUse hook; claude-code or codex for the session-start script, from its --host argument. Absent when unknown: the server does not know which tool called it, a check called from a harness does not say, and a session-start line whose --host was missing or unknown has none. Never the machine's hostname."
+      "description": "The AI tool the event came from, when the writer knows it: for a PreToolUse hook, claude-code or codex from its --host argument, and claude-code when it has none, as in every configuration written before the argument existed; claude-code or codex for the session-start script, from its --host argument. A hook whose --host was malformed or unknown has none. Absent when unknown: the server does not know which tool called it, a check called from a harness does not say, and a session-start line whose --host was missing or unknown has none. Never the machine's hostname."
     },
     "event": {
       "enum": ["rules_delivered", "rules_expired", "deny", "ask", "would_deny", "policy_error", "input_error", "lookup"],

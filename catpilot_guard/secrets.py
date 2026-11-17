@@ -33,7 +33,7 @@ import json
 import re
 import sys
 
-from . import write_decision, write_reason
+from . import hook_host, write_decision, write_reason
 
 MAX_INPUT_BYTES = 1_048_576
 
@@ -122,7 +122,7 @@ MIN_CREDENTIAL_LENGTH = 6
 # CATPILOT_EVIDENCE_SYSLOG is set: one content-free line per deny or input error, with the hook, the
 # tool, the credential type and the session id. Never the command, never the matched text.
 HOOK_NAME = "pretooluse-secrets"
-HOST = "claude-code"  # main() reads a Claude Code PreToolUse event; decide() called from a harness passes no host
+HOST = "claude-code"  # main()'s host with no --host (hook_host); decide() called from a harness passes no host
 
 
 def record_evidence(event: str, hook_event: object = None, host: str | None = None, **fields) -> None:
@@ -198,15 +198,16 @@ def decide(event: dict, host: str | None = None) -> dict:
 
 
 def main() -> int:
+    host = hook_host()  # the evidence label only, from --host; never the decision
     try:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:
             raise ValueError("hook input too large")
-        result = decide(json.loads(payload), HOST)
+        result = decide(json.loads(payload), host)
     except Exception:
         # Any failure, not only malformed input, blocks: a hook that crashes with an
         # ordinary non-zero exit would let the host run the command.
-        record_evidence("input_error", host=HOST)
+        record_evidence("input_error", host=host)
         write_reason(
             "Catpilot secret check could not read the hook input, so the command was not allowed. "
             "Review the command and retry.")
