@@ -2,113 +2,317 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/catpilotai/catpilot-ai-guardrails/docs/spec/overlay.v2.schema.json",
   "title": "Catpilot organization overlay, version 2",
-  "description": "Version 2 of the company rules file (docs/spec/OVERLAY_V2.md). Every model-facing list item is an object with a stable id and its phrase as text; an optional machine-only enforcement section holds rules that are never rendered into a prompt or returned by the server. Version 1 files are checked against overlay.schema.json instead. Cross-field rules are checked by tools/validate_overlay.py only, as in version 1: ids and aliases unique across the file, use_instead resolving to an approved item, no enforcement host in a model-facing value, the secret and content scans, and IP addresses refused as hosts. Never commit an overlay to a public repository.",
+  "description": "Version 2 of the company rules file (docs/spec/OVERLAY_V2.md). Every model-facing list item is an object with a stable id and its phrase as text; an optional machine-only enforcement section holds rules that are never rendered into a prompt or returned by the server. Version 1 files are checked against overlay.schema.json instead. A file with enforcement also carries a random salt, so the file's SHA-256, which a model sees, cannot confirm a guessed enforcement value. Cross-field rules are checked by tools/validate_overlay.py only, as in version 1: ids, aliases and template kinds unique across the file, use_instead resolving to an approved item, no enforcement host in a model-facing value, the secret and content scans, and IP addresses refused as hosts. Never commit an overlay to a public repository.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "organization", "owner", "reviewed_on", "expires_on", "data_classes", "hosting", "services", "identity", "review_triggers"],
+  "required": [
+    "schema_version",
+    "organization",
+    "owner",
+    "reviewed_on",
+    "expires_on",
+    "data_classes",
+    "hosting",
+    "services",
+    "identity",
+    "review_triggers"
+  ],
+  "dependentRequired": {
+    "enforcement": [
+      "salt"
+    ]
+  },
   "properties": {
-    "schema_version": {"const": 2},
-    "organization": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Display name only. No internal identifiers, tenant IDs, or domains."},
-    "owner": {"type": "string", "minLength": 3, "maxLength": 160, "description": "Where 'ask a human' points: a team mailbox, channel name, or role. One value."},
-    "intake_url": {"type": "string", "format": "uri", "maxLength": 500, "description": "Optional HTTPS intake form URL for security review requests. No credentials, no query string, host on the validator's allowlist."},
-    "reviewed_on": {"type": "string", "format": "date", "description": "Date a named reviewer accepted these values."},
-    "expires_on": {"type": "string", "format": "date", "description": "After this date the values are treated as unknown; a private bundle cannot be built from an expired overlay."},
+    "schema_version": {
+      "const": 2
+    },
+    "organization": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Display name only. No internal identifiers, tenant IDs, or domains."
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 160,
+      "description": "Where 'ask a human' points: a team mailbox, channel name, or role. One value."
+    },
+    "intake_url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 500,
+      "description": "Optional HTTPS intake form URL for security review requests. No credentials, no query string, host on the validator's allowlist."
+    },
+    "reviewed_on": {
+      "type": "string",
+      "format": "date",
+      "description": "Date a named reviewer accepted these values."
+    },
+    "expires_on": {
+      "type": "string",
+      "format": "date",
+      "description": "After this date the values are treated as unknown; a private bundle cannot be built from an expired overlay."
+    },
     "data_classes": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["never_in_prompts", "ok_with_approval", "ok"],
+      "required": [
+        "never_in_prompts",
+        "ok_with_approval",
+        "ok"
+      ],
       "properties": {
-        "never_in_prompts": {"$ref": "#/$defs/items"},
-        "ok_with_approval": {"$ref": "#/$defs/items"},
-        "ok": {"$ref": "#/$defs/items"}
+        "never_in_prompts": {
+          "$ref": "#/$defs/items"
+        },
+        "ok_with_approval": {
+          "$ref": "#/$defs/items"
+        },
+        "ok": {
+          "$ref": "#/$defs/items"
+        }
       }
     },
     "hosting": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["approved", "not_approved"],
+      "required": [
+        "approved",
+        "not_approved"
+      ],
       "properties": {
-        "approved": {"$ref": "#/$defs/items"},
-        "not_approved": {"$ref": "#/$defs/items"}
+        "approved": {
+          "$ref": "#/$defs/items"
+        },
+        "not_approved": {
+          "$ref": "#/$defs/items"
+        }
       }
     },
     "services": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["approved", "needs_review"],
+      "required": [
+        "approved",
+        "needs_review"
+      ],
       "properties": {
-        "approved": {"$ref": "#/$defs/items"},
-        "needs_review": {"$ref": "#/$defs/items"}
+        "approved": {
+          "$ref": "#/$defs/items"
+        },
+        "needs_review": {
+          "$ref": "#/$defs/items"
+        }
       }
     },
     "identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["default", "never"],
+      "required": [
+        "default",
+        "never"
+      ],
       "properties": {
-        "default": {"$ref": "#/$defs/item"},
-        "never": {"$ref": "#/$defs/items"}
+        "default": {
+          "$ref": "#/$defs/item"
+        },
+        "never": {
+          "$ref": "#/$defs/items"
+        }
       }
     },
-    "review_triggers": {"$ref": "#/$defs/items", "description": "Appended to the when-to-ask-a-human checkpoint."},
+    "review_triggers": {
+      "$ref": "#/$defs/items",
+      "description": "Appended to the when-to-ask-a-human checkpoint."
+    },
     "templates": {
       "type": "array",
       "maxItems": 20,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["kind"],
+        "required": [
+          "kind"
+        ],
         "properties": {
-          "kind": {"$ref": "#/$defs/id", "description": "The template's id."},
-          "location": {"type": "string", "format": "uri", "maxLength": 500, "description": "HTTPS only, no credentials, no query string, host on the validator's allowlist. Omit if the tool cannot reach it."}
+          "kind": {
+            "$ref": "#/$defs/id",
+            "description": "The template's id."
+          },
+          "location": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 500,
+            "description": "HTTPS only, no credentials, no query string, host on the validator's allowlist. Omit if the tool cannot reach it."
+          }
         }
       }
+    },
+    "salt": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32,128}$",
+      "not": {
+        "const": "0123456789abcdef0123456789abcdef"
+      },
+      "description": "Machine-only. A random value of 32 to 128 lowercase hex characters, required with enforcement (OVERLAY_V2.md §6.3 rule 10). Make one with: python3 -c 'import secrets; print(secrets.token_hex(16))'. The example's value is rejected."
     },
     "enforcement": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["rules"],
+      "required": [
+        "rules"
+      ],
       "description": "Machine-only. Never rendered into a prompt or returned by the server; read by hooks and the pull-request check once they ship. Validated only in this release.",
       "properties": {
-        "default_mode": {"$ref": "#/$defs/mode", "default": "monitor", "description": "The mode of a rule with no mode of its own."},
-        "rules": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"$ref": "#/$defs/rule"}}
+        "default_mode": {
+          "$ref": "#/$defs/mode",
+          "default": "monitor",
+          "description": "The mode of a rule with no mode of its own."
+        },
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/rule"
+          }
+        }
       }
     }
   },
   "$defs": {
-    "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 64, "description": "Lowercase letters, digits and single hyphens. Unique across the file, aliases and enforcement rule ids included; never reused for a different thing."},
-    "phrase": {"type": "string", "minLength": 1, "maxLength": 200, "description": "One short phrase. No URLs, no email addresses, no secrets, no narrative, no enforcement value."},
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "maxLength": 64,
+      "description": "Lowercase letters, digits and single hyphens. Unique across the file: item ids, aliases, template kinds and enforcement rule ids; never reused for a different thing."
+    },
+    "phrase": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "One short phrase. No URLs, no email addresses, no secrets, no narrative, no enforcement value."
+    },
     "item": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "text"],
+      "required": [
+        "id",
+        "text"
+      ],
       "properties": {
-        "id": {"$ref": "#/$defs/id"},
-        "text": {"$ref": "#/$defs/phrase"},
-        "aliases": {"type": "array", "maxItems": 5, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}, "description": "Former ids, matched exactly; not synonyms."}
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "text": {
+          "$ref": "#/$defs/phrase"
+        },
+        "aliases": {
+          "type": "array",
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "description": "Former ids, matched exactly; not synonyms."
+        }
       }
     },
-    "items": {"type": "array", "minItems": 1, "maxItems": 30, "items": {"$ref": "#/$defs/item"}},
-    "mode": {"enum": ["monitor", "ask", "block"]},
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "mode": {
+      "enum": [
+        "monitor",
+        "ask",
+        "block"
+      ]
+    },
     "rule": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "values"],
+      "required": [
+        "id",
+        "kind",
+        "values"
+      ],
       "properties": {
-        "id": {"$ref": "#/$defs/id"},
-        "kind": {"enum": ["protected_branch", "deploy_host"], "description": "Closed list (OVERLAY_V2.md §2.2). package_registry and cloud_account enter the schema with their first consumer."},
-        "mode": {"$ref": "#/$defs/mode"},
-        "use_instead": {"$ref": "#/$defs/id", "description": "The id or an alias of an item in hosting.approved or services.approved."},
-        "values": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "protected_branch",
+            "deploy_host"
+          ],
+          "description": "Closed list (OVERLAY_V2.md §2.2). package_registry and cloud_account enter the schema with their first consumer."
+        },
+        "mode": {
+          "$ref": "#/$defs/mode"
+        },
+        "use_instead": {
+          "$ref": "#/$defs/id",
+          "description": "The id or an alias of an item in hosting.approved or services.approved."
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       },
       "allOf": [
         {
-          "if": {"properties": {"kind": {"const": "protected_branch"}}, "required": ["kind"]},
-          "then": {"properties": {"values": {"items": {"$ref": "#/$defs/branch"}}}}
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "protected_branch"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "items": {
+                  "$ref": "#/$defs/branch"
+                }
+              }
+            }
+          }
         },
         {
-          "if": {"properties": {"kind": {"const": "deploy_host"}}, "required": ["kind"]},
-          "then": {"properties": {"values": {"items": {"$ref": "#/$defs/host"}}}}
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "deploy_host"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "items": {
+                  "$ref": "#/$defs/host"
+                }
+              }
+            }
+          }
         }
       ]
     },

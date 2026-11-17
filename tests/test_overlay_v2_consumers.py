@@ -5,7 +5,8 @@
   included), company-checklist block, benchmark prompt or scanner evidence, sidecar,
   session-start output or evidence line, MCP tool response or server evidence line.
 - The server cannot be probed: a check_plan call naming a listed host answers exactly as one
-  naming an unlisted host.
+  naming an unlisted host. The file's hash, which a model sees, cannot confirm a guess either:
+  the salt makes the file's bytes unguessable (§6.3 rule 10).
 - A migrated file renders the same bundle body and paste blocks as its source, and check_plan
   gives the same outcome for the same call (§2.4).
 - Version 1 files reach every consumer unchanged.
@@ -19,6 +20,7 @@ import io
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
 import unittest
@@ -53,6 +55,7 @@ CANARIES = (
     "canary-host-7e8f",  # a deploy host, canary-host-7e8f.example.net
     "canary-wild-0a1b",  # a wildcard deploy host, *.canary-wild-0a1b.example.net
     "canary-alias-2f4e",  # use_instead, an alias only enforcement refers to
+    "c0a5a17c0a5a17c0a5a17c0a5a17c0a5",  # the salt
 )
 STRUCTURE = ("protected_branch", "deploy_host", "default_mode", "use_instead")
 
@@ -69,6 +72,7 @@ def canary_overlay() -> dict:
     data["reviewed_on"] = TODAY - dt.timedelta(days=1)
     data["expires_on"] = TODAY + dt.timedelta(days=30)
     data["hosting"]["approved"][0]["aliases"].append("canary-alias-2f4e")
+    data["salt"] = "c0a5a17c0a5a17c0a5a17c0a5a17c0a5"
     data["enforcement"] = {
         "default_mode": "monitor",
         "rules": [
@@ -284,6 +288,37 @@ class ServerCanaryTests(CanaryCase):
         self.assertEqual({json.loads(line)["policy_sha256"] for line in lines}, {hashlib.sha256(self.raw).hexdigest()})
 
 
+class SaltedHashTests(unittest.TestCase):
+    """The whole-file SHA-256 reaches a model, so it must not confirm a guess (§6.3 rule 10).
+
+    The guesser here knows every byte of the file except the salt: the shipped example's text,
+    every enforcement value, the layout. Rebuilding the bytes with the true salt reproduces the
+    hash, which shows the rebuild is exact; with any other salt it does not match.
+    """
+
+    def test_every_value_known_but_the_salt_does_not_match_the_hash(self):
+        template = EXAMPLE_V2.read_text(encoding="utf-8")
+        published = f'salt: "{validate_overlay.EXAMPLE_SALT}"'
+        self.assertEqual(template.count(published), 1)
+
+        def rebuild(salt: str) -> bytes:
+            return template.replace(published, f'salt: "{salt}"').encode("utf-8")
+
+        secret = secrets.token_hex(16)
+        target = hashlib.sha256(rebuild(secret)).hexdigest()  # what the block, the sidecar and the server show
+        data = validate_overlay.parse_yaml(rebuild(secret).decode("utf-8"))
+        _, errors = validate_overlay.validate_overlay(data, today=dt.date(2026, 11, 17))
+        self.assertEqual(errors, [])
+        self.assertEqual(hashlib.sha256(rebuild(secret)).hexdigest(), target)
+        guesses = [validate_overlay.EXAMPLE_SALT, "0" * 32, "f" * 32, secret[:-1] + ("0" if secret[-1] != "0" else "1")]
+        guesses += [secrets.token_hex(16) for _ in range(1000)]
+        for guess in guesses:
+            rebuilt = validate_overlay.parse_yaml(rebuild(guess).decode("utf-8"))
+            # Every enforcement value and every other field is right; only the salt differs.
+            self.assertEqual({k: v for k, v in rebuilt.items() if k != "salt"}, {k: v for k, v in data.items() if k != "salt"})
+            self.assertNotEqual(hashlib.sha256(rebuild(guess)).hexdigest(), target)
+
+
 class ProbeTests(CanaryCase):
     """check_plan never reads enforcement, so naming a listed value changes nothing (§2.2)."""
 
@@ -408,10 +443,36 @@ class Version1UnchangedTests(unittest.TestCase):
         self.assertTrue(evaltool.overlay_checks(self.overlay)["cites_owner"]("ask security-review@example.org"))
 
     def test_the_example_block_and_its_v2_counterpart_fit_the_line_budget(self):
-        for path, day in ((EXAMPLE_V1, V1_DAY), (EXAMPLE_V2, dt.date(2026, 11, 17))):
-            with self.subTest(example=path.name), pinned(day):
-                lines = company_checklist.company_checklist_instruction(path).splitlines()
-                self.assertLessEqual(len(lines), 200)
+        with tempfile.TemporaryDirectory() as tmp:
+            v2 = Path(tmp) / "rules.yaml"
+            v2.write_text(EXAMPLE_V2.read_text(encoding="utf-8").replace(validate_overlay.EXAMPLE_SALT, secrets.token_hex(16)), encoding="utf-8")
+            for path, day in ((EXAMPLE_V1, V1_DAY), (v2, dt.date(2026, 11, 17))):
+                with self.subTest(example=path.name), pinned(day):
+                    lines = company_checklist.company_checklist_instruction(path).splitlines()
+                    self.assertLessEqual(len(lines), 200)
+
+
+class ServerPolicyErrorTests(unittest.TestCase):
+    """A file the server cannot parse is the normal policy error state, never an exception out of a tool."""
+
+    def test_deep_nesting_and_impossible_dates_are_invalid_policies(self):
+        cases = {
+            "nested too deeply": "[" * 5000 + "]" * 5000 + "\n",
+            "impossible date": EXAMPLE_V1.read_text(encoding="utf-8").replace("reviewed_on: 2026-09-13", "reviewed_on: 2026-13-45"),
+            "duplicate key": EXAMPLE_V1.read_text(encoding="utf-8") + 'owner: "someone-else@example.org"\n',
+        }
+        guidance = content.load_guidance()
+        with tempfile.TemporaryDirectory() as tmp:
+            for label, text in cases.items():
+                path = Path(tmp) / f"{label.replace(' ', '-')}.yaml"
+                path.write_text(text, encoding="utf-8")
+                with self.subTest(case=label):
+                    state = policy.load_policy(str(path), set(), now=dt.date(2026, 9, 14))
+                    self.assertEqual(state.status, "invalid")
+                    self.assertTrue(state.unknown_policy)
+                    self.assertEqual(state.reason, "The configured overlay did not validate: OverlayError.")
+                    self.assertTrue(mcp_tools.list_approved("hosting", guidance, state)["unknown_policy"])
+                    self.assertIsNone(sandbox.load_overlay(path))
 
 
 if __name__ == "__main__":

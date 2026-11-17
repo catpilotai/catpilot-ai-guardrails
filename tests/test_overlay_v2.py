@@ -26,6 +26,8 @@ NOTE = SPEC / "OVERLAY_V2.md"
 # The version 2 example's review date, so these tests do not depend on today's date.
 TODAY = dt.date(2026, 11, 17)
 V1_TODAY = dt.date(2026, 9, 13)
+# A salt for tests. The shipped example's salt is published, so the validator rejects it.
+TEST_SALT = "5f0c9a1e7d3b4c2a8e6f1d0b9a7c5e3f"
 
 
 def note_example(heading: str) -> str:
@@ -39,6 +41,15 @@ def load(path: Path) -> dict:
     return data
 
 
+def salted_copy(directory: Path, salt: str = TEST_SALT) -> Path:
+    """The version 2 example with its own salt, as a file."""
+    text = EXAMPLE_V2.read_text(encoding="utf-8").replace(f'salt: "{vo.EXAMPLE_SALT}"', f'salt: "{salt}"')
+    assert salt in text
+    path = Path(directory) / "rules.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 def rule(rule_id="extra-rule", kind="deploy_host", values=("deploy.example.net",), **extra) -> dict:
     return {"id": rule_id, "kind": kind, "values": list(values), **extra}
 
@@ -46,6 +57,7 @@ def rule(rule_id="extra-rule", kind="deploy_host", values=("deploy.example.net",
 class V2Case(unittest.TestCase):
     def setUp(self):
         self.data = load(EXAMPLE_V2)
+        self.data["salt"] = TEST_SALT
 
     def errors(self, data, hosts=frozenset()):
         _, errors = vo.validate_overlay(data, set(hosts), today=TODAY)
@@ -78,7 +90,12 @@ class ExampleTests(V2Case):
         self.assertEqual(errors, [])
 
     def test_the_note_s_complete_example_is_the_shipped_v2_example(self):
-        self.assertEqual(yaml.safe_load(note_example("### 5.1")), self.data)
+        self.assertEqual(yaml.safe_load(note_example("### 5.1")), load(EXAMPLE_V2))
+
+    def test_the_shipped_example_is_rejected_only_for_its_published_salt(self):
+        message = self.assertStructureRejects(load(EXAMPLE_V2), "salt: this is the published example's salt")
+        self.assertIn("secrets.token_hex(16)", message)
+        self.assertNotIn(vo.EXAMPLE_SALT, message)
 
     def test_the_note_s_migrated_example_validates(self):
         data = yaml.safe_load(note_example("### 5.2"))
@@ -101,10 +118,13 @@ class Rule1VersionDispatchTests(V2Case):
         cases = {
             "version 3": (dict(v1, schema_version=3), "expected 1 or 2"),
             "boolean": (dict(v1, schema_version=True), "expected 1 or 2"),
-            "float": (dict(self.data, schema_version=2.0), ""),
+            "float": (dict(self.data, schema_version=2.0), "schema_version: expected 1 or 2"),
+            "string": (dict(self.data, schema_version="2"), "schema_version: expected 1 or 2"),
+            "string 1": (dict(v1, schema_version="1"), "schema_version: expected 1 or 2"),
+            "list": (dict(v1, schema_version=[2]), "schema_version: expected 1 or 2"),
             "missing": ({k: v for k, v in v1.items() if k != "schema_version"}, "missing fields ['schema_version']"),
-            "v2 content marked 1": (dict(self.data, schema_version=1), "unknown fields ['enforcement']"),
-            "v2 items marked 1": (dict(self.mutated(lambda d: d.pop("enforcement")), schema_version=1), "expected a nonempty phrase"),
+            "v2 content marked 1": (dict(self.data, schema_version=1), "unknown fields ['enforcement', 'salt']"),
+            "v2 items marked 1": (dict(self.mutated(lambda d: (d.pop("enforcement"), d.pop("salt"))), schema_version=1), "expected a nonempty phrase"),
             "v1 enforcement section": (dict(v1, enforcement=self.data["enforcement"]), "unknown fields ['enforcement']"),
             "v1 content marked 2": (dict(v1, schema_version=2), "plain string is a version 1 item"),
         }
@@ -140,6 +160,13 @@ class Rule2ItemsTests(V2Case):
 
 
 class Rule3IdsTests(V2Case):
+    def test_distinct_template_kinds_pass(self):
+        self.assertValid(self.mutated(lambda d: d.update(templates=[{"kind": "lookup-tool"}, {"kind": "dashboard"}])))
+
+    def test_a_repeated_id_is_named_by_position_not_value(self):
+        message = self.assertStructureRejects(self.mutated(lambda d: d["enforcement"]["rules"].append(rule(rule_id="deploy-hosts"))))
+        self.assertEqual(message, "enforcement.rules[2].id: already used at enforcement.rules[1].id; ids, aliases and template kinds are unique across the file")
+
     def test_ids_and_aliases_pass_at_the_limits(self):
         long_id = "a" * 64
         five = [f"hosting-former-{n}" for n in range(5)]
@@ -161,6 +188,10 @@ class Rule3IdsTests(V2Case):
             "rule id repeats an item id": lambda d: d["enforcement"]["rules"].append(rule(rule_id="service-email")),
             "rule id repeats a rule id": lambda d: d["enforcement"]["rules"].append(rule(rule_id="deploy-hosts")),
             "rule id repeats an alias": lambda d: d["enforcement"]["rules"].append(rule(rule_id="data-cardholder-data-and-bank-details")),
+            "template kind repeats an item id": lambda d: d.update(templates=[{"kind": "hosting-power-apps"}]),
+            "template kind repeats an alias": lambda d: d.update(templates=[{"kind": "data-government-identifiers"}]),
+            "template kind repeats a rule id": lambda d: d.update(templates=[{"kind": "deploy-hosts"}]),
+            "two templates of one kind": lambda d: d.update(templates=[{"kind": "lookup-tool"}, {"kind": "lookup-tool"}]),
         }
         for label, mutate in cases.items():
             with self.subTest(case=label):
@@ -187,13 +218,26 @@ class Rule4EnforcementTests(V2Case):
                 lambda d: d["enforcement"]["rules"].append(rule(kind="package_registry", values=["npm.example.org"])), "enters the schema with its first consumer"),
             "cloud_account before its consumer": (
                 lambda d: d["enforcement"]["rules"].append(rule(kind="cloud_account", values=["aws:111122223333"])), "enters the schema with its first consumer"),
-            "exceptions are the next increment": (lambda d: d["enforcement"].update(exceptions=[]), "unknown fields ['exceptions']"),
+            "exceptions are the next increment": (lambda d: d["enforcement"].update(exceptions=[]), "enforcement: 1 unknown field;"),
             "free text in a rule": (lambda d: d["enforcement"]["rules"][0].update(reason="Because"), "no free text"),
             "not an object": (lambda d: d.update(enforcement=["main"]), "expected an object"),
         }
         for label, (mutate, fragment) in cases.items():
             with self.subTest(case=label):
                 self.assertStructureRejects(self.mutated(mutate), fragment)
+
+
+class EnforcementMessagesTests(V2Case):
+    def test_unknown_keys_inside_enforcement_are_counted_not_named(self):
+        cases = {
+            "section": lambda d: d["enforcement"].update({"hidden-host.example.net": 1, "secret-branch": 2}),
+            "rule": lambda d: d["enforcement"]["rules"][0].update({"hidden-host.example.net": "x"}),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(case=label):
+                message = self.assertStructureRejects(self.mutated(mutate), "unknown field")
+                self.assertNotIn("hidden-host", message)
+                self.assertNotIn("secret-branch", message)
 
 
 class Rule5ValuesTests(V2Case):
@@ -295,6 +339,11 @@ class Rule7HostsInModelTextTests(V2Case):
                 for error in rule7:
                     self.assertNotIn("apps.example.org", error.lower())
 
+    def test_rule_7_matches_substrings(self):
+        # As OVERLAY_V2.md says: a deploy host *.example.org also rejects the owner's mailbox at example.org.
+        errors = self.errors(self.mutated(lambda d: d["enforcement"]["rules"][1].update(values=["*.example.org"])))
+        self.assertIn("overlay.owner: names a value of enforcement rule 'deploy-hosts'; enforcement values never appear in model-facing text", errors)
+
     def test_a_branch_name_in_a_phrase_is_not_a_rule_7_error(self):
         # Rule 7 covers the allow-list kinds; protected branch names are ordinary words like "main".
         self.assertValid(self.mutated(lambda d: d["review_triggers"][0].update(text="External users of the main site")))
@@ -314,6 +363,132 @@ class Rule8SecretScanTests(V2Case):
             with self.subTest(case=label):
                 errors = self.errors(self.mutated(lambda d: d["enforcement"]["rules"].append(bad)))
                 self.assertTrue(any(e.startswith("overlay.enforcement.rules[2].values[0]") and "secret" in e for e in errors), errors)
+
+
+class Rule10SaltTests(V2Case):
+    def test_a_fresh_salt_passes_and_stays_out_of_every_view(self):
+        for salt in (TEST_SALT, "0" * 31 + "1", "ab" * 64):
+            with self.subTest(salt=salt):
+                self.assertValid(self.mutated(lambda d: d.update(salt=salt)))
+        overlay = vo.validate_structure(self.data)
+        self.assertEqual(overlay["salt"], TEST_SALT)
+        for view in (vo.model_facing(overlay), vo.v1_projection(overlay)):
+            self.assertNotIn("salt", view)
+            self.assertNotIn(TEST_SALT, repr(view))
+
+    def test_salt_is_optional_without_enforcement(self):
+        self.assertValid(self.mutated(lambda d: (d.pop("enforcement"), d.pop("salt"))))
+        self.assertValid(self.mutated(lambda d: d.pop("enforcement")))
+
+    def test_a_missing_short_or_published_salt_is_rejected_without_echoing_it(self):
+        cases = {
+            "missing": (lambda d: d.pop("salt"), "required when enforcement is present"),
+            "published": (lambda d: d.update(salt=vo.EXAMPLE_SALT), "published example's salt"),
+            "31 characters": (lambda d: d.update(salt="c0ffee" * 5 + "c"), "32 to 128 lowercase hex"),
+            "129 characters": (lambda d: d.update(salt="c0ffee" * 21 + "c0f"), "32 to 128 lowercase hex"),
+            "uppercase": (lambda d: d.update(salt="C0FFEE" * 6), "32 to 128 lowercase hex"),
+            "not hex": (lambda d: d.update(salt="c0ffeeg" * 6), "32 to 128 lowercase hex"),
+            "a number": (lambda d: d.update(salt=12345678901234567890123456789012), "quoted string"),
+            "null": (lambda d: d.update(salt=None), "quoted string"),
+        }
+        for label, (mutate, fragment) in cases.items():
+            with self.subTest(case=label):
+                message = self.assertStructureRejects(self.mutated(mutate), fragment)
+                self.assertIn("secrets.token_hex(16)", message)
+                self.assertNotIn("c0ffee", message.lower())
+                self.assertNotIn(vo.EXAMPLE_SALT, message)
+
+    def test_the_secret_scan_covers_the_salt(self):
+        overlay = vo.validate_structure(self.data)
+        overlay["salt"] = "AKIAIOSFODNN7EXAMPLE"  # past the structural check, as a future reader might hand it over
+        self.assertIn("overlay.salt: looks like a secret; overlays never contain credentials", vo.validate_content(overlay, set()))
+
+
+class NullTests(V2Case):
+    """Version 2 refuses null where its schema does; version 1 keeps reading null as absent."""
+
+    NULLS = {
+        "enforcement": lambda d: d.update(enforcement=None),
+        "aliases": lambda d: d["hosting"]["approved"][0].update(aliases=None),
+        "intake_url": lambda d: d.update(intake_url=None),
+        "templates": lambda d: d.update(templates=None),
+        "default_mode": lambda d: d["enforcement"].update(default_mode=None),
+        "mode": lambda d: d["enforcement"]["rules"][0].update(mode=None),
+        "use_instead": lambda d: d["enforcement"]["rules"][1].update(use_instead=None),
+        "values": lambda d: d["enforcement"]["rules"][1].update(values=None),
+        "salt": lambda d: d.update(salt=None),
+    }
+
+    def test_version_2_refuses_null(self):
+        for label, mutate in self.NULLS.items():
+            with self.subTest(field=label):
+                self.assertStructureRejects(self.mutated(mutate))
+
+    def test_version_1_still_reads_null_as_absent(self):
+        v1 = dict(load(EXAMPLE_V1), intake_url=None, templates=None)
+        overlay = vo.validate_structure(v1)
+        self.assertNotIn("intake_url", overlay)
+        self.assertEqual(overlay["templates"], [])
+
+
+class DuplicateKeyTests(unittest.TestCase):
+    """PyYAML keeps the last of two equal keys; the loader refuses them instead, in both versions."""
+
+    def load_text(self, text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rules.yaml"
+            path.write_text(text, encoding="utf-8")
+            return vo.load_overlay_file(path)
+
+    def assertDuplicate(self, text: str, where: str):
+        with self.assertRaises(vo.OverlayError) as caught:
+            self.load_text(text)
+        message = str(caught.exception)
+        self.assertIn(f"{where}: duplicate key; a key may appear once in each mapping", message)
+        return message
+
+    def test_a_second_enforcement_block(self):
+        text = EXAMPLE_V2.read_text(encoding="utf-8")
+        second = '\nenforcement:\n  rules:\n    - {id: other-hosts, kind: deploy_host, values: ["hidden-host.example.net"]}\n'
+        message = self.assertDuplicate(text + second, "overlay.enforcement")
+        self.assertNotIn("hidden-host", message)
+
+    def test_a_duplicate_inside_a_rule(self):
+        text = EXAMPLE_V2.read_text(encoding="utf-8").replace(
+            '      values: ["main", "release/*", "hotfix/*"]',
+            '      values: ["main", "release/*", "hotfix/*"]\n      values: ["hidden-branch"]',
+        )
+        message = self.assertDuplicate(text, "overlay.enforcement.rules[0].values")
+        self.assertNotIn("hidden-branch", message)
+
+    def test_an_unknown_duplicate_key_is_not_named(self):
+        text = EXAMPLE_V2.read_text(encoding="utf-8").replace(
+            "      mode: block\n", "      mode: block\n      hidden-host.example.net: 1\n      hidden-host.example.net: 2\n")
+        message = self.assertDuplicate(text, "overlay.enforcement.rules[0].<a key>")
+        self.assertNotIn("hidden-host", message)
+
+    def test_version_1_refuses_duplicates_too(self):
+        text = EXAMPLE_V1.read_text(encoding="utf-8")
+        self.assertDuplicate(text + 'owner: "someone-else@example.org"\n', "overlay.owner")
+        self.assertDuplicate(text.replace("  ok:\n", "  ok:\n    - \"Synthetic data\"\n  ok:\n", 1), "overlay.data_classes.ok")
+
+    def test_files_without_duplicates_load_as_before(self):
+        for path in (EXAMPLE_V1, EXAMPLE_V2):
+            with self.subTest(example=path.name):
+                data, _ = vo.load_overlay_file(path)
+                self.assertEqual(data, yaml.safe_load(path.read_text(encoding="utf-8")))
+
+    def test_aliases_are_checked_once(self):
+        # Nine levels of ten aliases each: walking every alias would take 10^9 steps.
+        lines = ['a0: &a0 ["x"]']
+        for n in range(1, 10):
+            lines.append(f"a{n}: &a{n} [" + ", ".join([f"*a{n - 1}"] * 10) + "]")
+        self.assertIsInstance(vo.parse_yaml("\n".join(lines) + "\n"), dict)
+
+    def test_unparseable_files_are_overlay_errors(self):
+        for text in ("[" * 5000 + "]" * 5000 + "\n", EXAMPLE_V1.read_text(encoding="utf-8").replace("reviewed_on: 2026-09-13", "reviewed_on: 2026-13-45")):
+            with self.subTest(text=text[:20]), self.assertRaises(vo.OverlayError):
+                self.load_text(text)
 
 
 class Rule9LintTests(V2Case):
@@ -339,13 +514,13 @@ class Rule9LintTests(V2Case):
 
     def test_the_cli_prints_warnings_and_still_passes(self):
         out, err = io.StringIO(), io.StringIO()
-        with pin_today(TODAY), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = vo.main([str(EXAMPLE_V2)])
+        with tempfile.TemporaryDirectory() as tmp, pin_today(TODAY), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = vo.main([str(salted_copy(tmp))])
         self.assertEqual(code, 0, err.getvalue())
         self.assertIn("WARNING: enforcement.rules[0] (protected-branches)", err.getvalue())
         self.assertIn("OK: overlay for Example Org", out.getvalue())
         self.assertIn("2 enforcement rules: validated only", out.getvalue())
-        for value in ("release/*", "hotfix/*", "apps.example.org"):
+        for value in ("release/*", "hotfix/*", "apps.example.org", TEST_SALT):
             self.assertNotIn(value, out.getvalue() + err.getvalue())
 
 
@@ -408,6 +583,9 @@ class DeriveIdTests(unittest.TestCase):
         # Odd text still gives a valid id.
         self.assertEqual(vo.derive_id("service", "Café ☕ menu", set()), "service-caf-menu")
         self.assertEqual(vo.derive_id("service", "!!!", set()), "service")
+        # A phrase with no ASCII letter or digit gets the bare prefix, then -2.
+        bare = set()
+        self.assertEqual([vo.derive_id("data", text, bare) for text in ("日本語", "Ελληνικά")], ["data", "data-2"])
         long_word = vo.derive_id("service", "x" * 60, set())
         self.assertEqual(long_word, ("service-" + "x" * 60)[:48])
         for value in taken:
@@ -439,6 +617,14 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual(vo.v1_projection(overlay), vo.validate_structure(v1))
         self.assertEqual(migrated["templates"][1], {"kind": "null"})  # quoted, so it stays a string
         self.assertEqual(migrated["review_triggers"][-1]["id"], "trigger-writes-to-a-system-of-record-2")
+
+    def test_generated_ids_step_around_template_kinds(self):
+        v1 = dict(self.v1, templates=[{"kind": "trigger-external-users"}])
+        migrated = yaml.safe_load(vo.migrate_text(v1))
+        self.assertEqual(migrated["review_triggers"][0]["id"], "trigger-external-users-2")
+        self.assertEqual(vo.validate_structure(migrated)["templates"], [{"kind": "trigger-external-users"}])
+        with self.assertRaises(vo.OverlayError):  # two templates of one kind cannot both be ids
+            vo.migrate(dict(self.v1, templates=[{"kind": "dashboard"}, {"kind": "dashboard"}]))
 
     def test_idempotent(self):
         first = vo.migrate_text(self.v1)
@@ -505,15 +691,36 @@ class JsonSchemaTests(unittest.TestCase):
         cls.v2 = jsonschema.Draft202012Validator(schema)
 
     def test_each_example_matches_its_own_version_s_schema_only(self):
-        v1, v2 = as_json(load(EXAMPLE_V1)), as_json(load(EXAMPLE_V2))
+        v1, v2 = as_json(load(EXAMPLE_V1)), as_json(dict(load(EXAMPLE_V2), salt=TEST_SALT))
         self.assertEqual(list(self.v1.iter_errors(v1)), [])
         self.assertEqual(list(self.v2.iter_errors(v2)), [])
         self.assertEqual(list(self.v2.iter_errors(as_json(yaml.safe_load(note_example("### 5.2"))))), [])
         self.assertTrue(list(self.v2.iter_errors(v1)))
         self.assertTrue(list(self.v1.iter_errors(v2)))
+        # As shipped, the version 2 example fails only on its published salt.
+        shipped = [list(e.absolute_path) for e in self.v2.iter_errors(as_json(load(EXAMPLE_V2)))]
+        self.assertEqual(shipped, [["salt"]])
+
+    def test_nulls_and_salts_agree_with_the_validator(self):
+        base = dict(load(EXAMPLE_V2), salt=TEST_SALT)
+        cases = dict(NullTests.NULLS)
+        cases.update({
+            "no salt": lambda d: d.pop("salt"),
+            "published salt": lambda d: d.update(salt=vo.EXAMPLE_SALT),
+            "short salt": lambda d: d.update(salt="ab" * 15),
+        })
+        for label, mutate in cases.items():
+            data = copy.deepcopy(base)
+            mutate(data)
+            with self.subTest(case=label):
+                self.assertTrue(list(self.v2.iter_errors(as_json(data))))
+                with self.assertRaises(vo.OverlayError):
+                    vo.validate_structure(data)
+        self.assertEqual(self.schema["properties"]["salt"]["not"]["const"], vo.EXAMPLE_SALT)
+        self.assertEqual(self.schema["properties"]["salt"]["pattern"], "^" + vo.SALT_RE.pattern + "$")
 
     def test_the_v2_schema_rejects_what_the_validator_rejects_structurally(self):
-        base = load(EXAMPLE_V2)
+        base = dict(load(EXAMPLE_V2), salt=TEST_SALT)
         cases = {
             "plain string": lambda d: d["hosting"]["approved"].append("Another platform"),
             "bad id": lambda d: d["hosting"]["approved"][1].update(id="Bad Id"),

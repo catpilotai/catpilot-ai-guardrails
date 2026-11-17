@@ -12,8 +12,10 @@ Checks, in order: the schema (implemented here without a jsonschema
 dependency), the expiry window, and a content scan for anything that looks
 like a secret, a URL outside the allowlist, an email address other than
 owner, an IP address, or an incident narrative. In version 2 the secret scan
-also covers `enforcement`, and no deploy host may appear in a model-facing
-value.
+also covers `enforcement`, no deploy host may appear in a model-facing value,
+and a file with `enforcement` carries a random `salt`, so the file's SHA-256,
+which a model sees, cannot confirm a guessed enforcement value. A key that
+appears twice in one mapping is refused in both versions.
 
 A passing overlay is structurally valid. The validator does not know whether
 the listed hosting or services are actually approved; a named reviewer does.
@@ -82,7 +84,7 @@ TOP_ALLOWED = TOP_REQUIRED + ("templates", "intake_url")
 # ----------------------------------------------------------------- version 2 (OVERLAY_V2.md)
 
 SCHEMA_VERSIONS = (1, 2)
-TOP_ALLOWED_V2 = TOP_ALLOWED + ("enforcement",)
+TOP_ALLOWED_V2 = TOP_ALLOWED + ("salt", "enforcement")
 # Ids and aliases share the grammar templates[].kind already uses (§2.1, §6.3 rule 3).
 ID_RE = KIND_RE
 ID_MAX = 64
@@ -124,6 +126,22 @@ _CLOUD_ACCOUNT_RE = re.compile(
     r"|gcp:[a-z][a-z0-9-]{5,29}"
 )
 _BRANCH_FORBIDDEN = set(" ~^:?*[\\")
+
+# §6.3 rule 10. The file's SHA-256 reaches a model (the block's "Overlay SHA-256" line,
+# the server's policy_source, the bundle manifest). A file made by `migrate` or copied
+# from the example is predictable, so without a random salt that hash would confirm
+# guessed enforcement values offline. The salt is machine-only and never in a message.
+SALT_RE = re.compile(r"[0-9a-f]{32,128}")
+# The salt in docs/spec/overlay.v2.example.yaml and OVERLAY_V2.md §5.1: published, so never valid.
+EXAMPLE_SALT = "0123456789abcdef0123456789abcdef"
+SALT_HOW = "make one with: python3 -c 'import secrets; print(secrets.token_hex(16))'"
+# Every field name the schemas define. A duplicate-key error names a key only when it is
+# one of these, so an arbitrary key (inside enforcement, say) is never repeated back.
+FIELD_NAMES = frozenset(
+    TOP_ALLOWED_V2
+    + ("never_in_prompts", "ok_with_approval", "ok", "approved", "not_approved", "needs_review", "default", "never")
+    + ("id", "text", "aliases", "kind", "location", "default_mode", "rules", "mode", "values", "use_instead")
+)
 
 
 class OverlayError(ValueError):
@@ -189,8 +207,10 @@ def _top_fields(data: dict, allowed: tuple[str, ...]) -> None:
         raise OverlayError(f"overlay: missing fields {sorted(missing)}")
 
 
-def _header(data: dict, out: dict) -> None:
-    """organization, owner, intake_url and the dates: plain values in both versions."""
+def _header(data: dict, out: dict, allow_null: bool = True) -> None:
+    """organization, owner, intake_url and the dates: plain values in both versions.
+
+    Version 1 reads `intake_url: null` as absent, as it always has; version 2 refuses it."""
     org = _item(data["organization"], "organization")
     if len(org) > 80:
         raise OverlayError("organization: longer than 80 characters; display name only")
@@ -199,7 +219,7 @@ def _header(data: dict, out: dict) -> None:
     if len(owner) < 3 or len(owner) > 160:
         raise OverlayError("owner: expected 3 to 160 characters")
     out["owner"] = owner
-    if "intake_url" in data and data["intake_url"] is not None:
+    if "intake_url" in data and (data["intake_url"] is not None or not allow_null):
         out["intake_url"] = _item(data["intake_url"], "intake_url", max_len=500)
     out["reviewed_on"] = _date(data["reviewed_on"], "reviewed_on")
     out["expires_on"] = _date(data["expires_on"], "expires_on")
@@ -207,9 +227,11 @@ def _header(data: dict, out: dict) -> None:
         raise OverlayError("expires_on: must be after reviewed_on")
 
 
-def _templates(data: dict) -> list[dict]:
+def _templates(data: dict, allow_null: bool = True) -> list[dict]:
     templates = data.get("templates", [])
     if templates is None:
+        if not allow_null:
+            raise OverlayError("templates: expected a list of at most 20 entries, not null")
         templates = []
     if not isinstance(templates, list) or len(templates) > 20:
         raise OverlayError("templates: expected a list of at most 20 entries")
@@ -237,8 +259,12 @@ def validate_structure(data: object) -> dict:
     """
     if not isinstance(data, dict):
         raise OverlayError("overlay: expected a YAML object")
-    if _is_version(data.get("schema_version"), 2):
+    version = data.get("schema_version")
+    if _is_version(version, 2):
         return _validate_structure_v2(data)
+    # Checked before any other field, so "2" or 2.0 reads as a version error.
+    if "schema_version" in data and (isinstance(version, bool) or version != 1):
+        raise OverlayError("schema_version: expected 1 or 2")
     return _validate_structure_v1(data)
 
 
@@ -277,7 +303,7 @@ class _Ids:
                 f"{label}: expected an id of lowercase letters, digits and single hyphens, at most {ID_MAX} characters"
             )
         if value in self.where:
-            raise OverlayError(f"{label}: {value!r} is already used at {self.where[value]}; ids and aliases are unique across the file")
+            raise OverlayError(f"{label}: already used at {self.where[value]}; ids, aliases and template kinds are unique across the file")
         self.where[value] = label
         return value
 
@@ -297,8 +323,8 @@ def _item_v2(value: object, label: str, ids: _Ids) -> dict:
     if missing:
         raise OverlayError(f"{label}: missing fields {sorted(missing)}")
     out = {"id": ids.add(value["id"], f"{label}.id"), "text": _item(value["text"], f"{label}.text")}
-    aliases = value.get("aliases")
-    if aliases is not None:
+    if "aliases" in value:
+        aliases = value["aliases"]
         if not isinstance(aliases, list) or len(aliases) > ALIASES_MAX:
             raise OverlayError(f"{label}.aliases: expected a list of at most {ALIASES_MAX} former ids")
         normalized = [ids.add(a, f"{label}.aliases[{i}]") for i, a in enumerate(aliases)]
@@ -322,7 +348,7 @@ def _items_v2(value: object, label: str, ids: _Ids) -> list[dict]:
 def _validate_structure_v2(data: dict) -> dict:
     _top_fields(data, TOP_ALLOWED_V2)
     out: dict = {"schema_version": 2}
-    _header(data, out)
+    _header(data, out, allow_null=False)
     ids = _Ids()
     dc = _object(data["data_classes"], "data_classes", ("never_in_prompts", "ok_with_approval", "ok"))
     out["data_classes"] = {k: _items_v2(dc[k], f"data_classes.{k}", ids) for k in ("never_in_prompts", "ok_with_approval", "ok")}
@@ -336,10 +362,29 @@ def _validate_structure_v2(data: dict) -> dict:
         "never": _items_v2(identity["never"], "identity.never", ids),
     }
     out["review_triggers"] = _items_v2(data["review_triggers"], "review_triggers", ids)
-    out["templates"] = _templates(data)
-    if data.get("enforcement") is not None:
+    out["templates"] = _templates(data, allow_null=False)
+    # Templates keep kind as their id (§2.1), so a kind is unique against every other id.
+    for i, template in enumerate(out["templates"]):
+        ids.add(template["kind"], f"templates[{i}].kind")
+    if "salt" in data:
+        out["salt"] = _salt(data["salt"])
+    if "enforcement" in data:
+        if "salt" not in out:
+            raise OverlayError(
+                "salt: required when enforcement is present, so the file's SHA-256, which a model sees, cannot confirm a "
+                f"guessed enforcement value; {SALT_HOW}"
+            )
         out["enforcement"] = _enforcement(data["enforcement"], out, ids)
     return out
+
+
+def _salt(value: object) -> str:
+    """§6.3 rule 10. Messages never repeat the value."""
+    if not isinstance(value, str) or not SALT_RE.fullmatch(value):
+        raise OverlayError(f"salt: expected a quoted string of 32 to 128 lowercase hex characters; {SALT_HOW}")
+    if value == EXAMPLE_SALT:
+        raise OverlayError(f"salt: this is the published example's salt, so it hides nothing; {SALT_HOW}")
+    return value
 
 
 def _mode(value: object, label: str) -> str:
@@ -355,7 +400,7 @@ def _enforcement(value: object, overlay: dict, ids: _Ids) -> dict:
         raise OverlayError("enforcement: expected an object with rules and optional default_mode")
     extra = set(value) - {"default_mode", "rules"}
     if extra:
-        raise OverlayError(f"enforcement: unknown fields {sorted(extra)}")
+        raise OverlayError(f"enforcement: {_count(extra, 'unknown field')}; it has rules and an optional default_mode")
     if "rules" not in value:
         raise OverlayError("enforcement: missing fields ['rules']")
     out = {"default_mode": _mode(value["default_mode"], "enforcement.default_mode") if "default_mode" in value else DEFAULT_MODE}
@@ -377,7 +422,7 @@ def _rule(value: object, label: str, ids: _Ids, targets: set[str]) -> dict:
     extra = set(value) - {"id", "kind", "mode", "values", "use_instead"}
     missing = {"id", "kind", "values"} - set(value)
     if extra:
-        raise OverlayError(f"{label}: unknown fields {sorted(extra)}; a rule has no free text")
+        raise OverlayError(f"{label}: {_count(extra, 'unknown field')}; a rule has id, kind, values, optional mode and use_instead, and no free text")
     if missing:
         raise OverlayError(f"{label}: missing fields {sorted(missing)}")
     out = {"id": ids.add(value["id"], f"{label}.id")}
@@ -414,6 +459,10 @@ def _rule(value: object, label: str, ids: _Ids, targets: set[str]) -> dict:
             raise OverlayError(f"{label}.use_instead: expected the id or an alias of an item in hosting.approved or services.approved")
         out["use_instead"] = target
     return out
+
+
+def _count(things: set, noun: str) -> str:
+    return f"{len(things)} {noun}{'' if len(things) == 1 else 's'}"
 
 
 def _host_problem(value: str) -> str | None:
@@ -488,16 +537,20 @@ def normalize_value(kind: str, value: str) -> str:
 def model_facing(overlay: dict) -> dict:
     """The parts of a validated overlay a model may see.
 
-    Version 1 is returned as it is. Version 2 loses `enforcement` (never
-    rendered, never returned: OVERLAY_V2.md §2.2) and every item's `aliases`
-    (no rules-block or bundle consumer: §4). Ids and text stay.
+    Version 1 is returned as it is. Version 2 loses `enforcement` and `salt`
+    (never rendered, never returned: OVERLAY_V2.md §2.2, §6.3 rule 10) and
+    every item's `aliases` (no rules-block or bundle consumer: §4). Ids and
+    text stay.
     """
     if not _is_version(overlay.get("schema_version"), 2):
         return overlay
-    out = {key: copy.deepcopy(value) for key, value in overlay.items() if key != "enforcement"}
+    out = {key: copy.deepcopy(value) for key, value in overlay.items() if key not in MACHINE_ONLY}
     for _, item in _iter_items(out):
         item.pop("aliases", None)
     return out
+
+
+MACHINE_ONLY = ("salt", "enforcement")
 
 
 def v1_projection(overlay: dict) -> dict:
@@ -507,7 +560,7 @@ def v1_projection(overlay: dict) -> dict:
     corresponds to: each item's `text` in place of the item, ids and aliases
     dropped, no `enforcement`. It is what `validate_structure` returns for the
     version 1 file `migrate` started from, so bundles, paste blocks and the
-    server answer the same for a file and its migration.
+    server answer the same for a file and its migration. No `salt` either.
     """
     if not _is_version(overlay.get("schema_version"), 2):
         return overlay
@@ -589,7 +642,7 @@ def validate_content(overlay: dict, allowed_hosts: set[str]) -> list[str]:
     host values may appear in a model-facing value (rule 7).
     """
     errors: list[str] = []
-    model = {key: value for key, value in overlay.items() if key != "enforcement"}
+    model = {key: value for key, value in overlay.items() if key not in MACHINE_ONLY}
     templates = model.get("templates", [])
     allowed_url_paths = set()
     for i, template in enumerate(templates):
@@ -621,11 +674,12 @@ def validate_content(overlay: dict, allowed_hosts: set[str]) -> list[str]:
             break
         if NARRATIVE_RE.search(text):
             errors.append(f"{path}: reads like an incident narrative; overlay values are lists of approved things, not stories")
-    enforcement = overlay.get("enforcement")
-    if enforcement:
-        for path, text in _walk_strings(enforcement, "overlay.enforcement"):
+    for key in MACHINE_ONLY:
+        for path, text in _walk_strings(overlay.get(key), f"overlay.{key}"):
             if _looks_like_secret(text):
                 errors.append(f"{path}: looks like a secret; overlays never contain credentials")
+    enforcement = overlay.get("enforcement")
+    if enforcement:
         errors.extend(_enforcement_values_in_model_text(model, enforcement))
     return errors
 
@@ -714,6 +768,45 @@ def lint_overlay(overlay: dict) -> list[str]:
     return warnings
 
 
+def parse_yaml(text: str) -> object:
+    """`yaml.safe_load`, refusing a key that appears twice in one mapping.
+
+    PyYAML keeps the last of two equal keys, so a second `enforcement:` block
+    or a second `values:` in a rule would silently replace the first. The
+    error names the key's path, and the key only when it is a schema field.
+    Raises OverlayError for a duplicate, and what safe_load raises otherwise.
+    """
+    node = yaml.compose(text, Loader=yaml.SafeLoader)
+    if node is not None:
+        _check_duplicate_keys(node, "overlay", yaml.SafeLoader(""), set())
+    return yaml.safe_load(text)
+
+
+def _check_duplicate_keys(node: yaml.Node, path: str, loader: yaml.SafeLoader, visited: set[int]) -> None:
+    if id(node) in visited:  # an alias: its node was checked where its anchor is
+        return
+    visited.add(id(node))
+    if isinstance(node, yaml.MappingNode):
+        keys = []
+        for key_node, value_node in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                _check_duplicate_keys(value_node, path, loader, visited)
+                continue
+            key = loader.construct_object(key_node, deep=True)
+            where = f"{path}.{key}" if isinstance(key, str) and key in FIELD_NAMES else f"{path}.<a key>"
+            try:
+                repeated = key in keys
+            except TypeError:  # an unhashable key never validates anyway
+                repeated = False
+            if repeated:
+                raise OverlayError(f"{where}: duplicate key; a key may appear once in each mapping")
+            keys.append(key)
+            _check_duplicate_keys(value_node, where, loader, visited)
+    elif isinstance(node, yaml.SequenceNode):
+        for i, child in enumerate(node.value):
+            _check_duplicate_keys(child, f"{path}[{i}]", loader, visited)
+
+
 def load_overlay_file(path: Path) -> tuple[dict, bytes]:
     if path.is_symlink():
         raise OverlayError(f"{path}: symlinks are not allowed")
@@ -721,8 +814,11 @@ def load_overlay_file(path: Path) -> tuple[dict, bytes]:
     if len(raw) > 131072:
         raise OverlayError(f"{path}: larger than 128 KiB; an overlay is a short list")
     try:
-        data = yaml.safe_load(raw.decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        data = parse_yaml(raw.decode("utf-8"))
+    except OverlayError as exc:
+        raise OverlayError(f"{path}: {exc}") from None
+    except (UnicodeDecodeError, yaml.YAMLError, ValueError, RecursionError) as exc:
+        # ValueError: an impossible date such as 2026-13-45. RecursionError: nesting too deep to parse.
         raise OverlayError(f"{path}: could not parse YAML ({exc.__class__.__name__})") from None
     return data, raw
 
@@ -765,14 +861,16 @@ def migrate(data: object) -> dict:
     """A version 1 overlay as version 2 (OVERLAY_V2.md §2.4).
 
     Sets `schema_version: 2`, turns each phrase into `{id, text}`, copies
-    everything else, and adds no `enforcement`. The dates stay: no value
-    changed. Deterministic. Raises OverlayError for a version 2 file, which
+    everything else, and adds no `enforcement` and so no `salt`. The dates
+    stay: no value changed. Deterministic. A phrase with no ASCII letter or
+    digit gets the bare prefix as its id (`data`, then `data-2`). Raises OverlayError for a version 2 file, which
     needs no migration, and for anything that is not a valid version 1 file.
     """
     if isinstance(data, dict) and _is_version(data.get("schema_version"), 2):
         raise OverlayError("schema_version: the file is already version 2; migrate converts version 1 files only, so there is nothing to do")
     source = validate_structure(data)
-    taken: set[str] = set()
+    # Template kinds are ids too (§2.1): a generated id steps around them.
+    taken: set[str] = {t["kind"] for t in source["templates"]}
 
     def items(values: list[str], prefix: str) -> list[dict]:
         return [{"id": derive_id(prefix, text, taken), "text": text} for text in values]

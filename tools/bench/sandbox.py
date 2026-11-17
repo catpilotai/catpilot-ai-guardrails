@@ -280,8 +280,8 @@ def load_overlay(overlay_file: Path | None) -> dict | None:
     if overlay_file is None:
         return None
     try:
-        data = yaml.safe_load(Path(overlay_file).read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+        data = validate_overlay.parse_yaml(Path(overlay_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError, yaml.YAMLError):  # a duplicate key is an OverlayError, a ValueError
         return None
     if not isinstance(data, dict):
         return None

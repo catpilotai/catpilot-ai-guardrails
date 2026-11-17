@@ -85,7 +85,8 @@ items are actually approved is the reviewer's call, not the validator's.
 
 ```bash
 python tools/validate_overlay.py docs/spec/overlay.example.yaml --allow-host intranet.example.org
-python tools/validate_overlay.py docs/spec/overlay.v2.example.yaml
+# a version 2 file with `enforcement` needs its own salt; the example's published one is rejected
+python3 -c 'import secrets; print(secrets.token_hex(16))'
 # print a version 1 file as version 2; --output FILE writes a new file instead
 python tools/validate_overlay.py migrate docs/spec/overlay.example.yaml
 ```

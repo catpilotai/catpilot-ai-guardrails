@@ -1,9 +1,12 @@
 # overlay.v2.example.yaml: a synthetic version 2 company rules file (docs/spec/OVERLAY_V2.md §5.1).
 # It is overlay.example.yaml after `migrate` (§5.2), then shorter ids (the generated ones kept as
 # aliases where something already referred to them), one new service, an enforcement section and
-# new review dates. Validate it with:
-#   python tools/validate_overlay.py docs/spec/overlay.v2.example.yaml
-# Every value below is fictional. Never commit a real rules file to a public repository.
+# new review dates. Every value below is fictional. Never commit a real rules file to a
+# public repository.
+#
+# As shipped it does not validate: its salt is the published example value, which the
+# validator rejects. Copy it outside any public repository, give it your own salt, then:
+#   python tools/validate_overlay.py /private/path/rules.yaml
 schema_version: 2
 organization: "Example Org"
 owner: "security-review@example.org"
@@ -54,6 +57,12 @@ review_triggers:
   - {id: trigger-external-users, text: "External users"}
   - {id: trigger-payments, text: "Payments or refunds"}
   - {id: trigger-system-of-record-writes, text: "Writes to a system of record"}
+
+# Machine-only: a random value that keeps the file's SHA-256, which a model sees, from
+# confirming guessed enforcement values. Required with enforcement. Make your own with
+#   python3 -c 'import secrets; print(secrets.token_hex(16))'
+# This example value is public, so the validator rejects it.
+salt: "0123456789abcdef0123456789abcdef"
 
 # Machine-only: never rendered into a prompt, never returned by the server.
 # This release validates these rules and nothing reads them yet. It accepts the

@@ -220,15 +220,17 @@ asked, not what they chose: a `PreToolUse` hook does not see the answer.
   unchanged.
 - `migrate` converts a version 1 file to version 2. It sets
   `schema_version: 2`, turns each phrase into `{id, text}`, copies everything
-  else, and adds no `enforcement` section. `reviewed_on` and `expires_on` stay,
-  because no value changed. Adding enforcement rules afterwards is a change a
+  else, and adds no `enforcement` section, and so no `salt` (§6.3 rule 10).
+  `reviewed_on` and `expires_on` stay, because no value changed. Adding enforcement rules afterwards is a change a
   reviewer approves, with new dates.
 - Ids come from the text: a prefix for the list (`data`, `hosting`,
   `service`, `identity`, `trigger`), a hyphen, then the text lowercased with
   each run of other characters turned into one hyphen, cut at a hyphen to at
   most 48 characters; a repeat gets `-2`, `-3`. The output is deterministic.
   Comments are not carried over. A company can shorten an id later and keep
-  the generated one as an alias.
+  the generated one as an alias. A phrase with no ASCII letter or digit gets
+  the bare prefix as its id (`data`, then `data-2`), so a company writing in
+  another script should replace those ids by hand.
 - A migrated file must render the same bundle body and paste block as its
   source, and `check_plan` must give the same outcome for the same free-text
   call. The build adds tests for both on the example.
@@ -359,6 +361,7 @@ today's bundle slots and paste blocks. **Evidence** is the local evidence log.
 | `enforcement.rules[].id`, `kind`, `mode` | Hook, PR check; deny reasons and Evidence carry `id` and `mode` | Server, Rules block | First build |
 | `enforcement.rules[].values` | Hook, PR check | Server, Rules block, Evidence, deny reasons, PR annotations | First build for `protected_branch` and `deploy_host`; other kinds with their first consumer |
 | `enforcement.rules[].use_instead` | Hook, PR check (resolved to the item's `text`) | Server, Rules block | First build |
+| `salt` | Validator only; it changes the file's SHA-256, which the Rules block, the Server and Evidence carry | Server, Rules block, Evidence, deny reasons | First build (§6.3 rule 10) |
 | `contacts.<topic>` | Server (`who_to_ask`, escalation draft, `list_approved`), Rules block | Hook, PR check (not needed) | Next increment |
 | `exceptions[]` (model-facing rules) | Server (decision note) | Hook, PR check (not needed) | Next increment |
 | `enforcement.exceptions[]` | Hook (only without `where`), PR check; Evidence carries `exception_id` | Server, Rules block | Next increment |
@@ -379,7 +382,8 @@ First-build fields only. It is the file from §5.2 after a reviewer approved
 shorter ids (the generated ones kept as aliases where something already
 referred to them), one new service, and an `enforcement` section, with new
 review dates. It is [`overlay.v2.example.yaml`](./overlay.v2.example.yaml),
-and the tests check that the two match and that it validates.
+and the tests check that the two match and that it validates once its
+published salt is replaced.
 
 *Corrected when the first build was implemented, to follow §6.3:* the
 approved version of this example also had a `package_registry` rule and a
@@ -387,6 +391,8 @@ approved version of this example also had a `package_registry` rule and a
 review dates (2026-12-01 to 2027-06-01) that the expiry-window check rejects
 before 2026-12-01. They are shown after the example instead, and the dates are
 the approval date and six months later, the span the version 1 example uses.
+The example also gained a `salt` after approval (§6.3 rule 10). Its value is
+published here, so the validator rejects it: replace it before use.
 
 ```yaml
 schema_version: 2
@@ -439,6 +445,11 @@ review_triggers:
   - {id: trigger-external-users, text: "External users"}
   - {id: trigger-payments, text: "Payments or refunds"}
   - {id: trigger-system-of-record-writes, text: "Writes to a system of record"}
+
+# Machine-only. Required with enforcement; make your own with
+#   python3 -c 'import secrets; print(secrets.token_hex(16))'
+# This published value is rejected.
+salt: "0123456789abcdef0123456789abcdef"
 
 # Machine-only: never rendered into a prompt, never returned by the server.
 enforcement:
@@ -537,7 +548,13 @@ review_triggers:
    load for the server and every renderer, and no deny reason or annotation
    prints a listed value. Test: plant a marker in every enforcement value and
    exception; assert it appears in no bundle, paste block, rules block,
-   benchmark prompt, MCP response, deny reason or evidence line.
+   benchmark prompt, MCP response, deny reason or evidence line. The file's
+   SHA-256 does reach a model (the rules block's `Overlay SHA-256` line, the
+   server's `policy_source`, the bundle manifest), and a file made by
+   `migrate` or copied from §5.1 is predictable enough that the hash would
+   confirm guessed enforcement values offline. A file with `enforcement`
+   therefore carries a random `salt` (§6.3 rule 10), which is machine-only
+   like `enforcement` and never appears in a message.
 2. **Evidence stays content-free.** A line carries the event, `rule_id`,
    `mode`, `exception_id`, the policy hash and the session id. Never a
    command, a file path, a prompt, a description or a value from
@@ -620,13 +637,26 @@ refusal of symlinks. Version 2 adds:
    differs by host (`ask` where no prompt is possible); a rule in `block` for
    a kind with no host verification note yet; and, in the next increment, an
    exception within 14 days of expiry.
+10. A file with `enforcement` has a top-level `salt`: a quoted string of 32 to
+    128 lowercase hex characters, chosen at random (`python3 -c 'import secrets; print(secrets.token_hex(16))'`) and never the
+    published example's value. Without it, the whole-file hash a model sees
+    would let anyone with the rules block test guesses at enforcement values
+    offline (§6.1). `salt` is machine-only: never rendered, never returned,
+    never in an error message.
+
+*Added after approval:* rule 10, and two readings of the rules as written.
+Rule 3 also counts template kinds, since templates keep `kind` as their id
+(§2.1). A key that appears twice in one mapping is refused in both versions,
+since YAML would otherwise keep only the last one.
 
 *How the first build reads two of these rules:* rule 4 accepts the first
 build's two kinds, `protected_branch` and `deploy_host` (§2.2), although their
 hook consumer lands in a later pull request; until then those rules are
 validated only. Rule 7 checks an id, alias or template kind for the value with
 each run of other characters as one hyphen (`apps.example.org` as
-`apps-example-org`), since an id cannot hold a dot.
+`apps-example-org`), since an id cannot hold a dot. Rule 7 matches substrings,
+so a `deploy_host` value `*.example.org` also rejects an `owner` such as
+`security-review@example.org`.
 
 ## 7. Decisions (2026-11-17)
 

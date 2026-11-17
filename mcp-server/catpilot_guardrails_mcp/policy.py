@@ -57,7 +57,9 @@ def load_policy(path: str | None, allowed_hosts: set[str] | None = None, now: dt
         overlay = validate_overlay.validate_structure(data)
     except FileNotFoundError:
         return PolicyState("missing", "The configured overlay file does not exist.")
-    except (OSError, validate_overlay.OverlayError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
+        # OverlayError is a ValueError. The others are a backstop: a file nested too deeply to
+        # parse, or an impossible date, is an invalid policy, never an exception out of a tool.
         return PolicyState("invalid", f"The configured overlay did not validate: {exc.__class__.__name__}.")
     today = now or dt.date.today()
     source = {
