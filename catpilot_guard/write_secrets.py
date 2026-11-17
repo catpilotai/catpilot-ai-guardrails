@@ -81,7 +81,7 @@ PATCH_FILE_HEADER = re.compile(r"\*\*\* (?:Add|Update|Delete) File: ")
 
 
 def patch_added_text(patch: str) -> list[str]:
-    """The text a Codex patch adds, one string per run of added lines.
+    """The text a Codex patch adds, one string per file.
 
     In Codex's patch format (*** Begin Patch, *** Add File: / *** Update File: /
     *** Delete File:, @@ hunks, *** End Patch) every added line starts with "+",
@@ -97,27 +97,22 @@ def patch_added_text(patch: str) -> list[str]:
     as ordinary characters, so text after one of them would be checked as a line
     of its own, without its "+", and skipped.
 
-    Added lines are joined only while they stay next to each other in the
-    resulting file: a context line, a hunk header, a file header or anything
-    else starts a new run, so a pattern cannot match across text the patch
-    leaves in between. Removed lines do not end a run: they are gone from the
-    file, and the added lines on either side of them become neighbours.
+    All the lines a patch adds to one file are checked together, in order, as
+    one text. Removed lines, blank context lines and separate hunks can leave
+    added lines next to each other in the file, so a value split across them
+    (password: on one added line, the value on the next) is still one match.
+    The cost is a rare false positive when two added fragments that a kept
+    line separates happen to form a credential; a person resolves it.
     """
-    runs: list[list[str]] = []
-    current: list[str] | None = None
+    sections: list[list[str]] = [[]]
     for line in patch.split("\n"):
         if line.endswith("\r"):
             line = line[:-1]
-        if line.startswith("+"):
-            if current is None:
-                current = []
-                runs.append(current)
-            current.append(line[1:])
-        elif line.startswith("-") and not line.startswith("---") and current is not None:
-            continue
-        else:
-            current = None
-    return ["\n".join(lines) + "\n" for lines in runs]
+        if PATCH_FILE_HEADER.match(line):
+            sections.append([])
+        elif line.startswith("+"):
+            sections[-1].append(line[1:])
+    return ["\n".join(lines) + "\n" for lines in sections if lines]
 
 
 def added_text(tool_name: str, tool_input: object) -> list[str] | None:

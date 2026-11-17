@@ -277,10 +277,30 @@ class CodexApplyPatchTests(unittest.TestCase):
     def test_a_moved_file_with_an_added_key_is_denied(self):
         self.assert_denied(run_hook(codex_event(patch("*** Update File: old.txt", "*** Move to: new.pem", "@@", " header", *KEY_LINES))))
 
-    def test_added_lines_are_not_joined_across_text_the_patch_keeps(self):
-        # In the file these two added lines are separated by the context line, so together they are not a token.
-        self.assert_no_decision(run_hook(codex_event(patch(
+    def test_a_value_split_across_added_lines_is_still_one_match(self):
+        # Codex can write these halves next to each other: a removed line (including one that starts with ---),
+        # a blank context line, separate add-only chunks and *** End of File all leave them adjacent in the file.
+        value = '+  "hunter2hunter2"'
+        for label, between in {
+            "adjacent": (),
+            "a removed line": ("-old: 1",),
+            "a removed YAML separator": ("----",),
+            "a removed SQL comment": ("--- comment",),
+            "a blank context line": (" ",),
+            "an empty context line": ("",),
+            "two add-only chunks": ("@@",),
+            "end of file, then another chunk": ("*** End of File", "@@"),
+        }.items():
+            with self.subTest(between=label):
+                self.assert_denied(run_hook(codex_event(patch("*** Update File: config.yaml", "@@", "+password:", *between, value))))
+
+    def test_added_lines_in_one_file_are_checked_together_even_across_kept_text(self):
+        # The cost of the test above: two fragments a kept line separates can match together. A person resolves it.
+        self.assert_denied(run_hook(codex_event(patch(
             "*** Update File: docs.md", "@@", "+See Authorization: Bearer", " unrelated", "+some_long_identifier_name_here"))))
+        # Lines added to different files are never joined.
+        self.assert_no_decision(run_hook(codex_event(patch(
+            "*** Update File: a.md", "@@", "+See Authorization: Bearer", "*** Update File: b.md", "@@", "+some_long_identifier_name_here"))))
 
     def test_an_oversized_patch_exits_two(self):
         proc = run_hook(codex_event(patch("*** Add File: big.txt", "+" + "a" * 1_100_000)))
