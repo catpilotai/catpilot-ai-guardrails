@@ -25,7 +25,7 @@ Everything an administrator places is under [`deploy/org/`](../deploy/org/):
 | `claude-code/managed-mcp.json` | The stricter alternative for the server: a fixed set, and users cannot add others |
 | `codex/managed_config.toml` | The server as a managed default for Codex CLI |
 | `install.sh` | Places all of it on one macOS or Linux machine as root, with your server URL substituted; refuses to overwrite a managed file that already exists and prints what to merge instead; `--managed-mcp-json` also writes the fixed-set `managed-mcp.json` |
-| `verify.sh` | Read-only presence checks as a normal user, and the evidence log's last line |
+| `verify.sh` | Checks as a normal user: the files are present; the `python3` the hook commands use starts and is 3.8 or later; each installed hook, run directly, denies a harmless probe and lets `ls` through; `managed-settings.json` runs each hook on the tools it covers; and the evidence log's last line. Writes nothing outside a temporary directory and no evidence line; exits non-zero on any failure |
 | `uninstall.sh` | Removes exactly what `install.sh` placed; leaves a managed file alone if it was edited since |
 
 The skills come from [`skills/`](../skills/) in a checkout of the release you are deploying; the install script copies them. Pin the release: the files are deterministic per release and the [`CHANGELOG.md`](../CHANGELOG.md) says what changed.
@@ -56,7 +56,7 @@ sudo deploy/org/install.sh --server-url https://mcp.example.com/mcp
 
 **Confirm it on one machine before the fleet.** As a normal user on that machine:
 
-1. `deploy/org/verify.sh` prints what is present.
+1. `deploy/org/verify.sh` prints what is present, checks that `python3` starts (a hook that cannot start is a non-blocking error to Claude Code, so commands would run unchecked; it names the macOS Command Line Tools stub when that is what `python3` resolves to), runs each installed hook on harmless probes (AWS's documentation example key, `git push --force origin main`, `ls`), and runs each hook command in `managed-settings.json` the same way, so a hooks block that was never merged shows up as a failure. It exits non-zero on any failure. It runs the hooks directly, not through Claude Code, whose own `PATH` can differ from your shell's, so the session steps below are still the proof.
 2. Start Claude Code and run `/status`. The `Setting sources` line must list `Enterprise managed settings (file)`; with an MDM profile it says `(plist)` or `(HKLM)`. If the line is missing, the file is not where Claude Code looks, or it failed to parse; `claude doctor` lists dropped entries.
 3. `claude mcp list` shows `catpilot-guardrails`.
 4. Ask for a command that contains AWS's documentation-only example key: `export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE && echo ok`. It is denied with a reason that names the credential type and does not echo the value. Ask for the same command with `$AWS_ACCESS_KEY_ID`; it runs.

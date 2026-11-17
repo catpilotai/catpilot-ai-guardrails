@@ -6,6 +6,9 @@ Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD
 
 ## [Unreleased]
 
+### Added
+
+- **`deploy/org/verify.sh` now checks that the hooks can run, not only that their files exist.** It checks that the `python3` the hook commands use starts within ten seconds and is 3.8 or later, and names the macOS Command Line Tools stub when that is what `python3` resolves to: a hook that cannot start is a non-blocking error to Claude Code, so commands and writes would run unchecked. It runs each installed hook directly on harmless probes (AWS's documentation-only example key, `git push --force origin main`, and `ls`), and runs each Catpilot hook command in `managed-settings.json` through a shell with `HOME` pointed at a temporary directory, failing when a hook is not wired or its matcher misses `Bash` or a file-write tool. It writes no evidence line and nothing outside a temporary directory it removes, sends nothing, and exits non-zero on any failure. It runs the hooks directly, not through Claude Code, so the session checks in `docs/DEPLOY_ORG.md` remain the proof. Tests in `tests/test_deploy_org.py`. Not run on a host; deployment-verification rows are unchanged.
 ### Changed
 
 - **The quickstart states and checks its Python range: 3.11 to 3.14.** On Python 3.15 the hash-locked, binary-only install failed with a resolver error, because PyYAML 6.0.3, the latest release, publishes no 3.15 wheel (and the pinned `pydantic-core` 2.46.5 has none either). The quickstart now checks the interpreter first and names a version to use instead. CI runs the offline suite on 3.14 as well as 3.11 and 3.13, and `tests/test_workflows.py` fails if the quickstart's stated range and the CI matrix drift apart. The lock is unchanged: every pinned compiled dependency already ships 3.14 wheels. 3.15 support waits on a PyYAML wheel.
