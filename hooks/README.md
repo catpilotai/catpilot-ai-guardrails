@@ -8,11 +8,13 @@ enforcement for that path only. Everything else in the repository is advice.
 | --- | --- | --- | --- | --- |
 | `claude-code/pretooluse-secrets.py` | Claude Code | `Bash` tool, PreToolUse | Denies a shell command that contains a literal credential (the secret-blocking patterns) with a plain-language reason. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md); earlier rows in the tested-runtimes table. |
 | `claude-code/pretooluse-write-secrets.py` (formerly `pretooluse-write-private-key.py`, kept as a compatibility entry point) | Claude Code; Codex (`apply_patch`) | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, and Codex's `apply_patch`, PreToolUse | Denies file content that contains a PEM private-key header or a literal credential matching the secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input, a missing sibling file, or any internal error. | Claude Code 2.1.312, 2026-10-27, under both file names: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
+| `claude-code/pretooluse-company-rules.py` | Claude Code; Codex | `Bash` tool, PreToolUse | The company's own enforcement rules, from a compiled policy (`tools/validate_overlay.py compile`): denies, asks the person about, or only logs a force push or deletion aimed at a branch the company protects, by each rule's mode (`block`, `ask`, `monitor`). Names the rule and the approved alternative, never a listed value. Never returns allow. A policy it cannot use applies no company rule and is logged; the built-in hooks are unaffected. Fails closed on malformed input. | Not run on a host. |
 | `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` tool, PreToolUse | Parses the command like a shell and denies a high-blast-radius operation (partial cloud-config resets, auto-approved infrastructure destroys, `kubectl delete` of a namespace or with `--all`, a recursive delete of root, a system directory, home, a credential directory, or a bare variable, a force push or deletion aimed at a protected branch, credential exfiltration pipes) with the safer alternative. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 
 Each file in `claude-code/` is a thin shim. The check itself is a module of the
 standard-library package [`catpilot_guard/`](../catpilot_guard/) at the repository
-root: `secrets.py`, `write_secrets.py`, and `destructive.py`, with `evidence.py`, the
+root: `secrets.py`, `write_secrets.py`, `destructive.py`, and `company_rules.py`
+(with `policy.py`, which reads its compiled policy), with `evidence.py`, the
 evidence writer they share. A shim looks for
 `catpilot_guard/` next to itself (the layout `deploy/org/install.sh` places), then at
 the repository root two levels up (a checkout), and runs the module's `main()`. If
@@ -176,7 +178,10 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   `release/*` (exact branch names, so `feature/main-fix` is fine), a bare
   `git push --force` while one of those is checked out (read from
   `.git/HEAD`, and blocked when the branch cannot be read), a deletion of one
-  of those branches, and `git push --mirror`.
+  of those branches, and `git push --mirror`, `--all` or `--branches` with a
+  force or `--prune`, and a forced or pruned refspec pattern
+  (`refs/heads/*:refs/heads/*`). An option's value (`-o ci.skip`,
+  `--push-option`, `--repo`) is not read as the remote.
 - Database and cache resets: `prisma db push --accept-data-loss`, `prisma
   migrate reset --force`, `rails`/`rake` `db:drop`, `db:reset`,
   `db:schema:load`, and `db:structure:load`, Django `flush --noinput`,
@@ -210,6 +215,80 @@ Text inside quotes is not a command, so `echo "rm -rf /"` and
   and decides the same way without it.
 - The way past a false positive is a person running the command in their own
   terminal; there is no flag the agent can add.
+
+## Company rules: your own enforcement rules (monitor, ask, block)
+
+`claude-code/pretooluse-company-rules.py` enforces the rules in the
+`enforcement` section of a version 2 company rules file
+([`docs/spec/OVERLAY_V2.md`](../docs/spec/OVERLAY_V2.md) §2.2). The built-in
+hooks above stay as they are: a company rule adds to them and never softens
+one.
+
+It does not read the YAML file. `python tools/validate_overlay.py compile
+rules.yaml --out company-policy.json` validates the file and writes a JSON
+policy: each rule's id, kind, mode (its own, or `default_mode`) and values,
+the approved alternative's text when the rule names one, the file's
+`expires_on`, and the SHA-256 of its bytes. Nothing else from the file is
+copied. It also prints what each rule does on each tool, without the values.
+`deploy/org/install.sh --overlay` compiles and places the policy and
+registers the hook on both tools
+([`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md#company-enforcement-rules)).
+
+The hook takes the policy only from an absolute path on its own command line:
+
+```bash
+python3 "/path/to/hooks/pretooluse-company-rules.py" --host claude-code --policy "/path/to/company-policy.json"
+```
+
+| Mode | Claude Code | Codex | Evidence |
+| --- | --- | --- | --- |
+| `block` | Deny | Deny | `deny` |
+| `ask` | Deny, unless the hook's command line has `--ask`. With it, ask the person in the `default`, `acceptEdits` and `plan` permission modes, and deny in any other mode, since those approve without a person or have nobody to answer | Deny: Codex does not support `ask` | `ask`, or `deny` where it acted as `block` |
+| `monitor` | No decision | No decision | `would_deny` |
+
+`ask` is opt-in because the hook cannot tell a person from a program: a
+`claude -p` run with a permission-prompt tool, or an Agent SDK callback that
+approves, sends the same event as an interactive session, and `ask` means a
+person decides first (decision 2). Add `--ask` to the root-owned command only
+after a host check shows a person answers on your machines.
+
+When several rules match one command, the strictest effect wins and each rule
+writes its own evidence line. After the file's `expires_on`, every company
+rule acts in `monitor` until the file is renewed and recompiled: nothing is
+blocked on stale values, and each match still writes `would_deny`.
+
+### Exact coverage
+
+- Kind `protected_branch`: a `git push` that force-pushes to (`--force`,
+  `-f`, `--force-with-lease`, `--force-if-includes`, or a `+refspec`) or
+  deletes (`--delete`, `-d`, or `:branch`) a branch a value covers, a bare
+  force push while such a branch is checked out, and `git push --mirror`.
+  Pushes are read exactly as the destructive-operation check reads them,
+  through the same wrappers and `bash -c` bodies, so `--all` or `--branches`
+  with a force or `--prune`, and a forced refspec pattern
+  (`refs/heads/*:refs/heads/*`), match every rule. A value ending in `/*`
+  covers every branch under the prefix; case is ignored. A value is a branch
+  name: the validator refuses a `refs/` prefix and names longer than 255
+  characters. An ordinary push is not a match.
+- Kind `deploy_host`: validated and compiled, and not acted on yet. `compile`
+  and the validator say so.
+- The reason names the rule ids and the approved alternative, never a listed
+  value, and never repeats the command. Evidence lines carry the rule id, the
+  mode that applied and the policy's hash, never a command or a value.
+- The policy must be a regular file, not a symlink, owned by the same user as
+  the `catpilot_guard` package the hook runs from, and neither the file nor its
+  directory may be writable by group or others. `install.sh` places both as
+  root. A policy that is missing, unreadable, malformed or placed any other
+  way, or a command line the hook cannot read, applies no company rule: the
+  hook returns no decision and writes a `policy_error` line with a fixed
+  label. A rules file is never less careful than none (§6.1).
+- The policy is readable by each person's account, because the hook runs as
+  them. The values stay out of every prompt, bundle and server answer, but an
+  agent that reads files on the machine can read them.
+- Failure behavior: malformed hook input or a missing `catpilot_guard`
+  package exits 2, and the host blocks the command.
+- Not covered: everything the destructive-operation check does not cover, and
+  any host other than Claude Code and Codex.
 
 ## When a hook cannot start
 

@@ -38,13 +38,13 @@ value for them, and are left out otherwise.
 | `session_id` | hooks, session start | The session id from the hook event, when it is an opaque id: 1 to 128 letters, digits, `.`, `_`, `:` or `-`. Any other value is left out. |
 | `session_source` | session start | How the session started, from the `SessionStart` event: `startup`, `resume`, `clear`, `compact` or `fork`. Absent when the event did not say, or said something else. |
 | `release` | server, session start | Server: the CalVer release of the guidance that answered, from `mcp-server/defaults/guidance.json`. Session start: the release the company rules bundle was built from, from its `company-checklist.json`, when it has this shape. The hooks have no release of their own yet and leave it out. |
-| `policy_sha256` | server, session start | SHA-256 of the company rules file's bytes. Server: on every call where the file was read and parsed, error answers included; absent with no file, a missing file, or one that fails the structure check. Session start: the hash the private build recorded, on `rules_delivered` and `rules_expired`. The hooks load no rules file yet. |
+| `policy_sha256` | server, session start, company-rules hook | SHA-256 of the company rules file's bytes. Server: on every call where the file was read and parsed, error answers included; absent with no file, a missing file, or one that fails the structure check. Session start: the hash the private build recorded, on `rules_delivered` and `rules_expired`. Company-rules hook: the hash its compiled policy records, on `deny`, `ask` and `would_deny`. |
 | `block_chars`, `block_lines` | session start | On `rules_delivered`: the size of `company-checklist.md` in characters and in lines. Sizes only, so an administrator can see a block that is over a host's budget. |
-| `rule_id` | not yet | The id of the company rule that decided ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.1). |
-| `mode` | not yet | That rule's mode: `monitor`, `ask` or `block` ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.3). The built-in checks have no mode. |
-| `hook` | hooks | `pretooluse-secrets`, `pretooluse-write-secrets` or `pretooluse-destructive-ops`. |
+| `rule_id` | company-rules hook | The id of the company rule that matched ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.1), on `deny`, `ask` and `would_deny`. When several rules match one command, each writes its own line. |
+| `mode` | company-rules hook | The mode that applied to that rule: `monitor`, `ask` or `block` ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.3), and `monitor` for every rule once the rules file has expired. The built-in checks have no mode. |
+| `hook` | hooks | `pretooluse-secrets`, `pretooluse-write-secrets`, `pretooluse-destructive-ops` or `pretooluse-company-rules`. |
 | `tool` | all | Hooks: the tool checked (`Bash`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, or Codex's `apply_patch`). Server: the MCP tool called. |
-| `label` | hooks, session start | Hooks: the fixed label of what matched: a credential type, `private-key-block`, or a destructive-operation type. Session start, on `policy_error`: why the rules could not be loaded, one of `bad-arguments`, `missing`, `unreadable`, `malformed`, `hash-mismatch` or `internal-error`. |
+| `label` | hooks, session start | Hooks: the fixed label of what matched: a credential type, `private-key-block`, or a destructive-operation type. Company-rules hook, on `policy_error`: why its compiled policy could not be used, one of `bad-arguments`, `missing`, `unreadable`, `wrong-owner`, `malformed` or `internal-error`. Session start, on `policy_error`: why the rules could not be loaded, one of `bad-arguments`, `missing`, `unreadable`, `malformed`, `hash-mismatch` or `internal-error`. |
 | `error`, `policy_status`, `unknown_policy` | server | On every server line; `null` when the tool returned an error. |
 | `topic`, `category`, `kind` | server | The enumerated argument, or `invalid`. |
 | `outcome`, `ask_a_human`, `fields` | server | For `check_plan`: the outcome, whether to ask a human, and the names of the fields supplied. |
@@ -55,12 +55,12 @@ value for them, and are left out otherwise.
 
 | Event | Meaning | Written by today |
 | --- | --- | --- |
-| `deny` | A check denied a tool call. | the three hooks |
-| `input_error` | A hook could not read its input and exited 2, which blocks. | the three hooks |
+| `deny` | A check denied a tool call. From the company-rules hook, one line per company rule that matched and denied, or whose `ask` acted as `block` because nobody could be asked. | the four hooks |
+| `input_error` | A hook could not read its input and exited 2, which blocks. | the four hooks |
 | `lookup` | The server answered a tool call, including with an error. | the server |
-| `ask` | A rule in `ask` mode asked the person. The line records that they were asked, not what they chose. | nothing yet |
-| `would_deny` | A rule in `monitor` mode matched; nothing was blocked. | nothing yet |
-| `policy_error` | A company rules file could not be loaded or did not validate. | the session-start script |
+| `ask` | A rule in `ask` mode had the host ask the person. The line records that they were asked, not what they chose: a `PreToolUse` hook does not see the answer. | the company-rules hook |
+| `would_deny` | A rule in `monitor` mode, or any rule of an expired rules file, matched; nothing was blocked. | the company-rules hook |
+| `policy_error` | A company rules file could not be loaded or did not validate. The company-rules hook then applies no company rule; the built-in checks are unaffected. | the session-start script, the company-rules hook |
 | `rules_delivered` | The company rules were delivered at session start. On Claude Code, the script delivers a one-line status; the managed `CLAUDE.md` carries the rules. | the session-start script |
 | `rules_expired` | At session start, the company rules file was past its expiry date. | the session-start script |
 

@@ -256,6 +256,23 @@ else
                      || echo "FAIL     the session-start checks stopped with an error (above)")
 fi
 echo
+
+# Company enforcement rules (install.sh --overlay with an enforcement section): the compiled policy and the
+# company-rules hook on each tool, run directly and as the managed file registers it, with HOME at the temporary
+# directory, so no evidence line is written anywhere real.
+echo "Company enforcement rules (the company-rules hook)"
+if [ ! -e "$CC_DIR/catpilot-guardrails/policy/company-policy.json" ] && [ ! -e "$CODEX_DIR/catpilot-guardrails/policy/company-policy.json" ] \
+   && ! grep -qs pretooluse-company-rules "$CC_DIR/managed-settings.json" "$CODEX_DIR/requirements.toml"; then
+  echo "skipped  no compiled company policy and no company-rules hook on either tool (install.sh --overlay places them when the rules file has enforcement rules)"
+elif [ ! -f "$RULES_FILES" ]; then
+  fail "a company policy is installed, and $RULES_FILES, which checks it, is not beside verify.sh: run verify.sh from a checkout"
+elif [ "$python_ok" -ne 1 ]; then
+  echo "skipped  no working interpreter (see the FAIL line above)"
+else
+  count_report < <("$PYTHON_BIN" "$RULES_FILES" verify-company-rules --cc-dir "$CC_DIR" --codex-dir "$CODEX_DIR" --home "$WORK/home" --timeout "$TIMEOUT_SECONDS" 2>&1 \
+                     || echo "FAIL     the company-rules checks stopped with an error (above)")
+fi
+echo
 echo "Evidence log for this user"
 if [ -e "$HOME/.catpilot-guardrails/evidence.jsonl" ]; then
   echo "present  $HOME/.catpilot-guardrails/evidence.jsonl ($(wc -l < "$HOME/.catpilot-guardrails/evidence.jsonl" | tr -d ' ') lines); last line:"; tail -n 1 "$HOME/.catpilot-guardrails/evidence.jsonl"

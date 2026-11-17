@@ -251,6 +251,36 @@ If your `requirements.toml` already has a `[hooks]` table with its own `managed_
 
 **What this does not reach.** Codex cloud tasks, and Work with Local computer access, whose cloud orchestration supports only MCP hooks; and ChatGPT.
 
+## Company enforcement rules
+
+A version 2 rules file can carry an `enforcement` section: rules a hook applies exactly, each in `monitor`, `ask` or `block` ([`spec/OVERLAY_V2.md`](spec/OVERLAY_V2.md) §2.2 and §2.3). In this release the hook acts on `protected_branch` rules: a force push or deletion aimed at a branch the company protects, on top of the built-in list. `deploy_host` rules are validated and compiled, and not acted on yet.
+
+When the file given to `install.sh --overlay` has an `enforcement` section, `install.sh` also:
+
+- compiles it with `tools/validate_overlay.py compile` into a JSON policy: each rule's id, kind, mode and values, the approved alternative's text, the file's `expires_on` and its SHA-256, and nothing else. It prints what each rule does on each tool, without the values, and refuses to write a policy the hook would not load;
+- places the policy at `<managed dir>/catpilot-guardrails/policy/company-policy.json` for each tool, owned by root and writable only by root;
+- registers `hooks/pretooluse-company-rules.py --host <tool> --policy <that file>` on `Bash`, in `managed-settings.json` and `requirements.toml` (in the files it writes, or the JSON and TOML it prints for you to merge).
+
+For the example rules file, the commands added are:
+
+```text
+Claude Code (a PreToolUse group, matcher "Bash"):
+CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/pretooluse-company-rules.py" --host claude-code --policy "/Library/Application Support/ClaudeCode/catpilot-guardrails/policy/company-policy.json"
+
+Codex (a [[hooks.PreToolUse]] table, matcher "^Bash$"):
+CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-company-rules.py" --host codex --policy "/etc/codex/catpilot-guardrails/policy/company-policy.json"
+```
+
+**Rolling out a rule.** Start a new rule in `monitor`: it blocks nothing and writes a `would_deny` line each time it would have. `python3 tools/evidence_summary.py` counts them per rule id. Move it to `ask` or `block` once the count shows it fires where you expect, then reinstall. `ask` acts as `block` unless you add `--ask` to the company-rules hook command in `managed-settings.json`. The hook cannot tell a person from a program that approves, such as `claude -p` with a permission-prompt tool or an Agent SDK callback, and `ask` means a person decides first (decision 2 in the spec). Add it once a session check shows a person answering on your machines. With it, the person confirms on Claude Code in the `default`, `acceptEdits` and `plan` permission modes. In other modes, and on Codex, which does not support `ask`, it still denies. After the file's `expires_on`, every company rule acts in `monitor` until you renew the file and reinstall; the built-in checks are unaffected.
+
+**What a failure does.** A policy the hook cannot use, because it is missing, malformed, or owned or writable by anyone but root, applies no company rule: the hook returns no decision and writes a `policy_error` line. The built-in hooks keep running. `verify.sh` fails it. A rules file without an `enforcement` section installs no policy, and removes one an earlier install placed.
+
+**What `verify.sh` checks.** For each tool with a policy: the policy and the hook are present; the hook, run directly and as the managed file registers it, lets `ls` through and, on a force push to a branch the first `protected_branch` rule covers, gives the strictest effect of every rule that covers that branch; and no run wrote `policy_error`. It fails a managed file that registers the hook when there is no policy. It never prints a listed value.
+
+**What stays private, and what does not.** The values never reach a prompt, a bundle, the server or an evidence line, and a deny reason names the rule, not the branch. The policy is readable by each person's account, because the hook runs as them, so an agent that reads files can read the branch names. Do not list anything there that must stay secret from the people the rules apply to.
+
+Not run on a host. The host check does not cover it yet.
+
 ## Check the company rules in a session
 
 `verify.sh` runs the session-start script and each registered command directly, so, as with the hooks, only a session shows that a tool loads them. The check is a session with no skill, no MCP server and no project instruction file, so that only the rules at session start can answer. On a test machine, install with `--skills ""` (no skills) and a server URL that does not resolve, such as `https://mcp.invalid/mcp`, from a test copy of your rules with one distinctive value, so an answer from the rules cannot be a guess. Start each tool in an empty directory, with a configuration directory that holds only its sign-in (`CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex), and confirm with `/mcp` and `/skills` that nothing else is loaded. Then:
@@ -284,20 +314,21 @@ On an individual plan only route 3 and a private custom GPT are available; they 
 
 ## The evidence log
 
-The three hooks, the session-start hook and the server can append one JSON line per event to a local file named by `CATPILOT_EVIDENCE_LOG`. Off unless the variable is set; the public endpoint never sets it. A logging failure never changes a decision, an answer or what the session-start hook prints. Every line follows one versioned schema, [`spec/EVIDENCE.md`](spec/EVIDENCE.md), with the JSON Schema beside it. Lines written before schema version 1 have no `schema_version`; they use the same keys, and `tools/evidence_summary.py` reads them alone or mixed with new ones.
+The three built-in hooks, the company-rules hook, the session-start hook and the server can append one JSON line per event to a local file named by `CATPILOT_EVIDENCE_LOG`. Off unless the variable is set; the public endpoint never sets it. A logging failure never changes a decision, an answer or what the session-start hook prints. Every line follows one versioned schema, [`spec/EVIDENCE.md`](spec/EVIDENCE.md), with the JSON Schema beside it. Lines written before schema version 1 have no `schema_version`; they use the same keys, and `tools/evidence_summary.py` reads them alone or mixed with new ones.
 
 What a line carries, and what it never carries:
 
 | Source | Recorded | Never recorded |
 | --- | --- | --- |
-| Every line | `schema_version`, a random `event_id`, the time (`ts`), `source`, and `event` from a closed list (`deny`, `input_error`, `lookup`, `rules_delivered`, `rules_expired` and `policy_error` are written today) | the machine's hostname, the person's name or account |
+| Every line | `schema_version`, a random `event_id`, the time (`ts`), `source`, and `event` from a closed list (`deny`, `ask`, `would_deny`, `input_error`, `lookup`, `rules_delivered`, `rules_expired` and `policy_error` are all written today) | the machine's hostname, the person's name or account |
 | `pretooluse-secrets` | hook, `deny` or `input_error`, `host` `claude-code`, tool `Bash`, the credential type (`label`), the session id when it is an opaque id | the command, the matched text |
 | `pretooluse-write-secrets` (logged as `pretooluse-write-private-key` before the rename) | hook, `deny` or `input_error`, `host` `claude-code`, the tool (`Write`, `Edit`, ...), the credential type or `private-key-block`, the session id when it is an opaque id | the file path, the content |
 | `pretooluse-destructive-ops` | hook, `deny` or `input_error`, `host` `claude-code`, tool `Bash`, the operation type (`label`), the session id when it is an opaque id | the command |
+| `pretooluse-company-rules` | hook, `deny`, `ask`, `would_deny`, `policy_error` or `input_error`, `host` `claude-code` or `codex`, tool `Bash`, the id of the company rule that matched (`rule_id`), the mode that applied (`mode`), the SHA-256 of the company rules file the policy was compiled from (`policy_sha256`), the session id when it is an opaque id; on `policy_error`, a fixed `label` (`bad-arguments`, `missing`, `unreadable`, `wrong-owner`, `malformed` or `internal-error`) | the command, the branch, any value from the rules, the policy's path |
 | `session-start` (`catpilot-company-rules.py`, on Claude Code and Codex) | `rules_delivered`, `rules_expired` or `policy_error`; `host` `claude-code` or `codex`; how the session started (`session_source`: `startup`, `resume`, `clear`, `compact` or `fork`); the session id when it is an opaque id; on `rules_delivered` and `rules_expired`, the SHA-256 of the company rules file (`policy_sha256`) and the release; on `rules_delivered`, the block's size (`block_chars`, `block_lines`); on `policy_error`, a fixed `label` saying why (`missing`, `unreadable`, `malformed`, `hash-mismatch`, `bad-arguments` or `internal-error`) | the rules' text, the owner, the dates, any path, anything else from the hook event |
 | `mcp-server` | `lookup`, release, tool, `policy_status`, `unknown_policy`, the SHA-256 of the company rules file whenever one was read (`policy_sha256`), the enumerated argument (`topic`, `category`, `kind`, or `invalid`), and for `check_plan` the `outcome`, `ask_a_human`, and the *names* of the fields the caller supplied | the description, data classes, hosting, services, any value from the company rules file, or any other value |
 
-`rule_id` and `mode` are defined in the schema for company rules enforced by the hooks; nothing writes them yet.
+`rule_id` and `mode` are written only by the company-rules hook; the built-in checks have no rule id and no mode.
 
 ```json
 {"event": "deny", "event_id": "5b0f3c1e-8f2a-4d7b-9c41-0e6a2d9f7b13", "hook": "pretooluse-secrets", "host": "claude-code", "label": "AWS access key ID", "schema_version": 1, "session_id": "…", "source": "claude-code-hook", "tool": "Bash", "ts": "2026-11-16T15:04:05+00:00"}
@@ -329,6 +360,7 @@ What a pilot report reads from it: denials per hook per day (the hooks were in f
 | Claude Code, `SessionStart` status hook through the managed settings file | verified on 2.1.326: each session start wrote a `rules_delivered` or `rules_expired` line with `host` `claude-code`, Its output reached the model: with only the sidecar backdated, the model quoted an expiry date, 2026-02-01, that only the hook's notice carried. `/hooks` was not run, and only the `startup` source ran ([note](../evals/reports/2026.11.17-session-start-rules-verification.md)) | 2026-11-17 | A maintainer installed and ran the sessions; Catpilot recorded |
 | Codex CLI, `PreToolUse` hooks through `/etc/codex/requirements.toml` (`install.sh`) | verified on 0.169.0 on macOS, through the host check (`evals/host-check/run.sh`) in a headless `codex exec` session with the owner's own config left out: Codex loaded the managed hooks with no trust step; two force pushes to `main`, an `rm -rf` of a home-directory path, a `terraform` auto-approve apply and AWS's documentation key were blocked on `Bash`, a synthetic key block written through Codex's file-edit tool was blocked on `apply_patch` and no file was created, and a harmless command ran; six evidence lines labeled `host` `codex`. Interactive sessions and the `Edit`/`Write` matcher aliases not run ([note](../evals/reports/2026.11.17-host-check-codex-managed-hooks.md)) | 2026-11-17 | The maintainer ran the host check; Catpilot recorded |
 | Codex CLI, `SessionStart` hook through `/etc/codex/requirements.toml` | verified on 0.169.0 with no trust step: a session answered the same question with the two distinctive values. With the rules expired, the host showed the warning, and the model named no approved host and named the owner. Each session wrote a `rules_delivered` or `rules_expired` line with `host` `codex`. `/hooks` was not run, and only the `startup` source ran ([note](../evals/reports/2026.11.17-session-start-rules-verification.md)) | 2026-11-17 | A maintainer installed and ran the sessions; Catpilot recorded |
+| Claude Code and Codex CLI, the company-rules hook (`install.sh --overlay` with enforcement rules) | not yet verified on a host: unit tests, and `install.sh`, `verify.sh` and `uninstall.sh` run in temporary directories (`tests/test_company_rules.py`) | | |
 | Evidence log, hooks and server | unit and stdio contract tests in `tests/` | 2026-09-20 | Catpilot |
 
 A row moves to "verified" when a person has run the steps on a real machine and recorded the transcript or screenshot under `evals/reports/`, the same standard as the tested-runtimes table.

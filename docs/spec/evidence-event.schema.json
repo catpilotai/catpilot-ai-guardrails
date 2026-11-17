@@ -29,22 +29,22 @@
     },
     "event": {
       "enum": ["rules_delivered", "rules_expired", "deny", "ask", "would_deny", "policy_error", "input_error", "lookup"],
-      "description": "What happened. Written today: deny and input_error (hooks), lookup (server), rules_delivered, rules_expired and policy_error (session-start script). ask and would_deny are reserved for the company-rules hooks."
+      "description": "What happened. Written today: deny and input_error (hooks), ask, would_deny and policy_error (the company-rules hook), lookup (server), rules_delivered, rules_expired and policy_error (session-start script)."
     },
     "rule_id": {
       "type": "string",
       "maxLength": 64,
       "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
-      "description": "The id of the company rule that decided, when one did (docs/spec/OVERLAY_V2.md). Not written yet."
+      "description": "The id of the company rule that matched (docs/spec/OVERLAY_V2.md §2.1), on the company-rules hook's deny, ask and would_deny lines; one line per matching rule."
     },
     "mode": {
       "enum": ["monitor", "ask", "block"],
-      "description": "The mode of the company rule that decided (docs/spec/OVERLAY_V2.md §2.3). Not written yet; the built-in checks have no mode."
+      "description": "The mode that applied to the company rule that matched (docs/spec/OVERLAY_V2.md §2.3): its own, or monitor once the rules file has expired. Written by the company-rules hook; the built-in checks have no mode."
     },
     "policy_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "SHA-256 of the company rules file's bytes. The server writes it whenever it read and parsed the file. The session-start script writes the hash its private build recorded, on rules_delivered and rules_expired. The hooks load no rules file yet."
+      "description": "SHA-256 of the company rules file's bytes. The server writes it whenever it read and parsed the file. The session-start script writes the hash its private build recorded, on rules_delivered and rules_expired. The company-rules hook writes the hash its compiled policy records, on deny, ask and would_deny."
     },
     "release": {
       "type": "string",
@@ -71,7 +71,7 @@
       "description": "Session-start script, rules_delivered: the number of lines in the company rules block it read. A size, never the text."
     },
     "hook": {
-      "enum": ["pretooluse-secrets", "pretooluse-write-secrets", "pretooluse-destructive-ops"],
+      "enum": ["pretooluse-secrets", "pretooluse-write-secrets", "pretooluse-destructive-ops", "pretooluse-company-rules"],
       "description": "Which hook wrote the line. Lines written before the write hook's rename say pretooluse-write-private-key; they have no schema_version."
     },
     "tool": {
@@ -82,7 +82,7 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 200,
-      "description": "A hook's fixed label for what it matched: a credential type, private-key-block, or a destructive-operation type. Never the matched text. On a session-start policy_error line, why the company rules could not be loaded: one of the values the session-start condition below lists."
+      "description": "A hook's fixed label for what it matched: a credential type, private-key-block, or a destructive-operation type. Never the matched text. On the company-rules hook's policy_error line, why the compiled policy could not be used: bad-arguments, missing, unreadable, wrong-owner, malformed or internal-error. On a session-start policy_error line, why the company rules could not be loaded: one of the values the session-start condition below lists."
     },
     "error": {
       "enum": ["invalid-input", "unknown-category", "unknown-kind", "unknown-topic", null],

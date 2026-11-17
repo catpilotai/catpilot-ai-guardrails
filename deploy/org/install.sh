@@ -34,7 +34,13 @@
 #     Codex CLI    the same script and the rules under /etc/codex/catpilot-guardrails/, and, in the
 #                  requirements.toml above, the script as a managed SessionStart hook (--host codex) that gives
 #                  the model the block.
-#                With no --overlay, nothing about session-start rules is placed or registered.
+#                When the rules file has an enforcement section, it is also compiled
+#                (tools/validate_overlay.py compile) into the JSON policy the company-rules hook reads, placed
+#                root-owned at <managed dir>/catpilot-guardrails/policy/company-policy.json for each tool, and the
+#                hook, hooks/pretooluse-company-rules.py --policy <that file>, is registered on Bash in
+#                managed-settings.json and requirements.toml (in the files written or printed above). It enforces
+#                the company's own rules in monitor, ask or block; ask acts as block on Codex.
+#                With no --overlay, nothing about session-start rules or company enforcement is placed or registered.
 # It does not touch user settings, does not restart anything, and does not send anything anywhere.
 # Windows paths differ and are not handled here; see docs/DEPLOY_ORG.md.
 set -euo pipefail
@@ -71,6 +77,7 @@ RULES_FILES="$REPO/deploy/org/session_start_files.py"
 
 PRIVATE_TMP=""
 HOSTS_DIR=""
+POLICY_FILE=""
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 cleanup() { [ -n "$PRIVATE_TMP" ] && rm -rf "$PRIVATE_TMP" || true; }
 trap cleanup EXIT
@@ -83,6 +90,9 @@ if [ -n "$OVERLAY_FILE" ]; then
   for f in company-checklist.md company-checklist.json; do
     [ -n "$HOSTS_DIR" ] && [ -f "$HOSTS_DIR/$f" ] || { echo "the private build wrote no $f, which the session-start hooks read" >&2; exit 2; }
   done
+  # The enforcement section, compiled for the company-rules hook. A rules file without one writes no policy.
+  "$PYTHON_BIN" "$REPO/tools/validate_overlay.py" compile "$OVERLAY_FILE" --out "$PRIVATE_TMP/company-policy.json" ${ALLOW_HOSTS[@]+"${ALLOW_HOSTS[@]}"}
+  [ -f "$PRIVATE_TMP/company-policy.json" ] && POLICY_FILE="$PRIVATE_TMP/company-policy.json"
 fi
 
 # The managed files are generated before anything is written, so a value that cannot be written safely stops
@@ -95,9 +105,12 @@ CODEX_TOML="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/
   exit 2
 }
 if [ -n "$HOSTS_DIR" ]; then
-  # The SessionStart hook is added to the parsed settings and written out as JSON, never spliced into the text.
-  SETTINGS_JSON="$(printf '%s\n' "$SETTINGS_JSON" | "$PYTHON_BIN" "$RULES_FILES" settings --cc-dir "$CC_DIR")"
-  REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR")"
+  # The SessionStart hook, and with a compiled policy the company-rules hook, are added to the parsed settings and
+  # written out as JSON, never spliced into the text.
+  ENFORCE=()
+  [ -n "$POLICY_FILE" ] && ENFORCE=(--enforce)
+  SETTINGS_JSON="$(printf '%s\n' "$SETTINGS_JSON" | "$PYTHON_BIN" "$RULES_FILES" settings --cc-dir "$CC_DIR" ${ENFORCE[@]+"${ENFORCE[@]}"})"
+  REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR" ${ENFORCE[@]+"${ENFORCE[@]}"})"
 else
   REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR" --no-rules)"
 fi
@@ -121,6 +134,22 @@ install_rules() {
   chmod 755 "$root" "$root/hooks" "$root/instructions"
   chmod 644 "$root/hooks/catpilot-company-rules.py" "$root/instructions/company-checklist.md" "$root/instructions/company-checklist.json"
   echo "rules   $root/ (hooks/catpilot-company-rules.py, instructions/company-checklist.md and .json)"
+}
+
+# install_policy MANAGED_DIR: the compiled company policy the company-rules hook reads, under catpilot-guardrails/policy/,
+# owned by whoever runs this (root) and writable only by them: the hook refuses a policy anyone else could have
+# changed. A rules file without enforcement rules removes the policy an earlier install placed.
+install_policy() {
+  local dir="$1/catpilot-guardrails/policy"
+  if [ -n "$POLICY_FILE" ]; then
+    mkdir -p "$dir"; chmod 755 "$dir"
+    cp "$POLICY_FILE" "$dir/company-policy.json"; chmod 644 "$dir/company-policy.json"
+    echo "policy  $dir/company-policy.json (company enforcement rules for the company-rules hook)"
+  elif [ -e "$dir" ]; then
+    rm -rf "$dir"
+    echo "removed $dir: this rules file has no enforcement rules. If a managed file kept above still runs"
+    echo "        pretooluse-company-rules.py, remove that entry; until then it logs policy_error and enforces nothing"
+  fi
 }
 
 install_skill() {  # $1 = destination root
@@ -147,6 +176,7 @@ cp "$REPO/hooks/claude-code/pretooluse-secrets.py" \
    "$REPO/hooks/claude-code/pretooluse-write-secrets.py" \
    "$REPO/hooks/claude-code/pretooluse-write-private-key.py" \
    "$REPO/hooks/claude-code/pretooluse-destructive-ops.py" \
+   "$REPO/hooks/claude-code/pretooluse-company-rules.py" \
    "$CC_DIR/catpilot-guardrails/hooks/"
 chmod 644 "$CC_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $CC_DIR/catpilot-guardrails/hooks/"
 # The hooks are shims that import catpilot_guard from beside themselves.
@@ -161,6 +191,7 @@ if [ -n "$HOSTS_DIR" ]; then
   echo "blocks  $CC_DIR/catpilot-guardrails/instructions/"
   # Company rules at session start: the block in the managed CLAUDE.md, a status from the SessionStart hook.
   install_rules "$CC_DIR"
+  install_policy "$CC_DIR"
   "$PYTHON_BIN" "$RULES_FILES" claude-md-place --block "$CC_DIR/catpilot-guardrails/instructions/company-checklist.md" --target "$CC_DIR/CLAUDE.md"
 elif [ -e "$CC_DIR/catpilot-guardrails/instructions/company-checklist.json" ] || [ -e "$CODEX_DIR/catpilot-guardrails/instructions/company-checklist.json" ]; then
   echo "note    company rules at session start from an earlier --overlay install are still in place, unchanged;"
@@ -198,11 +229,12 @@ mkdir -p "$CODEX_DIR/catpilot-guardrails/hooks"
 cp "$REPO/hooks/claude-code/pretooluse-secrets.py" \
    "$REPO/hooks/claude-code/pretooluse-write-secrets.py" \
    "$REPO/hooks/claude-code/pretooluse-destructive-ops.py" \
+   "$REPO/hooks/claude-code/pretooluse-company-rules.py" \
    "$CODEX_DIR/catpilot-guardrails/hooks/"
 chmod 755 "$CODEX_DIR/catpilot-guardrails" "$CODEX_DIR/catpilot-guardrails/hooks"
 chmod 644 "$CODEX_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $CODEX_DIR/catpilot-guardrails/hooks/"
 install_package "$CODEX_DIR/catpilot-guardrails/hooks"
-[ -n "$HOSTS_DIR" ] && install_rules "$CODEX_DIR"
+if [ -n "$HOSTS_DIR" ]; then install_rules "$CODEX_DIR"; install_policy "$CODEX_DIR"; fi
 if [ -e "$CODEX_DIR/requirements.toml" ] || [ -L "$CODEX_DIR/requirements.toml" ]; then
   echo "exists  $CODEX_DIR/requirements.toml (not overwritten); merge this into it, keeping one [features] and one [hooks] table:"; echo "$REQUIREMENTS_TOML"
 else

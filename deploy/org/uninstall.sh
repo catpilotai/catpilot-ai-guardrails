@@ -6,7 +6,8 @@
 # have since edited or merged is left in place and named, so you can remove our keys by hand.
 # It removes /etc/codex/catpilot-guardrails/ (the Codex hooks and their package, and from an --overlay install the
 # session-start script and rules) and /etc/codex/requirements.toml under the same byte-for-byte rule, with or
-# without the session-start hook. A tool's catpilot-guardrails/hooks/ stays while a kept managed file still runs
+# without the session-start hook and the company-rules hook; the compiled company policy goes with
+# catpilot-guardrails/. A tool's catpilot-guardrails/hooks/ stays while a kept managed file still runs
 # hooks from it. From an --overlay install it also removes the marked catpilot-company-rules
 # section of the managed CLAUDE.md, deleting that file only when nothing else is in it.
 #
@@ -59,23 +60,27 @@ remove_if_ours() {
 }
 SETTINGS_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" -e "s#/Library/Application Support/ClaudeCode#$CC_DIR#g" "$REPO/deploy/org/claude-code/managed-settings.json")"
 SETTINGS_WITH_RULES=""
+SETTINGS_WITH_ENFORCE=""
 REQUIREMENTS_TOML=""
+REQUIREMENTS_WITH_ENFORCE=""
 REQUIREMENTS_NO_RULES=""
 if [ "$PYTHON_OK" -eq 1 ]; then
   SETTINGS_WITH_RULES="$(printf '%s\n' "$SETTINGS_JSON" | "$PYTHON_BIN" "$RULES_FILES" settings --cc-dir "$CC_DIR" 2>/dev/null)" || SETTINGS_WITH_RULES=""
+  SETTINGS_WITH_ENFORCE="$(printf '%s\n' "$SETTINGS_JSON" | "$PYTHON_BIN" "$RULES_FILES" settings --cc-dir "$CC_DIR" --enforce 2>/dev/null)" || SETTINGS_WITH_ENFORCE=""
   REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR" 2>/dev/null)" || REQUIREMENTS_TOML=""
+  REQUIREMENTS_WITH_ENFORCE="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR" --enforce 2>/dev/null)" || REQUIREMENTS_WITH_ENFORCE=""
   REQUIREMENTS_NO_RULES="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR" --no-rules 2>/dev/null)" || REQUIREMENTS_NO_RULES=""
 fi
 remove_if_ours "$CC_DIR/managed-settings.json" \
-  "remove the catpilot keys by hand: the hooks entries that run catpilot-guardrails/hooks/, SessionStart included, and managedMcpServers.catpilot-guardrails" \
-  "$SETTINGS_JSON" "$SETTINGS_WITH_RULES"
+  "remove the catpilot keys by hand: the hooks entries that run catpilot-guardrails/hooks/, SessionStart and the company-rules hook included, and managedMcpServers.catpilot-guardrails" \
+  "$SETTINGS_JSON" "$SETTINGS_WITH_RULES" "$SETTINGS_WITH_ENFORCE"
 MCP_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/claude-code/managed-mcp.json")"
 remove_if_ours "$CC_DIR/managed-mcp.json" "remove the catpilot keys by hand" "$MCP_JSON"
 CODEX_TOML="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/codex/managed_config.toml")"
 remove_if_ours "$CODEX_DIR/managed_config.toml" "remove the catpilot keys by hand" "$CODEX_TOML"
 remove_if_ours "$CODEX_DIR/requirements.toml" \
   "remove by hand the [hooks] managed_dir that names catpilot-guardrails, the [[hooks.PreToolUse]] entries that run catpilot-guardrails/hooks/, the [[hooks.SessionStart]] entry that runs catpilot-company-rules.py, and [features].hooks = true unless you want it" \
-  "$REQUIREMENTS_TOML" "$REQUIREMENTS_NO_RULES"
+  "$REQUIREMENTS_TOML" "$REQUIREMENTS_WITH_ENFORCE" "$REQUIREMENTS_NO_RULES"
 
 # The managed CLAUDE.md: only the marked section is ours.
 if [ -e "$CC_DIR/CLAUDE.md" ] || [ -L "$CC_DIR/CLAUDE.md" ]; then
