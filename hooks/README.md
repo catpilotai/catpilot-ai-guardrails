@@ -147,7 +147,9 @@ off for that repository.
 
 `claude-code/pretooluse-destructive-ops.py` blocks high-blast-radius shell
 commands on the `Bash` tool path. It splits the command into simple commands
-the way a shell would (pipes, `;`, `&&`, `||`, subshells), looks through
+the way a shell would (pipes, `;`, `&&`, `||`, subshells, and each line of a
+multi-line command, with a backslash at the end of a line joining it to the
+next), looks through
 `sudo`, `env`, `time`, `timeout`, `stdbuf`, `ionice`, `setsid`, `unbuffer`, and
 similar wrappers and through a shell's command string, however its options
 are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,

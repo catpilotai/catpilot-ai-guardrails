@@ -6,7 +6,7 @@ calls decide(). It needs no other check module; it imports catpilot_guard/eviden
 Scope, stated exactly:
   - Runs only for the Bash tool (the matcher in settings selects it).
   - Splits the proposed command into simple commands the way a shell would
-    (pipes, ;, &&, ||, subshells), looks through sudo/env/time-style wrappers
+    (pipes, ;, &&, ||, subshells, and each line of a multi-line command), looks through sudo/env/time-style wrappers
     (also timeout, gtimeout, stdbuf, ionice, setsid, unbuffer) and a shell's
     command string (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
     `bash --login -c`), and checks each one against deterministic signatures
@@ -200,21 +200,25 @@ SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", ")", "\n"}
 
 
 def _tokens(command: str) -> list[str]:
+    """The command's words and operators. An unquoted newline separates commands, as in a shell, and a
+    backslash-newline joins two lines into one, so every line of a multi-line command is read."""
+    command = command.replace("\\\r\n", "").replace("\\\n", "")
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
+        lexer.whitespace = " \t\r"
         lexer.whitespace_split = True
         lexer.commenters = ""
         return list(lexer)
     except ValueError:
         # Unbalanced quotes: fall back to whitespace splitting with quotes stripped.
-        return [t.strip("\"'") for t in command.replace(";", " ; ").replace("&&", " && ").replace("|", " | ").split()]
+        return [t.strip("\"'") for t in command.replace("\n", " ; ").replace(";", " ; ").replace("&&", " && ").replace("|", " | ").split()]
 
 
 def _simple_commands(command: str, depth: int = 0):
     """Yield argv lists for each simple command, with wrappers removed and `sh -c` bodies expanded."""
     current: list[str] = []
     for token in _tokens(command) + [";"]:
-        if token in SEPARATORS or set(token) <= set(";&|()"):
+        if token in SEPARATORS or set(token) <= set(";&|()\n"):
             if current:
                 yield from _unwrap(current, depth)
             current = []
