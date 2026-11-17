@@ -6,6 +6,10 @@ instruction field, blocks for repository-based agents, and the standalone
 web page that is the source for catpilot.ai/safe-ai-building. No third-party
 templating dependency; plain Python strings.
 
+One target is not built from the component bodies: `company-checklist`, the
+block from `tools/company_checklist.py` that benchmark condition F plants.
+It holds company values, so only a private build writes it.
+
 Determinism: fixed zip timestamps derived from the release CalVer, no
 wall-clock values anywhere, sorted output.
 """
@@ -25,6 +29,7 @@ TARGET_NAMES = (
     "copilot",
     "agents-md",
     "claude-md",
+    "company-checklist",
     "copilot-instructions",
     "lovable",
     "bolt",
@@ -35,6 +40,8 @@ TARGET_NAMES = (
 # The bundler's sidecar manifest. Defined here because bundle.py imports this
 # module, not the other way round; bundle.MANIFEST_NAME aliases this name.
 MANIFEST_NAME = "catpilot.json"
+# The company-checklist target's file, written by private builds only.
+COMPANY_CHECKLIST_NAME = "company-checklist.md"
 PASTE_LIMIT = 8000  # ChatGPT project/GPT instructions and Copilot Studio instructions
 PASTE_HEADROOM = 300  # room for the per-file header line so the whole pasted file fits
 REPO_URL = "https://github.com/catpilotai/catpilot-ai-guardrails"
@@ -360,10 +367,12 @@ def web_page(cfg: dict, digests: list[dict], paste: str, release: str, npx_comma
 # Rendering
 
 
-def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_md: str, out_dir: Path, enabled: list[str], *, manifest_json: str, bundle_name: str | None = None, values_block: str | None = None, install_source: str = "catpilotai/catpilot-ai-guardrails") -> list[Path]:
+def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_md: str, out_dir: Path, enabled: list[str], *, manifest_json: str, bundle_name: str | None = None, values_block: str | None = None, install_source: str = "catpilotai/catpilot-ai-guardrails", company_checklist: str | None = None) -> list[Path]:
     """Render the enabled targets. Artifacts that ship the skill directory carry
     the catpilot.json manifest alongside SKILL.md. For a private build pass
-    bundle_name, values_block, and the private install source."""
+    bundle_name, values_block, the private install source, and the
+    company_checklist block. The public build passes no company_checklist,
+    so it never writes the company-checklist target."""
     release = cfg["version"]
     name = bundle_name or cfg["name"]
     private = values_block is not None
@@ -406,6 +415,11 @@ def render_all(cfg: dict, skills, rendered_bodies: dict[str, str], bundle_skill_
         files["v0-instructions.md"] = (_md_header(name, release, "Paste into v0: Project settings → Instructions") + paste).encode("utf-8")
     if "web" in enabled and not private:
         files["web/safe-ai-building.html"] = web_page(cfg, digests, paste, release, npx_command).encode("utf-8")
+    if "company-checklist" in enabled and company_checklist is not None:
+        # The block exactly, plus the final newline condition F adds when it
+        # plants the block in a project with no CLAUDE.md or AGENTS.md. No
+        # header: the file is the text the benchmark measured.
+        files[COMPANY_CHECKLIST_NAME] = (company_checklist + "\n").encode("utf-8")
     files["README.md"] = dist_readme(cfg, release, sorted(files), name=name, private=private, npx_command=npx_command).encode("utf-8")
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -428,6 +442,7 @@ def dist_readme(cfg: dict, release: str, names: list[str], *, name: str | None =
         "copilot-declarative-agent.stub.json": ("Microsoft 365 declarative agent", "Manifest stub with the same instructions. Validate against Microsoft's current schema, then publish through the tenant's agent catalog."),
         "AGENTS.md": ("Repository-based agents", "Append the block to the project's AGENTS.md."),
         "CLAUDE.md": ("Claude Code", "Append the block to the project's CLAUDE.md or ~/.claude/CLAUDE.md."),
+        COMPANY_CHECKLIST_NAME: ("Claude Code, Codex", "A short checklist plus the company's validated rules: the text benchmark condition F puts in the project's CLAUDE.md or AGENTS.md."),
         "copilot-instructions.md": ("GitHub Copilot in a repository", "Append the block to .github/copilot-instructions.md."),
         "lovable-knowledge.md": ("Lovable", "Project → Settings → Knowledge."),
         "bolt-prompt.txt": ("Bolt", "Save as .bolt/prompt in the project."),

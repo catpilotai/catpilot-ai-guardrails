@@ -59,6 +59,7 @@ enabled = [
   "copilot",
   "agents-md",
   "claude-md",
+  "company-checklist",
   "copilot-instructions",
   "lovable",
   "bolt",

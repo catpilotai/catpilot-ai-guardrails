@@ -38,6 +38,9 @@ Slots and overlays (docs/spec/OVERLAY.md):
 Per-host targets (docs/spec/PACKAGING.md §9):
   - `--target all` also renders the tier's enabled per-host artifacts into
     dist/<release>/ (zip, paste blocks, web page). `--check` covers dist/.
+  - A private build also writes the `company-checklist` target,
+    company-checklist.md, from tools/company_checklist.py: the same text
+    benchmark condition F plants. The public build never writes it.
 
 Usage:
   python tools/bundle.py                        # build all tiers into skills/
@@ -66,9 +69,11 @@ from pathlib import Path
 import yaml
 
 try:
+    from tools import company_checklist
     from tools import targets as targets_module
     from tools import validate_overlay
 except ModuleNotFoundError:  # invoked as `python tools/bundle.py`
+    import company_checklist
     import targets as targets_module
     import validate_overlay
 
@@ -966,6 +971,7 @@ def build_tier(
                 cfg, skills, rendered_bodies, rendered, hosts_dir, [t for t in enabled if t != "web"],
                 manifest_json=manifest_json,
                 bundle_name=bundle_name, values_block=overlay_values_block(overlay), install_source=install_source or "<your private repository>",
+                company_checklist=company_checklist.render(overlay, overlay_bytes or b""),
             )
     return bundle_dir
 
@@ -975,6 +981,10 @@ def build_tier(
 
 
 def cmd_build(tier_filter: str | None, target: str | None) -> int:
+    if target == "company-checklist":
+        # Refuse before dist/ is cleared: the public build never writes this target.
+        print("INVALID: the company-checklist target holds company values; build it with --overlay", file=sys.stderr)
+        return 2
     guard_no_overlay_in_public_tree()
     tiers = discover_tiers()
     if tier_filter:

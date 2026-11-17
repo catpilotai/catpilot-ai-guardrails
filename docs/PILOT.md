@@ -46,7 +46,7 @@ Collect three things as you go:
 The comparison runs offline, on your own tasks, with the repository's benchmark runner:
 
 - **Condition D:** the activated skill plus your rules through the server, with an instruction to consult it.
-- **Condition F:** the same company facts pasted as a checklist.
+- **Condition F:** the same company facts pasted as a checklist. Its text is the `company-checklist.md` that a private build of your rules writes.
 
 ```bash
 python tools/bench.py --scenarios <your scenarios dir> --examples <your reference examples> \
