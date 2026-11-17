@@ -24,7 +24,8 @@ skills/                     # shipped bundles (CalVer, generated)
     references/<component>.md
 dist/2026.09.18/            # per-host artifacts (generated): zip, paste blocks, web page
 catpilot_guard/             # the hook checks as a standard-library package (Python 3.8+), one module per check:
-                            # secrets.py, write_secrets.py, destructive.py
+                            # secrets.py, write_secrets.py, destructive.py; and evidence.py, the evidence
+                            # writer the checks and the reference server share
 hooks/README.md             # install steps and exact coverage for every hook and gate
 hooks/claude-code/          # the three PreToolUse hooks (credentials in Bash, credentials in file writes,
                             # destructive commands) as thin shims that run catpilot_guard, the former write
@@ -46,7 +47,7 @@ tools/
   bench.py, bench/          # benchmark runner: conditions, scanners, functional checks, reports
   evidence_summary.py       # pilot readout from the content-free evidence log
   sbom.py                   # SPDX SBOM of the pinned dependencies, for signed releases
-docs/spec/                  # format, packaging, overlay specs; V2 postmortem
+docs/spec/                  # format, packaging, overlay and evidence specs; V2 postmortem
 frameworks/                 # long-form framework guides, kept as reference and not packaged as skills
 evals/                      # cases.json, scenarios/, retired scenarios, reference examples, reports/
 tests/                      # unit tests for the bundler, validators, hooks and their package, gates, server, deployment scripts, and runner

@@ -181,7 +181,7 @@ check "$HOOK_DIR/pretooluse-write-secrets.py"
 check "$HOOK_DIR/pretooluse-write-private-key.py"  # compatibility entry point for older settings
 check "$HOOK_DIR/pretooluse-destructive-ops.py"
 # The package the hooks import from beside them; a hook that cannot load it exits 2, which blocks everything it covers.
-for m in __init__ secrets write_secrets destructive; do check "$HOOK_DIR/catpilot_guard/$m.py"; done
+for m in __init__ secrets write_secrets destructive evidence; do check "$HOOK_DIR/catpilot_guard/$m.py"; done
 for s in "$CC_DIR"/.claude/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
 echo
 

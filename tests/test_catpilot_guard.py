@@ -32,6 +32,9 @@ SHIMS = {
     "pretooluse-destructive-ops.py": "catpilot_guard.destructive",
 }
 EVIDENCE_VARS = ("CATPILOT_EVIDENCE_LOG", "CATPILOT_EVIDENCE_SYSLOG")
+# The evidence fields that legitimately differ between two runs of the same event.
+TIMESTAMP = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$"
+EVENT_ID = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 
 
 def _test_module(name: str):
@@ -197,15 +200,20 @@ class ShimParityTests(unittest.TestCase):
                         shim_log, module_log = Path(tmp) / "shim.jsonl", Path(tmp) / "module.jsonl"
                         run_shim(HOOK_DIR / shim, event_payload, hook_env(CATPILOT_EVIDENCE_LOG=str(shim_log)))
                         run_module(SHIMS[shim], event_payload, hook_env(CATPILOT_EVIDENCE_LOG=str(module_log)))
-                        lines = []
+                        lines, event_ids = [], []
                         for log in (shim_log, module_log):
                             entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
                             for entry in entries:
-                                entry.pop("ts")
+                                # The two fields that differ between runs: each must still be there and well formed.
+                                self.assertRegex(entry.pop("ts"), TIMESTAMP)
+                                event_id = entry.pop("event_id")
+                                self.assertRegex(event_id, EVENT_ID)
+                                event_ids.append(event_id)
                             lines.append(entries)
                             log.unlink()
                         self.assertEqual(len(lines[0]), 1)
                         self.assertEqual(lines[0], lines[1])
+                        self.assertEqual(len(set(event_ids)), len(event_ids))
 
     def test_a_shim_loaded_as_a_module_exposes_the_checks_functions(self):
         import catpilot_guard.destructive
@@ -352,7 +360,7 @@ class PackageSourceTests(unittest.TestCase):
         # -I: no environment variables, user site, or current directory; -S: no site-packages at all.
         proc = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", code, str(ROOT), *modules], capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(sorted(modules), ["destructive", "secrets", "write_secrets"])
+        self.assertEqual(sorted(modules), ["destructive", "evidence", "secrets", "write_secrets"])
 
     def test_package_and_shims_parse_as_python_3_8(self):
         for path in self._sources() + [HOOK_DIR / shim for shim in SHIMS]:

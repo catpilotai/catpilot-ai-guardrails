@@ -8,6 +8,9 @@ Each module reads one Claude Code PreToolUse event on stdin in main() and prints
 decision or nothing. The files in hooks/claude-code/ are thin shims that run main(), and
 hooks/harness/ calls the same functions. Importing the package imports no check.
 
+  evidence       the content-free evidence writer the checks and the reference MCP server
+                 share (docs/spec/EVIDENCE.md); a check imports it only to write a line
+
 write_decision() and write_reason() are how every main() talks to the host, so that a
 failure to write never ends in an exit code the host treats as non-blocking.
 """

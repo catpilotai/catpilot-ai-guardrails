@@ -129,20 +129,23 @@ On an individual plan only route 3 and a private custom GPT are available; they 
 
 ## The evidence log
 
-The three hooks and the server can append one JSON line per event to a local file named by `CATPILOT_EVIDENCE_LOG`. Off unless the variable is set; the public endpoint never sets it. A logging failure never changes a decision or an answer.
+The three hooks and the server can append one JSON line per event to a local file named by `CATPILOT_EVIDENCE_LOG`. Off unless the variable is set; the public endpoint never sets it. A logging failure never changes a decision or an answer. Every line follows one versioned schema, [`spec/EVIDENCE.md`](spec/EVIDENCE.md), with the JSON Schema beside it. Lines written before schema version 1 have no `schema_version`; they use the same keys, and `tools/evidence_summary.py` reads them alone or mixed with new ones.
 
 What a line carries, and what it never carries:
 
 | Source | Recorded | Never recorded |
 | --- | --- | --- |
-| `pretooluse-secrets` | time, hook, `deny` or `input_error`, tool `Bash`, the credential type (`label`), the session id | the command, the matched text |
-| `pretooluse-write-secrets` (logged as `pretooluse-write-private-key` before the rename) | time, hook, `deny` or `input_error`, the tool (`Write`, `Edit`, ...), the credential type or `private-key-block`, the session id | the file path, the content |
-| `pretooluse-destructive-ops` | time, hook, `deny` or `input_error`, tool `Bash`, the operation type (`label`), the session id | the command |
-| `mcp-server` | time, release, tool, `policy_status`, `unknown_policy`, the enumerated argument (`topic`, `category`, `kind`, or `invalid`), and for `check_plan` the `outcome`, `ask_a_human`, and the *names* of the fields the caller supplied | the description, data classes, hosting, services, or any other value |
+| Every line | `schema_version`, a random `event_id`, the time (`ts`), `source`, and `event` from a closed list (`deny`, `input_error` and `lookup` are written today) | the machine's hostname, the person's name or account |
+| `pretooluse-secrets` | hook, `deny` or `input_error`, `host` `claude-code`, tool `Bash`, the credential type (`label`), the session id when it is an opaque id | the command, the matched text |
+| `pretooluse-write-secrets` (logged as `pretooluse-write-private-key` before the rename) | hook, `deny` or `input_error`, `host` `claude-code`, the tool (`Write`, `Edit`, ...), the credential type or `private-key-block`, the session id when it is an opaque id | the file path, the content |
+| `pretooluse-destructive-ops` | hook, `deny` or `input_error`, `host` `claude-code`, tool `Bash`, the operation type (`label`), the session id when it is an opaque id | the command |
+| `mcp-server` | `lookup`, release, tool, `policy_status`, `unknown_policy`, the SHA-256 of the company rules file whenever one was read (`policy_sha256`), the enumerated argument (`topic`, `category`, `kind`, or `invalid`), and for `check_plan` the `outcome`, `ask_a_human`, and the *names* of the fields the caller supplied | the description, data classes, hosting, services, any value from the company rules file, or any other value |
+
+`rule_id` and `mode` are defined in the schema for company rules enforced by the hooks; nothing writes them yet.
 
 ```json
-{"event": "deny", "hook": "pretooluse-secrets", "label": "aws access key", "session_id": "…", "source": "claude-code-hook", "tool": "Bash", "ts": "2026-09-20T15:04:05+00:00"}
-{"ask_a_human": true, "error": null, "fields": ["audience", "data_classes"], "outcome": "requires_review", "policy_status": "current", "release": "2026.09.18", "source": "mcp-server", "tool": "check_plan", "ts": "2026-09-20T15:06:11+00:00", "unknown_policy": false}
+{"event": "deny", "event_id": "5b0f3c1e-8f2a-4d7b-9c41-0e6a2d9f7b13", "hook": "pretooluse-secrets", "host": "claude-code", "label": "AWS access key ID", "schema_version": 1, "session_id": "…", "source": "claude-code-hook", "tool": "Bash", "ts": "2026-11-16T15:04:05+00:00"}
+{"ask_a_human": true, "error": null, "event": "lookup", "event_id": "a3e9d0b4-6c1f-4e52-8b7a-2f4d6c8e0a91", "fields": ["audience", "data_classes"], "outcome": "requires_review", "policy_sha256": "…", "policy_status": "approved", "release": "2026.09.18", "schema_version": 1, "source": "mcp-server", "tool": "check_plan", "ts": "2026-11-16T15:06:11+00:00", "unknown_policy": false}
 ```
 
 Turn it on: for the hooks, the managed settings example sets it on each hook command (`CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl"`), so each user's denials land in their own home directory, where your device-management or endpoint tooling can collect the file. For the server, set the variable in the service's environment when you run it yourself. There is no upload, no rotation, and no aggregation in this package; ship the files to whatever you already use.

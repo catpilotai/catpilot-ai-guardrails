@@ -181,7 +181,7 @@ choose the policy file.
 | --- | --- |
 | `CATPILOT_OVERLAY_FILE` | Absolute path to a company overlay (`docs/spec/OVERLAY.md`). Optional. Re-read and re-validated on every call, so expiry and revocation take effect immediately. |
 | `CATPILOT_TEMPLATE_HOSTS` | Comma-separated hosts allowed in the overlay's template locations. Required if the overlay names templates. |
-| `CATPILOT_EVIDENCE_LOG` | Path of a local JSON-lines file. When set, every tool call appends one line: time, release, tool, `policy_status`, `unknown_policy`, the enumerated argument, and for `check_plan` the outcome, `ask_a_human`, and the names of the fields supplied. Never the description or any other free text. Optional; the public endpoint does not set it. A logging failure never changes an answer. |
+| `CATPILOT_EVIDENCE_LOG` | Path of a local JSON-lines file. When set, every tool call appends one `lookup` line: the schema version, a random event id, time, release, tool, `policy_status`, `unknown_policy`, the SHA-256 of the overlay file whenever one was read (`policy_sha256`), the enumerated argument, and for `check_plan` the outcome, `ask_a_human`, and the names of the fields supplied. Never the description, an overlay value, or any other free text. The line format is [`docs/spec/EVIDENCE.md`](../docs/spec/EVIDENCE.md); the writer is `catpilot_guard/evidence.py`, imported from the repository root. Optional; the public endpoint does not set it. A logging failure never changes an answer. |
 
 Host configuration snippets are in `host-configs/`: a `.mcp.json` for Claude
 Code and a `config.toml` fragment for Codex. Replace the absolute paths.

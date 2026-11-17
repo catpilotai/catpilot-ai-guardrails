@@ -12,7 +12,8 @@ enforcement for that path only. Everything else in the repository is advice.
 
 Each file in `claude-code/` is a thin shim. The check itself is a module of the
 standard-library package [`catpilot_guard/`](../catpilot_guard/) at the repository
-root: `secrets.py`, `write_secrets.py`, and `destructive.py`. A shim looks for
+root: `secrets.py`, `write_secrets.py`, and `destructive.py`, with `evidence.py`, the
+evidence writer they share. A shim looks for
 `catpilot_guard/` next to itself (the layout `deploy/org/install.sh` places), then at
 the repository root two levels up (a checkout), and runs the module's `main()`. If
 the package is missing or cannot be imported, the shim exits 2, which blocks. The
@@ -198,8 +199,9 @@ Text inside quotes is not a command, so `echo "rm -rf /"` and
   and any host other than Claude Code. It stops accidents, not an adversary.
 - Failure behavior: malformed input, a missing `catpilot_guard` package, or any
   internal error exits 2 and the host blocks the command. It needs the package
-  beside it, but not the other hook files or the package's `secrets` module,
-  which it imports only for optional syslog.
+  beside it, but not the other hook files or the package's `secrets` module.
+  It imports the package's `evidence` module only to write an evidence line,
+  and decides the same way without it.
 - The way past a false positive is a person running the command in their own
   terminal; there is no flag the agent can add.
 
@@ -222,13 +224,23 @@ stays the proof.
 
 Set `CATPILOT_EVIDENCE_LOG` to a file path in the hook's environment (the
 managed-settings example in `deploy/org/` does it on the command line) and each
-deny appends one JSON line: the time, the hook, the decision, the credential
-type, `private-key-block`, or destructive operation label, the tool, and the
-session id. Set `CATPILOT_EVIDENCE_SYSLOG=1` (or a `host:port` / socket path)
-to emit the same content-free JSON line to syslog. Never the command, the file
-path, or the content. Malformed input is recorded as `input_error` beside the
-fail-closed exit. Off unless set; a logging failure never changes the decision.
-Summarize collected logs with `python3 tools/evidence_summary.py`.
+deny appends one JSON line: the schema version, a random event id, the time,
+the hook, the event (`deny`), the host (`claude-code`), the credential type,
+`private-key-block`, or destructive operation label, the tool, and the session
+id when it is an opaque id. Set `CATPILOT_EVIDENCE_SYSLOG=1` (or a `host:port`
+/ socket path) to emit the same content-free JSON line to syslog. Never the
+command, the file path, or the content. Malformed input is recorded as
+`input_error` beside the fail-closed exit. Off unless set.
+
+All three hooks write through one writer, `catpilot_guard/evidence.py`, which
+the reference server uses too. The line format is versioned:
+[`docs/spec/EVIDENCE.md`](../docs/spec/EVIDENCE.md), with a JSON Schema beside
+it. Each line is one write to the file, under an `fcntl` lock where the
+platform has one, so hooks in several sessions can share a file. The writer
+waits at most half a second for the lock, never raises, and a logging failure,
+or a missing `evidence` module, never changes the decision. A check called
+from a harness writes the same line without `host`. Summarize collected logs
+with `python3 tools/evidence_summary.py`.
 
 ## Inside your own harness
 

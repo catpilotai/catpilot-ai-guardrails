@@ -28,11 +28,8 @@ pretooluse-write-private-key.py, which remains as a compatibility entry point.
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
 
 from . import write_decision, write_reason
 
@@ -58,42 +55,22 @@ def secrets_module():
     return _SECRETS_MODULE
 
 
-# Optional evidence log. When CATPILOT_EVIDENCE_LOG names a file, each deny appends one JSON
-# line: the time, the hook, the decision, and the credential type. When CATPILOT_EVIDENCE_SYSLOG
-# is set, the same content-free JSON line is emitted to syslog. Never the command, never
-# the matched text. Off unless set; a logging failure never changes the decision, because
-# this function swallows every error.
-EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
-SYSLOG_ENV = "CATPILOT_EVIDENCE_SYSLOG"
+# Optional evidence log, written by catpilot_guard/evidence.py when CATPILOT_EVIDENCE_LOG or
+# CATPILOT_EVIDENCE_SYSLOG is set: one content-free line per deny or input error, with the hook, the
+# tool, the credential type and the session id. Never the file path, never the content.
 HOOK_NAME = "pretooluse-write-secrets"
+HOST = "claude-code"  # main() reads a Claude Code PreToolUse event; inspect_event() called from a harness passes no host
 
 
-def record_evidence(event: str, **fields) -> None:
-    path = os.environ.get(EVIDENCE_ENV, "").strip()
-    syslog_spec = os.environ.get(SYSLOG_ENV, "").strip()
-    if not path and not syslog_spec:
-        return
-    line = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "claude-code-hook", "hook": HOOK_NAME, "event": event}
-    line.update({k: v for k, v in fields.items() if v is not None})
-    serialized = json.dumps(line, sort_keys=True)
-    if path:
-        try:
-            target = Path(os.path.expanduser(path))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with open(target, "a", encoding="utf-8") as fh:
-                fh.write(serialized + "\n")
-        except Exception:
-            pass
-    if syslog_spec:
-        try:
-            secrets_module().emit_syslog(serialized, syslog_spec)
-        except Exception:
-            pass
+def record_evidence(event: str, hook_event: object = None, host: str | None = None, **fields) -> None:
+    """One evidence line through the shared writer, imported here so that a missing or broken writer is a
+    logging failure: it never changes the decision, and nothing here raises."""
+    try:
+        from . import evidence
 
-
-def session_id_of(event: object) -> str | None:
-    sid = event.get("session_id") if isinstance(event, dict) else None
-    return sid if isinstance(sid, str) and 0 < len(sid) <= 128 else None
+        evidence.record_hook_event(HOOK_NAME, event, hook_event, host, **fields)
+    except Exception:
+        pass
 
 
 def added_text(tool_name: str, tool_input: object) -> list[str] | None:
@@ -138,7 +115,7 @@ def find_write_credential(parts: list[str]) -> tuple[str, str] | None:
     return None
 
 
-def inspect_event(event: object) -> dict:
+def inspect_event(event: object, host: str | None = None) -> dict:
     if not isinstance(event, dict):
         raise ValueError("invalid hook event")
     parts = added_text(str(event.get("tool_name")), event.get("tool_input"))
@@ -147,7 +124,7 @@ def inspect_event(event: object) -> dict:
     found = find_write_credential(parts)
     if found is not None:
         label, reason = found
-        record_evidence("deny", tool=str(event.get("tool_name")), label=label, session_id=session_id_of(event))
+        record_evidence("deny", event, host, tool=str(event.get("tool_name")), label=label)
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -163,11 +140,11 @@ def main() -> int:
         payload = sys.stdin.buffer.read(MAX_INPUT + 1)
         if len(payload) > MAX_INPUT:
             raise ValueError("hook input too large")
-        result = inspect_event(json.loads(payload))
+        result = inspect_event(json.loads(payload), HOST)
     except Exception:
         # Any failure (malformed input, a missing sibling module, an unexpected error)
         # blocks: an ordinary non-zero exit would let the host perform the write.
-        record_evidence("input_error")
+        record_evidence("input_error", host=HOST)
         write_reason("Catpilot write check unavailable: invalid input or an internal error. Review the write before retrying.")
         return 2
     return write_decision(result)

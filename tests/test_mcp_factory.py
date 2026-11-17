@@ -85,7 +85,8 @@ class FactoryTests(unittest.TestCase):
             client.post("/mcp", headers=HEADERS, json=INITIALIZE)
             call(client, "get_guidance", {"topic": "not-a-topic"})
             call(client, "check_plan", {"description": "Upload the customer export and share it publicly.", "audience": "anyone with the link"})
-        self.assertEqual(records[0], ("get_guidance", {"topic": "invalid"}, True))
+        # No overlay is configured here, so there is no overlay hash to pass.
+        self.assertEqual(records[0], ("get_guidance", {"topic": "invalid", "policy_sha256": None}, True))
         tool, fields, has_request = records[1]
         self.assertEqual((tool, has_request, fields["fields"]), ("check_plan", True, ["audience"]))
         self.assertIn(fields["outcome"], {"requires_review", "prohibited", "unknown"})
