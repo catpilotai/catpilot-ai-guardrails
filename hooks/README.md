@@ -7,7 +7,7 @@ enforcement for that path only. Everything else in the repository is advice.
 | Hook | Host | Path covered | What it does | Verified |
 | --- | --- | --- | --- | --- |
 | `claude-code/pretooluse-secrets.py` | Claude Code | `Bash` tool, PreToolUse | Denies a shell command that contains a literal credential (the secret-blocking patterns) with a plain-language reason. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md); earlier rows in the tested-runtimes table. |
-| `claude-code/pretooluse-write-secrets.py` (formerly `pretooluse-write-private-key.py`, kept as a compatibility entry point) | Claude Code; Codex (`apply_patch`, not verified on a host) | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, and Codex's `apply_patch`, PreToolUse | Denies file content that contains a PEM private-key header or a literal credential matching the secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input, a missing sibling file, or any internal error. | Claude Code 2.1.312, 2026-10-27, under both file names: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
+| `claude-code/pretooluse-write-secrets.py` (formerly `pretooluse-write-private-key.py`, kept as a compatibility entry point) | Claude Code; Codex (`apply_patch`) | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, and Codex's `apply_patch`, PreToolUse | Denies file content that contains a PEM private-key header or a literal credential matching the secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input, a missing sibling file, or any internal error. | Claude Code 2.1.312, 2026-10-27, under both file names: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 | `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` tool, PreToolUse | Parses the command like a shell and denies a high-blast-radius operation (partial cloud-config resets, auto-approved infrastructure destroys, `kubectl delete` of a namespace or with `--all`, a recursive delete of root, a system directory, home, a credential directory, or a bare variable, a force push or deletion aimed at a protected branch, credential exfiltration pipes) with the safer alternative. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 
 Each file in `claude-code/` is a thin shim. The check itself is a module of the
@@ -302,8 +302,10 @@ project-level hooks on 2026-11-17, before `--host` existed
 Codex sends file edits as `apply_patch`, with the patch in
 `tool_input.command`, whichever of `apply_patch`, `Edit` or `Write` the
 matcher names. `pretooluse-write-secrets.py` reads the lines the patch adds,
-split on newlines the way Codex's own patch parser splits them. Not verified
-on a host:
+split on newlines the way Codex's own patch parser splits them. Verified on
+Codex CLI 0.169.0 on 2026-11-17 as a managed hook: a synthetic key block
+written through Codex's file-edit tool was blocked
+([note](../evals/reports/2026.11.17-host-check-codex-managed-hooks.md)):
 
 ```toml
 [[hooks.PreToolUse]]
