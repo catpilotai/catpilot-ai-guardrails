@@ -7,7 +7,7 @@ enforcement for that path only. Everything else in the repository is advice.
 | Hook | Host | Path covered | What it does | Verified |
 | --- | --- | --- | --- | --- |
 | `claude-code/pretooluse-secrets.py` | Claude Code | `Bash` tool, PreToolUse | Denies a shell command that contains a literal credential (the secret-blocking patterns) with a plain-language reason. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md); earlier rows in the tested-runtimes table. |
-| `claude-code/pretooluse-write-secrets.py` (formerly `pretooluse-write-private-key.py`, kept as a compatibility entry point) | Claude Code | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, PreToolUse | Denies file content that contains a PEM private-key header or a literal credential matching the secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input, a missing sibling file, or any internal error. | Claude Code 2.1.312, 2026-10-27, under both file names: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
+| `claude-code/pretooluse-write-secrets.py` (formerly `pretooluse-write-private-key.py`, kept as a compatibility entry point) | Claude Code; Codex (`apply_patch`, not verified on a host) | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, and Codex's `apply_patch`, PreToolUse | Denies file content that contains a PEM private-key header or a literal credential matching the secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input, a missing sibling file, or any internal error. | Claude Code 2.1.312, 2026-10-27, under both file names: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 | `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` tool, PreToolUse | Parses the command like a shell and denies a high-blast-radius operation (partial cloud-config resets, auto-approved infrastructure destroys, `kubectl delete` of a namespace or with `--all`, a recursive delete of root, a system directory, home, a credential directory, or a bare variable, a force push or deletion aimed at a protected branch, credential exfiltration pipes) with the safer alternative. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 
 Each file in `claude-code/` is a thin shim. The check itself is a module of the
@@ -105,12 +105,18 @@ environment variable reference (`os.environ["AWS_ACCESS_KEY_ID"]`) or
 
 - Covered: content added through the `Write`, `Edit`, `MultiEdit`, and
   `NotebookEdit` tools (the `content`, `new_string`, each edit's
-  `new_string`, and `new_source` fields) in a session where the hook is
+  `new_string`, and `new_source` fields), and the lines a Codex `apply_patch`
+  patch adds (each line that starts with `+`, in a new file or a hunk;
+  removed and context lines are not added text), in a session where the hook is
   configured and the host reports it loaded, when that content contains a
   PEM private-key header (RSA, EC, DSA, OPENSSH, ENCRYPTED, and PGP PRIVATE
   KEY BLOCK variants) or a literal credential matching the 27 patterns in
   `catpilot_guard/secrets.py`.
-- Not covered: file reads, prompts, other tools, other hosts, and files a
+- Not covered: a credential the edit completes from text already in the
+  file (only added text is checked, for `Edit` and `apply_patch` alike: a
+  value added under an existing `password =` line, or a key body added
+  under an existing PEM header), file reads, prompts, other tools, other
+  hosts, and files a
   person edits themselves.
 - Failure behavior: if the hook cannot parse its input, the input is over
   1 MiB, the `catpilot_guard` package or its `secrets` module is missing, or
@@ -291,9 +297,24 @@ timeout = 30
 
 Add the secret check the same way. Verified on Codex CLI 0.169.0 as
 project-level hooks on 2026-11-17, before `--host` existed
-([note](../evals/reports/2026.11.17-session-start-rules-verification.md)). The
-write check is not wired for Codex: its file edits arrive as `apply_patch`,
-whose input is a patch, not the `Write` and `Edit` fields the check reads.
+([note](../evals/reports/2026.11.17-session-start-rules-verification.md)).
+
+Codex sends file edits as `apply_patch`, with the patch in
+`tool_input.command`, whichever of `apply_patch`, `Edit` or `Write` the
+matcher names. `pretooluse-write-secrets.py` reads the lines the patch adds,
+split on newlines the way Codex's own patch parser splits them. Not verified
+on a host:
+
+```toml
+[[hooks.PreToolUse]]
+matcher = "^apply_patch$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'python3 "/path/to/catpilot-ai-guardrails/hooks/claude-code/pretooluse-write-secrets.py" --host codex'
+timeout = 30
+```
+
 Managed Codex hooks through `/etc/codex/requirements.toml` are not set up by
 `deploy/org/install.sh` yet.
 

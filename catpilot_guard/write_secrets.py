@@ -1,10 +1,11 @@
-"""Claude Code PreToolUse hook: deny a file write or edit that adds a literal credential or private-key block.
+"""PreToolUse hook for Claude Code and Codex: deny a file write or edit that adds a literal credential or private-key block.
 
 hooks/claude-code/pretooluse-write-secrets.py runs this module's main(); hooks/harness/secret_gate.py
 calls inspect_event(). The credential patterns come from the sibling secrets module.
 
-Covers the Write, Edit, MultiEdit, and NotebookEdit tools only. It checks the
-content being added against the literal credential patterns documented in the
+Covers Claude Code's Write, Edit, MultiEdit, and NotebookEdit tools and Codex's
+apply_patch, whose tool_input.command is a patch: the lines it adds are the
+lines that start with "+". It checks the content being added against the literal credential patterns documented in the
 secret-blocking component of catpilot-security-core (PEM private-key headers,
 API keys, tokens, database URLs with embedded passwords, and literal
 password/secret/token assignments) and returns a deny decision with a
@@ -73,6 +74,47 @@ def record_evidence(event: str, hook_event: object = None, host: str | None = No
         pass
 
 
+# Codex's file-edit tool. Its hook input reports tool_name "apply_patch" whichever of
+# apply_patch, Edit or Write the matcher named, with the patch in tool_input.command.
+APPLY_PATCH = "apply_patch"
+PATCH_FILE_HEADER = re.compile(r"\*\*\* (?:Add|Update|Delete) File: ")
+
+
+def patch_added_text(patch: str) -> list[str]:
+    """The text a Codex patch adds, one string per file.
+
+    In Codex's patch format (*** Begin Patch, *** Add File: / *** Update File: /
+    *** Delete File:, @@ hunks, *** End Patch) every added line starts with "+",
+    in a new file and in a hunk alike; removed lines start with "-" and context
+    lines with a space. Every "+" line counts wherever it sits, so a wrapper
+    around the patch (a heredoc, or missing Begin and End markers) hides nothing.
+    Removed and context lines are not added text: deleting a key is not a write
+    of one.
+
+    Lines are split the way Codex's own parser splits them, on "\n" only, with
+    a "\r" before it dropped. Python's str.splitlines() would also split on
+    "\r", form feed, U+2028 and other separators that Codex writes into the file
+    as ordinary characters, so text after one of them would be checked as a line
+    of its own, without its "+", and skipped.
+
+    All the lines a patch adds to one file are checked together, in order, as
+    one text. Removed lines, blank context lines and separate hunks can leave
+    added lines next to each other in the file, so a value split across them
+    (password: on one added line, the value on the next) is still one match.
+    The cost is a rare false positive when two added fragments that a kept
+    line separates happen to form a credential; a person resolves it.
+    """
+    sections: list[list[str]] = [[]]
+    for line in patch.split("\n"):
+        if line.endswith("\r"):
+            line = line[:-1]
+        if PATCH_FILE_HEADER.match(line):
+            sections.append([])
+        elif line.startswith("+"):
+            sections[-1].append(line[1:])
+    return ["\n".join(lines) + "\n" for lines in sections if lines]
+
+
 def added_text(tool_name: str, tool_input: object) -> list[str] | None:
     """The strings a supported tool would add to a file, or None for tools this hook does not cover."""
     if not isinstance(tool_input, dict):
@@ -88,6 +130,11 @@ def added_text(tool_name: str, tool_input: object) -> list[str] | None:
         parts = [e.get("new_string") for e in edits]
     elif tool_name == "NotebookEdit":
         parts = [tool_input.get("new_source")]
+    elif tool_name == APPLY_PATCH:
+        command = tool_input.get("command")
+        if not isinstance(command, str):
+            raise ValueError("missing patch")
+        parts = patch_added_text(command)
     else:
         return None
     if not all(isinstance(p, str) for p in parts):

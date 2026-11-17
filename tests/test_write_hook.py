@@ -180,5 +180,133 @@ class WriteHookTests(unittest.TestCase):
             gate_file_write(None)
 
 
+
+def patch(*body: str) -> str:
+    """A Codex apply_patch patch from its lines."""
+    return "\n".join(("*** Begin Patch",) + body + ("*** End Patch",)) + "\n"
+
+
+def codex_event(command, host_shape: bool = True) -> str:
+    value = {"tool_name": "apply_patch", "tool_input": {"command": command}}
+    if host_shape:
+        value.update({"session_id": "sess-patch", "hook_event_name": "PreToolUse", "turn_id": "turn-1", "cwd": str(ROOT), "model": "example-model"})
+    return json.dumps(value)
+
+
+KEY_LINES = tuple("+" + line for line in KEY_BLOCK.splitlines())
+
+
+class CodexApplyPatchTests(unittest.TestCase):
+    """Codex sends file edits as apply_patch, with the patch in tool_input.command."""
+
+    def assert_denied(self, proc: subprocess.CompletedProcess) -> None:
+        WriteHookTests.assert_denied(self, proc)
+
+    def assert_no_decision(self, proc: subprocess.CompletedProcess) -> None:
+        WriteHookTests.assert_no_decision(self, proc)
+
+    def test_denies_a_key_block_in_a_new_file(self):
+        self.assert_denied(run_hook(codex_event(patch("*** Add File: deploy/key.pem", *KEY_LINES))))
+
+    def test_denies_a_key_block_or_credential_added_in_a_hunk(self):
+        for added in (KEY_LINES, ('+GITHUB_TOKEN = "' + SYNTHETIC_GITHUB_TOKEN + '"',)):
+            with self.subTest(added=added[0][:20]):
+                proc = run_hook(codex_event(patch("*** Update File: app/config.py", "@@ def settings():", " DEBUG = False", "-TOKEN = None", *added)))
+                self.assert_denied(proc)
+                self.assertNotIn(SYNTHETIC_GITHUB_TOKEN, proc.stdout)
+
+    def test_denies_added_lines_however_the_patch_is_wrapped(self):
+        body = ("*** Add File: k.pem",) + KEY_LINES
+        wrapped = {
+            "heredoc": "apply_patch <<'PATCH'\n" + patch(*body) + "PATCH\n",
+            "no begin or end markers": "\n".join(body) + "\n",
+            "second of two files": patch("*** Add File: README.md", "+hello", *body),
+        }
+        for label, command in wrapped.items():
+            with self.subTest(label=label):
+                self.assert_denied(run_hook(codex_event(command)))
+
+    def test_removed_and_context_lines_are_not_added_text(self):
+        removed = tuple("-" + line for line in KEY_BLOCK.splitlines())
+        context = tuple(" " + line for line in KEY_BLOCK.splitlines())
+        for label, body in {
+            "deleting a key": ("*** Update File: k.pem", "@@", *removed),
+            "a key already in the file, as context": ("*** Update File: k.pem", "@@", *context, "+# rotated, see the secret store"),
+            "deleting the file": ("*** Delete File: k.pem",),
+            "a harmless new file": ("*** Add File: notes.md", "+# Notes", "+Read the key from the secret store at runtime."),
+            "placeholders and environment references": ("*** Add File: .env.example", "+STRIPE_API_KEY=REPLACE_ME", "+DATABASE_URL=${DATABASE_URL}"),
+        }.items():
+            with self.subTest(label=label):
+                self.assert_no_decision(run_hook(codex_event(patch(*body))))
+
+    def test_a_patch_that_is_not_text_fails_closed(self):
+        for command in (None, 42, ["*** Begin Patch"]):
+            with self.subTest(command=command):
+                proc = run_hook(codex_event(command))
+                self.assertEqual(proc.returncode, 2)
+                self.assertEqual(proc.stdout, "")
+
+    def test_evidence_names_apply_patch_and_never_the_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "evidence.jsonl"
+            env = {"CATPILOT_EVIDENCE_LOG": str(log)}
+            full_env = {k: v for k, v in os.environ.items() if k not in ("CATPILOT_EVIDENCE_LOG", "CATPILOT_EVIDENCE_SYSLOG")}
+            full_env.update(env)
+            proc = subprocess.run([sys.executable, str(HOOK), "--host", "codex"], input=codex_event(patch("*** Add File: secret-dir/key.pem", *KEY_LINES)),
+                                  capture_output=True, text=True, timeout=10, env=full_env)
+            self.assert_denied(proc)
+            (line,) = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual((line["event"], line["tool"], line["label"], line["host"], line["session_id"]), ("deny", "apply_patch", "private-key-block", "codex", "sess-patch"))
+            text = log.read_text(encoding="utf-8")
+            for fragment in ("SYNTHETIC-NOT-A-KEY", "secret-dir", "key.pem", "BEGIN RSA"):
+                self.assertNotIn(fragment, text)
+
+    def test_line_separators_codex_does_not_split_on_hide_nothing(self):
+        # Codex splits a patch on "\n" only; these are ordinary characters inside a line it writes.
+        for sep in ("\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            for hidden in ('GITHUB_TOKEN="' + SYNTHETIC_GITHUB_TOKEN + '"', KEY_BLOCK.splitlines()[0]):
+                with self.subTest(sep=repr(sep), hidden=hidden[:12]):
+                    self.assert_denied(run_hook(codex_event(patch("*** Add File: notes.md", "+# note" + sep + hidden))))
+                    self.assert_denied(run_hook(codex_event(patch("*** Update File: a.py", "@@", " x = 1", "+y = 2" + sep + hidden))))
+
+    def test_crlf_patches(self):
+        crlf = lambda text: text.replace("\n", "\r\n")
+        self.assert_denied(run_hook(codex_event(crlf(patch("*** Add File: k.pem", *KEY_LINES)))))
+        self.assert_no_decision(run_hook(codex_event(crlf(patch("*** Add File: notes.md", "+# Notes", "+hello")))))
+
+    def test_a_moved_file_with_an_added_key_is_denied(self):
+        self.assert_denied(run_hook(codex_event(patch("*** Update File: old.txt", "*** Move to: new.pem", "@@", " header", *KEY_LINES))))
+
+    def test_a_value_split_across_added_lines_is_still_one_match(self):
+        # Codex can write these halves next to each other: a removed line (including one that starts with ---),
+        # a blank context line, separate add-only chunks and *** End of File all leave them adjacent in the file.
+        value = '+  "hunter2hunter2"'
+        for label, between in {
+            "adjacent": (),
+            "a removed line": ("-old: 1",),
+            "a removed YAML separator": ("----",),
+            "a removed SQL comment": ("--- comment",),
+            "a blank context line": (" ",),
+            "an empty context line": ("",),
+            "two add-only chunks": ("@@",),
+            "end of file, then another chunk": ("*** End of File", "@@"),
+        }.items():
+            with self.subTest(between=label):
+                self.assert_denied(run_hook(codex_event(patch("*** Update File: config.yaml", "@@", "+password:", *between, value))))
+
+    def test_added_lines_in_one_file_are_checked_together_even_across_kept_text(self):
+        # The cost of the test above: two fragments a kept line separates can match together. A person resolves it.
+        self.assert_denied(run_hook(codex_event(patch(
+            "*** Update File: docs.md", "@@", "+See Authorization: Bearer", " unrelated", "+some_long_identifier_name_here"))))
+        # Lines added to different files are never joined.
+        self.assert_no_decision(run_hook(codex_event(patch(
+            "*** Update File: a.md", "@@", "+See Authorization: Bearer", "*** Update File: b.md", "@@", "+some_long_identifier_name_here"))))
+
+    def test_an_oversized_patch_exits_two(self):
+        proc = run_hook(codex_event(patch("*** Add File: big.txt", "+" + "a" * 1_100_000)))
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.stdout, "")
+
+
 if __name__ == "__main__":
     unittest.main()
