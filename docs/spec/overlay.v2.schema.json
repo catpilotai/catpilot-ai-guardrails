@@ -155,7 +155,7 @@
       "not": {
         "const": "0123456789abcdef0123456789abcdef"
       },
-      "description": "Machine-only. A random value of 32 to 128 lowercase hex characters, required with enforcement (OVERLAY_V2.md §6.3 rule 10). Set one with: python tools/validate_overlay.py salt FILE. The example's value is rejected here; the validator also rejects salts close to it and other hand-made ones (a repeated pattern, fewer than 8 different digits, a run of 8 consecutive digits)."
+      "description": "Machine-only. A random value of 32 to 128 lowercase hex characters, required with enforcement (OVERLAY_V2.md §6.3 rule 10). Set one with: python tools/validate_overlay.py salt FILE. The example's value is rejected here; the validator also rejects salts close to it and other hand-made ones (well-known published values, repeated or evenly stepping patterns, fewer than 8 different digits, runs of consecutive digits)."
     },
     "enforcement": {
       "type": "object",

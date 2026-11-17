@@ -413,7 +413,20 @@ class Rule10SaltTests(V2Case):
         "seven digits": ("1357913579b1d3579bd1357913b5d79b", "fewer than 8 different hex digits"),
         "an ascending run of 8": ("9e1c4a7f2b6d0e8c3a5f" + "3456789a" + "c1e0", "run of 8 or more consecutive hex digits"),
         "a descending run of 8": ("9e1c4a7f2b6d0e8c3a5f" + "fedcba98" + "1e30", "run of 8 or more consecutive hex digits"),
+        **{f"published value {n}": (value, "well-known published value") for n, value in enumerate(vo.SALT_DENYLIST)},
+        "a published value, then random digits": (vo.SALT_DENYLIST[2] + TEST_SALT, "well-known published value"),
+        "the first 32 digits of SHA-256 of nothing": (vo.SALT_DENYLIST[4][:32], "well-known published value"),
+        "bytes 00 01 02 03 04 05": ("9e1c4a7f2b6d0e8c3a5f" + "000102030405" + "d9b7e1c3f5a2", "6 or more bytes in a row that step evenly"),
+        "bytes 00 11 22 33 44 55": ("9e1c4a7f2b6d0e8c3a5f" + "001122334455" + "d9b7e1c3f5a2", "6 or more bytes in a row that step evenly"),
+        "bytes f0 e0 d0 c0 b0 a0": ("9e1c4a7f2b6d0e8c3a5f" + "f0e0d0c0b0a0" + "d9b7e1c3f5a2", "6 or more bytes in a row that step evenly"),
+        "bytes that repeat, odd length": ("9e1c4a7f2b6d0e8c" * 2 + "3", "repeats a pattern"),
+        "digits that step 3, 5, 9 over and over": ("03814925a36b47c58d69e7af8b09c1ad", "digits step in a repeating pattern"),
+        "digits that step 2, 7, 4, 13 over and over": ("57e2f18c9b2635c0df6a790413aebd48", "digits step in a repeating pattern"),
     }
+
+    def test_the_denylist_ignores_case_and_short_byte_runs_pass(self):
+        self.assertEqual(vo.salt_problem(vo.SALT_DENYLIST[3].upper()), "it is a well-known published value")
+        self.assertIsNone(vo.salt_problem("9e1c4a7f2b6d0e8c3a5f" + "0001020304" + "d9b7e1c3f5a26"))  # five bytes is not six
 
     def test_weak_salts_are_rejected_without_echoing_them(self):
         for label, (salt, fragment) in self.WEAK.items():
@@ -492,6 +505,25 @@ class SaltCommandTests(unittest.TestCase):
                     self.assertNotIn("\n", after.replace("\r\n", ""))
                 if label == "before enforcement":
                     self.assertLess(after.index("\nsalt:"), after.index("\nenforcement:"))
+
+    def test_replaces_a_crlf_salt_line_and_keeps_its_comment(self):
+        for label, ending in (("crlf", "\r\n"), ("lf", "\n")):
+            before = EXAMPLE_V2.read_text(encoding="utf-8").replace(
+                f'salt: "{vo.EXAMPLE_SALT}"', f'salt: "{vo.EXAMPLE_SALT}"  # rotate yearly').replace("\n", ending)
+            path = self.dir / f"{label}.yaml"
+            path.write_bytes(before.encode("utf-8"))
+            with self.subTest(ending=label):
+                code, _, err = self.run_salt(path)
+                self.assertEqual(code, 0, err)
+                after = path.read_bytes().decode("utf-8")
+                self.assertEqual(after.count("salt:"), before.count("salt:"))
+                self.assertEqual(len(after.split(ending)), len(before.split(ending)))
+                self.assertOnlySaltChanged(before, after)
+                if ending == "\r\n":
+                    self.assertNotIn("\n", after.replace("\r\n", ""))
+                (line,) = [line for line in after.split(ending) if line.startswith("salt:")]
+                self.assertRegex(line, r'^salt: "[0-9a-f]{64}"  # rotate yearly$')
+                self.assertIsNone(vo.salt_problem(vo.parse_yaml(after)["salt"]))
 
     def test_refuses_version_1_symlinks_and_salts_it_cannot_edit_in_one_line(self):
         v1 = self.dir / "v1.yaml"

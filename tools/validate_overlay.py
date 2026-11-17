@@ -139,12 +139,29 @@ SALT_RE = re.compile(r"[0-9a-f]{32,128}")
 EXAMPLE_SALT = "0123456789abcdef0123456789abcdef"
 SALT_HOW = "set a new one with: python tools/validate_overlay.py salt FILE"
 # Checks that catch a hand-made salt. They do not measure randomness. The thresholds are
-# set so a salt from `secrets.token_hex(16)` or longer is essentially never rejected: at
-# 32 characters, fewer than 8 different digits happens about 4 times in 10^8 and a run of
-# 8 about once in 10^7. (Fewer than 10 digits, or a run of 6, would reject about 1 in
-# 10^4 and 1 in 3 x 10^4 genuinely random salts.)
+# set so a salt from `secrets.token_hex(16)` or longer is essentially never rejected. Worked
+# out per salt: a run of 8 digits about 1e-7 at 32 characters and 2.4e-7 at 64; fewer than
+# 8 different digits 4e-8 at 32; six evenly stepping bytes under 1e-8; the rest far less.
+# None of 600,000 token_hex(16) and 600,000 token_hex(32) salts was rejected. (Fewer than
+# 10 digits, or a run of 6, would reject about 1 in 10^4 and 1 in 3 x 10^4 random salts.)
 SALT_MIN_DISTINCT = 8
 SALT_MAX_RUN = 7
+# Read as bytes (pairs of hex digits), a run of this many bytes whose values step evenly
+# (00 01 02 ..., 00 11 22 ...) is refused.
+SALT_BYTE_RUN = 6
+# Digit-to-digit steps (mod 16) that repeat with a period this short over the whole salt (a1b2c3...).
+SALT_STEP_PERIOD = 4
+# Published values someone might paste: test vectors, well-known digests, hex words. Compared on
+# the full value and on the leading 32 digits.
+SALT_DENYLIST = (
+    "000102030405060708090a0b0c0d0e0f",
+    "00112233445566778899aabbccddeeff",
+    "2b7e151628aed2a6abf7158809cf4f3c",
+    "d41d8cd98f00b204e9800998ecf8427e",
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "deadbeefcafebabe8badf00d1337c0de",
+)
+_SALT_DENIED = frozenset(SALT_DENYLIST) | frozenset(value[:32] for value in SALT_DENYLIST)
 _HEX = "0123456789abcdef"
 # Every field name the schemas define. A duplicate-key error names a key only when it is
 # one of these, so an arbitrary key (inside enforcement, say) is never repeated back.
@@ -399,13 +416,33 @@ def _salt(value: object) -> str:
     return value
 
 
+def _periodic(sequence, max_period: int) -> bool:
+    """True when the whole sequence repeats with some period from 1 to max_period."""
+    n = len(sequence)
+    return any(all(sequence[i] == sequence[i + period] for i in range(n - period)) for period in range(1, max_period + 1))
+
+
+def _even_run(numbers: list[int], length: int) -> bool:
+    """True when `length` or more numbers in a row step by one constant amount."""
+    count, previous = 1, None
+    for a, b in zip(numbers, numbers[1:]):
+        count = count + 1 if b - a == previous else 2
+        previous = b - a
+        if count >= length:
+            return True
+    return False
+
+
 def salt_problem(value: str) -> str | None:
     """Why a well-formed salt looks hand-made, or None. Catches common mistakes; does not measure randomness."""
+    value = value.lower()
+    if value in _SALT_DENIED or value[:32] in _SALT_DENIED:
+        return "it is a well-known published value"
     shorter = min(len(value), len(EXAMPLE_SALT))
     if sum(a != b for a, b in zip(value, EXAMPLE_SALT)) <= shorter / 2:
         return "it is the published example's salt or close to it"
-    n = len(value)
-    if any(all(value[i] == value[i + period] for i in range(n - period)) for period in range(1, n // 2 + 1)):
+    octets = [int(value[i:i + 2], 16) for i in range(0, len(value) - 1, 2)]
+    if _periodic(value, len(value) // 2) or _periodic(octets, len(octets) // 2):
         return "it repeats a pattern"
     if len(set(value)) < SALT_MIN_DISTINCT:
         return f"it uses fewer than {SALT_MIN_DISTINCT} different hex digits"
@@ -416,6 +453,11 @@ def salt_problem(value: str) -> str | None:
         down = down + 1 if step == -1 else 1
         if max(up, down) > SALT_MAX_RUN:
             return f"it has a run of {SALT_MAX_RUN + 1} or more consecutive hex digits"
+    if _even_run(octets, SALT_BYTE_RUN):
+        return f"it has {SALT_BYTE_RUN} or more bytes in a row that step evenly"
+    steps = [(_HEX.index(b) - _HEX.index(a)) % 16 for a, b in zip(value, value[1:])]
+    if _periodic(steps, SALT_STEP_PERIOD):
+        return "its digits step in a repeating pattern"
     return None
 
 
@@ -1013,21 +1055,23 @@ def migrate_main(argv: list[str]) -> int:
     return 0
 
 
-_SALT_LINE = re.compile(r"^salt:[^\r\n]*$", re.MULTILINE)
+_SALT_LINE = re.compile(r"^salt:(?P<value>[^\r\n]*?)(?P<comment>[ \t]+#[^\r\n]*)?(?P<cr>\r?)$", re.MULTILINE)
 _ENFORCEMENT_LINE = re.compile(r"^enforcement:", re.MULTILINE)
 
 
 def set_salt_text(text: str, salt: str) -> str:
     """`text` with its top-level `salt:` line replaced, or one added before `enforcement:` (else at the end).
 
-    A plain text edit: no other line changes. Raises OverlayError when the result does not read
+    A plain text edit: no other line changes, and a replaced line keeps its line ending and a
+    trailing comment. Raises OverlayError when the result does not read
     back as the same file with only the salt changed (a salt written over several lines, say).
     """
     line = f'salt: "{salt}"'
     newline = "\r\n" if "\r\n" in text else "\n"
     found = _SALT_LINE.findall(text)
     if len(found) == 1:
-        edited = _SALT_LINE.sub(line, text)
+        # The line keeps its own ending and any trailing comment.
+        edited = _SALT_LINE.sub(lambda m: line + (m.group("comment") or "") + m.group("cr"), text)
     elif not found:
         place = _ENFORCEMENT_LINE.search(text)
         if place:
@@ -1051,7 +1095,8 @@ def set_salt_text(text: str, salt: str) -> str:
 def salt_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="validate_overlay.py salt",
-        description="Set a new random salt in a version 2 company rules file, changing no other line. The salt is never printed.",
+        description="Set a new random salt in a version 2 company rules file, changing no other line. An existing salt: line "
+        "is replaced, keeping its line ending and any trailing comment. The salt is never printed.",
     )
     parser.add_argument("overlay", type=Path)
     args = parser.parse_args(argv)

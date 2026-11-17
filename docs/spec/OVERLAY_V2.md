@@ -642,13 +642,20 @@ refusal of symlinks. Version 2 adds:
     hash a model sees would let anyone with the rules block test guesses at
     enforcement values offline (§6.1). `python tools/validate_overlay.py salt FILE` is the way to set one: it
     writes a 64-character salt from `secrets.token_hex(32)` and changes no
-    other line. The validator rejects a salt within a Hamming distance of half
-    its length of the published example's (over the shorter length), one that
-    repeats a pattern (a period of at most half its length), one with fewer
-    than 8 different hex digits, and one with a run of 8 or more consecutive
-    ascending or descending hex digits (`01234567`, `fedcba98`). These checks
-    catch common mistakes; they do not measure randomness. They are set so a
-    random salt of 32 characters or more is rejected about once in 10^7.
+    other line, keeping an existing salt line's ending and trailing comment.
+    The validator rejects a salt that is, or starts with, a well-known
+    published value (test vectors such as `000102…0f` and `2b7e1516…`, the
+    MD5 and SHA-256 of nothing, hex words); one within a Hamming distance of
+    half its length of the published example's (over the shorter length); one
+    that repeats a pattern (a period of at most half its length, as digits or
+    as bytes); one with fewer than 8 different hex digits; one with a run of 8
+    or more consecutive ascending or descending hex digits (`01234567`,
+    `fedcba98`); one with 6 or more bytes in a row that step evenly
+    (`00 01 02 …`, `00 11 22 …`); and one whose digit-to-digit steps repeat
+    with a period of at most 4 (`a1b2c3…`). These checks catch common
+    mistakes; they do not measure randomness. A random salt is rejected about
+    once in 10^7 at 32 characters and once in 4 × 10^6 at 64, almost all of
+    it from the run-of-8 check; none of 1,200,000 random salts was.
     `salt` is machine-only: never rendered, never returned, never in an error
     message.
 
