@@ -676,11 +676,15 @@ class Rule9LintTests(V2Case):
         data = self.mutated(modes)
         self.assertValid(data)
         warnings = vo.lint_overlay(vo.validate_structure(data))
-        self.assertEqual(len(warnings), 3)
+        # protected_branch has a host verification note (2026-11-17), so block on it draws no warning.
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("(deploy-hosts): kind deploy_host is validated and compiled", warnings[0])
+        self.assertIn("(more-branches): mode ask differs by host", warnings[1])
+        self.assertIn("acts as block", warnings[1])
+        # Block on an enforced kind without a host verification note still warns.
+        with mock.patch.object(vo, "HOST_VERIFIED_KINDS", ()):
+            warnings = vo.lint_overlay(vo.validate_structure(data))
         self.assertIn("(protected-branches): mode block for kind protected_branch", warnings[0])
-        self.assertIn("(deploy-hosts): kind deploy_host is validated and compiled", warnings[1])
-        self.assertIn("(more-branches): mode ask differs by host", warnings[2])
-        self.assertIn("acts as block", warnings[2])
         # default_mode applies to a rule with no mode of its own.
         data = self.mutated(lambda d: (d["enforcement"].update(default_mode="ask"), d["enforcement"]["rules"][0].pop("mode")))
         self.assertTrue(any("(protected-branches): mode ask" in w for w in vo.lint_overlay(vo.validate_structure(data))))
@@ -690,7 +694,7 @@ class Rule9LintTests(V2Case):
         with tempfile.TemporaryDirectory() as tmp, pin_today(TODAY), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = vo.main([str(salted_copy(tmp))])
         self.assertEqual(code, 0, err.getvalue())
-        self.assertIn("WARNING: enforcement.rules[0] (protected-branches)", err.getvalue())
+        self.assertIn("WARNING: enforcement.rules[1] (deploy-hosts)", err.getvalue())
         self.assertIn("OK: overlay for Example Org", out.getvalue())
         self.assertIn("2 enforcement rules: `compile` writes them as the policy the company-rules hook reads", out.getvalue())
         for value in ("release/*", "hotfix/*", "apps.example.org", TEST_SALT):

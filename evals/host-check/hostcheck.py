@@ -815,7 +815,8 @@ def cmd_collect(args) -> int:
         "results_dir": str(results),
         "options": {"sessions": facts.get("sessions") == "yes", "keep": facts.get("keep") == "yes",
                     "control": facts.get("control") == "yes",
-                    "allow_copilot_config": facts.get("allow_copilot_config") == "yes"},
+                    "allow_copilot_config": facts.get("allow_copilot_config") == "yes",
+                    "only": facts.get("only") or None},
         "commit": {"head": facts.get("git_head"), "branch": facts.get("git_branch"), "dirty": facts.get("git_dirty") == "yes"},
         "versions": {
             "claude_code": facts.get("claude_version"),
