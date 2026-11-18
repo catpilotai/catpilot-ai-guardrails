@@ -259,6 +259,15 @@ writes its own evidence line. After the file's `expires_on`, every company
 rule acts in `monitor` until the file is renewed and recompiled: nothing is
 blocked on stale values, and each match still writes `would_deny`.
 
+The same compiled policy drives the pull-request check, `tools/pr_check.py`,
+which a company runs in its own CI
+([`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md#pull-request-check)). It applies
+these rules, with this hook's matching, to the workflows, composite actions,
+`package.json` scripts and deploy configuration files a pull request adds or
+changes, so a deploy a CI job would run, which this hook never sees, is
+checked before merge. There `monitor` annotates and passes, and `ask` fails the
+check as `block` does. Not yet run in a real repository's CI.
+
 ### Exact coverage
 
 - Kind `protected_branch`: a `git push` that force-pushes to (`--force`,
@@ -307,10 +316,11 @@ blocked on stale values, and each match still writes `would_deny`.
 
   A value `*.D` covers every name under `D`; any other value covers that host
   only. Each `deploy_host` rule is its own allow-list, so list every approved
-  host in one rule. Not covered: a deploy a script or CI job runs, a vendor not
-  listed here, a custom domain set in a project file (the service's own domain
-  is the target then), `ssh` sessions, `curl` uploads, container pushes and
-  cloud object copies.
+  host in one rule. Not covered: a deploy a script or CI job runs (the
+  pull-request check reads the workflows and scripts a pull request changes), a
+  vendor not listed here, a custom domain set in a project file (the service's
+  own domain is the target then), `ssh` sessions, `curl` uploads, container
+  pushes and cloud object copies.
 - The reason names the rule ids and the approved alternative, never a listed
   value, and never repeats the command. Evidence lines carry the rule id, the
   mode that applied and the policy's hash, never a command or a value.

@@ -1,0 +1,113 @@
+# Catpilot pull-request check: a TEMPLATE for your company's own repositories.
+#
+# This is not a workflow of catpilot-ai-guardrails, and it does not run here. It runs
+# tools/pr_check.py on every pull request: the files the pull request adds or changes that can
+# deploy or push (workflows, composite actions, package.json scripts, vercel.json, netlify.toml,
+# fly.toml, wrangler.toml/json/jsonc, firebase.json) are checked against the company's compiled
+# enforcement rules. A rule in monitor annotates and passes; ask and block fail the check. Exact
+# coverage, setup and limits: "Pull-request check" in docs/DEPLOY_ORG.md.
+#
+# To use it:
+#   1. Copy this file into a repository the pull requests under review cannot change (see
+#      "Who can change this file" below), or into .github/workflows/ of each repository.
+#   2. Replace the all-zero ref of the checker checkout with the full 40-character commit SHA of
+#      the catpilot-ai-guardrails release you reviewed. Never a branch or a tag: a branch moves,
+#      and a tag can be moved. Until you do, the checkout fails and so does the check.
+#   3. Compile the rules (python tools/validate_overlay.py compile rules.yaml --out policy.json)
+#      and store the file's content as the organization secret CATPILOT_POLICY_JSON, shared with
+#      the repositories this check runs in (and as a Dependabot secret, or Dependabot's pull
+#      requests fail the check).
+#   4. Require the job `catpilot-pr-check` before merging, in a ruleset or branch protection rule.
+#
+# Security design, step by step below:
+#   - The checker never comes from the pull request. catpilot-ai-guardrails is checked out at a
+#     pinned commit into its own directory, and tools/pr_check.py runs from there. The pull
+#     request is checked out into a separate directory and is only read: the checker parses its
+#     files and runs `git diff`. No script, package manager, build or action from it runs.
+#   - The policy never comes from the repository. It is the organization secret above, written to
+#     a file under the runner's temporary directory with umask 077, and removed at the end.
+#   - No secret, no pass. A pull request from a fork gets no secrets, and neither does a
+#     repository the secret is not shared with: the first step then fails the job, so the check
+#     fails closed instead of passing unchecked.
+#   - Every action is pinned to a full commit SHA. The token is read-only (contents: read), and
+#     neither checkout keeps credentials in the repository's git config.
+#   - Python runs isolated (-I: no PYTHON* variables, no user site, no current directory on the
+#     path), with PyYAML installed from hash-pinned wheels listed in the checker's own checkout.
+#   - Annotations name the rule, the file and the line, never a listed value, a command or a host.
+#
+# Who can change this file: on pull_request, GitHub runs a workflow as the pull request's own
+# branch has it, so anyone who can push a branch to the repository can edit or delete this file in
+# their pull request, and can also read the secret from a workflow of their own. Two ways to keep
+# the check out of the pull request's reach: run it as a required workflow from a central
+# repository (an organization ruleset with "Require workflows to pass before merging", which by
+# GitHub's documentation runs the workflow from that repository; not verified by Catpilot), or
+# require code-owner review for .github/workflows/ so a change to this file needs your approval.
+# Either way, the listed values are readable by anyone with write access to a repository the secret
+# is shared with: do not list anything that must stay secret from them.
+
+name: catpilot-pr-check
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  catpilot-pr-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Fails closed when the secret is not available: fork pull requests get no secrets.
+      - name: Write the compiled company policy from the organization secret
+        env:
+          CATPILOT_POLICY_JSON: ${{ secrets.CATPILOT_POLICY_JSON }}
+        run: |
+          if [ -z "${CATPILOT_POLICY_JSON}" ]; then
+            echo "::error title=Catpilot pull-request check::The CATPILOT_POLICY_JSON secret is not available to this run (a pull request from a fork gets no secrets, or the secret is not shared with this repository), so the company rules cannot be checked and the check fails."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "${CATPILOT_POLICY_JSON}" > "${RUNNER_TEMP}/catpilot-policy.json"
+
+      # The checker, at a pinned commit, in its own directory. Replace the all-zero SHA.
+      - name: Check out catpilot-ai-guardrails at a pinned commit (the checker)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: catpilotai/catpilot-ai-guardrails
+          ref: "0000000000000000000000000000000000000000" # the full SHA of the release commit you reviewed
+          path: catpilot-checker
+          persist-credentials: false
+
+      # The pull request head, read and never run. fetch-depth 0 so git can find the merge base.
+      - name: Check out the pull request head (read only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pull-request
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML from hash-pinned wheels (the checker's own list)
+        run: >-
+          python -I -m pip install --only-binary=:all: --require-hashes --no-deps
+          -r catpilot-checker/deploy/ci/requirements-pr-check.txt
+
+      # Values reach the script only through environment variables, never interpolated into it.
+      - name: Run the Catpilot pull-request check from the checker's checkout
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python -I catpilot-checker/tools/pr_check.py \
+            --policy "${RUNNER_TEMP}/catpilot-policy.json" \
+            --repo pull-request \
+            --base "${BASE_SHA}" \
+            --format github
+
+      - name: Remove the policy file
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/catpilot-policy.json"

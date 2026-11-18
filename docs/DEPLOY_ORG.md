@@ -296,6 +296,91 @@ CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/
 
 Verified in `block` and `monitor`, with a control run, on Claude Code 2.1.326, Codex CLI 0.169.0 and Copilot CLI 1.0.113; on Copilot the probe and the control passed in separate runs at one commit ([status](#verification-status)). The [host check](../evals/host-check/README.md) probes one `block` and one `monitor` rule on all three tools, with a control run after the uninstall.
 
+The same policy also runs in your repositories' CI, as the [pull-request check](#pull-request-check).
+
+## Pull-request check
+
+The hooks see what an agent runs on a person's machine. A pull request can change what runs somewhere else: a workflow that deploys, a `deploy` script in `package.json`, a host in a deploy configuration. `tools/pr_check.py` applies the same compiled policy to the files a pull request adds or changes, with the hook's own matching (`catpilot_guard/company_rules.py` and `catpilot_guard/deploy_targets.py`), and fails the pull request's check where a rule in `ask` or `block` fires. [`deploy/ci/catpilot-pr-check.yml`](../deploy/ci/catpilot-pr-check.yml) is a workflow template for your own repositories; it is not a workflow of this repository. Tested offline only, in temporary git repositories (`tests/test_pr_check.py`); not yet run in a real repository's CI ([status](#verification-status)).
+
+```bash
+python tools/pr_check.py --policy company-policy.json --repo . --base origin/main
+python tools/pr_check.py --policy company-policy.json --repo . --files package.json .github/workflows/deploy.yml
+```
+
+`--base REF` scans what `REF...HEAD` adds or changes; a rename counts as an addition, and deleted files are not scanned. `--files` scans the files named, relative to `--repo` or absolute inside it. `--format github` prints workflow-command annotations at the file and line; `text`, the default, prints `file:line: level: message`. Exit 0 passes, 1 fails, 2 is a usage or policy error, printed without values. Python 3.11 or later with PyYAML.
+
+**What it scans, exactly.** By file name; every other file is ignored.
+
+| File | What is read |
+| --- | --- |
+| `.github/workflows/*.yml`, `*.yaml` | Each step's `run:` script, every line, through the hook's matching for `protected_branch` and `deploy_host` rules. Each `${{ … }}` expression is read as a shell variable, so a destination taken from one (`scp dist deploy@${{ secrets.HOST }}:/srv`) is a destination the check cannot read, which no value covers, as in the hook. Each step's `uses:` naming a deploy action in the table below |
+| `action.yml`, `action.yaml`, anywhere | The same, for a composite action's `runs.steps` |
+| `package.json`, anywhere | Each value under `scripts`, as a command |
+| `vercel.json` | Literal host names in `alias` and `domains`; `buildCommand` and `installCommand` as commands. The file alone implies no `vercel.app` deploy |
+| `netlify.toml` | `build.command` and each `context.<name>.command`, as commands. The file alone implies no deploy |
+| `fly.toml`, `fly.<name>.toml` | `app = "x"`: the host `x.fly.dev` |
+| `wrangler.toml`, `wrangler.json`, `wrangler.jsonc` | At the top level and under each `env.<name>`: each `route` or `routes` pattern's literal host (`*.example.org/*` as the wildcard `*.example.org`; `*example.org/*` as `example.org` and `*.example.org`), else its `zone_name`, else a host the check cannot read; `workers_dev = true`: the suffix `workers.dev`. Wrangler's default of `workers_dev` when no route is set is not inferred |
+| `firebase.json` | `hosting.site`, or each `site` in a `hosting` list: the host `<site>.web.app`; every `predeploy` and `postdeploy` command |
+
+Deploy actions a step can name in `uses:`, at any version:
+
+| Action | Target |
+| --- | --- |
+| `peaceiris/actions-gh-pages` | `github.io`, or the `cname` input instead when it is a literal host name |
+| `actions/deploy-pages`, `JamesIves/github-pages-deploy-action` | `github.io` |
+| `amondnet/vercel-action`, `BetaHuhn/deploy-to-vercel-action` | `vercel.app`, plus each literal host name in `alias-domains` or `ALIAS_DOMAINS` |
+| `nwtgck/actions-netlify`, `South-Paw/action-netlify-deploy`, `jsmrcaga/action-netlify-deploy` | `netlify.app` |
+| `netlify/actions/cli` | its `args`, read as a `netlify` command: `deploy` is `netlify.app` |
+| `cloudflare/wrangler-action` | its `command`, read as a `wrangler` command, `deploy` when absent: `workers.dev`, or `pages.dev` for `pages deploy` |
+| `cloudflare/pages-action` | `pages.dev` |
+| `FirebaseExtended/action-hosting-deploy` | `web.app` |
+| `superfly/flyctl-actions` | its `args`, read as a `flyctl` command: `deploy` is `fly.dev`; `superfly/flyctl-actions/setup-flyctl` deploys nothing |
+| `appleboy/scp-action` (`host`), `burnett01/rsync-deployments` and `easingthemes/ssh-deploy` (`remote_host`) | the named host when it is a literal host name; otherwise a host the check cannot read |
+
+A `with:` input counts only when it is a literal host name. An expression or a secret gives nothing for a domain input, and a destination the check cannot read for a copy action. When a CLI action's arguments hold an expression and read as no deploy, the service's own domain is assumed.
+
+**Modes.**
+
+| Mode | Annotation | Check |
+| --- | --- | --- |
+| `monitor` | warning | passes |
+| `ask` | error | fails: nobody can be asked in a pull-request check (decision 2) |
+| `block` | error | fails |
+
+After the policy's `expires_on`, every rule acts in `monitor` until the rules are renewed and recompiled, as in the hook. A scanned file the check cannot read (it does not parse, it is a symbolic link or sits under one, it is not UTF-8, or it is larger than 1 MiB) gets an annotation with a fixed text, "could not read this file", and fails the check when a rule that file could reveal is in `ask` or `block`; otherwise it is a warning. A deploy configuration (`fly.toml`, `wrangler.*`) can reveal only `deploy_host` rules; the other scanned files, both kinds.
+
+**What an annotation says.** The rule id, a fixed explanation for its kind, and the approved alternative (`use_instead`), at the file and the line that fired it: the script line, the `uses:` line or the key, or line 1. Never a listed value, the matched command or the host ([spec](spec/OVERLAY_V2.md) §4). GitHub shows a limited number of annotations per step; the job log lists every one.
+
+**Set it up.**
+
+1. Compile the rules: `python tools/validate_overlay.py compile rules.yaml --out company-policy.json`.
+2. Store the file's content as an organization secret named `CATPILOT_POLICY_JSON`, shared with the repositories to check, and as a Dependabot secret if Dependabot opens pull requests there. GitHub limits a secret to 48 KB, less than the 256 KiB a policy may have; a policy that does not fit needs a route this package does not provide.
+3. Copy `deploy/ci/catpilot-pr-check.yml`. Replace the all-zero `ref` of the `catpilot-ai-guardrails` checkout with the full commit SHA of the release you reviewed; until you do, the checkout and so the check fail.
+4. Require it before merging. Preferably, as a required workflow: an organization ruleset with "Require workflows to pass before merging", naming the file in a central repository at a pinned ref. By GitHub's documentation that runs the workflow from the central repository, so a pull request cannot change it; not verified by Catpilot. Otherwise commit it to each repository's `.github/workflows/`, require the `catpilot-pr-check` job ("Require status checks to pass" in branch protection or a ruleset), and require code-owner review for `.github/workflows/`.
+
+**Threat model.** The check is for a pull request that adds or changes a deploy or a force push the company's rules do not allow. The template keeps the pull request away from what checks it:
+
+- The checker never comes from the pull request. `catpilot-ai-guardrails` is checked out at a pinned commit into its own directory, and `tools/pr_check.py` runs from there; the pull request is checked out beside it, at its head, with enough history for the merge base, and is only read. Its YAML is read with PyYAML's safe composer, its TOML with `tomllib`, its JSON with `json`, and the changed files come from `git diff --name-only --no-ext-diff --no-textconv`. No script, package manager, build or action from the pull request runs.
+- The policy never comes from the repository. It is the organization secret, written under the runner's temporary directory with `umask 077` and removed at the end; `pr_check.py` refuses a policy inside `--repo`, a symbolic link, and anything the hook's parser refuses.
+- No secret, no pass. A pull request from a fork gets no secrets, and the first step then fails the job.
+- Every action is pinned to a full commit SHA (the same `actions/checkout` and `actions/setup-python` commits this repository's own workflows use), the token is `contents: read`, neither checkout keeps its credentials, Python runs with `-I`, and PyYAML comes from hash-pinned wheels listed in the checker's checkout (`deploy/ci/requirements-pr-check.txt`).
+
+What it does not protect against:
+
+- On `pull_request`, GitHub runs a workflow as the pull request's branch has it. Anyone who can push a branch to the repository can change or delete a template committed there, unless it runs as a required workflow from another repository or the workflow directory needs code-owner review.
+- Anyone who can push a workflow to a repository the secret is shared with can read the secret, and with it the listed values, as anyone can read the policy on a managed machine. Do not list anything that must stay secret from people with write access.
+- People who can bypass the ruleset or branch protection, and pull requests from forks, which fail by design until a maintainer takes the change onto a branch of the repository.
+
+**What it does not cover.**
+
+- Files the pull request does not add or change: an unchanged reusable workflow, composite action or script that a changed file calls.
+- What a command calls: `npm run deploy` is not followed into `package.json`, nor `./deploy.sh` into the script.
+- Reusable workflows and actions from other repositories, deploy actions not in the table, and Docker actions.
+- A bare force push, or a push to `HEAD`, in a workflow: the branch it runs on is not something the check can read, and the hook reads the checked-out branch instead.
+- The built-in protected branches, which are the hooks' own list: the check applies company rules only.
+- Merge queues: a required check must also report on `merge_group`, which the template does not handle.
+- Everything the hook does not cover ([exact coverage](../hooks/README.md#exact-coverage-3)).
+
 ## Check the company rules in a session
 
 `verify.sh` runs the session-start script and each registered command directly, so, as with the hooks, only a session shows that a tool loads them. The check is a session with no skill, no MCP server and no project instruction file, so that only the rules at session start can answer. On a test machine, install with `--skills ""` (no skills) and a server URL that does not resolve, such as `https://mcp.invalid/mcp`, from a test copy of your rules with one distinctive value, so an answer from the rules cannot be a guess. Start each tool in an empty directory, with a configuration directory that holds only its sign-in (`CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex), and confirm with `/mcp` and `/skills` that nothing else is loaded. Then:
@@ -377,6 +462,7 @@ What a pilot report reads from it: denials per hook per day (the hooks were in f
 | Codex CLI, `SessionStart` hook through `/etc/codex/requirements.toml` | verified on 0.169.0 with no trust step: a session answered the same question with the two distinctive values. With the rules expired, the host showed the warning, and the model named no approved host and named the owner. Each session wrote a `rules_delivered` or `rules_expired` line with `host` `codex`. `/hooks` was not run, and only the `startup` source ran ([note](../evals/reports/2026.11.17-session-start-rules-verification.md)) | 2026-11-17 | A maintainer installed and ran the sessions; Catpilot recorded |
 | Claude Code and Codex CLI, the company-rules hook (`install.sh --overlay` with enforcement rules) | verified on Claude Code 2.1.326 and Codex CLI 0.169.0 on macOS through the host check: with a `block` and a `monitor` `protected_branch` rule on branches off the built-in list, the hook denied the force push the `block` rule covers and the tool's remote branch did not move; it let the `monitor` push through with a `would_deny` line and the branch moved; with no hook installed, both pushes ran (control). The company-rule evidence lines carried the rule id, the mode and the policy hash beside the usual envelope (event, hook, host, session id, tool, time), and no command, branch or rules value. `ask` and `deploy_host` not run ([note](../evals/reports/2026.11.17-host-check-company-rules.md)) | 2026-11-17 | The maintainer ran the host check; Catpilot recorded |
 | GitHub Copilot CLI, policy hooks in `/etc/github-copilot/policy.d/` (`install.sh`), the company-rules hook included | verified on Copilot CLI 1.0.113 on macOS through the host check (one full run at `d605495`, then two Copilot-only reruns at `4cf50c1` with the corrected kit): Copilot loaded the policy file and reported `Denied by preToolUse hook:` with the hook's reason for two force pushes to `main`, an `rm -rf` of a home-directory path, a `terraform` auto-approve apply, AWS's documentation key in a command, a synthetic key block written with `apply_patch`, and the force push a company `block` rule covers (remote branch unmoved); it let the push a `monitor` rule covers through with a `would_deny` line, and the branch moved; with no hooks installed both pushes ran (control). At `4cf50c1` the probe and the control passed in different runs, because the model declined some items in the other session each time. Evidence lines labeled `copilot-cli` ([note](../evals/reports/2026.11.17-host-check-company-rules.md)) | 2026-11-17 (reruns 2026-11-18 UTC) | The maintainer ran the host check; Catpilot recorded |
+| Pull-request check (`tools/pr_check.py`, the `deploy/ci/catpilot-pr-check.yml` template) | not yet run in a repository's CI; tested offline in temporary git repositories (`tests/test_pr_check.py`) | | |
 | Evidence log, hooks and server | unit and stdio contract tests in `tests/` | 2026-09-20 | Catpilot |
 
 A row moves to "verified" when a person has run the steps on a real machine and recorded the transcript or screenshot under `evals/reports/`, the same standard as the tested-runtimes table.
