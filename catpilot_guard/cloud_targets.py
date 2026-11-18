@@ -6,8 +6,8 @@ wrappers such as sudo, env and timeout, and `bash -c` bodies). It also reads the
 readonly. It looks through package runners as catpilot_guard/deploy_targets.py does (npx, bunx, pnpx, `npm exec`,
 `pnpm dlx`/`exec`, `yarn dlx`/`exec`, `npx -c` strings; `npx aws-cdk` is cdk), and through the runners
 registry_targets.runner_split names, as the package_registry reader does: `python -m MODULE` (`python -m awscli` is
-aws), `poetry run`, `uv run`, `uv tool run`, `uvx`, `pipenv run` and `bundle exec`, past their own options. It returns
-one Target for each account the command names explicitly. A command that names none is no target: `aws s3 ls`, `gcloud
+aws), `poetry run`, `uv run`, `uv tool run`, `uvx`, `pipenv run` and `bundle exec`, past their own options. A command
+is named without a Windows `.exe`. It returns one Target for each account the command names explicitly. A command that names none is no target: `aws s3 ls`, `gcloud
 run deploy` and `az group list` act in the account of the active profile or configuration, which the hook does not
 read. A Target is one of:
 
@@ -16,29 +16,33 @@ read. A Target is one of:
                `"arn:aws:iam::$(cat id):role/x"`, `arn:${PARTITION}:iam::...`, `--role-arn $ROLE`), a GCP project given
                by number or in any form a project id cannot take, an Azure subscription given by name, an account
                option whose value is not an account id, an account option last in the command with nothing after it
-               (xargs or stdin supplies the value: `xargs gcloud run deploy --project`)
+               (xargs or stdin supplies the value: `xargs gcloud run deploy --project`), a runner with more than three
+               options this module does not know before its command
 
 What is recognized, exactly:
 
   aws, sam, cdk   every ARN in any argument, whatever option or JSON document it sits in: partitions aws, aws-cn,
                   aws-us-gov and every other aws-*, with a 12-digit account field (an empty field, `aws` for an
-                  AWS-owned resource, and `*` name none); an ARN with a variable as its partition or in its account
-                  field is unknown, and so is one with a variable in its service or region and no 12-digit account
+                  AWS-owned resource, and `*` name none); an ARN with a variable anywhere in its partition or in its
+                  account field is unknown, and so is one with a variable in its service or region and no 12-digit account
                   field (the variable may hold colons, or spaces the pattern stops at)
   aws             --account-id, --aws-account-id, --source-account (`-` names none), --account-ids (each id, comma- or
                   space-separated), as `OPT X` or `OPT=X`, and their abbreviations, which the AWS CLI's parser takes
                   (down to `--acc`, `--aws`, `--source-ac`; `--account-i` is read as --account-ids); --role-arn (down
                   to `--role-a`) holding a variable is unknown; `aws configure set [profile.NAME.]sso_account_id ID`,
-                  and `role_arn` holding a variable
+                  and `role_arn` holding a variable; shorter abbreviations the CLI also takes (`--a`, `--ac`, `--aw`,
+                  `--sou`), but only for a value of 12 digits, since another option may share them
   cdk             an environment argument `aws://ACCOUNT/REGION` (`unknown-account` names none)
   gcloud          --project and --billing-project, as `OPT X` or `OPT=X`; `gcloud config set project|core/project X`;
                   `gcloud [alpha|beta|preview] projects SUBCOMMAND PROJECT_ID` for every subcommand but list and search
-  gsutil          -u PROJECT before the command (the requester-pays project); `gsutil mb|ls|hmac|kms -p PROJECT`
+  gsutil          -u PROJECT before the command (the requester-pays project); `gsutil mb|ls|hmac|kms -p PROJECT`;
+                  long options may come between the short ones (`gsutil mb --retention 1d -p PROJECT`)
   bq              --project_id X, --project_id=X (also with one dash, as absl flags take it)
-  az              --subscription X, --subscription=X, abbreviated down to `--sub`, which az's parser takes;
+  az              --subscription X, --subscription=X, abbreviated down to `--sub`, which az's parser takes, and
+                  to `--s` and `--su` for a subscription GUID only;
                   --subscription-id; --subscriptions (each one); `az account set -s|-n|--name X` (`--name`
                   abbreviated down to `--n`); the /subscriptions/<id>/ of a resource id or management URL in any
-                  argument
+                  argument, also percent-decoded (`/subscriptions%2F<id>`)
   assignments     CLOUDSDK_CORE_PROJECT, GOOGLE_CLOUD_PROJECT (gcp); AZURE_SUBSCRIPTION_ID, ARM_SUBSCRIPTION_ID (azure);
                   the ARN in AWS_ROLE_ARN (aws)
 
@@ -58,22 +62,23 @@ Standard library only. Python 3.8+.
 """
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
+from urllib.parse import unquote
 
 from .deploy_targets import RUNNERS, _call_string, _tool
-from .destructive import ASSIGNMENT, _simple_commands
-from .registry_targets import runner_split
+from .destructive import ASSIGNMENT
+from .registry_targets import command_name, runner_split, split_command
 
 ACCOUNT = "account"
 UNKNOWN = "unknown"
 
 ARN_START = re.compile(r"arn:", re.IGNORECASE)
 ARN = re.compile(r"arn:aws(?:-[a-z]+)*:([^:\s\"',]*):([^:\s\"',]*):([^:\s\"',]*):", re.IGNORECASE)
-# An ARN the pattern above cannot read: a variable as its partition (`arn:${PARTITION}:...`), or a variable in its
-# service, region or account field that holds what that pattern stops at (`arn:aws:iam::$(cat id):role/x`).
-VARIABLE_ARN = re.compile(r"arn:(?:[$`]|aws(?:-[a-z]+)*:(?:[^:\"',]*:){0,2}[^:\"',]*?[$`])", re.IGNORECASE)
+# An ARN the pattern above cannot read: a variable anywhere in its partition (`arn:${PARTITION}:...`, `arn:aws-${P}:`),
+# or a variable in its service, region or account field that holds what that pattern stops at
+# (`arn:aws:iam::$(cat id):role/x`).
+VARIABLE_ARN = re.compile(r"arn:(?:[^:\"',]*?[$`]|aws(?:-[a-z]+)*:(?:[^:\"',]*:){0,2}[^:\"',]*?[$`])", re.IGNORECASE)
 CDK_ENVIRONMENT = re.compile(r"^aws://([^/]*)/")
 AZURE_SUBSCRIPTION_PATH = re.compile(r"/subscriptions/([^/\s\"',?]+)", re.IGNORECASE)
 AWS_ID = re.compile(r"[0-9]{12}")
@@ -86,6 +91,11 @@ AZURE_GUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 AWS_ACCOUNT_OPTIONS = {"--account-id": "--account-id", "--aws-account-id": "--aws", "--source-account": "--source-ac"}
 AWS_ACCOUNT_LIST_OPTIONS = {"--account-ids": "--acc"}  # and every abbreviation of --account-id, which may be either
 AWS_ROLE_ARN = {"--role-arn": "--role-a"}
+# Shorter abbreviations the parsers also take where the command has no other option with that prefix (`--a`, `--ac`,
+# `--aw`, `--s`, `--su`). They may be another option's abbreviation too, so only an account-shaped value (12 digits, a
+# GUID) is read from them.
+AWS_SHORT_ACCOUNT_OPTIONS = {"--account-ids": "--a", "--aws-account-id": "--a", "--source-account": "--sou"}
+AZ_SHORT_SUBSCRIPTION_OPTIONS = {"--subscription": "--s"}
 AWS_CONFIG_KEYS = ("sso_account_id", "role_arn")
 GCLOUD_PROJECT_OPTIONS = {"--project": "--project", "--billing-project": "--billing-project"}
 BQ_PROJECT_OPTIONS = {"--project_id": "--project_id", "-project_id": "-project_id"}
@@ -101,6 +111,7 @@ GCLOUD_VALUE_OPTIONS = {"--project", "--billing-project", "--account", "--config
                         "--filter", "--limit", "--page-size", "--sort-by"}
 GCLOUD_TRACKS = {"alpha", "beta", "preview"}
 GSUTIL_VALUE_LETTERS = "ohui"
+GSUTIL_LONG_VALUE_OPTIONS = {"--impersonate-service-account", "--trace-token", "--perf-trace-token"}
 AZ_VALUE_OPTIONS = {"--subscription", "-s", "-n", "--name", "-o", "--output", "--query", "-g", "--resource-group"}
 EXPORTERS = {"export", "declare", "typeset", "local", "readonly"}
 GCP_VARIABLES = {"CLOUDSDK_CORE_PROJECT", "GOOGLE_CLOUD_PROJECT"}
@@ -153,13 +164,15 @@ def _arns(text: str) -> list:
     return out
 
 
-def _named(name: str, options: dict, exclude: tuple = ()) -> bool:
-    """Whether an argument names one of these options, exactly or abbreviated down to the shortest form given."""
-    return name not in exclude and any(name.startswith(shortest) and canonical.startswith(name)
-                                       for canonical, shortest in options.items())
+def _named(name: str, options: dict, exclude=()) -> bool:
+    """Whether an argument names one of these options, exactly or abbreviated down to the shortest form given. exclude
+    is a tuple of names, or a function of the name that is true for names to leave out."""
+    if callable(exclude) and exclude(name) or not callable(exclude) and name in exclude:
+        return False
+    return any(name.startswith(shortest) and canonical.startswith(name) for canonical, shortest in options.items())
 
 
-def _option_values(args: list, options: dict, many: bool = False, exclude: tuple = ()) -> list:
+def _option_values(args: list, options: dict, many: bool = False, exclude=()) -> list:
     """The values of these options ({name: shortest abbreviation}): `OPT X` or `OPT=X`; with many, every argument up to
     the next option. None for an option with nothing after it (xargs or stdin supplies the value). Stops at `--`."""
     out, i = [], 0
@@ -224,6 +237,11 @@ def _aws(args: list) -> list:
     for value in _option_values(args, AWS_ROLE_ARN):
         if value is None or _has_variable(value):
             out.append(Target(UNKNOWN))
+    strict = lambda name: _named(name, AWS_ACCOUNT_OPTIONS) or _named(name, AWS_ACCOUNT_LIST_OPTIONS)  # noqa: E731
+    for value in _option_values(args, AWS_SHORT_ACCOUNT_OPTIONS, many=True, exclude=strict):
+        for one in re.split(r"[,\s]+", value or ""):
+            if AWS_ID.fullmatch(one):
+                out.append(Target(ACCOUNT, "aws:" + one))
     words = _positionals(args, AWS_VALUE_OPTIONS)
     if words[:2] == ["configure", "set"] and len(words) >= 3 and words[2].split(".")[-1] in AWS_CONFIG_KEYS:
         value = words[3] if len(words) >= 4 else None
@@ -262,11 +280,21 @@ def _gcloud(args: list) -> list:
     return out
 
 
-def _gsutil_letters(args: list, letters_with_value: str, wanted: str) -> tuple:
-    """getopt-style short options at the start of args: (the value of the option `wanted`, or "" when it is last with
-    nothing after it, or None when absent; the index of the first word that is not an option)."""
+def _gsutil_letters(args: list, letters_with_value: str, wanted: str, long_values: set | frozenset = frozenset(),
+                    guess: bool = False) -> tuple:
+    """getopt-style options at the start of args, short and long interleaved: (the value of the short option `wanted`,
+    or "" when it is last with nothing after it, or None when absent; the index of the first word that is not an
+    option). A long option in long_values takes the next word; with guess, so does any other long option followed by a
+    word that is not an option (`--retention 1d`), which reads further rather than less."""
     i = 0
-    while i < len(args) and args[i].startswith("-") and len(args[i]) > 1 and not args[i].startswith("--"):
+    while i < len(args) and args[i].startswith("-") and len(args[i]) > 1:
+        if args[i] == "--":
+            return None, i + 1
+        if args[i].startswith("--"):
+            takes = "=" not in args[i] and (args[i] in long_values or
+                                            guess and i + 1 < len(args) and not args[i + 1].startswith("-"))
+            i += 2 if takes else 1
+            continue
         letters = args[i][1:]
         for k, letter in enumerate(letters):
             if letter in letters_with_value:
@@ -284,7 +312,7 @@ def _gsutil_letters(args: list, letters_with_value: str, wanted: str) -> tuple:
 def _gsutil(args: list) -> list:
     """gsutil's -u before the command, and -p after mb, ls, hmac and kms: getopt style, so in a cluster (`-mu PROJECT`)
     or attached (`-uPROJECT`)."""
-    value, command_at = _gsutil_letters(args, GSUTIL_VALUE_LETTERS, "u")
+    value, command_at = _gsutil_letters(args, GSUTIL_VALUE_LETTERS, "u", GSUTIL_LONG_VALUE_OPTIONS)
     if value is not None:
         return [_read(value or None, gcp_project)]
     words = args[command_at:]
@@ -292,7 +320,7 @@ def _gsutil(args: list) -> list:
         rest = words[1:]
         if words[0] in ("hmac", "kms") and rest and not rest[0].startswith("-"):
             rest = rest[1:]  # the subcommand: hmac create, kms authorize
-        value, _ = _gsutil_letters(rest, GSUTIL_PROJECT_COMMANDS[words[0]], "p")
+        value, _ = _gsutil_letters(rest, GSUTIL_PROJECT_COMMANDS[words[0]], "p", guess=True)
         if value is not None:
             return [_read(value or None, gcp_project)]
     return []
@@ -304,15 +332,19 @@ def _bq(args: list) -> list:
 
 def _az(args: list) -> list:
     out = [_read(v, azure_subscription) for v in _option_values(args, AZ_SUBSCRIPTION_OPTIONS)]
+    for value in _option_values(args, AZ_SHORT_SUBSCRIPTION_OPTIONS, exclude=lambda name: _named(name, AZ_SUBSCRIPTION_OPTIONS)):
+        if value and AZURE_GUID.fullmatch(value.lower()):
+            out.append(Target(ACCOUNT, "azure:" + value.lower()))
     for value in _option_values(args, {"--subscriptions": "--subscriptions"}, many=True):  # az graph query
         out.append(_read(value, azure_subscription))
     words = _positionals(args, AZ_VALUE_OPTIONS)
     if words[:2] == ["account", "set"]:
         out.extend(_read(v, azure_subscription) for v in _option_values(args, AZ_ACCOUNT_SET_OPTIONS))
     for arg in args:
-        for match in AZURE_SUBSCRIPTION_PATH.finditer(arg):
-            value = match.group(1)
-            out.append(Target(UNKNOWN) if _has_variable(value) else azure_subscription(value))
+        for text in dict.fromkeys((arg, unquote(arg))):  # also as decoded: /subscriptions%2F<id>
+            for match in AZURE_SUBSCRIPTION_PATH.finditer(text):
+                value = match.group(1)
+                out.append(Target(UNKNOWN) if _has_variable(value) else azure_subscription(value))
     return out
 
 
@@ -331,14 +363,16 @@ def _assignment_targets(assignment: str) -> list:
 
 
 def _argv_targets(argv: list, depth: int) -> list:
-    name = os.path.basename(argv[0]).lower()
+    name = command_name(argv[0])
+    argv = [name] + list(argv[1:])
     if depth < 3 and (name in RUNNERS or (name == "npm" and argv[1:2] in (["exec"], ["x"]))):
         call = _call_string(argv[2:] if name == "npm" else argv[1:])
         if call is not None:  # npx -c 'aws ...' runs the string as a shell command
             return cloud_targets(call, depth=depth + 1)
     split = runner_split(name, list(argv[1:])) if depth < 4 else None
     if split is not None:  # python -m awscli, poetry|uv|pipenv run, uv tool run, uvx, bundle exec
-        return [t for inner in split[1] for t in _argv_targets(inner, depth + 1)]
+        out = [Target(UNKNOWN)] if split[2] else []  # more unknown runner options than are read both ways
+        return out + [t for inner in split[1] for t in _argv_targets(inner, depth + 1)]
     name, args = _tool(argv)
     name = PACKAGES.get(name, name)
     out = []
@@ -362,12 +396,13 @@ def _argv_targets(argv: list, depth: int) -> list:
     return out
 
 
-def cloud_targets(command: str, cwd: str | None = None, depth: int = 0) -> list:
+def cloud_targets(command: str, cwd: str | None = None, depth: int = 0, split: tuple | None = None) -> list:
     """Every account the command names, in order: each command's own, then the assignments the split dropped. cwd is
-    accepted for symmetry with deploy_targets and not used."""
+    accepted for symmetry with deploy_targets and not used. split is registry_targets.split_command(command), when the
+    caller has it."""
     targets: list = []
-    assignments: list = []
-    for argv in _simple_commands(command, assignments=assignments):
+    commands, assignments = split if split is not None else split_command(command)
+    for argv in commands:
         targets.extend(_argv_targets(argv, depth))
     for assignment in assignments:
         targets.extend(_assignment_targets(assignment))

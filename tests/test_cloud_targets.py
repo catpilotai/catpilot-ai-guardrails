@@ -214,6 +214,52 @@ class CloudTargetTests(unittest.TestCase):
                 self.assertEqual(targets(command), [(UNKNOWN, None)])
         self.assertEqual(targets("gcloud projects describe --help"), [])
 
+    # Second review of PR #135 (564d238).
+
+    def test_shorter_abbreviations_read_only_account_shaped_values(self):
+        cases = {
+            "aws organizations describe-account --ac 999988887777": "aws:999988887777",
+            "aws organizations describe-account --a 999988887777": "aws:999988887777",
+            "aws quicksight list-users --aw 999988887777 --namespace default": "aws:999988887777",
+            "aws quicksight list-users --a=999988887777 --namespace default": "aws:999988887777",
+            "aws lambda add-permission --function-name f --sou 999988887777 --action x": "aws:999988887777",
+            "az group list --su %s" % GUID: "azure:" + GUID,
+            "az group list --s %s" % GUID.upper(): "azure:" + GUID,
+        }
+        for command, name in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(ACCOUNT, name)])
+        # Another option's abbreviation with a value that is not an account names nothing.
+        for command in ("aws s3api put-object --bucket b --key k --ac private", "aws ec2 run-instances --a ami-123",
+                        "aws lambda add-permission --function-name f --sou s3 --action x",
+                        "az vm create -n x --s Standard_B1s", "az vm list --su prod"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
+
+    def test_a_variable_anywhere_in_the_partition_is_unknown(self):
+        for command in ('aws lambda create-function --function-name f --role "arn:aws-${P}" --runtime python3.12',
+                        'aws lambda create-function --function-name f --role "arn:a${P}" --runtime python3.12',
+                        'aws lambda create-function --function-name f --role "arn:aws-`echo cn`:iam::1:role/x"'):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(UNKNOWN, None)])
+
+    def test_gsutil_long_options_between_the_short_ones(self):
+        for command in ("gsutil mb --retention 1d -p acme-other-1 gs://b", "gsutil mb --pap enforced -p acme-other-1 gs://b",
+                        "gsutil mb --autoclass -p acme-other-1 gs://b", "gsutil mb --retention=1d -l us -p acme-other-1 gs://b",
+                        "gsutil --trace-token t -u acme-other-1 ls gs://b", "gsutil -o Credentials:x=y -u acme-other-1 ls gs://b"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(ACCOUNT, "gcp:acme-other-1")])
+        self.assertEqual(targets("gsutil -m rsync -u -r src gs://bucket"), [])
+
+    def test_decoded_resource_ids_windows_names_env_pairs_and_runner_options(self):
+        self.assertEqual(targets('az rest --uri "https://management.azure.com/subscriptions%%2F%s/x"' % GUID), [(ACCOUNT, "azure:" + GUID)])
+        self.assertEqual(targets("aws.exe sts assume-role --role-arn arn:aws:iam::999988887777:role/x"), [(ACCOUNT, "aws:999988887777")])
+        self.assertEqual(targets("env 'A-B=x/y' aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x"),
+                         [(ACCOUNT, "aws:999988887777")])
+        self.assertIn((UNKNOWN, None), targets("uv run --a 1 --b 2 --c 3 --d 4 aws s3 ls"))
+        self.assertEqual(targets("uv run --no-build-isolation-package x aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x"),
+                         [(ACCOUNT, "aws:999988887777")])
+
     def test_coverage_is_an_exact_match(self):
         cases = [
             ("aws:123456789012", Target(ACCOUNT, "aws:123456789012"), True),

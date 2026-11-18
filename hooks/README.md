@@ -323,23 +323,29 @@ blocked on stale values, and each match still writes `would_deny`.
   `-mMODULE` and `-Im MODULE`), `poetry run`, `uv run`, `uv tool run`, `uvx`,
   `pipenv run` and `bundle exec`, past each runner's own options (`uv run
   --no-project pip ...`, `uv run -- pip ...`); a runner option it does not
-  know is read both ways, as a flag and as an option that takes the next word:
+  know is read both ways, as a flag and as an option that takes the next word,
+  and the runner's own options are read up to the last place its command may
+  start. A command is named without a Windows `.exe`:
   - `npm`, `pnpm`, `yarn`, `bun`, `npx`, `bunx` and `pnpx` with
     `--registry URL` or `--registry=URL`, an abbreviation down to `--reg`
-    (npm takes a unique prefix), npm's `-reg` shorthand, or npm's
-    `--@scope:registry=URL`, anywhere in the arguments, whatever the
+    (npm takes a unique prefix), or npm's `--@scope:registry=URL`, with any
+    number of leading dashes (npm strips them: `-registry`, `---reg=URL`,
+    `-reg`, `-@acme:registry=URL`), anywhere in the arguments, whatever the
     subcommand (an install, a publish, a login, a runner's package source);
   - `npm config set` and `npm set` (and pnpm's, and `npm c set`) of
-    `registry` or `@scope:registry`, as `KEY URL` or `KEY=URL`; `yarn config
-    set` of `registry`, `npmRegistryServer`, `npmPublishRegistry`, or either
-    under `npmScopes.<scope>.`;
+    `registry` or `@scope:registry`, as `KEY URL` or `KEY=URL`, anywhere
+    after `config set` (`-L user` skipped); `yarn config set` of `registry`,
+    `npmRegistryServer`, `npmPublishRegistry`, or either under
+    `npmScopes.<scope>.`;
   - `pip`, `pip3`, `pip3.N` and `python[3[.N]] -m pip` `install`, `download`,
-    `wheel` and `lock` with `-i`/`--index-url`, `--extra-index-url` or
-    `-f`/`--find-links` (`OPT URL`, `OPT=URL`, `-iURL`), any abbreviation of
-    those long options (`--ind`, `--ext`, `--fi`: pip takes a unique prefix),
-    and `i` or `f` at the end of a cluster of short flags (`-Ui URL`);
-    `pip config set` of a `<section>.index-url`, `.extra-index-url` or
-    `.find-links` key (any case, `_` for `-`), each URL of its value;
+    `wheel` and `lock` with `-i`/`--index-url`, its hidden alias
+    `--pypi-url`, `--extra-index-url` or `-f`/`--find-links` (`OPT URL`,
+    `OPT=URL`, `-iURL`), any abbreviation of those long options (`--ind`,
+    `--ext`, `--fi`, `--pyp`: pip takes a unique prefix), and `i` or `f` at
+    the end of a cluster of short flags (`-Ui URL`); `pip config set` of a
+    `<section>.index-url`, `.pypi-url`, `.extra-index-url` or `.find-links`
+    key (any case, `_` for `-`), past pip's own options (`pip config
+    --timeout 30 set ...`), each URL of its value;
   - `uv` `pip`, `add`, `remove`, `sync`, `lock`, `export`, `tree`, `venv`,
     `build`, `version` and `tool` subcommands, and the own options of `uv run`,
     `uv tool run` and `uvx`, with those options (exact names: uv takes no
@@ -359,7 +365,8 @@ blocked on stale values, and each match still writes `would_deny`.
     with a server argument;
   - the assignments `NPM_CONFIG_REGISTRY`, `PNPM_CONFIG_REGISTRY`,
     `BUN_CONFIG_REGISTRY`, `YARN_REGISTRY`, `YARN_NPM_REGISTRY_SERVER` and
-    `YARN_NPM_PUBLISH_REGISTRY` (any case), `PIP_INDEX_URL`,
+    `YARN_NPM_PUBLISH_REGISTRY` (any case), `npm_config_@scope:registry`
+    (which only `env` can set), `PIP_INDEX_URL`, `PIP_PYPI_URL`,
     `PIP_EXTRA_INDEX_URL`, `PIP_FIND_LINKS`, `UV_INDEX_URL`,
     `UV_EXTRA_INDEX_URL`, `UV_DEFAULT_INDEX`, `UV_INDEX`, `UV_FIND_LINKS`,
     `UV_PUBLISH_URL`, `UV_PUBLISH_CHECK_URL`, `POETRY_REPOSITORIES_<NAME>_URL`,
@@ -372,8 +379,10 @@ blocked on stale values, and each match still writes `would_deny`.
   target is the URL's host, lowercase, without credentials (variables in them
   included) or port, and its path, lowercase, with empty and `.` segments
   dropped, `..` applied and no trailing slash; for an image, the registry
-  host and the repository path without tag or digest. The authority ends at
-  the first `/`, `\`, `?` or `#`. A value without a scheme is read as
+  host and the repository path without tag or digest. Tabs, newlines and
+  carriage returns are removed first, as npm's and uv's URL parser removes
+  them (`.<TAB>.` is `..`), and the authority ends at the first `/`, `\`, `?`
+  or `#`. A value without a scheme is read as
   `https://` where the option only takes a URL, and as a local path, which
   names no registry, for find-links; `file://` URLs and paths starting with
   `/`, `./`, `../` or `~` name none. These are unknown, and no value covers
@@ -382,13 +391,24 @@ blocked on stale values, and each match still writes `would_deny`.
   `0x7f` that a URL parser reads as a number); a backslash or any character a
   URL authority cannot hold before the path
   (`https://evil.example\@registry.npmjs.org/` connects to evil.example with
-  npm and pip, and Python's own URL parser says registry.npmjs.org); an `http:` or `https:` value without `//` after the
-  colon; a value option last in the command with nothing after it, whose
-  value `xargs` or stdin supplies (`xargs npm install --registry`); and a
-  push, pull, run or create with no image. A URL path segment that holds a variable, a `%` (`%2e%2e` is `..`),
-  a `\` or a `;` may reach any path on the host once read, so the target is
-  the host alone, which only a value with no path covers; in an image, which
-  cannot hold `..`, a variable ends the path there instead.
+  npm and pip, and Python's own URL parser says registry.npmjs.org); an
+  `http:` or `https:` value without `//` after the colon, or a `//host` value
+  where only a URL is taken; a value option last in the command with nothing
+  after it, whose value `xargs` or stdin supplies (`xargs npm install
+  --registry`); a push, pull, run or create with no image; and a runner,
+  `docker run` or `create` with more than three options the reader does not
+  know before its command or image. A URL path segment that holds a
+  variable, a `\`, a `;` or a control character, or a percent escape that
+  decodes to `.`, `..`, `/`, `\`, `;`, a control character or another `%`
+  (`%2e%2e`, `%252e`), may reach any path on the host once read, so the
+  target is the host alone, which only a value with no path covers; any
+  other escape is decoded (`My%20Project`). In an image, which cannot hold
+  `..`, a variable ends the path there instead.
+
+  Known limit: the command splitter shared with the other checks cuts a
+  command at an unquoted `$(`, so `docker run -v $(pwd):/app node:20 ...`
+  has no image and is unknown, which fires a `package_registry` rule. Quote
+  it (`-v "$(pwd)":/app`) until the splitter reads command substitutions.
 
   A value `host` covers that host with any path. `host/path` covers that
   host's targets whose path is that path or under it, by whole segments:
@@ -408,9 +428,11 @@ blocked on stale values, and each match still writes `would_deny`.
   tarball or git remote (`uv run --with URL` too); Docker Hub; `docker build
   --push`, `buildx`, `tag`, `service create` and compose; pipenv's own
   options (`--pypi-mirror`, `pipenv install -i`); pipx, pdm, hatch and rye,
-  their options and the commands they run; registries a script or CI job
-  uses internally; and cargo, maven, gradle, nuget, composer, conda, helm, apt
-  and brew.
+  their options and the commands they run; Bundler's sources (`bundle add
+  --source URL`, `bundle config mirror.<url> URL`, a Gemfile's `source`);
+  options held in a variable (`npm install $FLAGS`); registries a script or
+  CI job uses internally; and cargo, maven, gradle, nuget, composer, conda,
+  helm, apt and brew.
 - Kind `cloud_account`, an allow-list: a command that names an account no
   value of the rule covers fires the rule. `catpilot_guard/cloud_targets.py`
   reads it, through the same splitting, wrappers, assignments and package
@@ -421,11 +443,13 @@ blocked on stale values, and each match still writes `would_deny`.
     JSON document it sits in, in the `aws`, `aws-cn`, `aws-us-gov` and every
     other `aws-*` partition, with a 12-digit account field (an empty field,
     `aws` for an AWS-owned resource, and `*` name none); an ARN with a
-    variable as its partition (`arn:${PARTITION}:...`) or in its account field
+    variable anywhere in its partition (`arn:${PARTITION}:...`,
+    `arn:aws-${P}:...`) or in its account field
     (`"arn:aws:iam::$(cat id):role/x"`) is unknown; `aws` `--account-id`,
     `--aws-account-id` and `--source-account` (`-` names none) and
     `--account-ids` (each id), and their abbreviations, which the AWS CLI takes
-    (down to `--acc`, `--aws` and `--source-ac`); `--role-arn` (down to
+    (down to `--acc`, `--aws` and `--source-ac`, and down to `--a`, `--ac`,
+    `--aw` and `--sou` for a 12-digit value only); `--role-arn` (down to
     `--role-a`) holding a variable; `aws configure set
     [profile.NAME.]sso_account_id ID`, and `role_arn` holding a variable; a
     `cdk` environment `aws://ACCOUNT/REGION`;
@@ -433,10 +457,12 @@ blocked on stale values, and each match still writes `would_deny`.
     project` (or `core/project`), and `gcloud [alpha|beta|preview] projects
     SUBCOMMAND PROJECT_ID` for every subcommand but `list` and `search`;
     `gsutil -u PROJECT` before the command and `gsutil mb`, `ls`, `hmac` and
-    `kms` `-p PROJECT`; `bq --project_id` (also `-project_id`);
-  - `az` `--subscription` (down to `--sub`), `--subscription-id` and
-    `--subscriptions`, `az account set -s`, `-n` or `--name`, and the
-    `/subscriptions/<id>/` of a resource id or management URL in any argument;
+    `kms` `-p PROJECT`, long options between them included; `bq
+    --project_id` (also `-project_id`);
+  - `az` `--subscription` (down to `--sub`, and to `--s` for a GUID only),
+    `--subscription-id` and `--subscriptions`, `az account set -s`, `-n` or
+    `--name`, and the `/subscriptions/<id>/` of a resource id or management
+    URL in any argument, also percent-decoded;
   - the assignments `CLOUDSDK_CORE_PROJECT` and `GOOGLE_CLOUD_PROJECT`,
     `AZURE_SUBSCRIPTION_ID` and `ARM_SUBSCRIPTION_ID`, and the ARN in
     `AWS_ROLE_ARN`.
@@ -447,9 +473,10 @@ blocked on stale values, and each match still writes `would_deny`.
   account of the active profile or configuration, which the hook does not
   read. A variable, a GCP project given by number or in a form a project id
   cannot take, an Azure subscription given by name, an account option whose
-  value is not an account id, and an account option last in the command with
-  nothing after it (`xargs gcloud run deploy --project`) are unknown, and no
-  value covers them. Coverage is an exact match, ignoring case. Each
+  value is not an account id, an account option last in the command with
+  nothing after it (`xargs gcloud run deploy --project`), and a runner with
+  more than three options the reader does not know before its command are
+  unknown, and no value covers them. Coverage is an exact match, ignoring case. Each
   `cloud_account` rule is its own allow-list. Not covered: a profile or
   configuration given by name (`--profile`, `AWS_PROFILE`, `gcloud
   --configuration`, `gcloud config configurations activate`), the account of a

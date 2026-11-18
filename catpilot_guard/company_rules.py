@@ -72,7 +72,7 @@ from . import policy as policy_module
 from .cloud_targets import account_covered, cloud_targets
 from .deploy_targets import deploy_targets, host_covered
 from .destructive import _simple_commands, git_push_rewrites
-from .registry_targets import registry_covered, registry_targets
+from .registry_targets import registry_covered, registry_targets, split_command
 
 MAX_INPUT_BYTES = 1_048_576
 HOOK_NAME = "pretooluse-company-rules"
@@ -145,9 +145,11 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy) -> li
                 push = git_push_rewrites(argv[1:], working_dir)
                 if push is not None:
                     pushes.append(push)
-    targets = deploy_targets(command, working_dir) if "deploy_host" in kinds else []
-    registries = registry_targets(command, working_dir) if "package_registry" in kinds else []
-    accounts = cloud_targets(command, working_dir) if "cloud_account" in kinds else []
+    # One split of the command for the deploy, registry and account readers: a long command is split once, not per kind.
+    split = split_command(command) if kinds & {"deploy_host", "package_registry", "cloud_account"} else ([], [])
+    targets = deploy_targets(command, working_dir, commands=split[0]) if "deploy_host" in kinds else []
+    registries = registry_targets(command, working_dir, split=split) if "package_registry" in kinds else []
+    accounts = cloud_targets(command, working_dir, split=split) if "cloud_account" in kinds else []
     fired = []
     for rule in policy.rules:
         if rule.kind == "protected_branch":

@@ -193,6 +193,7 @@ SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 # Shell options that take a separate value (`bash -o pipefail -c ...`, `bash --rcfile FILE -c ...`).
 SHELL_VALUE_OPTIONS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+ENV_PAIR = re.compile(r"^[^=]+=")
 KUBECTL_VALUE_FLAGS = {"-n", "--namespace", "-l", "--selector", "-f", "--filename", "-o", "--output", "--context",
                        "--cluster", "--kubeconfig", "--field-selector", "--grace-period", "--timeout", "-k", "--kustomize",
                        "-s", "--server", "--user", "--token", "--as"}
@@ -279,8 +280,11 @@ def _strip_wrappers(argv: list[str], assignments: list[str] | None = None) -> li
         name = os.path.basename(argv[0].lstrip("`"))
         if name in WRAPPERS:
             argv = argv[1:]
-            while argv and (argv[0].startswith("-") or ASSIGNMENT.match(argv[0])):
-                if assignments is not None and ASSIGNMENT.match(argv[0]):
+            # env takes every word with `=` before the command as NAME=VALUE, a name the shell would refuse included
+            # (`env 'A-B=x/y' rm -rf /` runs rm).
+            pair = ENV_PAIR if name == "env" else ASSIGNMENT
+            while argv and (argv[0].startswith("-") or pair.match(argv[0])):
+                if assignments is not None and pair.match(argv[0]):
                     assignments.append(argv[0])
                 takes_value = argv[0] in ("-u", "-g", "-n", "-C")
                 argv = argv[2:] if takes_value else argv[1:]

@@ -291,11 +291,12 @@ def _git_push_heroku(args: list) -> Target | None:
     return None
 
 
-def deploy_targets(command: str, cwd: str | None = None, depth: int = 0) -> list:
+def deploy_targets(command: str, cwd: str | None = None, depth: int = 0, commands: list | None = None) -> list:
     """Every deploy or publish target the command names, in order. cwd, where the command runs, tells a directory
-    `vercel dist` deploys from a subcommand it does not know."""
+    `vercel dist` deploys from a subcommand it does not know. commands is the command's simple commands, when the caller
+    has split it already (company_rules splits once for every kind)."""
     targets = []
-    for argv in _simple_commands(command):
+    for argv in (commands if commands is not None else _simple_commands(command)):
         base = os.path.basename(argv[0]).lower()
         if depth < 3 and (base in RUNNERS or (base == "npm" and argv[1:2] in (["exec"], ["x"]))):
             call = _call_string(argv[2:] if base == "npm" else argv[1:])
