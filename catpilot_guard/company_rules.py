@@ -47,6 +47,19 @@ Scope, stated exactly:
     under `copilot -p` or an allow-all mode is not verified. When several rules match, the strictest effect wins
     and each rule writes its own line.
   - After the policy's expires_on, every company rule acts in monitor until the file is renewed (decision 3).
+  - Expiring exceptions (§3.1) relax one company rule, never a built-in check: the built-in checks are separate hooks
+    and read no policy. The hook applies an exception until its expires_on (the day itself included) and only when it
+    has no `where`: a repository name read from a working tree is something the agent can change, so only the
+    pull-request check reads `where`. For protected_branch, an exception's allows are branches the rule stops
+    protecting (a value ending in `/*` covers the prefix, as for the rule's values); for deploy_host, package_registry
+    and cloud_account, extra approved hosts, registries or accounts, covered as the rule's values cover them, so an
+    unknown target, which no value covers, no exception covers either. A rule fires when something it matches is
+    covered by no rule value and no active exception; `git push --mirror` and the other pushes that can rewrite every branch are never excepted. When active
+    exceptions cover everything a rule matched, the rule decides nothing and writes a would_deny line carrying the
+    exception_id of each exception that covered a match, with the rule's own mode: the line records that exceptions
+    covered all of the rule's matches, whether or not the rule would have decided anything (in monitor mode it would
+    not) and whether or not another rule decides the command. An expired exception is ignored, and none outlives the
+    policy.
   - A deny or ask reason names the rule ids and the approved alternative (use_instead_text), never a listed
     value, a host, a registry or an account, and never repeats the command.
   - A policy that is missing, unreadable, malformed, owned by the wrong user or writable by others, or
@@ -56,13 +69,14 @@ Scope, stated exactly:
   - Fails closed on its input: a hook event it cannot read exits 2, which the host treats as a block.
 
 Evidence lines (CATPILOT_EVIDENCE_LOG): deny, ask, would_deny and policy_error with the rule id, the mode that
-applied, the policy's source SHA-256 and the session id. Never a command, a branch, a host, a registry, an account,
-a value or a path.
+applied, the policy's source SHA-256 and the session id, and on a would_deny line for a rule whose matches exceptions
+all covered, the exception id. Never a command, a branch, a host, a registry, an account, a value or a path.
 
 Standard library only. Python 3.8+.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import sys
@@ -134,8 +148,10 @@ def record_evidence(event: str, hook_event: object = None, host: str | None = No
         pass
 
 
-def matched_rules(command: str, cwd: object, policy: policy_module.Policy) -> list:
-    """The policy's rules this command fires, in policy order."""
+def matched_rules(command: str, cwd: object, policy: policy_module.Policy, today=None) -> list:
+    """(rule, exception ids) for each of the policy's rules this command matches, in policy order. The ids are empty
+    when the rule fires. Otherwise active exceptions covered everything the rule matched, so it does not fire, and the
+    ids name them, in policy order: for each match, the first exception that covers it."""
     working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
     kinds = {rule.kind for rule in policy.rules}
     pushes = []
@@ -150,24 +166,56 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy) -> li
     targets = deploy_targets(command, working_dir, commands=split[0]) if "deploy_host" in kinds else []
     registries = registry_targets(command, working_dir, split=split) if "package_registry" in kinds else []
     accounts = cloud_targets(command, working_dir, split=split) if "cloud_account" in kinds else []
-    fired = []
+    mirror = any(rewrites_every_branch for rewrites_every_branch, _ in pushes)
+    branches = [branch for _, names in pushes for branch in names if branch]
+    matched = []
     for rule in policy.rules:
         if rule.kind == "protected_branch":
-            hit = any(
-                mirror or any(branch and any(policy_module.branch_matches(v, branch) for v in rule.values) for branch in branches)
-                for mirror, branches in pushes
-            )
+            # A push that can rewrite every branch fires the rule as a whole: an exception names branches, not that.
+            if mirror:
+                matched.append((rule, ()))
+                continue
+            covered = _branch_covered
+            hits = [branch for branch in branches if covered(rule.values, branch)]  # a protect-list: a listed branch fires
         elif rule.kind == "deploy_host":
-            hit = any(not any(host_covered(value, target) for value in rule.values) for target in targets)
+            covered = _target_covered
+            hits = [target for target in targets if not covered(rule.values, target)]  # an allow-list: an unlisted host fires
         elif rule.kind == "package_registry":
-            hit = any(not any(registry_covered(value, target) for value in rule.values) for target in registries)
+            covered = _registry_covered
+            hits = [target for target in registries if not covered(rule.values, target)]  # allow-list, as deploy_host
         elif rule.kind == "cloud_account":
-            hit = any(not any(account_covered(value, target) for value in rule.values) for target in accounts)
+            covered = _account_covered
+            hits = [target for target in accounts if not covered(rule.values, target)]  # allow-list, as deploy_host
         else:
-            hit = False
-        if hit:
-            fired.append(rule)
-    return fired
+            continue
+        if not hits:
+            continue
+        exceptions = policy.active_exceptions(rule.id, today)
+        used = set()
+        for hit in hits:
+            exception = next((e for e in exceptions if covered(e.allows, hit)), None)
+            if exception is None:  # a match no exception covers: the rule fires
+                used = set()
+                break
+            used.add(exception.id)
+        matched.append((rule, tuple(e.id for e in exceptions if e.id in used)))
+    return matched
+
+
+def _branch_covered(values, branch: str) -> bool:
+    return any(policy_module.branch_matches(value, branch) for value in values)
+
+
+def _target_covered(values, target) -> bool:
+    return any(host_covered(value, target) for value in values)
+
+
+def _registry_covered(values, target) -> bool:
+    return any(registry_covered(value, target) for value in values)  # an unknown registry: nothing covers it
+
+
+def _account_covered(values, target) -> bool:
+    return any(account_covered(value, target) for value in values)  # an unknown account: nothing covers it
 
 
 def can_ask(host: str | None, event: dict, ask_enabled: bool = False) -> bool:
@@ -209,23 +257,32 @@ def decide(event: dict, host: str | None, policy: policy_module.Policy | None, t
         raise ValueError("command must be a string")
     if policy is None or not command:
         return {}
-    fired = matched_rules(command, event.get("cwd"), policy)
-    if not fired:
+    today = today or dt.date.today()  # one date for the exceptions and the file's expiry, even across midnight
+    matched = matched_rules(command, event.get("cwd"), policy, today)
+    if not matched:
         return {}
     expired = policy.expired(today)
     asking = can_ask(host, event, ask_enabled)
     effects = []
-    for rule in fired:
+    for rule, excepted_by in matched:
         mode = "monitor" if expired else rule.mode
-        effect = {"block": "deny", "ask": "ask" if asking else "deny", "monitor": None}[mode]
-        effects.append((rule, mode, effect))
-    final = "deny" if any(e == "deny" for _, _, e in effects) else "ask" if any(e == "ask" for _, _, e in effects) else None
-    for rule, mode, effect in effects:
+        # A rule whose matches exceptions all covered decides nothing, whatever its mode.
+        effect = None if excepted_by else {"block": "deny", "ask": "ask" if asking else "deny", "monitor": None}[mode]
+        effects.append((rule, mode, effect, excepted_by))
+    final = "deny" if any(e == "deny" for _, _, e, _ in effects) else "ask" if any(e == "ask" for _, _, e, _ in effects) else None
+    for rule, mode, effect, excepted_by in effects:
+        if excepted_by:
+            # Exceptions covered all of the rule's matches: one would_deny line per exception that covered a match,
+            # with the rule's own mode (OVERLAY_V2.md §3.1).
+            for exception_id in excepted_by:
+                record_evidence("would_deny", event, host, tool="Bash", rule_id=rule.id, mode=mode, exception_id=exception_id,
+                                policy_sha256=policy.source_sha256)
+            continue
         line = "would_deny" if effect is None else final
         record_evidence(line, event, host, tool="Bash", rule_id=rule.id, mode=mode, policy_sha256=policy.source_sha256)
     if final is None:
         return {}
-    deciding = [rule for rule, _, effect in effects if effect == final]
+    deciding = [rule for rule, _, effect, _ in effects if effect == final]
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",

@@ -231,9 +231,11 @@ one.
 It does not read the YAML file. `python tools/validate_overlay.py compile
 rules.yaml --out company-policy.json` validates the file and writes a JSON
 policy: each rule's id, kind, mode (its own, or `default_mode`) and values,
-the approved alternative's text when the rule names one, the file's
+the approved alternative's text when the rule names one, each expiring
+exception's id, rule, allows, `expires_on` and `where`, the file's
 `expires_on`, and the SHA-256 of its bytes. Nothing else from the file is
-copied. It also prints what each rule does on each tool, without the values.
+copied. It also prints what each rule does on each tool, and each exception's
+rule and expiry, without the values.
 `deploy/org/install.sh --overlay` compiles and places the policy and
 registers the hook on both tools
 ([`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md#company-enforcement-rules)).
@@ -260,6 +262,32 @@ When several rules match one command, the strictest effect wins and each rule
 writes its own evidence line. After the file's `expires_on`, every company
 rule acts in `monitor` until the file is renewed and recompiled: nothing is
 blocked on stale values, and each match still writes `would_deny`.
+
+**Expiring exceptions** ([`OVERLAY_V2.md`](../docs/spec/OVERLAY_V2.md) §3.1)
+relax one company rule until a date, never a built-in check:
+
+- For a `protected_branch` rule, an exception's `allows` are branches the
+  rule stops protecting; a value ending in `/*` covers the prefix. For a
+  `deploy_host`, `package_registry` or `cloud_account` rule, they are extra
+  approved hosts, registries or accounts, covered as the rule's values cover
+  them, so a target the hook cannot read (unknown), which no value covers, no
+  exception covers either. A rule fires when something it matches is covered
+  by no rule value and no active exception. A push that can rewrite every branch (`git push --mirror`,
+  `--all` or `--branches` with a force or `--prune`, a forced pattern refspec)
+  fires a `protected_branch` rule whatever its exceptions.
+- The hook applies an exception through its `expires_on`, the day itself
+  included; after that it is ignored and the rule applies as written. No
+  exception outlives the file. An exception with `where` is never applied by
+  a hook: a repository name read from a working tree is something the agent
+  can change, so only the pull-request check, not built yet, reads it.
+- The built-in checks are separate hooks and read no policy. An exception
+  allowing `main` on a company `protected_branch` rule stops that rule firing
+  on `git push --force origin main`; the destructive-operation check still
+  denies it.
+- When active exceptions cover everything a rule matched, the rule decides
+  nothing and writes a `would_deny` line with the exception's `exception_id`
+  and the rule's own `mode`, one line per exception that covered a match. The
+  decision is the strictest of the other matching rules'.
 
 ### Exact coverage
 
@@ -519,8 +547,9 @@ blocked on stale values, and each match still writes `would_deny`.
   read the `would_deny` counts before you block.
 - The reason names the rule ids and the approved alternative, never a listed
   value, a host, a registry or an account, and never repeats the command.
-  Evidence lines carry the rule id, the mode that applied and the policy's
-  hash, never a command or a value.
+  Evidence lines carry the rule id, the mode that applied, the policy's hash
+  and, when an exception changed the decision, the exception id, never a
+  command or a value.
 - The policy must be a regular file, not a symlink, owned by the same user as
   the `catpilot_guard` package the hook runs from, and neither the file nor its
   directory may be writable by group or others. `install.sh` places both as
@@ -543,8 +572,24 @@ Each hook fails closed once Python is running: malformed input, a missing
 (for example, the host closed the pipe) exits 2, which blocks. Before
 that point it cannot. If the `python3` in the hook command is missing, is the
 macOS Command Line Tools stub on a machine without the tools, or is older than
-3.8, the command exits with another code, which Claude Code treats as a
-non-blocking error: the command or write goes ahead unchecked. `deploy/org/verify.sh` checks the interpreter, runs each
+3.8, the command exits with another code. What happens then depends on the
+tool:
+
+- **Claude Code** blocks the call, because the managed hooks `install.sh`
+  writes set `"onFailure": "block"`: a hook that cannot start, exits with
+  another code or times out then blocks, as exit 2 does (Claude Code 2.1.295
+  or later; [hooks reference](https://code.claude.com/docs/en/hooks), "Block
+  the action when a hook fails"). Without that key, it is a non-blocking error
+  and the command or write goes ahead unchecked; `verify.sh` notes an entry
+  without it. Catpilot has not checked what a version before 2.1.295 does with
+  the key; a denied probe in a real session (steps 4 and 5 of "Confirm it on
+  one machine" in `docs/DEPLOY_ORG.md`) shows the hooks still run there.
+- **Codex** can let the call run: its documentation says a `PreToolUse`
+  error, timeout or malformed response can let the tool run.
+- **Copilot CLI** denies the call on a non-zero exit, but lets it run when a
+  hook times out.
+
+`deploy/org/verify.sh` checks the interpreter, runs each
 installed hook on harmless probes, and runs each hook command in
 `managed-settings.json` the same way. Run it as a normal user on each machine
 after install and after an OS or Python upgrade. It cannot see Claude Code's
