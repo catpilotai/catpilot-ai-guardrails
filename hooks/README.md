@@ -189,8 +189,10 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   `HEAD`): `git push --force origin $BRANCH`, `"${TARGET}"`, `${B:-main}`,
   `release/$V`, `"ma$X"` and `"$P/main"` are blocked, while `feature/$TICKET`,
   `"v$VERSION"` and a tag (`:refs/tags/$TAG`) are not. Braces are expanded as
-  bash expands them (`:{feature,develop}` deletes both); more than 64 words
-  is unknown when the push forces or deletes. A variable whose value
+  bash expands them, before options are read (`:{feature,develop}` deletes
+  both; `{-f,}` is a force); a word that would make more than 64 is unknown
+  where it stands, and may be `--force` when it could make an option or sits
+  beside another variable. A variable whose value
   holds a space or a colon, which splits the word or the refspec, is not seen;
   in the pull-request check a `${{ ... }}` that names a context a pull
   request's author sets (`github.event.*` other than a number, `github.head_ref`)
@@ -249,9 +251,9 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
     `tracking` makes a bare force push's branch unknown. A read (`git config
     --get`) and `remote.<name>.mirror false` do not count, and a push that
     names a refspec is never a mirror (git refuses a refspec with
-    `remote.<name>.mirror`, and a refspec overrides `remote.<name>.push`); an
-    unquoted variable refspec that is empty, which makes it a bare push, is
-    not seen. The same holds for a `GIT_CONFIG_*` assignment.
+    `remote.<name>.mirror`, and a refspec overrides `remote.<name>.push`); a
+    refspec that expands to nothing (an unquoted empty variable, `"$@"`),
+    which makes it a bare push, is not seen. The same holds for a `GIT_CONFIG_*` assignment.
 
   These settings in git's config files are not read. An
   option's value (`-o ci.skip`, `--push-option`, `--repo`) is not read as the

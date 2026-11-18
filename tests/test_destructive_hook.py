@@ -169,6 +169,14 @@ DENIED = {
     "forced matching push by config": "git -c push.default=matching push -f origin",
     "push refspecs by config": "git -c remote.origin.push=+refs/heads/*:refs/heads/* push origin",
     "heads/ prefix": "git push --force origin heads/main",
+    # Braces expand before options are read; a word past the limit is unknown where it stands (review of f92bb75).
+    "a brace that makes --force": "git push origin main {--force,}",
+    "a brace that makes -f": "git push {-f,} origin main",
+    "a remote past the limit": "git push {origin,v{1..70}} :develop",
+    "a variable beside a word past the limit": "git push $F origin {main,v{1..70}}",
+    "prune with a word past the limit": "git push --prune origin {refs/heads/*,v{1..70}}",
+    "braces bash removes": "git push -f origin {:/..:{main,refs/heads/tmp}}",
+    "exponential braces then a force push": "git push origin x " + "{,}" * 23 + "; git push --force origin main",
     # git splits a refspec at its last colon; braces make several refspecs; X+=1 and A[0]=1 are assignments.
     "refspec with a colon in its source": 'git push --force origin ":/rewritten feature:main"',
     "refspec with a colon in a search": 'git push --force origin "HEAD^{/fix: x}:main"',
@@ -267,6 +275,7 @@ ALLOWED = {
     "timeout force-with-lease feature": "timeout 60 git push --force-with-lease origin feature/x",
     "ordinary push to a variable": "git push origin $BRANCH",
     "push with a trailing tag variable": 'git push origin main "$TAG"',
+    "many tags": "git push origin v{1..100}",
     "delete a tag held in a variable": "git push origin :refs/tags/$TAG",
     "delete a tag by --delete": "git push --delete origin refs/tags/$T",
     "delete a version branch": 'git push origin --delete "v$VERSION"',
@@ -519,6 +528,32 @@ class DestructiveHookTests(unittest.TestCase):
                     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(repo)})
                     out = json.loads(run_hook(payload).stdout)
                     self.assertEqual(out.get("hookSpecificOutput", {}).get("permissionDecision"), expected)
+
+    def test_brace_expansion_matches_bash(self):
+        # Review of f92bb75: bash 5's results, a linear pairing (no exponential or quadratic case), and the limit.
+        import time
+        from catpilot_guard.destructive import expand_braces, git_config_assignment_harmful
+        cases = {
+            "{origin,}": ["origin"], "{01..03}": ["01", "02", "03"], "{a..e..2}": ["a", "c", "e"], "x{y{a,b}": ["x{ya", "x{yb"],
+            ":{{feature,main}": [":{feature", ":{main"], "{:/..:{main,x}}": [":/..:main", ":/..:x"], "a{b}c": ["a{b}c"],
+            "{a,{b,c}}": ["a", "b", "c"], "v{1..3}": ["v1", "v2", "v3"],
+        }
+        for word, want in cases.items():
+            with self.subTest(word=word):
+                self.assertEqual(expand_braces(word), want)
+        self.assertIsNone(expand_braces("{1..100}"))
+        self.assertIsNone(expand_braces("{a,b}" * 1200))
+        start = time.monotonic()
+        self.assertIsNone(expand_braces("{,}" * 23))  # past the limit, and quickly
+        expand_braces("{" * 5000)
+        self.assertLess(time.monotonic() - start, 2)
+        # GIT_CONFIG_PARAMETERS: a value chunk is never a key; a key holding a variable counts unless an insteadOf.
+        harmful = lambda value: git_config_assignment_harmful("GIT_CONFIG_PARAMETERS", value)
+        self.assertFalse(harmful("'http.extraheader'='Authorization: Bearer $TOKEN'"))
+        self.assertFalse(harmful("'user.name'='$NAME'"))
+        self.assertTrue(harmful("'$S.mirror'='true'"))
+        self.assertFalse(harmful("'url.$X.insteadOf'='https://x/'"))
+        self.assertTrue(harmful("'remote.origin.mirror=true'"))
 
     def test_works_without_its_sibling_hooks(self):
         with tempfile.TemporaryDirectory() as tmp:
