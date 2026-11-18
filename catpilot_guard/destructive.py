@@ -412,22 +412,32 @@ def _expand_braces_keep_empty(word: str, limit: int = BRACE_LIMIT):
     """The words bash makes of `word` by brace expansion (`{a,b}`, `{1..3}`, `{a..c}`, nested), or None when there
     would be more than limit. `${...}` is parameter expansion, not a brace: collapse it first. Quoting is already gone,
     so a quoted literal brace is expanded too (stricter)."""
-    def pairs_of(text: str):
-        pairs, stack = {}, []
-        for i, ch in enumerate(text):
+    def closing(text: str, start: int):
+        """The `}` that closes the brace at start as bash's parser finds it: one at the brace's own level closes it only
+        after a comma or a `..` (not just before the `}`) at that level; before that it is an ordinary character
+        (`{x},main}` is `x}` and `main`). The word's length is capped, so a scan per brace stays cheap."""
+        depth, satisfied, i = 0, False, start
+        while i < len(text):
+            ch = text[i]
             if ch == "{" and (i == 0 or text[i - 1] != "$"):
-                stack.append(i)
-            elif ch == "}" and stack:
-                pairs[stack.pop()] = i
-        return pairs
+                depth += 1
+            elif ch == "}" and depth > 1:
+                depth -= 1
+            elif ch == "}" and depth == 1:
+                if satisfied:
+                    return i
+            elif depth == 1 and (ch == "," or (text.startswith("..", i) and i + 2 < len(text) and text[i + 2] != "}")):
+                satisfied = True
+            i += 1
+        return None
 
     def parts(body: str):
         out, depth, current = [], 0, ""
         for ch in body:
             if ch == "{":
                 depth += 1
-            elif ch == "}":
-                depth -= 1
+            elif ch == "}" and depth > 0:
+                depth -= 1  # a `}` with no open brace before it is an ordinary character (`{x},main}`)
             if ch == "," and depth == 0:
                 out.append(current)
                 current = ""
@@ -454,7 +464,8 @@ def _expand_braces_keep_empty(word: str, limit: int = BRACE_LIMIT):
             return [chr(c) for c in (range(a, b + 1, step) if a <= b else range(a, b - 1, -step))]
         return []
 
-    pairs = pairs_of(word)
+    if "{" in word and (len(word) > 4096 or word.count("{") > 4 * limit):
+        return None  # unknown, and quickly: bash would make more than any refspec needs
     search = 0
     while True:
         start = word.find("{", search)
@@ -462,7 +473,7 @@ def _expand_braces_keep_empty(word: str, limit: int = BRACE_LIMIT):
             start = word.find("{", start + 1)
         if start < 0:
             return [word]
-        end = pairs.get(start)
+        end = closing(word, start)
         if end is None:
             search = start + 1  # an unmatched `{` is literal: look further on, as bash does
             continue
@@ -565,6 +576,19 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     else:
         environment_config = False
     repo = cwd
+    if any("{" in word for word in args):
+        # The shell expands braces in every word, git's own and the subcommand's included (`git {push,-f} origin main`).
+        head = []
+        for position, word in enumerate(args):
+            if word == "push" or "{" not in word:
+                head.append(word)
+                if word == "push":
+                    head.extend(args[position + 1:])  # the push's own words are expanded below, with placeholders
+                    break
+                continue
+            words = expand_braces(BRACED_EXPANSION.sub("$VAR", word))
+            head.extend(words if words is not None else ["$CATPILOT_BRACES"])
+        args = head
     index, git_dir_path, configs, unknown = 0, None, [], cwd is None
     while index < len(args) and (args[index].startswith("-") or args[index].startswith(("$", "`"))):
         arg = args[index]
@@ -602,13 +626,13 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     positional: list[str] = []
     # The shell expands braces before git sees the words (`:{feature,develop}`, `{origin,HEAD:main}`, `{-f,}`), so options
     # are read after it. A word past the limit is a variable placeholder: unknown wherever it stands, and possibly --force.
-    rest, too_many, option_like = [], False, False
+    rest, too_many, unsure = [], False, False
     for word in args[index + 1:]:
         words = expand_braces(BRACED_EXPANSION.sub("$VAR", word))
         if words is None:
             rest.append("$CATPILOT_BRACES")
             too_many = True
-            option_like = option_like or re.search(r"(?:^|[{,])-", word) is not None  # it may expand to an option
+            unsure = unsure or re.search(r"[^\w./{},]", word) is not None  # `{,}--force`, `{+main,..}`, `:{a,..}`, `$F`
         else:
             rest.extend(words)
     i = 0
@@ -646,8 +670,8 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     if too_many:
         # The words past the limit may hold --force (an option-like brace, or beside a variable that may), or a pattern
         # refspec that --prune or --all would apply to.
-        force = force or option_like or any(w.startswith(("$", "`")) and w != "$CATPILOT_BRACES" for w in positional)
-        mirror = mirror or prune or every
+        force = force or unsure or any(w.startswith(("$", "`")) and w != "$CATPILOT_BRACES" for w in positional)
+        mirror = mirror or (every and (force or prune)) or (prune and unsure)
 
     def variable(word: str) -> bool:
         return word.startswith(("$", "`")) and not CURRENT_BRANCH_SUBSTITUTION.fullmatch(word)
@@ -662,19 +686,20 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
         return current_branch(repo, git_dir_path) if known else None
 
     settings = [c.replace(" ", "") for c in configs]
-    if environment_config and len(positional) <= 1:
+    bare = len([w for w in positional if w != "$CATPILOT_BRACES"]) <= 1
+    if environment_config and bare:
         mirror = True  # a bare push; a refspec overrides remote.<name>.push, and git refuses one with
         # remote.<name>.mirror (an unquoted variable that is empty, making a bare push, is not seen)
     if any(re.fullmatch(r"remote\..+\.mirror=(?!false$|no$|off$|0$).*", c) or re.fullmatch(r"remote\..+\.mirror", c) for c in settings):
         mirror = True  # remote.<name>.mirror makes a push behave as --mirror
-    if len(positional) <= 1 and any(c.startswith("remote.") and ".push=" in c for c in settings):
+    if bare and any(c.startswith("remote.") and ".push=" in c for c in settings):
         mirror = True  # the configured refspecs may rewrite any branch
-    if len(positional) <= 1 and force and "push.default=matching" in settings:
+    if bare and force and "push.default=matching" in settings:
         mirror = True  # a forced matching push rewrites every branch both sides have
-    if len(positional) <= 1 and any(c in ("push.default=upstream", "push.default=tracking") or c.startswith("branch.")
+    if bare and any(c in ("push.default=upstream", "push.default=tracking") or c.startswith("branch.")
                                     for c in settings):
         known = False  # the bare push goes to the configured upstream, not to a branch of the same name
-    branches: list[str | None] = []
+    branches: list[str | None] = [None] if too_many and (force or delete) else []
     if not mirror:
         for spec in positional[1:]:
             plus = spec.startswith("+")
@@ -772,7 +797,10 @@ def git_config_assignment_harmful(name: str, value: str | None) -> bool:
             return True
         # `'key'='value'` or `'key=value'` pairs: the key is what comes before the first `=` of each quoted chunk.
         # The key of each `'key'='value'` or `'key=value'` pair; a value chunk is never a key.
-        keys = [m.group(1).split("=", 1)[0] for m in re.finditer(r"'([^']*)'(?:='[^']*')?", value)]
+        pair = r"'([^']*)'(?:='[^']*')?"
+        if re.sub(pair, "", value).strip() or OPAQUE_EXPANSION in value:
+            return True  # `$MORE` or an escaped quote outside a pair, or an expression whose text may close the quote
+        keys = [m.group(1).split("=", 1)[0] for m in re.finditer(pair, value)]
         keys = [key for key in keys if "." in key or "$" in key]
         insteadof = lambda key: key.lower().startswith("url.") and key.lower().endswith(".insteadof")
         return not keys or any(HARMFUL_CONFIG_KEY.fullmatch(key) or ("$" in key and not insteadof(key)) for key in keys)

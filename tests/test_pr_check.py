@@ -436,6 +436,11 @@ class EnvTests(unittest.TestCase):
         self.assertEqual(self.fired(self.doc(step_env=params, run="git push origin")), [])
         bad = "GIT_CONFIG_PARAMETERS: \"'remote.origin.mirror=true'\"\n"
         self.assertEqual(self.fired(self.doc(step_env=bad, run="git push origin")), ["protected-branches"])
+        # A value a pull request's author sets may close the quote and add a key (final review of 9e7c565).
+        title = "GIT_CONFIG_PARAMETERS: \"'user.name'='${{ github.event.pull_request.title }}'\"\n"
+        self.assertEqual(self.fired(self.doc(step_env=title, run="git push origin")), ["protected-branches"])
+        header = "GIT_CONFIG_PARAMETERS: \"'http.https://github.com/.extraheader'='AUTHORIZATION: basic ${{ secrets.X }}'\"\n"
+        self.assertEqual(self.fired(self.doc(step_env=header, run="git push origin")), [])
         self.assertEqual(self.fired(self.doc(step_env="OTHER: x\n", run="git push origin feature")), [])
 
     def test_an_expression_in_a_destination_is_unknown(self):

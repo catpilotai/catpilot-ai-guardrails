@@ -723,7 +723,7 @@ def _git_environment(all_levels: list) -> str:
         merged.update(values)
         opaque = opaque or level_opaque
 
-    if opaque or any(GIT_CONFIG_NAME.fullmatch(name) and git_config_assignment_harmful(name, merged.get(name)) for name in names):
+    if opaque or any(GIT_CONFIG_NAME.fullmatch(name) and git_config_assignment_harmful(name, _expressions_as_variables(merged[name]) if isinstance(merged.get(name), RawValue) else merged.get(name)) for name in names):
         return "GIT_CONFIG_GLOBAL=from-env; "  # an assignment the reader always counts (git_config_assignment_harmful)
     if names & GIT_PLACE_NAMES:
         return "GIT_DIR=elsewhere; "
