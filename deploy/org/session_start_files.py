@@ -82,7 +82,7 @@ CODEX_MATCHER_NAMES = {"Bash": ("Bash",), "apply_patch": ("apply_patch", "Edit",
 # [features] written as a dotted key or an inline table, which the minimal reader does not read.
 _FEATURES_ELSEWHERE = re.compile(r"^\s*([\"']?)features\1\s*(?:\.|=)", re.MULTILINE)
 CODEX_HOOK_FILES = tuple(name for _, _, names in CODEX_PRETOOLUSE for name in names)
-CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence", "policy", "company_rules")
+CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence", "policy", "company_rules", "deploy_targets")
 # The company-rules hook and the compiled policy it reads (install.sh --overlay, when the rules file has enforcement
 # rules). The policy sits under the tool's tree, root-owned like the hooks; the hook takes its path on its command line.
 COMPANY_HOOK = "pretooluse-company-rules.py"
@@ -1065,6 +1065,38 @@ def first_branch_probe(policy_file: Path):
         return None
 
 
+# Deploys the probe can name, each with the hosting service's own domain (catpilot_guard/deploy_targets.py).
+DEPLOY_PROBES = (("netlify deploy --prod", "netlify.app"), ("vercel --prod", "vercel.app"), ("surge dist", "surge.sh"),
+                 ("firebase deploy", "web.app"), ("wrangler deploy", "workers.dev"))
+
+
+def suffix_covered(value: str, suffix: str) -> bool:
+    """catpilot_guard/deploy_targets.py's host_covered for a service's own domain, repeated so this helper imports only
+    the standard library (a test checks the two agree): only `*.D` with the suffix under or equal to D covers it."""
+    value = value.lower()
+    return value.startswith("*.") and (suffix == value[2:] or suffix.endswith("." + value[2:]))
+
+
+def first_deploy_probe(policy_file: Path):
+    """(rule id, mode, command, expired, modes) for a deploy the policy's first deploy_host rule does not allow, or None.
+    modes are the effective modes of every deploy_host rule that does not allow it either: each is its own allow-list."""
+    try:
+        data = json.loads(policy_file.read_text(encoding="utf-8"))
+        expired = dt.date.fromisoformat(data["expires_on"]) < dt.date.today()
+        rules = [rule for rule in data["rules"] if rule["kind"] == "deploy_host"]
+        if not rules:
+            return None
+        first = rules[0]
+        for command, suffix in DEPLOY_PROBES:
+            if not any(suffix_covered(v, suffix) for v in first["values"]):
+                modes = ["monitor" if expired else rule["mode"] for rule in rules
+                         if not any(suffix_covered(v, suffix) for v in rule["values"])]
+                return first["id"], first["mode"], command, expired, modes
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return None
+
+
 def company_commands(host: str, managed: Path, prefer_tomllib: bool):
     """(matcher, command) for each registration of the company-rules hook in the tool's managed file, the file, and
     a sentence when the file cannot be read."""
@@ -1133,8 +1165,13 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             rule_id, mode, command, expired, modes = probe
             runs.append((command, modes,
                          "a force push to a branch rule %s protects (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
-        else:
-            report.line("note", "the %s policy has no protected_branch rule, so only a harmless command is probed" % host)
+        deploy = first_deploy_probe(policy_file)
+        if deploy is not None:
+            rule_id, mode, command, expired, modes = deploy
+            runs.append((command, modes,
+                         "a deploy to a host rule %s does not allow (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
+        if probe is None and deploy is None:
+            report.line("note", "the %s policy has no protected_branch or deploy_host rule, so only a harmless command is probed" % host)
         log = home / ("verify-company-%s.jsonl" % host)
         for command, modes, what in runs:
             expected = expected_effect(host, modes, ask_enabled=False)  # run directly, without --ask

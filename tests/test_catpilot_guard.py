@@ -360,7 +360,7 @@ class PackageSourceTests(unittest.TestCase):
         # -I: no environment variables, user site, or current directory; -S: no site-packages at all.
         proc = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", code, str(ROOT), *modules], capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(sorted(modules), ["company_rules", "copilot", "destructive", "evidence", "policy", "secrets", "session_start", "write_secrets"])
+        self.assertEqual(sorted(modules), ["company_rules", "copilot", "deploy_targets", "destructive", "evidence", "policy", "secrets", "session_start", "write_secrets"])
 
     def test_package_and_shims_parse_as_python_3_8(self):
         for path in self._sources() + [HOOK_DIR / shim for shim in SHIMS]:

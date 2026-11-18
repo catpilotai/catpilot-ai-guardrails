@@ -110,10 +110,10 @@ class PolicyFormatTests(unittest.TestCase):
                     pol.parse(raw)
                 self.assertEqual(caught.exception.args, ("malformed",))
 
-    def test_a_deploy_host_rule_is_carried_and_not_enforced(self):
+    def test_a_deploy_host_rule_is_carried_and_enforced(self):
         policy = parsed([branch_rule(), {"id": "deploy-hosts", "kind": "deploy_host", "mode": "block", "values": ["apps.example.org"]}])
         self.assertEqual([r.kind for r in policy.rules], ["protected_branch", "deploy_host"])
-        self.assertNotIn("deploy_host", pol.ENFORCED_KINDS)
+        self.assertIn("deploy_host", pol.ENFORCED_KINDS)
 
     def test_branch_values_match_like_the_built_in_check(self):
         cases = [("refs/heads/deploy", "deploy", True),("main", "main", True), ("main", "MAIN", True), ("main", "mainline", False), ("main", "", False),
@@ -469,7 +469,7 @@ class CompileTests(unittest.TestCase):
     def test_the_printout_names_rules_and_effects_never_values(self):
         code, out, err = self.compile()
         self.assertIn("protected-branches | protected_branch | block | deny | deny", out)
-        self.assertIn("deploy-hosts | deploy_host | monitor | not enforced in this release", out)
+        self.assertIn("deploy-hosts | deploy_host | monitor | log would_deny only | log would_deny only", out)
         for value in (BRANCH_MARKER, HOST_MARKER, "release/*", TEST_SALT):
             self.assertNotIn(value, out + err)
 
@@ -633,6 +633,27 @@ class DeployTests(unittest.TestCase):
             for branch in ("main", "release/x", "release", "deploy", "a/b/c", "a/b/", ""):
                 with self.subTest(value=value, branch=branch):
                     self.assertEqual(helper.branch_matches(value, branch), pol.branch_matches(value, branch))
+
+    def test_verify_reads_deploy_coverage_as_the_hook_does(self):
+        import importlib.util
+
+        from catpilot_guard.deploy_targets import SUFFIX, Target, host_covered
+
+        spec = importlib.util.spec_from_file_location("session_start_files_for_deploys", ORG / "session_start_files.py")
+        helper = importlib.util.module_from_spec(spec)
+        previous = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(helper)
+        finally:
+            sys.dont_write_bytecode = previous
+        for value in ("*.vercel.app", "vercel.app", "*.app.example", "*.surge.sh", "*.railway.app", "apps.example.org"):
+            for _, suffix in helper.DEPLOY_PROBES + (("", "up.railway.app"),):
+                with self.subTest(value=value, suffix=suffix):
+                    self.assertEqual(helper.suffix_covered(value, suffix), host_covered(value, Target(SUFFIX, suffix)))
+        from catpilot_guard.deploy_targets import deploy_targets
+        for command, suffix in helper.DEPLOY_PROBES:
+            self.assertEqual([(t.kind, t.name) for t in deploy_targets(command)], [(SUFFIX, suffix)])
 
     def test_requirements_refuses_enforce_without_rules(self):
         proc = subprocess.run([sys.executable, str(ORG / "session_start_files.py"), "requirements", "--codex-dir", "/etc/codex",

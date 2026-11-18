@@ -268,7 +268,7 @@ If your `requirements.toml` already has a `[hooks]` table with its own `managed_
 
 ## Company enforcement rules
 
-A version 2 rules file can carry an `enforcement` section: rules a hook applies exactly, each in `monitor`, `ask` or `block` ([`spec/OVERLAY_V2.md`](spec/OVERLAY_V2.md) §2.2 and §2.3). In this release the hook acts on `protected_branch` rules: a force push or deletion aimed at a branch the company protects, on top of the built-in list. `deploy_host` rules are validated and compiled, and not acted on yet.
+A version 2 rules file can carry an `enforcement` section: rules a hook applies exactly, each in `monitor`, `ask` or `block` ([`spec/OVERLAY_V2.md`](spec/OVERLAY_V2.md) §2.2 and §2.3). The hook acts on `protected_branch` rules, a force push or deletion aimed at a branch the company protects, on top of the built-in list, and on `deploy_host` rules, a deploy or publish to a host the company has not listed: `vercel`, `netlify deploy`, `fly deploy`, `firebase deploy`, `wrangler deploy`, `surge`, `gh-pages`, `railway up`, `amplify publish` and `git push heroku` deploy under the service's own domain, which only a value such as `*.vercel.app` covers, and `scp` and `rsync` uploads name their host ([exact coverage](../hooks/README.md#exact-coverage-3)). `deploy_host` is not verified on a host yet, so start its rules in `monitor`.
 
 When the file given to `install.sh --overlay` has an `enforcement` section, `install.sh` also:
 

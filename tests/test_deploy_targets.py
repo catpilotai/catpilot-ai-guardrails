@@ -1,0 +1,147 @@
+"""deploy_host rules: what a command deploys to (catpilot_guard/deploy_targets.py), and the company-rules hook's
+decision on it (docs/spec/OVERLAY_V2.md §2.2: an allow-list, so a target no value covers fires the rule)."""
+
+from __future__ import annotations
+
+import json
+import sys
+import unittest
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from catpilot_guard import company_rules as cr  # noqa: E402
+from catpilot_guard import policy as pol  # noqa: E402
+from catpilot_guard.deploy_targets import HOST, SUFFIX, UNKNOWN, Target, deploy_targets, host_covered  # noqa: E402
+
+MARKER = "zq-marker.apps.example.org"
+
+
+def targets(command):
+    return [(t.kind, t.name) for t in deploy_targets(command)]
+
+
+class DeployTargetTests(unittest.TestCase):
+    def test_hosting_services_deploy_under_their_own_domain(self):
+        cases = {
+            "vercel": "vercel.app", "vercel --prod": "vercel.app", "vc deploy --prod": "vercel.app",
+            "vercel --token t deploy": "vercel.app", "vercel ./dist": "vercel.app", "vercel redeploy https://x": "vercel.app",
+            "npx vercel deploy --prod": "vercel.app", "pnpm dlx vercel --prod": "vercel.app",
+            "netlify deploy --prod --dir dist": "netlify.app", "ntl deploy": "netlify.app",
+            "fly deploy -a myapp": "fly.dev", "flyctl deploy": "fly.dev", "fly launch": "fly.dev",
+            "firebase deploy --only hosting": "web.app",
+            "wrangler deploy": "workers.dev", "wrangler publish": "workers.dev", "wrangler pages deploy dist": "pages.dev",
+            "surge dist": "surge.sh", "npx gh-pages -d dist": "github.io", "railway up": "up.railway.app",
+            "amplify publish": "amplifyapp.com", "git push heroku main": "herokuapp.com",
+            "cd app && npm run build && vercel --prod": "vercel.app", "bash -lc 'netlify deploy --prod'": "netlify.app",
+            "npm run build\nnetlify deploy --prod": "netlify.app",
+        }
+        for command, suffix in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(SUFFIX, suffix)])
+
+    def test_named_destinations(self):
+        cases = {
+            "scp -r dist deploy@web1.example.org:/srv": [(HOST, "web1.example.org")],
+            "scp -P 2222 -i key dist/app.tar Web1.Example.org:app.tar": [(HOST, "web1.example.org")],
+            "rsync -av -e ssh dist/ app@apps.example.org:/var/www": [(HOST, "apps.example.org")],
+            "rsync -av dist/ rsync://mirror.example.net/site/": [(HOST, "mirror.example.net")],
+            "surge dist my-site.example.org": [(HOST, "my-site.example.org")],
+            "surge --domain x.surge.sh": [(HOST, "x.surge.sh")],
+            "rsync -avz dist/ $HOST:/srv": [(UNKNOWN, None)],
+            "scp dist/* ${DEPLOY_HOST}:/srv": [(UNKNOWN, None)],
+        }
+        for command, want in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), want)
+
+    def test_what_is_not_a_deploy(self):
+        for command in ("vercel env ls", "vercel dev", "vercel login", "netlify status", "netlify dev", "flyctl launch --no-deploy",
+                        "fly logs", "firebase login", "wrangler dev", "railway logs", "git push origin main", "git push",
+                        "scp deploy@web1.example.org:/srv/log.txt .", "scp file.txt ./copy", "rsync -av src/ dst/",
+                        "rsync -av rsync://mirror.example.net/x ./local", "ls", "echo vercel --prod", "npm run deploy"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
+
+    def test_coverage(self):
+        cases = [
+            ("*.vercel.app", Target(SUFFIX, "vercel.app"), True),
+            ("vercel.app", Target(SUFFIX, "vercel.app"), False),
+            ("*.railway.app", Target(SUFFIX, "up.railway.app"), True),
+            ("*.example.vercel.app", Target(SUFFIX, "vercel.app"), False),
+            ("*.example.org", Target(HOST, "web1.example.org"), True),
+            ("*.example.org", Target(HOST, "example.org"), False),
+            ("apps.example.org", Target(HOST, "apps.example.org"), True),
+            ("Apps.Example.org", Target(HOST, "apps.example.org"), True),
+            ("apps.example.org", Target(HOST, "web1.apps.example.org"), False),
+            ("*.example.org", Target(UNKNOWN), False),
+        ]
+        for value, target, want in cases:
+            with self.subTest(value=value, target=target):
+                self.assertIs(host_covered(value, target), want)
+
+
+def policy(values=("apps.example.org", "*.apps.example.org"), mode="block", use_instead=None, extra=()):
+    rule = {"id": "deploy-hosts", "kind": "deploy_host", "mode": mode, "values": list(values)}
+    if use_instead:
+        rule["use_instead_text"] = use_instead
+    return pol.parse(json.dumps({
+        "format": "catpilot-company-policy", "format_version": 1, "source_sha256": "c" * 64, "expires_on": "2099-01-01",
+        "rules": [rule, *extra],
+    }).encode())
+
+
+def bash(command):
+    return {"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/tmp", "permission_mode": "default"}
+
+
+class HookDecisionTests(unittest.TestCase):
+    def setUp(self):
+        self.lines = []
+        patcher = mock.patch.object(cr, "record_evidence", lambda event, hook_event=None, host=None, **f: self.lines.append((event, f)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def effect(self, command, **kw):
+        result = cr.decide(bash(command), kw.pop("host", "claude-code"), policy(**kw))
+        return result.get("hookSpecificOutput", {}).get("permissionDecision", "none")
+
+    def test_an_unlisted_target_fires_and_a_listed_one_does_not(self):
+        self.assertEqual(self.effect("vercel --prod"), "deny")
+        self.assertEqual(self.effect("scp -r dist deploy@web1.example.org:/srv"), "deny")
+        self.assertEqual(self.effect("rsync -av dist/ $HOST:/srv"), "deny")  # unknown: nothing covers it
+        self.assertEqual(self.effect("rsync -av dist/ deploy@apps.example.org:/srv"), "none")
+        self.assertEqual(self.effect("scp app.tar web2.apps.example.org:/srv"), "none")
+        self.assertEqual(self.effect("vercel --prod", values=("*.vercel.app",)), "none")
+        self.assertEqual(self.effect("ls && npm test"), "none")
+        self.assertEqual(self.effect("vercel env ls"), "none")
+
+    def test_every_target_must_be_covered(self):
+        self.assertEqual(self.effect("scp a apps.example.org:/srv && vercel --prod"), "deny")
+
+    def test_modes_and_hosts(self):
+        self.assertEqual(self.effect("netlify deploy --prod", mode="monitor"), "none")
+        self.assertEqual([(e, f["rule_id"], f["mode"]) for e, f in self.lines], [("would_deny", "deploy-hosts", "monitor")])
+        self.assertEqual(self.effect("netlify deploy --prod", mode="ask", host="codex"), "deny")
+
+    def test_the_reason_names_the_rule_and_alternative_never_the_host(self):
+        result = cr.decide(bash("scp -r dist deploy@%s:/srv" % MARKER), "claude-code",
+                           policy(values=("apps.example.org",), use_instead="Internal App Platform (company sign-in)"))
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("Catpilot company rule `deploy-hosts`: this command deploys or publishes to a host the company has not approved.", reason)
+        self.assertIn("Use instead: Internal App Platform (company sign-in).", reason)
+        for text in (MARKER, "apps.example.org", "scp"):
+            self.assertNotIn(text, reason)
+        self.assertEqual(self.lines[0][1], {"tool": "Bash", "rule_id": "deploy-hosts", "mode": "block", "policy_sha256": "c" * 64})
+
+    def test_protected_branch_and_deploy_host_rules_together(self):
+        branch = {"id": "protected-branches", "kind": "protected_branch", "mode": "block", "values": ["main"]}
+        result = cr.decide(bash("git push --force origin main && vercel --prod"), "claude-code", policy(mode="monitor", extra=(branch,)))
+        self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(sorted((e, f["rule_id"]) for e, f in self.lines), [("deny", "protected-branches"), ("would_deny", "deploy-hosts")])
+
+
+if __name__ == "__main__":
+    unittest.main()
