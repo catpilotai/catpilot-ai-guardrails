@@ -31,9 +31,12 @@ Scope, stated exactly:
         dd to a raw block device; a force push (--force, -f, --force-with-lease,
         or a +refspec) or a deletion aimed at main, master, trunk, production,
         prod, staging, develop, or release/*, including a bare `git push -f`
-        while the checked-out branch is one of those; git push --mirror, --all
-        or --branches with a force or --prune, and a forced or pruned refspec
-        pattern (an option's value, as in -o ci.skip, is not read as the remote)
+        while the checked-out branch is one of those (unknown, so blocked, after
+        a command in the line that may change it: commands_with_branch_context);
+        git push --mirror, --all or --branches with a force or --prune, a forced
+        or pruned refspec pattern, a forced matching refspec, and a push
+        remote.<name>.mirror or remote.<name>.push makes a mirror (an option's
+        value, as in -o ci.skip, is not read as the remote)
       * unconfirmed database or cache wipes: `prisma db push --accept-data-loss`,
         `prisma migrate reset --force`, `rails`/`rake` `db:drop`/`db:reset`/
         `db:schema:load`/`db:structure:load`, Django `flush --noinput`,
@@ -412,20 +415,35 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     substitution and a bare force push are then None. The built-in check (_git_finding) treats None as protected, and the company-rules hook
     (catpilot_guard/company_rules.py) fires every protected_branch rule on it; both read pushes this way.
     """
-    index, repo, git_dir_path, configs = 0, cwd, None, []
+    known_branch = str(cwd) if isinstance(cwd, KnownBranch) else None
+    repo = None if known_branch is not None else cwd
+    index, git_dir_path, configs, unknown = 0, None, [], cwd is None
     while index < len(args) and (args[index].startswith("-") or args[index].startswith(("$", "`"))):
-        arg = args[index]  # a variable before the subcommand is read as an option (`git $OPTS push`)
-        if arg == "-C" and index + 1 < len(args):
+        arg = args[index]
+        if arg.startswith(("$", "`")):
+            unknown = True  # a variable before the subcommand may hold any option (`git $OPTS push`, OPTS=-C ../x)
+            index += 1
+        elif arg == "-C" and index + 1 < len(args):
             repo = os.path.join(repo, os.path.expanduser(args[index + 1])) if repo is not None else None
+            known_branch = None  # another repository: a branch known for this one says nothing about it
+            unknown = unknown or repo is None
             index += 2
         elif arg == "-c" and index + 1 < len(args):
             configs.append(args[index + 1].lower())
             index += 2
+        elif arg == "--config-env" and index + 1 < len(args):
+            configs.append(args[index + 1].lower())  # NAME=ENVVAR: the value is unknown, the setting is not
+            index += 2
+        elif arg.startswith("--config-env="):
+            configs.append(arg[len("--config-env="):].lower())
+            index += 1
         elif arg == "--git-dir" and index + 1 < len(args):
-            git_dir_path = args[index + 1]
+            git_dir_path, known_branch = args[index + 1], None
+            unknown = unknown or repo is None
             index += 2
         elif arg.startswith("--git-dir="):
-            git_dir_path = arg[len("--git-dir="):]
+            git_dir_path, known_branch = arg[len("--git-dir="):], None
+            unknown = unknown or repo is None
             index += 1
         elif arg in GIT_VALUE_OPTIONS:
             index += 2
@@ -455,7 +473,8 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
         elif arg.startswith("--"):
             continue
         elif arg.startswith("-") and len(arg) > 1:
-            if "$" in arg or "`" in arg:
+            letters = arg[1:].split("o", 1)[0]  # what follows an o is -o's value (`-o"$OPT"`)
+            if "$" in letters or "`" in letters:
                 force = True  # `-$F`: the variable may hold f
             for position, letter in enumerate(arg[1:], start=1):
                 if letter == "o":  # -o takes a value: the rest of the cluster, or the next argument
@@ -475,15 +494,23 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     if len(literal) >= 2 and any(variable(word) and any(not variable(after) for after in positional[i + 1:])
                                  for i, word in enumerate(positional)):
         force = True  # a variable before a literal word may hold --force
-    known = cwd is not None
+    known = not unknown
 
     def checked_out() -> str | None:
-        return current_branch(repo, git_dir_path) if known else None
+        if not known:
+            return None
+        return known_branch if known_branch is not None else current_branch(repo, git_dir_path)
 
-    if len(positional) <= 1 and any(c.startswith("remote.") and ".push=" in c for c in configs):
+    settings = [c.replace(" ", "") for c in configs]
+    if any(re.fullmatch(r"remote\..+\.mirror=(?!false$|no$|off$|0$).*", c) or re.fullmatch(r"remote\..+\.mirror", c) for c in settings):
+        mirror = True  # remote.<name>.mirror makes a push behave as --mirror
+    if len(positional) <= 1 and any(c.startswith("remote.") and ".push=" in c for c in settings):
         mirror = True  # the configured refspecs may rewrite any branch
-    if len(positional) <= 1 and force and any(c.replace(" ", "") == "push.default=matching" for c in configs):
+    if len(positional) <= 1 and force and "push.default=matching" in settings:
         mirror = True  # a forced matching push rewrites every branch both sides have
+    if len(positional) <= 1 and any(c in ("push.default=upstream", "push.default=tracking") or c.startswith("branch.")
+                                    for c in settings):
+        known = False  # the bare push goes to the configured upstream, not to a branch of the same name
     branches: list[str | None] = []
     if not mirror:
         for spec in positional[1:]:
@@ -503,8 +530,11 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
             if not (delete or plus or force or (":" in spec and source == "")):
                 continue
             if CURRENT_BRANCH_SUBSTITUTION.fullmatch(destination):
-                # The shell runs it in its own directory, not in -C's repository.
-                branches.append(current_branch(cwd) if known else None)
+                # The shell runs it where it is, not in -C's repository.
+                if cwd is None or (unknown and not isinstance(cwd, KnownBranch)):
+                    branches.append(None)
+                else:
+                    branches.append(str(cwd) if isinstance(cwd, KnownBranch) else current_branch(cwd))
                 continue
             if "$" in destination or "`" in destination:
                 branches.append(None)  # a variable or a substitution: the branch is unknown
@@ -523,50 +553,130 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
 
 # What can change which branch a later command in the same line has checked out, or where it runs: the checked-out
 # branch is then unknown for the rest of the line (commands_with_branch_context).
-CONTEXT_COMMANDS = {"cd", "pushd", "popd", "source", ".", "eval", "exec", "alias"}
-GIT_CONTEXT_SUBCOMMANDS = {"checkout", "switch", "symbolic-ref"}
-GIT_ENVIRONMENT = re.compile(r"\bGIT_(?:DIR|WORK_TREE|COMMON_DIR)\b")
-FUNCTION_DEFINITION = re.compile(r"\bfunction\s+\S|(?<![\w$])[A-Za-z_][\w.:-]*\s*\(\s*\)")
-# An unquoted current-branch substitution, quoted before splitting so it reads as one word.
-UNQUOTED_CURRENT_BRANCH = re.compile(
-    r"(?<![\"'\\])(?:\$\(\s*git\s+(?:branch\s+--show-current|rev-parse\s+--abbrev-ref\s+HEAD|symbolic-ref\s+(?:-q\s+)?"
-    r"--short\s+HEAD)\s*\)|`\s*git\s+(?:branch\s+--show-current|rev-parse\s+--abbrev-ref\s+HEAD|symbolic-ref\s+(?:-q\s+)?"
-    r"--short\s+HEAD)\s*`)(?![\"'])"
-)
+CONTEXT_COMMANDS = {"cd", "chdir", "pushd", "popd", "source", ".", "eval", "exec", "alias"}
+GIT_CONTEXT_SUBCOMMANDS = {"checkout", "switch", "symbolic-ref", "init"}
+# An assignment that points git at another repository or adds configuration (GIT_CONFIG_COUNT/KEY_n/VALUE_n can set
+# remote.<name>.mirror): read as a word of its own, so a quoted mention in a message is not one.
+GIT_ENVIRONMENT_ASSIGNMENT = re.compile(r"GIT_(?:DIR|WORK_TREE|COMMON_DIR|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+|CONFIG_PARAMETERS)=")
+REBASE_VALUE_OPTIONS = {"--onto", "-X", "-s", "--strategy", "--strategy-option", "-x", "--exec", "-C"}
 
 
-def _git_subcommand(args: list[str]) -> str | None:
+class KnownBranch(str):
+    """A branch a command earlier in the line checked out by name (`git switch feature-x`), for git_push_rewrites to
+    read instead of a directory's HEAD."""
+
+
+def _git_subcommand(args: list[str]) -> tuple[str | None, list[str]]:
+    """git's subcommand and its arguments, skipping git's own options (and a variable, which may hold one)."""
     index = 0
-    while index < len(args) and args[index].startswith("-"):
-        index += 2 if args[index] in ("-C", "-c", "--git-dir") or args[index] in GIT_VALUE_OPTIONS else 1
-    return args[index] if index < len(args) else None
+    while index < len(args) and args[index].startswith(("-", "$", "`")):
+        index += 2 if args[index] in ("-C", "-c", "--git-dir", "--config-env") or args[index] in GIT_VALUE_OPTIONS else 1
+    return (args[index], args[index + 1:]) if index < len(args) else (None, [])
 
 
-def _changes_branch_context(argv: list[str]) -> bool:
+def _local_branch_exists(cwd: str, name: str) -> bool:
+    """Whether refs/heads/<name> exists in cwd's repository, as a loose ref or in packed-refs."""
+    try:
+        git_dir = _git_dir(Path(cwd).expanduser().resolve())
+        if git_dir is None or not name or ".." in name or name.startswith(("/", "-")):
+            return False
+        if (git_dir / "refs" / "heads" / name).is_file():
+            return True
+        packed = (git_dir / "packed-refs").read_text(encoding="utf-8", errors="replace")
+        return any(line.split(" ", 1)[-1].strip() == "refs/heads/" + name for line in packed.splitlines())
+    except OSError:
+        return False
+
+
+def _branch_after(argv: list[str], branch_cwd):
+    """The branch context after argv: branch_cwd unchanged, a KnownBranch, or None (unknown)."""
     name = os.path.basename(argv[0])
     if name in CONTEXT_COMMANDS:
-        return True
-    if name == "git":
-        sub = _git_subcommand(argv[1:])
-        if sub in GIT_CONTEXT_SUBCOMMANDS:
+        return None
+    if name == "gh":
+        return None if argv[1:3] == ["pr", "checkout"] or argv[1:2] == ["co"] else branch_cwd
+    if name != "git":
+        return branch_cwd
+    sub, rest = _git_subcommand(argv[1:])
+    if any(a.startswith(("-C", "--git-dir", "--work-tree")) or a.startswith(("$", "`")) for a in argv[1:argv.index(sub) if sub in argv else len(argv)]):
+        # Another repository, or a variable that may name one: what it checks out is not this one's branch.
+        return branch_cwd if sub not in GIT_CONTEXT_SUBCOMMANDS and sub not in ("branch", "rebase", "stash") else None
+    if sub in ("switch", "checkout"):
+        words = [a for a in rest if not a.startswith("-")]
+        create = [a for a in rest if a in ("-c", "-C", "--create", "--force-create", "-b", "-B", "--orphan")]
+        if "--" in rest or "--detach" in rest or "-d" in rest:
+            return None
+        if create and words:
+            return KnownBranch(words[0])  # `git switch -c X`, `git checkout -b X [start]`
+        if sub == "switch" and len(words) == 1:
+            return KnownBranch(words[0])
+        if sub == "checkout" and len(words) == 1 and branch_cwd is not None and not isinstance(branch_cwd, KnownBranch) \
+                and _local_branch_exists(branch_cwd, words[0]):
+            return KnownBranch(words[0])  # an existing local branch, which git checks out rather than a path
+        return None
+    if sub in ("symbolic-ref", "init"):
+        return None
+    if sub == "branch":  # `git branch -m main` renames the checked-out branch
+        moves = any(a in ("--move", "-m", "-M") or (a.startswith("-") and not a.startswith("--") and set(a[1:]) & {"m", "M"})
+                    for a in rest)
+        return None if moves else branch_cwd
+    if sub == "rebase":  # `git rebase <upstream> <branch>` checks out <branch> first
+        words, skip = [], False
+        for a in rest:
+            if skip:
+                skip = False
+            elif a in REBASE_VALUE_OPTIONS:
+                skip = True
+            elif not a.startswith("-"):
+                words.append(a)
+        return None if len(words) >= 2 else branch_cwd
+    if sub == "stash" and rest[:1] == ["branch"]:
+        return None
+    return branch_cwd
+
+
+def _defines_function_or_points_git(command: str) -> bool:
+    """Whether the line defines a function (`name() ...`, `function name`), which may stand in for git, or assigns a
+    GIT_* variable that points git elsewhere, or names a directory for env (`env -C`, `--chdir`), read from the
+    shell words, so a quoted mention (`-m "fix parse() edge case"`) is not one."""
+    tokens = _tokens(command)
+    command_start = True
+    for i, token in enumerate(tokens):
+        if token in SEPARATORS or set(token) <= set(";&|()\n"):
+            if token.startswith("()") and i > 0 and not tokens[i - 1].endswith("$") and tokens[i - 1] not in SEPARATORS:
+                return True  # `name()`, the parentheses split off as one token
+            if token == "(" and i > 0 and i + 1 < len(tokens) and tokens[i + 1].startswith(")") and not tokens[i - 1].endswith("$"):
+                return True
+            command_start = True
+            continue
+        if command_start and token == "function":
             return True
-        if sub == "branch":  # `git branch -m main` renames the checked-out branch
-            return any(a in ("--move", "-m", "-M") or (a.startswith("-") and not a.startswith("--") and set(a[1:]) & {"m", "M"})
-                       for a in argv[2:])
-    return name == "gh" and argv[1:3] == ["pr", "checkout"]
+        if GIT_ENVIRONMENT_ASSIGNMENT.match(token):
+            return True
+        if token == "--chdir" or token.startswith("--chdir="):
+            return True
+        if token == "env":
+            for option in tokens[i + 1:]:
+                if not option.startswith("-"):
+                    break
+                if option == "-C" or (not option.startswith("--") and "C" in option[1:]):
+                    return True
+        command_start = False
+    return False
 
 
 def commands_with_branch_context(command: str, cwd: str | None):
-    """Each simple command, with the directory to read the checked-out branch from, or None when it is unknown: after
-    an earlier command in the line that changes directory or branch (`cd`, `git checkout`, `git switch`, `gh pr
-    checkout`, `source`, ...), and anywhere in a line that sets GIT_DIR or GIT_WORK_TREE or defines a function (which
-    may stand in for git). A script or program run earlier in the line that switches branches is not seen."""
-    command = UNQUOTED_CURRENT_BRANCH.sub(lambda m: '"%s"' % m.group(0), command)
-    branch_cwd = None if (GIT_ENVIRONMENT.search(command) or FUNCTION_DEFINITION.search(command)) else cwd
+    """Each simple command, with what git_push_rewrites reads the checked-out branch from: cwd's HEAD, a KnownBranch
+    a command earlier in the line switched to by name (`git switch X`, `git checkout -b X`, or `git checkout X` for an
+    existing local branch), or None (unknown) after a command that may change it otherwise or the directory (`cd`,
+    `pushd`, `git checkout <commit>`, `git init`, `git rebase <upstream> <branch>`, `git stash branch`, `git branch -m`,
+    `gh pr checkout`, `source`, `eval`), and anywhere in a line that defines a function (which may stand in for git),
+    assigns a GIT_* variable that points git elsewhere, or gives env a directory. A script or program run earlier in
+    the line that switches branches is not seen, nor a setting in git's config files."""
+    branch_cwd = None if _defines_function_or_points_git(command) else cwd
     for argv in _simple_commands(command):
         yield argv, branch_cwd
-        if _changes_branch_context(argv):
-            branch_cwd = None
+        branch_cwd = _branch_after(argv, branch_cwd)
 
 
 def _git_finding(args: list[str], cwd: str | None) -> bool:

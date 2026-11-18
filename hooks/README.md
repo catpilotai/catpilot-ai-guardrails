@@ -187,17 +187,25 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   `"${TARGET}"`, `${B:-main}`, a backtick) names a branch the hook cannot
   read, so it is blocked like an unreadable checked-out branch; an ordinary
   push to a variable is not. Three exceptions:
-  - A substitution that asks git for the checked-out branch
-    (`"$(git branch --show-current)"`, `$(git rev-parse --abbrev-ref HEAD)`,
-    `$(git symbolic-ref --short HEAD)`, quoted or not, or in backticks) is read
-    as that branch.
+  - A substitution that asks git for the checked-out branch, as one quoted
+    word (`"$(git branch --show-current)"`, `"$(git rev-parse --abbrev-ref
+    HEAD)"`, `"$(git symbolic-ref --short HEAD)"`, or the same in backticks),
+    is read as that branch. Unquoted, the shell-word reader splits it, so it
+    is unknown and blocked.
   - So are `HEAD` and `@`, and `heads/main` as `main`.
-  - The checked-out branch counts as unknown, and so blocked, after a command
-    earlier in the same line that may change it or the directory (`cd`,
-    `pushd`, `git checkout`, `git switch`, `git branch -m`, `gh pr checkout`,
-    `source`, `eval`), and anywhere in a line that sets `GIT_DIR` or
-    `GIT_WORK_TREE` or defines a function. A script run earlier in the line
-    that switches branches is not seen.
+  - After a command earlier in the same line that checks out a branch by
+    name (`git switch X`, `git switch -c X`, `git checkout -b X`, or `git
+    checkout X` for an existing local branch), the branch is X. After one that
+    may change it otherwise or the directory, it is unknown, and so blocked:
+    `cd`, `chdir`, `pushd`, `git checkout` of anything else, `git init`, `git
+    rebase <upstream> <branch>`, `git stash branch`, `git branch -m`, `gh pr
+    checkout`, `gh co`, `source` or `eval`. It is also unknown anywhere in a
+    line that defines a function (`name()`, `function name`), assigns
+    `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` or a `GIT_CONFIG_*` variable,
+    gives env a directory (`env -C`, `--chdir`), or puts a variable before
+    git's subcommand. These are read as shell words, so a mention inside a
+    quoted message does not count. A script run earlier in the line that
+    switches branches is not seen.
 
   A word that starts with a variable may hold an option. When it is followed
   by a literal word, with two literal words besides (`git push $F origin
@@ -207,10 +215,13 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
 
   Also blocked:
   - the matching refspec (`:`) with a force or a `+`;
-  - a bare push given `-c remote.<name>.push=...`;
-  - a bare push given `-c push.default=matching` with a force.
+  - a push given `-c remote.<name>.mirror` (it acts as `--mirror`);
+  - a bare push given `-c remote.<name>.push=...` or `--config-env` for it;
+  - a bare push given `-c push.default=matching` with a force;
+  - a bare force push given `-c push.default=upstream` or a `branch.*`
+    setting, whose destination is then unknown.
 
-  A matching or `remote.*.push` setting in git's config files is not read. An
+  These settings in git's config files are not read. An
   option's value (`-o ci.skip`, `--push-option`, `--repo`) is not read as the
   remote.
 - Database and cache resets: `prisma db push --accept-data-loss`, `prisma

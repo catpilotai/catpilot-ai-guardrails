@@ -23,8 +23,12 @@ What it scans, exactly (by file name; every other file is ignored):
                                  repository (its `pre:` runs before the first step); any other variable or `${{ ... }}` stays unknown, so a
                                  destination or a branch taken from one is one the check cannot read, which fires (as
                                  in the hook). A run step whose shell (its own, or `defaults.run.shell` of its job or
-                                 workflow, or pwsh on a literal Windows runner) is not bash or sh, with only the plain
-                                 options `_readable_shell` allows, cannot be read; PowerShell is not read. Each step's `uses:`
+                                 workflow, or pwsh on a Windows runner named literally, also in a runs-on mapping's
+                                 labels) is not bash or sh, with only the plain options `_readable_shell` allows,
+                                 cannot be read; PowerShell is not read. On a runner the check cannot read (a matrix
+                                 expression, a group with no labels) a step with no shell is read as bash, unless it
+                                 holds what only PowerShell reads (`<#`, `Invoke-Expression`, `iex`, the `&` call
+                                 operator), and then it cannot be read. Each step's `uses:`
                                  naming a deploy action (DEPLOY_ACTIONS) or a force-pushing action (PUSH_ACTIONS), and
                                  a `docker://` step's `entrypoint` and `args`, as a command
   action.yml|yaml (anywhere)     the same, for the steps of a composite action (`runs.steps`), with no env: value
@@ -619,14 +623,32 @@ def _readable_shell(shell: str | None) -> bool:
     return True
 
 
-def _windows_runner(job) -> bool:
-    """Whether a job's runs-on names a Windows runner literally, where a step with no shell runs pwsh. A runner given
-    by an expression (a matrix) is not known, and its steps are read as bash."""
+def _runner_labels(job) -> tuple:
+    """(literal labels, unresolved): runs-on as a label, a list, or a mapping's `labels`. unresolved is True for an
+    expression (a matrix) or a mapping with no labels (a runner group), whose operating system the check cannot read."""
+    labels, unresolved = [], False
     for runs_on in _values(job, "runs-on"):
-        labels = runs_on.value if isinstance(runs_on, yaml.SequenceNode) else [runs_on]
-        if any(isinstance(label, yaml.ScalarNode) and "windows" in label.value.lower() for label in labels):
-            return True
-    return False
+        nodes = runs_on.value if isinstance(runs_on, yaml.SequenceNode) else [runs_on]
+        if isinstance(runs_on, yaml.MappingNode):
+            found = _values(runs_on, "labels")
+            nodes = [n for f in found for n in (f.value if isinstance(f, yaml.SequenceNode) else [f])]
+            unresolved = unresolved or not nodes
+        for node in nodes:
+            if isinstance(node, yaml.ScalarNode) and "${{" not in node.value:
+                labels.append(node.value.lower())
+            else:
+                unresolved = True
+    return labels, unresolved
+
+
+def _windows_runner(job) -> bool:
+    """Whether a job's runs-on names a Windows runner literally, where a step with no shell runs pwsh."""
+    return any("windows" in label for label in _runner_labels(job)[0])
+
+
+# What only PowerShell reads as a command or a comment, in a step that may run in pwsh (a runner the check cannot
+# read): such a step is unreadable rather than read with shell rules.
+POWERSHELL_ONLY = re.compile(r"<#|#>|\binvoke-expression\b|\biex\b|\bstart-process\b|^\s*&\s|[;|]\s*&\s", re.IGNORECASE | re.MULTILINE)
 
 
 def _default_shell(node, inherited: str | None) -> str | None:
@@ -653,7 +675,7 @@ def _docker_command(*parts) -> str:
     return " ".join(part for part in parts if part and part.strip())
 
 
-def _step_items(step, levels: list | None, default_shell: str | None) -> list:
+def _step_items(step, levels: list | None, default_shell: str | None, maybe_pwsh: bool = False) -> list:
     """A step's commands, targets and pushes. levels None: an earlier step may have changed any variable, so no
     env: value is substituted, not even the step's own (GitHub does not document whether it beats GITHUB_ENV)."""
     env = {} if levels is None else _merge_env(levels + [_env_level(step)])
@@ -665,7 +687,7 @@ def _step_items(step, levels: list | None, default_shell: str | None) -> list:
         if not (isinstance(key, yaml.ScalarNode) and isinstance(value, yaml.ScalarNode)):
             continue
         if key.value == "run":
-            if _readable_shell(shell):
+            if _readable_shell(shell) and not (shell is None and maybe_pwsh and POWERSHELL_ONLY.search(value.value)):
                 items.append(_run_item(key, value, env))
             else:
                 items.append(UnreadableStep(key.start_mark.line + 1))
@@ -705,24 +727,32 @@ def _runs_code(step) -> bool:
     return False
 
 
+# GitHub's own actions whose action.yml declares no `pre:` (read from each repository's default branch on 2026-11-17).
+NO_PRE_ACTIONS = {
+    "actions/checkout", "actions/setup-node", "actions/setup-python", "actions/setup-go", "actions/setup-java",
+    "actions/setup-dotnet", "actions/cache", "actions/upload-artifact", "actions/download-artifact",
+    "actions/github-script", "actions/configure-pages", "actions/upload-pages-artifact", "actions/deploy-pages",
+}
+
+
 def _runs_pre(step) -> bool:
     """Whether a step's action may have a `pre:` (or `pre-entrypoint:`), which runs at the start of the job, before
-    the first step: any action from another repository but actions/checkout. Local actions cannot have one."""
+    the first step: any action from another repository but NO_PRE_ACTIONS. Local actions cannot have one."""
     for uses in _values(step, "uses"):
         name = uses.value.strip().lower() if isinstance(uses, yaml.ScalarNode) else "?"
-        if not name.startswith(("./", "docker://")) and name.split("@", 1)[0] != "actions/checkout":
+        if not name.startswith(("./", "docker://")) and name.split("@", 1)[0] not in NO_PRE_ACTIONS:
             return True
     return False
 
 
-def _steps_items(steps, levels: list, shell: str | None, code_ran: bool = False) -> list:
+def _steps_items(steps, levels: list, shell: str | None, code_ran: bool = False, maybe_pwsh: bool = False) -> list:
     """The items of one job's (or composite action's) steps, in order: env: values are substituted only until a step
     that can run code, since it may set any variable for the steps after it. An action's `pre:` runs before the
     first step, so a job with one substitutes nothing; code_ran True substitutes nothing either."""
     items = []
     code_ran = code_ran or any(_runs_pre(step) for step in steps.value)
     for step in steps.value:
-        items.extend(_step_items(step, None if code_ran else levels, shell))
+        items.extend(_step_items(step, None if code_ran else levels, shell, maybe_pwsh))
         code_ran = code_ran or _runs_code(step)
     return items
 
@@ -737,9 +767,10 @@ def scan_workflow(raw: str) -> list:
             shell = _default_shell(job, workflow_shell)
             if shell is None and _windows_runner(job):
                 shell = "pwsh"  # GitHub's default shell on Windows runners
+            maybe_pwsh = shell is None and _runner_labels(job)[1]
             for steps in _values(job, "steps"):
                 if isinstance(steps, yaml.SequenceNode):
-                    items.extend(_steps_items(steps, [workflow_env, _env_level(job)], shell))
+                    items.extend(_steps_items(steps, [workflow_env, _env_level(job)], shell, maybe_pwsh=maybe_pwsh))
     return items
 
 

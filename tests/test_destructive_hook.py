@@ -161,11 +161,6 @@ DENIED = {
     "a variable that may hold --force": "git push origin $F main",
     # Review of #133: the checked-out branch is unknown after a command that may change it, or with GIT_DIR or a
     # function standing in for git; a variable before literal words may hold --force; git's other spellings.
-    "substitution after cd": 'cd ../other && git push -f origin "$(git branch --show-current)"',
-    "HEAD after checkout": "git checkout main && git push --force-with-lease origin HEAD",
-    "bare push after switch": "git switch main; git push -f",
-    "substitution with a git function": 'git() { echo main; }; git push -f origin "$(git branch --show-current)"',
-    "bare push with GIT_DIR": "export GIT_DIR=../b/.git; git push -f",
     "a variable before the remote": "git push $F origin main",
     "a variable option cluster": "git push -$F origin main",
     "a variable git option": "git $OPTS push -f origin main",
@@ -389,8 +384,7 @@ class DestructiveHookTests(unittest.TestCase):
                 with self.subTest(branch=branch):
                     head.write_text(f"ref: refs/heads/{branch}\n")
                     for command in ("git push -f", "git push --force-with-lease origin", "git push --force origin HEAD",
-                                    "git push -f origin @", "git push --force-with-lease origin $(git branch --show-current)",
-                                    "git push -f origin `git rev-parse --abbrev-ref HEAD`",
+                                    "git push -f origin @",
                                     'git push --force-with-lease origin "$(git branch --show-current)"',
                                     "git push -f origin '`git rev-parse --abbrev-ref HEAD`'".replace("'", '"'),
                                     'git push -f origin HEAD:"$(git symbolic-ref --short HEAD)"'):
@@ -401,6 +395,49 @@ class DestructiveHookTests(unittest.TestCase):
             head.write_text("0123456789abcdef0123456789abcdef01234567\n")  # detached: branch unknown, so it blocks
             payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git push -f"}, "cwd": str(repo)})
             self.assertEqual(json.loads(run_hook(payload).stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_the_checked_out_branch_after_a_command_that_may_change_it(self):
+        # Run on a feature branch, so only the context rule can block (review of #133). Each blocked command has an
+        # allowed counterpart.
+        blocked = [
+            'cd ../main && git push -f origin "$(git branch --show-current)"',
+            "cd ../main && git push -f", "pushd ../main && git push --force-with-lease", "chdir ../main; git push -f",
+            "git checkout main && git push --force-with-lease origin HEAD", "git switch main; git push -f",
+            "git switch -c main && git push -f origin HEAD", "git checkout -b main && git push -f origin @",
+            'git() { echo main; }; git push -f origin "$(git branch --show-current)"', "function git { :; }; git push -f",
+            "git \\\n() { :; }; git push -f",
+            "export GIT_DIR=../b/.git; git push -f", "GIT_DIR=../b/.git git push -f origin HEAD", "env GIT_WORK_TREE=x git push -f",
+            "env -C ../main git push -f", "env --chdir=../main git push -f",
+            "git rebase origin/main main && git push -f", "git init -b main && git push -u --force origin HEAD",
+            "git stash branch main && git push -f", "gh pr checkout 12 && git push -f", "gh co 12 && git push -f",
+            "git branch -m main && git push -f", "git $OPTS push -f", "git $OPTS push --force origin HEAD",
+            "git $OPTS checkout main && git push -f", "git -c push.default=upstream push -f origin",
+            # Unquoted, the substitution is split into words and read as unknown (only the quoted form is read).
+            "git push --force-with-lease origin $(git branch --show-current)",
+            'bash -c "echo on $(git branch --show-current); git push -f origin main"',
+            'sh -c "git fetch; echo $(git branch --show-current); rm -rf ~"',
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true git push -f origin",
+        ]
+        allowed = [
+            'git push --force-with-lease origin "$(git branch --show-current)"', "git push --force-with-lease", "git push -f origin HEAD",
+            "cd sub && git push -u origin feature-x", "git switch feature-y && git push --force-with-lease",
+            "git checkout feature-y && git rebase main && git push --force-with-lease", "git checkout -b feat-2 && git push -fu origin HEAD",
+            "git rebase main && git push --force-with-lease", 'git commit --amend -m "fix parse() edge case" && git push --force-with-lease',
+            'python -c "import app; app.main()" && git push --force-with-lease', 'echo "fn()" && git push --force-with-lease',
+            'git commit -m "explain GIT_DIR=x" && git push -f origin HEAD'.replace("=x", ""),
+            "git commit -m \"$(cat <<'EOF'\nfix parse() bug\nEOF\n)\" && git push --force-with-lease",
+            'git push -o"$OPT" origin feature-z', "git push origin main \"$TAG\"",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".git" / "refs" / "heads").mkdir(parents=True)
+            (repo / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
+            (repo / ".git" / "refs" / "heads" / "feature-y").write_text("0" * 40 + "\n")
+            for command, expected in [(c, "deny") for c in blocked] + [(c, None) for c in allowed]:
+                with self.subTest(command=command):
+                    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(repo)})
+                    out = json.loads(run_hook(payload).stdout)
+                    self.assertEqual(out.get("hookSpecificOutput", {}).get("permissionDecision"), expected)
 
     def test_works_without_its_sibling_hooks(self):
         with tempfile.TemporaryDirectory() as tmp:

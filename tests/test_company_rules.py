@@ -324,6 +324,28 @@ class DecisionTests(unittest.TestCase):
                 cr.decide(event, "claude-code", parsed())
 
 
+class BranchContextTests(unittest.TestCase):
+    """The company rules read the checked-out branch as the built-in check does: unknown after a command that may
+    change it, known after `git switch X` (review of #133). Run on a feature branch, so only that rule decides."""
+
+    def test_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").mkdir()
+            (Path(tmp) / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
+            policy = parsed([branch_rule(values=("main",))])
+            fired = lambda command: [r.id for r in cr.matched_rules(command, tmp, policy)]
+            for command in ("cd ../m && git push -f", "git checkout main && git push -f origin HEAD", "git switch main && git push -f",
+                            'git() { :; }; git push -f origin "$(git branch --show-current)"', "env -C ../m git push -f"):
+                with self.subTest(command=command):
+                    self.assertEqual(fired(command), ["protected-branches"])
+            for command in ("git push -f", 'git push -f origin "$(git branch --show-current)"', "git switch other && git push -f",
+                            'git commit -m "fix parse() bug" && git push --force-with-lease'):
+                with self.subTest(command=command):
+                    self.assertEqual(fired(command), [])
+            # No checkout's branch is the workflow's (the pull-request check): unknown, so it fires.
+            self.assertEqual([r.id for r in cr.matched_rules("git push -f", tmp, policy, branch_known=False)], ["protected-branches"])
+
+
 class ArgumentTests(unittest.TestCase):
     def test_parse_args(self):
         cases = [

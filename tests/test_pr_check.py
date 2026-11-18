@@ -403,6 +403,8 @@ class EnvTests(unittest.TestCase):
         self.assertEqual(self.fired(text), ["protected-branches"])
         self.assertEqual(self.fired(self.doc(job_env="B: feature\n") + "      - uses: ./local-action\n"), [])
         self.assertEqual(self.fired(self.doc(job_env="B: feature\n") + "      - uses: actions/checkout@v4\n"), [])
+        # GitHub's own actions with no pre: (NO_PRE_ACTIONS) leave env: values readable.
+        self.assertEqual(self.fired(self.doc(job_env="B: feature\n") + "      - uses: actions/setup-node@v4\n"), [])
 
     def test_the_branch_a_workflow_runs_on_is_unknown_even_inside_a_checkout(self):
         # check_file's directory may sit inside a git work tree (a TMPDIR under a repository): its branch is not the
@@ -494,6 +496,22 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(findings(".github/workflows/d.yml", text), [(8, None, "error"), (12, None, "error"), (14, None, "error")])
         self.assertEqual(findings(".github/workflows/d.yml", text, rules=[host_rule("monitor")]),
                          [(8, None, "warning"), (12, None, "warning"), (14, None, "warning")])
+
+    def test_runners_given_as_a_mapping_or_an_expression(self):
+        def job(runs_on, run):
+            return "name: ci\non: push\njobs:\n  w:\n    runs-on: %s\n    steps:\n      - run: %s\n" % (runs_on, run)
+        hidden = "\"<# note #> git push --force origin main\""
+        # A mapping's labels are read: a Windows label makes a step with no shell PowerShell, so unreadable.
+        self.assertEqual(findings(".github/workflows/d.yml", job("{group: org, labels: [windows-latest]}", "echo ok")), [(7, None, "error")])
+        self.assertEqual(findings(".github/workflows/d.yml", job("{group: org, labels: [ubuntu-latest]}", "echo ok")), [])
+        # A runner the check cannot read: shell rules, unless the script holds what only PowerShell reads.
+        for runs_on in ("${{ matrix.os }}", "{group: org-runners}"):
+            with self.subTest(runs_on=runs_on):
+                self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, hidden)), [(7, None, "error")])
+                self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "iex $cmd")), [(7, None, "error")])
+                self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "git push --force origin main")),
+                                 [(7, "protected-branches", "error")])
+                self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "echo ok")), [])
 
     def test_a_windows_runner_s_default_shell_is_not_read(self):
         text = "name: ci\non: push\njobs:\n  w:\n    runs-on: windows-latest\n    steps:\n      - run: git push --force origin main\n" \
