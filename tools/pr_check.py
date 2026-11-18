@@ -306,8 +306,15 @@ def _strings(value: object) -> list:
     return []
 
 
+# Contexts whose value is a number or a commit hash, which cannot end a word or a refspec: read like a shell variable.
+SAFE_CONTEXT = re.compile(r"\$\{\{\s*github\.(?:run_id|run_number|run_attempt|sha|event\.pull_request\.number|event\.number)\s*\}\}")
+
+
 def _expressions_as_variables(text: str) -> str:
-    """Each `${{ ... }}` as a shell variable, keeping the line count, so a value taken from one is unreadable."""
+    """Each `${{ ... }}` as a shell variable, keeping the line count, so a value taken from one is unreadable. One that
+    can hold any text, which GitHub puts in before the shell runs, is the opaque placeholder; a number or a hash
+    (SAFE_CONTEXT) is an ordinary variable, so `bot/update-${{ github.run_id }}` reads as `bot/update-*`."""
+    text = SAFE_CONTEXT.sub("$CATPILOT_NUMBER", text)
     return EXPRESSION.sub(lambda m: EXPRESSION_VARIABLE + "\n" * m.group(0).count("\n"), text)
 
 
@@ -652,9 +659,9 @@ def _windows_runner(job) -> bool:
 # What only PowerShell reads as a command or a comment, in a step that may run in pwsh (a runner the check cannot
 # read): such a step is unreadable rather than read with shell rules.
 POWERSHELL_ONLY = re.compile(
-    r"<#|#>|\binvoke-expression\b|\biex\b(?!\s+-S\b)|\bstart-process\b"
+    r"<#|#>|\binvoke-expression\b|(?<![.\w])iex\b(?![.\w-])(?!\s+-S\b)|\bstart-process\b"
     r"|^\s*&\s+[\"'$\w({]|[;|]\s+&\s+[\"'$\w({]"  # the call operator; not bash's `|&` or a case's `;&`
-    r"|\s`\r?$",  # PowerShell's line continuation, a backtick after a space (not a markdown fence)
+    r"|(?<!`)`\r?$",  # PowerShell's line continuation (one backtick, not a markdown fence)
     re.IGNORECASE | re.MULTILINE)
 
 
@@ -690,11 +697,22 @@ def _git_environment(all_levels: list) -> str:
     """What the `env:` names a step runs with say about git, as an assignment the hook's reader sees at the start of
     each script: GIT_CONFIG_* may make a push a mirror, GIT_DIR and the like point git elsewhere. An `env:` that is an
     expression may set any of them. Read from every level, values or not."""
-    names, opaque = set(), False
+    names, opaque, merged = set(), False, {}
     for values, level_opaque in all_levels:
         names |= set(values)
+        merged.update(values)
         opaque = opaque or level_opaque
-    if opaque or any(GIT_CONFIG_NAME.fullmatch(name) for name in names):
+
+    def harmless(name: str) -> bool:
+        # A GIT_CONFIG_KEY_n naming a setting that cannot make a mirror (safe.directory, url.*.insteadOf), its
+        # VALUE_n and COUNT; anything else, or a key that is not a literal, may.
+        if name == "GIT_CONFIG_COUNT" or name.startswith("GIT_CONFIG_VALUE_"):
+            return True
+        if name.startswith("GIT_CONFIG_KEY_"):
+            key = (merged.get(name) or "").lower()
+            return bool(key) and not re.fullmatch(r"remote\..+\.(?:mirror|push)|push\.default|include\..*|includeif\..*", key)
+        return name == "GIT_CONFIG_GLOBAL" and merged.get(name) == "/dev/null"
+    if opaque or any(GIT_CONFIG_NAME.fullmatch(name) and not harmless(name) for name in names):
         return "GIT_CONFIG_COUNT=1; "
     if names & GIT_PLACE_NAMES:
         return "GIT_DIR=elsewhere; "

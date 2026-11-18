@@ -203,7 +203,8 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   - So are `HEAD` and `@`, and `heads/main` as `main`.
   - After a command earlier in the same line that may change the branch or
     the directory, the branch is unknown, and so blocked: `cd`, `chdir`,
-    `pushd`, `popd`, `git checkout`, `git switch`, `git init`, `git rebase
+    `pushd`, `popd`, `git checkout` (but not `git checkout [x] -- <paths>`,
+    which restores files), `git switch`, `git init`, `git rebase
     <upstream> <branch>` or `--root <branch>`, `git stash branch`, `git
     symbolic-ref`, `git branch -m`, `gh pr checkout`, `gh co`, `source`,
     `eval`, `exec` or `alias`. A switch never names the branch, since it may
@@ -212,8 +213,11 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   - It is unknown for the whole line when the line, or a `bash -c` body in
     it, defines a function (`name()`, `function name`), assigns `GIT_DIR`,
     `GIT_WORK_TREE` or `GIT_COMMON_DIR` (also `export GIT_DIR` and `read
-    GIT_DIR`), or gives env or sudo a directory (`env -C`, `--chdir`), behind
-    any wrapper; and when a variable comes before a git command's subcommand. A line that assigns a `GIT_CONFIG_*` variable, which can set
+    GIT_DIR`), or gives env or sudo a directory (`env -C`, `--chdir`), at a
+    command's start, among a declaration's names (`export FOO GIT_DIR=...`),
+    or behind a wrapper and its option values (`sudo -u bob`, `nice -n 5`,
+    `timeout 60`); and when a variable comes before a git command's
+    subcommand, other than as the value of `-C`, `-c` or `--git-dir`. A line that assigns a `GIT_CONFIG_*` variable, which can set
     `remote.<name>.mirror`, makes any push in it count as a mirror. These are
     read as shell words, with assignments only where they are assignments, so
     a mention inside a quoted message does not count. A script run earlier in
@@ -232,8 +236,13 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   - a bare push given `-c push.default=matching` with a force;
   - a bare force push given `-c push.default=upstream` or a `branch.*`
     setting, whose destination is then unknown;
-  - any push after `git config` sets `remote.<name>.mirror`,
-    `remote.<name>.push` or `push.default` earlier in the line.
+  - a bare push after a command earlier in the line sets
+    `remote.<name>.mirror`, `remote.<name>.push`, an include, or
+    `push.default` to `matching`, `upstream` or `tracking` (`git config KEY
+    VALUE`, `git config set`, `git remote add --mirror`); a read (`git config
+    --get`) does not, and a push that names a refspec is never a mirror (git
+    refuses a refspec with `remote.<name>.mirror`, and a refspec overrides
+    `remote.<name>.push`). The same holds for a `GIT_CONFIG_*` assignment.
 
   These settings in git's config files are not read. An
   option's value (`-o ci.skip`, `--push-option`, `--repo`) is not read as the

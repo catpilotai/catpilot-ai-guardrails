@@ -542,8 +542,8 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
         return current_branch(repo, git_dir_path) if known else None
 
     settings = [c.replace(" ", "") for c in configs]
-    if environment_config:
-        mirror = True
+    if environment_config and len(positional) <= 1:
+        mirror = True  # a refspec overrides remote.<name>.push, and git refuses one with remote.<name>.mirror
     if any(re.fullmatch(r"remote\..+\.mirror=(?!false$|no$|off$|0$).*", c) or re.fullmatch(r"remote\..+\.mirror", c) for c in settings):
         mirror = True  # remote.<name>.mirror makes a push behave as --mirror
     if len(positional) <= 1 and any(c.startswith("remote.") and ".push=" in c for c in settings):
@@ -557,6 +557,10 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     if not mirror:
         for spec in positional[1:]:
             plus = spec.startswith("+")
+            if BRACE_EXPANSION.search(spec):
+                if delete or plus or force or "{" in spec.split(":", 1)[0] or spec.startswith(("{", "+{")):
+                    branches.append(None)  # `{HEAD:main,feature}`: the shell makes it several refspecs
+                continue
             if spec.lstrip("+") == ":":
                 if plus or force:
                     mirror, branches = True, []  # the matching refspec: every branch both sides have
@@ -585,11 +589,11 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
                 # an unknown namespace it could be refs/heads/. A `${{ ... }}` of the pull-request check is text GitHub
                 # puts in before the shell runs, which may end the word: unknown. A value holding a space or a colon,
                 # which splits the word or the refspec, is not seen (hooks/README.md).
-                if OPAQUE_EXPANSION in destination:
-                    branches.append(None)
-                    continue
                 namespace = re.match(r"refs/([A-Za-z0-9._-]+)/", destination)
                 if namespace and namespace.group(1) != "heads":
+                    continue
+                if OPAQUE_EXPANSION in destination:
+                    branches.append(None)
                     continue
                 if destination.startswith("refs/") and not namespace:
                     branches.append(None)
@@ -623,11 +627,12 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
 CONTEXT_COMMANDS = {"cd", "chdir", "pushd", "popd", "source", ".", "eval", "exec", "alias"}
 GIT_CONTEXT_SUBCOMMANDS = {"checkout", "switch", "symbolic-ref", "init"}
 # An assignment that points git at another repository or adds configuration.
-GIT_ENVIRONMENT_ASSIGNMENT = re.compile(r"GIT_(?:DIR|WORK_TREE|COMMON_DIR)(?:=|$)")
-GIT_CONFIG_ASSIGNMENT = re.compile(r"GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM)(?:=|$)")
-ASSIGNMENT_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+GIT_ENVIRONMENT_ASSIGNMENT = re.compile(r"GIT_(?:DIR|WORK_TREE|COMMON_DIR)(?:\+?=|$)")
+GIT_CONFIG_ASSIGNMENT = re.compile(r"GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM)(?:\+?=|$)")
+ASSIGNMENT_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")
 # Commands whose arguments may be assignments that reach a later command's environment.
-ASSIGNING_COMMANDS = {"export", "declare", "typeset", "local", "readonly", "read"} | WRAPPERS | set(WRAPPER_SPECS)
+DECLARATION_COMMANDS = {"export", "declare", "typeset", "local", "readonly", "read"}
+ASSIGNING_COMMANDS = DECLARATION_COMMANDS | WRAPPERS | set(WRAPPER_SPECS)
 # Words after which the next word is still a command's first word.
 COMMAND_PREFIX_WORDS = {"{", "!", "then", "do", "else", "elif", "if", "while", "until", "time"}
 REBASE_VALUE_OPTIONS = {"--onto", "-X", "-s", "--strategy", "--strategy-option", "-x", "--exec", "-C"}
@@ -660,8 +665,15 @@ def _changes_branch(argv: list[str]) -> bool:
     if name != "git":
         return False
     sub, rest, elsewhere = _git_subcommand(argv[1:])
-    if any(a.startswith(("$", "`")) for a in argv[1:argv.index(sub) if sub in argv else len(argv)]):
-        return True  # a variable before the subcommand may make it anything (`git $X a=b switch main`)
+    globals_, index = argv[1:argv.index(sub) if sub in argv else len(argv)], 0
+    while index < len(globals_):
+        word = globals_[index]
+        if word in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env") or word in GIT_VALUE_OPTIONS:
+            index += 2  # its value, whatever it holds
+            continue
+        if word.startswith(("$", "`")):
+            return True  # a variable before the subcommand may make it anything (`git $X a=b switch main`)
+        index += 1
     if sub == "checkout" and "--" in rest and rest.index("--") < len(rest) - 1:
         return False  # `git checkout [<tree-ish>] -- <paths>` restores files; the branch stays
     if sub in GIT_CONTEXT_SUBCOMMANDS:
@@ -682,12 +694,29 @@ def _changes_branch(argv: list[str]) -> bool:
     return sub == "stash" and rest[:1] == ["branch"]
 
 
+GIT_CONFIG_READ_OPTIONS = {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l", "--unset", "--unset-all",
+                           "--remove-section", "--rename-section", "--show-origin", "--show-scope", "--name-only"}
+
+
 def _sets_mirror_config(argv: list[str]) -> bool:
-    """Whether argv is `git config` setting what makes later pushes rewrite every branch."""
+    """Whether argv sets what makes a later bare push rewrite every branch: `git config` (or `git config set`) of
+    remote.<name>.mirror, remote.<name>.push, push.default=matching or an include, or `git remote add --mirror`. A
+    read (`--get`, one positional) does not."""
     if os.path.basename(argv[0]) != "git":
         return False
     sub, rest, _ = _git_subcommand(argv[1:])
-    return sub == "config" and any(re.fullmatch(r"remote\..+\.(?:mirror|push)|push\.default", a.lower()) for a in rest)
+    if sub == "remote":
+        return rest[:1] == ["add"] and any(a == "--mirror" or a.startswith("--mirror=") for a in rest)
+    if sub != "config" or any(a in GIT_CONFIG_READ_OPTIONS for a in rest):
+        return False
+    words = [a for a in rest if not a.startswith("-")]
+    if words[:1] == ["set"]:
+        words = words[1:]
+    if len(words) < 2:
+        return False
+    key, value = words[0].lower(), words[1].lower()
+    return bool(re.fullmatch(r"remote\..+\.(?:mirror|push)|include\.path|includeif\..+\.path", key)) or \
+        (key == "push.default" and value in ("matching", "upstream", "tracking"))
 
 
 def _shell_bodies(command: str, depth: int = 0) -> list[str]:
@@ -719,12 +748,14 @@ def _points_git_elsewhere(command: str) -> str | None:
     for body in _shell_bodies(command):
         tokens = _tokens(body)
         at_start, assigning, previous, env_options = True, False, "", False
+        wrapper, skip, positionals = None, 0, 0
         for i, token in enumerate(tokens):
             if token in SEPARATORS or set(token) <= set(";&|()\n"):
                 if previous and not previous.endswith(("$", "=")) and previous not in SEPARATORS and not set(previous) <= set(";&|()\n"):
                     if token.startswith("()") or (token == "(" and i + 1 < len(tokens) and tokens[i + 1].startswith(")")):
                         found = found or "elsewhere"  # `name()`; not `arr=()` or `$()`
                 at_start, assigning, previous, env_options = True, False, token, False
+                wrapper, skip, positionals = None, 0, 0
                 continue
             if token == "--chdir" or token.startswith("--chdir="):
                 found = found or "elsewhere"  # env's or sudo's, wherever it comes
@@ -732,10 +763,12 @@ def _points_git_elsewhere(command: str) -> str | None:
                 if token.startswith("-"):
                     if token in ("-C", "--chdir") or token.startswith("--chdir=") or (not token.startswith("--") and "C" in token[1:]):
                         found = found or "elsewhere"
+                    if token in ("-u", "--unset"):
+                        skip = 1  # its value names a variable to unset
                     previous = token
                     continue
                 env_options = False
-            if token == "env":
+            if token == "env" and (at_start or assigning):
                 env_options = True  # env's own options follow, wherever env comes in a wrapper chain
             if at_start and token in COMMAND_PREFIX_WORDS:
                 previous = token
@@ -752,11 +785,26 @@ def _points_git_elsewhere(command: str) -> str | None:
             if at_start or assigning:
                 if token.startswith("-"):
                     previous = token  # an option of a prefix word or of an assigning command (`time -p`, `env -i`)
+                    if wrapper in WRAPPERS and token in ("-u", "-g", "-n", "-C"):
+                        skip = 1  # its value (`sudo -u bob`, `env -u X`, `nice -n 5`)
+                    elif wrapper in WRAPPER_SPECS and token in WRAPPER_SPECS[wrapper][0]:
+                        skip = 1
+                    continue
+                if skip:
+                    skip, previous = skip - 1, token
+                    continue
+                if wrapper in WRAPPER_SPECS and positionals:
+                    positionals, previous = positionals - 1, token  # timeout's DURATION
+                    continue
+                if wrapper in DECLARATION_COMMANDS:
+                    previous = token  # every argument of export/declare/read is a name or an assignment
                     continue
                 if os.path.basename(token) in ASSIGNING_COMMANDS:
+                    wrapper = os.path.basename(token)
+                    positionals = WRAPPER_SPECS[wrapper][1] if wrapper in WRAPPER_SPECS else 0
                     at_start, assigning, previous = False, True, token
                     continue
-            at_start, assigning, previous = False, False, token
+            at_start, assigning, previous, wrapper = False, False, token, None
     return found
 
 
