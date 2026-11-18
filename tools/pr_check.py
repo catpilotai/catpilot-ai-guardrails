@@ -677,7 +677,7 @@ def _windows_runner(job) -> bool:
 POWERSHELL_ONLY = re.compile(
     r"<#|#>|\binvoke-expression\b|(?<![.\w])iex\b(?![.\w-])(?!\s+-S\b)|\bstart-process\b"
     r"|^\s*&\s+[\"'$\w({]|[;|]\s+&\s+[\"'$\w({]"  # the call operator; not bash's `|&` or a case's `;&`
-    r"|(?<!`)`\r?$",  # PowerShell's line continuation (one backtick, not a markdown fence)
+    r"|^(?:[^`\n]*`[^`\n]*`)*[^`\n]*(?<!`)`\r?$",  # PowerShell's continuation: an unpaired backtick ending a line
     re.IGNORECASE | re.MULTILINE)
 
 

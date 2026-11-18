@@ -553,6 +553,8 @@ class ShellTests(unittest.TestCase):
                 tight = "|\n          git push origin`\n            --force main\n"
                 self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, tight)), [(7, None, "error")])
                 self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "\"cp .iex.exs out\"")), [])
+                # A closing backtick of a pair is bash's command substitution, not a continuation (review of fe2f878).
+                self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "|\n          SHA=`git rev-parse --short HEAD`\n")), [])
                 fence = "|\n          cat > notes.md <<'EOF'\n          ```\n          ok\n          ```\n          EOF\n"
                 self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, fence)), [])
                 for bash in ("make test |& tee log", "iex -S mix", "case $x in a) echo;& b) echo;; esac"):
