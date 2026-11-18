@@ -9,8 +9,10 @@
 # rules at session start: the block and its sidecar on each tool and that their SHA-256 hashes match, the
 # marked section of the managed CLAUDE.md, the expiry date, the session-start script run directly for each
 # tool, and the SessionStart hook that managed-settings.json and /etc/codex/requirements.toml register, run
-# the way the tool would. It writes only to a temporary directory it removes on exit, sends nothing anywhere,
-# and writes no evidence line.
+# the way the tool would. It works in a temporary directory it removes on exit, where the probes' evidence lines
+# go, as long as the registered commands are install.sh's own: a built-in hook's command changed to another
+# evidence path, a wrapper or an env file writes its probe lines where those send them (one naming syslog is
+# skipped); a company-rules command that is not exactly install.sh's is not run.
 #
 # It runs the hooks directly, not through Claude Code, so it proves nothing about what a session does:
 # Claude Code's own PATH can differ from this shell's, and only a session shows the host applying a deny.
@@ -233,7 +235,8 @@ echo "Codex CLI (managed dir: $CODEX_DIR)"
 check "$CODEX_DIR/managed_config.toml"
 for s in "$CODEX_DIR"/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
 # The PreToolUse hooks requirements.toml declares, run directly and through a shell the way Codex would, with HOME
-# at the temporary directory and no evidence variable, so no evidence line is written anywhere real.
+# at the temporary directory and no evidence variable, so install.sh's own commands write their probes' evidence
+# there; a command changed to send it elsewhere (another path, a wrapper, an env file) writes it there.
 if [ ! -f "$RULES_FILES" ]; then
   fail "$RULES_FILES, which checks the Codex hooks, is not beside verify.sh: run verify.sh from a checkout"
 elif [ "$python_ok" -ne 1 ]; then
@@ -261,7 +264,7 @@ echo
 
 # Company rules at session start (install.sh --overlay). The checks and the runs are in session_start_files.py:
 # each run gets a SessionStart event on stdin, HOME pointed at the temporary directory and no evidence variable,
-# so no evidence line is written anywhere real.
+# so install.sh's own commands write their evidence there (a changed command writes it where it sends it).
 echo "Company rules at session start (advice, not enforcement)"
 if [ ! -f "$RULES_FILES" ]; then
   if [ -e "$CC_DIR/catpilot-guardrails/instructions/company-checklist.json" ] || [ -e "$CODEX_DIR/catpilot-guardrails/instructions/company-checklist.json" ]; then
@@ -278,8 +281,8 @@ fi
 echo
 
 # Company enforcement rules (install.sh --overlay with an enforcement section): the compiled policy and the
-# company-rules hook on each tool, run directly and as the managed file registers it, with HOME at the temporary
-# directory, so no evidence line is written anywhere real.
+# company-rules hook on each tool, run directly and as the managed file registers it (only when it is install.sh's
+# own command), with HOME at the temporary directory, where the probes' evidence lines go.
 echo "Company enforcement rules (the company-rules hook)"
 if [ ! -e "$CC_DIR/catpilot-guardrails/policy/company-policy.json" ] && [ ! -e "$CODEX_DIR/catpilot-guardrails/policy/company-policy.json" ] \
    && [ ! -e "$COPILOT_DIR/catpilot-guardrails/policy/company-policy.json" ] \

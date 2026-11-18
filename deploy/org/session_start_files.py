@@ -30,7 +30,9 @@ CLAUDE.md shapes what the model does without enforcing anything.
   verify-company-rules --cc-dir DIR --codex-dir DIR --home DIR [--copilot-dir DIR] [--timeout SECONDS]
                                    verify.sh's checks of the company-rules hook on each tool with a compiled policy:
                                    the files and their ownership, the policy loading, a probe for its first
-                                   protected_branch rule, and the hook as the managed file registers it
+                                   protected_branch rule and its first deploy_host rule, picked outside the active
+                                   exceptions where it can be and otherwise expected as the exceptions make it, and
+                                   the hook as the managed file registers it
 
 What each host reads, from the vendors' documentation (read on 2026-11-16):
   Claude Code  the managed CLAUDE.md in the managed directory, /Library/Application Support/ClaudeCode/CLAUDE.md
@@ -616,8 +618,9 @@ def judge(report: Report, label: str, host: str, state: str, rules, result, succ
 def clean_env(home: Path) -> dict:
     """This environment without the evidence variables, with HOME at verify.sh's temporary directory, so neither a
     variable from the environment nor a command's own CATPILOT_EVIDENCE_LOG="$HOME/..." writes anywhere real."""
-    env = {k: v for k, v in os.environ.items() if k not in ("CATPILOT_EVIDENCE_LOG", "CATPILOT_EVIDENCE_SYSLOG")}
-    env["HOME"] = str(home)
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("CATPILOT_EVIDENCE_LOG", "CATPILOT_EVIDENCE_SYSLOG", "BASH_ENV", "ENV") and not k.startswith("BASH_FUNC_")}
+    env["HOME"] = str(home)  # BASH_ENV, ENV and exported functions could set an evidence sink before a probe runs
     return env
 
 
@@ -829,11 +832,13 @@ def codex_event(tool: str, command: str, cwd: Path) -> str:
                        "tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)})
 
 
-def run_hook(argv: list, event: str, home: Path, timeout: int):
+def run_hook(argv: list, event: str, home: Path, timeout: int, extra_env: dict | None = None):
     """A CompletedProcess, or a sentence saying why there is none."""
+    env = clean_env(home)
+    env.update(extra_env or {})
     try:
         return subprocess.run(argv, input=event, capture_output=True, encoding="utf-8", errors="replace",
-                              timeout=timeout, env=clean_env(home), cwd=str(home))
+                              timeout=timeout, env=env, cwd=str(home))
     except subprocess.TimeoutExpired:
         return "did not finish within the %ds hook timeout" % timeout
     except OSError as exc:
@@ -981,7 +986,7 @@ def expected_effect(host: str, modes: list, ask_enabled: bool) -> str:
 def has_ask_flag(command: str) -> bool:
     return "--ask" in _split(command)
 EFFECT_WORDS = {"deny": "denies", "ask": "asks the person about", "none": "logs, without blocking,"}
-COMPANY_LOG = ".catpilot-guardrails/evidence.jsonl"  # where the registered command's own prefix sends evidence
+COMPANY_LOG = ".catpilot-guardrails/evidence.jsonl"  # where the standard prefix sends evidence under verify's temporary home
 
 
 def company_event(host: str, command: str, cwd: Path) -> str:
@@ -1016,6 +1021,63 @@ def company_decision(result, copilot: bool = False) -> str:
     return found if found in ("deny", "ask") else "printed something other than a deny, an ask or the empty decision"
 
 
+def _log_entries(log: Path) -> list:
+    """The JSON objects in an evidence log verify itself pointed the hook at."""
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    entries = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def logged_rule(entries: list, rule_id: str, excepted: bool, expected: str, host: str, policy_sha256: str | None) -> bool:
+    """Whether the company-rules hook wrote the line that proves it read rule_id from this policy for this host: a
+    would_deny line when it decided nothing (any of deny, ask or would_deny when it decided), carrying an exception_id
+    exactly when the probe was excepted. A hook that reads no rule, another hook, a stale --policy or the wrong --host
+    writes no such line."""
+    events = ("would_deny",) if expected == "none" else ("deny", "ask", "would_deny")
+    return any(e.get("hook") == "pretooluse-company-rules" and e.get("event") in events and e.get("rule_id") == rule_id
+               and e.get("host") == host and (policy_sha256 is None or e.get("policy_sha256") == policy_sha256)
+               and bool(e.get("exception_id")) == excepted for e in entries)
+
+
+def standard_company_command(command: str, hook: Path, host: str, policy_file: Path) -> bool:
+    """Whether a registered company-rules command is exactly the one install.sh writes for this tool (the standard
+    evidence prefix, python3, this hook, --host, this policy), with one --ask allowed after the hook, after --host or at
+    the end. verify
+    runs only such a command: any other (a wrapper, an env file, another evidence sink, another policy or host) could
+    send its probe lines somewhere real or behave differently than verify can see, so it is not run."""
+    ask = r"(?: --ask)?"
+    pattern = (re.escape(EVIDENCE_PREFIX) + r' python3 "' + re.escape(str(hook)) + r'"' + ask + r' --host ' + re.escape(host)
+               + ask + r' --policy "' + re.escape(str(policy_file)) + r'"' + ask)
+    return re.fullmatch(pattern, command.strip(" \t\n")) is not None and _split(command).count("--ask") <= 1
+
+
+def policy_hash(policy_file: Path) -> str | None:
+    try:
+        value = json.loads(policy_file.read_text(encoding="utf-8")).get("source_sha256")
+        return value if isinstance(value, str) else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def logged_a_rule(entries: list) -> bool:
+    """Whether the company-rules hook wrote a deny, ask or would_deny line: never right for a harmless command."""
+    return any(e.get("hook") == "pretooluse-company-rules" and e.get("event") in ("deny", "ask", "would_deny") for e in entries)
+
+
+# What the hook was expected to do, for a FAIL line: "expected it to deny a force push ...".
+EXPECTED_WORDS = {"deny": "deny", "ask": "ask the person about", "none": "log, without blocking,"}
+
+
 def policy_errors(log: Path) -> list:
     """The labels of the policy_error lines in an evidence log verify itself pointed the hook at."""
     try:
@@ -1047,22 +1109,41 @@ def branch_matches(value: str, branch: str) -> bool:
     return value.casefold() == branch.casefold()
 
 
-def first_branch_probe(policy_file: Path):
-    """(rule id, mode, command, expired, modes) for a force push to a branch the policy's first protected_branch rule
-    covers, or None. modes are the effective modes of every rule that covers that branch, the probed one included, so
-    the expected decision is the strictest of them, as the hook decides. The caller never prints the command."""
+def exception_allows(data: dict, rule_id: str, today: dt.date) -> list:
+    """The allows of every exception the hook applies to this rule today (catpilot_guard/policy.py active_exceptions):
+    not past its expires_on, no `where`, and none once the policy itself has expired."""
+    if dt.date.fromisoformat(data["expires_on"]) < today:
+        return []
+    return [value for exception in data.get("exceptions") or []
+            if exception["rule"] == rule_id and "where" not in exception
+            and dt.date.fromisoformat(exception["expires_on"]) >= today
+            for value in exception["allows"]]
+
+
+def first_branch_probe(policy_file: Path, today=None):
+    """(rule id, mode, command, expired, modes, excepted) for a force push to a branch the policy's first protected_branch
+    rule covers, or None. The branch is the first of the rule's values that no active exception to the rule allows;
+    when an exception allows them all, the first, and excepted is True. modes are the effective modes of every rule
+    that covers that branch and has no active exception allowing it, the probed one included, so the expected decision
+    is the strictest of them, as the hook decides. The caller never prints the command."""
     try:
+        today = today or dt.date.today()
         data = json.loads(policy_file.read_text(encoding="utf-8"))
-        expired = dt.date.fromisoformat(data["expires_on"]) < dt.date.today()
+        expired = dt.date.fromisoformat(data["expires_on"]) < today
         branch_rules = [rule for rule in data["rules"] if rule["kind"] == "protected_branch"]
         if not branch_rules:
             return None
         first = branch_rules[0]
-        value = first["values"][0]
-        branch = value[:-1] + "catpilot-verify" if value.endswith("/*") else value
-        modes = ["monitor" if expired else rule["mode"] for rule in branch_rules
-                 if any(branch_matches(v, branch) for v in rule["values"])]
-        return first["id"], first["mode"], "git push --force origin %s" % shlex.quote(branch), expired, modes
+
+        def fires(rule: dict, branch: str) -> bool:
+            return (any(branch_matches(v, branch) for v in rule["values"])
+                    and not any(branch_matches(a, branch) for a in exception_allows(data, rule["id"], today)))
+
+        candidates = [value[:-1] + "catpilot-verify" if value.endswith("/*") else value for value in first["values"]]
+        branch = next((candidate for candidate in candidates if fires(first, candidate)), candidates[0])
+        modes = ["monitor" if expired else rule["mode"] for rule in branch_rules if fires(rule, branch)]
+        return (first["id"], first["mode"], "git push --force origin %s" % shlex.quote(branch), expired, modes,
+                not fires(first, branch))
     except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
         return None
 
@@ -1079,20 +1160,25 @@ def suffix_covered(value: str, suffix: str) -> bool:
     return value.startswith("*.") and (suffix == value[2:] or suffix.endswith("." + value[2:]))
 
 
-def first_deploy_probe(policy_file: Path):
+def first_deploy_probe(policy_file: Path, today=None):
     """(rule id, mode, command, expired, modes) for a deploy the policy's first deploy_host rule does not allow, or None.
-    modes are the effective modes of every deploy_host rule that does not allow it either: each is its own allow-list."""
+    An active exception's allows count as allowed, so the probe is a deploy no exception lets through. modes are the
+    effective modes of every deploy_host rule that does not allow it either: each is its own allow-list."""
     try:
+        today = today or dt.date.today()
         data = json.loads(policy_file.read_text(encoding="utf-8"))
-        expired = dt.date.fromisoformat(data["expires_on"]) < dt.date.today()
+        expired = dt.date.fromisoformat(data["expires_on"]) < today
         rules = [rule for rule in data["rules"] if rule["kind"] == "deploy_host"]
         if not rules:
             return None
         first = rules[0]
+
+        def allowed(rule: dict, suffix: str) -> bool:
+            return any(suffix_covered(v, suffix) for v in list(rule["values"]) + exception_allows(data, rule["id"], today))
+
         for command, suffix in DEPLOY_PROBES:
-            if not any(suffix_covered(v, suffix) for v in first["values"]):
-                modes = ["monitor" if expired else rule["mode"] for rule in rules
-                         if not any(suffix_covered(v, suffix) for v in rule["values"])]
+            if not allowed(first, suffix):
+                modes = ["monitor" if expired else rule["mode"] for rule in rules if not allowed(rule, suffix)]
                 return first["id"], first["mode"], command, expired, modes
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
@@ -1136,8 +1222,12 @@ def company_commands(host: str, managed: Path, prefer_tomllib: bool):
 def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, prefer_tomllib: bool = True,
                          copilot_dir: Path | None = None) -> int:
     """For each tool with a compiled policy: the files, the hook run directly on a harmless command and on a probe
-    for the first protected_branch rule, and the hook as the tool's managed file registers it. A policy the hook
-    refuses (wrong owner, writable by others, malformed) shows as a policy_error line, which is a FAIL here."""
+    for the first protected_branch rule (and the first deploy_host rule), and the hook as the tool's managed file
+    registers it. A policy the hook refuses (wrong owner, writable by others, malformed) shows as a policy_error line,
+    which is a FAIL here. Every rule probe must also leave the evidence line that shows the hook read the rule from
+    this policy for this host (logged_rule: would_deny when it decides nothing, with an exception_id exactly when
+    excepted), since a hook that reads no rule, another hook or a stale policy can give the same decision; and the
+    harmless command must leave no rule line."""
     report = Report()
     tools = [(CLAUDE_CODE, cc_dir), (CODEX, codex_dir)] + ([(COPILOT, copilot_dir)] if copilot_dir is not None else [])
     for host, managed in tools:
@@ -1162,21 +1252,25 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
         if not report.present(hook):
             continue
         probe = first_branch_probe(policy_file)
-        runs = [("ls", [], "a harmless command")]
+        runs = [("ls", [], "a harmless command", None, False)]
         if probe is not None:
-            rule_id, mode, command, expired, modes = probe
-            runs.append((command, modes,
-                         "a force push to a branch rule %s protects (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
+            rule_id, mode, command, expired, modes, excepted = probe
+            excepted_note = ", allowed by an active exception: the rule decides nothing" if excepted else ""
+            runs.append((command, modes, "a force push to a branch rule %s protects (%s%s%s)" % (
+                rule_id, mode, ", expired: monitor" if expired else "", excepted_note), rule_id, excepted))
         deploy = first_deploy_probe(policy_file)
         if deploy is not None:
             rule_id, mode, command, expired, modes = deploy
             runs.append((command, modes,
-                         "a deploy to a host rule %s does not allow (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
+                         "a deploy to a host rule %s does not allow (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else ""),
+                         rule_id, False))
         if probe is None and deploy is None:
             report.line("note", "no rule probe for %s: the policy has no protected_branch rule, and no deploy_host rule or none "
                         "that a probe deploy falls outside, so only a harmless command is probed" % host)
         log = home / ("verify-company-%s.jsonl" % host)
-        for command, modes, what in runs:
+        sha = policy_hash(policy_file)
+        for command, modes, what, probe_rule, excepted in runs:
+            before = len(_log_entries(log))
             expected = expected_effect(host, modes, ask_enabled=False)  # run directly, without --ask
             verb = "lets through" if command == "ls" else EFFECT_WORDS[expected]
             env = clean_env(home)
@@ -1190,11 +1284,21 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             except OSError as exc:
                 result = "could not start (%s)" % exc.__class__.__name__
             got = company_decision(result, copilot=(host == COPILOT))
-            if got == expected:
+            added = _log_entries(log)[before:]
+            if got == expected and probe_rule is not None and \
+                    not logged_rule(added, probe_rule, excepted, expected, host, sha):
+                # Deciding nothing is also what a hook that reads no rule does: the line for the rule is the proof.
+                report.line("FAIL", "%s --host %s gave the expected decision on %s, but its evidence has no %s line for %s%s "
+                            "from this policy, so it may not have read the rule" % (
+                                COMPANY_HOOK, host, what, "would_deny" if expected == "none" else "rule", probe_rule,
+                                " with the exception's id" if excepted else ""))
+            elif got == expected and probe_rule is None and logged_a_rule(added):
+                report.line("FAIL", "%s --host %s let %s through but wrote a company-rule line for it" % (COMPANY_HOOK, host, what))
+            elif got == expected:
                 word = "passes" if command == "ls" else {"deny": "denies", "ask": "asks", "none": "logs"}[expected]
                 report.line(word, "%s --host %s %s %s" % (COMPANY_HOOK, host, verb, what))
             else:
-                report.line("FAIL", "%s --host %s: expected it to %s %s, got %s" % (COMPANY_HOOK, host, expected, what, got))
+                report.line("FAIL", "%s --host %s: expected it to %s %s, got %s" % (COMPANY_HOOK, host, EXPECTED_WORDS[expected], what, got))
         for label in sorted(set(policy_errors(log))):
             report.line("FAIL", "the company-rules hook for %s could not use its policy (%s); it applies no company rule "
                         "until this is fixed: the policy and its directory must be owned like the hooks and writable only "
@@ -1216,18 +1320,38 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
                 report.line("FAIL", "%s runs %s under a matcher that does not cover Bash" % (managed_file, COMPANY_HOOK))
             if host == COPILOT and "--host copilot-cli" not in command and "--host=copilot-cli" not in command:
                 report.line("FAIL", "%s runs %s without --host copilot-cli, so its decisions lack the fields Copilot CLI reads" % (managed_file, COMPANY_HOOK))
-            if "CATPILOT_EVIDENCE_SYSLOG" in command:
-                report.line("skipped", "%s command for %s (it forwards evidence to syslog; check it in a session)" % (managed_file, COMPANY_HOOK))
+            # Only the command install.sh writes is run, exactly as registered, with HOME at verify's temporary home
+            # and no evidence setting of verify's own, so its standard prefix writes the proof line where verify reads
+            # it. Any other command (a wrapper, an env file, another evidence sink, policy or host) could send probe
+            # lines somewhere real or behave in ways verify cannot see: it is not run, and fails.
+            if not standard_company_command(command, hook, host, policy_file):
+                report.line("FAIL", "%s runs %s with a command other than the one install.sh writes (%s python3 \"%s\" "
+                            "--host %s --policy \"%s\", optionally with --ask); verify does not run it, so it cannot "
+                            "prove the hook reads the rules: reinstall, or confirm this setup in a session" % (
+                                managed_file, COMPANY_HOOK, EVIDENCE_PREFIX, hook, host, policy_file))
                 continue
-            for probe_command, modes, what in runs:
+            for probe_cmd, modes, what, probe_rule, excepted in runs:
                 expected = expected_effect(host, modes, has_ask_flag(command))
-                verb = "lets through" if probe_command == "ls" else EFFECT_WORDS[expected]
-                got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_command, home), home, timeout),
+                verb = "lets through" if probe_cmd == "ls" else EFFECT_WORDS[expected]
+                before = len(_log_entries(registered_log))
+                got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_cmd, home), home, timeout),
                                        copilot=(host == COPILOT))
-                if got == expected:
+                added = _log_entries(registered_log)[before:]
+                proven = logged_rule(added, probe_rule, excepted, expected, host, sha) if probe_rule is not None \
+                    else not logged_a_rule(added)
+                if got == expected and proven:
                     report.line("wired", "%s runs %s, which %s %s" % (managed_file, COMPANY_HOOK, verb, what))
+                elif got == expected and probe_rule is None:
+                    report.line("FAIL", "%s runs %s, which let %s through but wrote a company-rule line for it" % (managed_file, COMPANY_HOOK, what))
+                elif got == expected:
+                    report.line("FAIL", "%s runs %s, which gave the expected decision on %s, but its evidence has no %s line "
+                                "for %s%s from this policy and host: it may read no rule (a --policy it cannot load or a stale "
+                                "copy, the wrong --host, another hook), or send its evidence somewhere verify cannot read (a "
+                                "path of its own, syslog, or nowhere); verify reads it through the standard prefix "
+                                "%s" % (managed_file, COMPANY_HOOK, what, "would_deny" if expected == "none" else "rule",
+                                        probe_rule, " with the exception's id" if excepted else "", EVIDENCE_PREFIX))
                 else:
-                    report.line("FAIL", "%s command for %s: expected it to %s %s, got %s" % (managed_file, COMPANY_HOOK, expected, what, got))
+                    report.line("FAIL", "%s command for %s: expected it to %s %s, got %s" % (managed_file, COMPANY_HOOK, EXPECTED_WORDS[expected], what, got))
             for label in sorted(set(policy_errors(registered_log))):
                 report.line("FAIL", "%s runs %s with a policy it could not use (%s)" % (managed_file, COMPANY_HOOK, label))
     return 0

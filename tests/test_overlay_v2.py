@@ -207,6 +207,7 @@ class Rule4EnforcementTests(V2Case):
         def fifty(d):
             d["enforcement"]["rules"] = [rule(rule_id=f"rule-{n}", mode=vo.MODES[n % 3]) for n in range(50)]
             d["enforcement"]["default_mode"] = "block"
+            d["enforcement"].pop("exceptions")  # it relaxes deploy-hosts, which this replaces
         self.assertValid(self.mutated(fifty))
 
     def test_bad_modes_counts_and_kinds_are_rejected(self):
@@ -222,7 +223,8 @@ class Rule4EnforcementTests(V2Case):
                 lambda d: d["enforcement"]["rules"].append(rule(kind="package_registry", values=["npm.example.org"])), "enters the schema with its first consumer"),
             "cloud_account before its consumer": (
                 lambda d: d["enforcement"]["rules"].append(rule(kind="cloud_account", values=["aws:111122223333"])), "enters the schema with its first consumer"),
-            "exceptions are the next increment": (lambda d: d["enforcement"].update(exceptions=[]), "enforcement: 1 unknown field;"),
+            "an empty exceptions list": (lambda d: d["enforcement"].update(exceptions=[]), "enforcement.exceptions: expected a list of 1 to 50"),
+            "another unknown field": (lambda d: d["enforcement"].update(waivers=[]), "enforcement: 1 unknown field;"),
             "free text in a rule": (lambda d: d["enforcement"]["rules"][0].update(reason="Because"), "no free text"),
             "not an object": (lambda d: d.update(enforcement=["main"]), "expected an object"),
         }
@@ -620,9 +622,9 @@ class DuplicateKeyTests(unittest.TestCase):
     def test_merge_keys_are_refused(self):
         anchors = 'x-a: &a {mode: block}\nx-b: &b {mode: monitor}\n'
         cases = {
-            "two merge keys": (anchors + "rule: {<<: *a, <<: *b, id: rule-c}\n", "overlay.<a key>.<<"),
-            "a list of merges": (anchors + "rule: {<<: [*a, *b], id: rule-c}\n", "overlay.<a key>.<<"),
-            "a merge beside an explicit key": (anchors + "rule:\n  <<: *a\n  mode: ask\n", "overlay.<a key>.<<"),
+            "two merge keys": (anchors + "entry: {<<: *a, <<: *b, id: rule-c}\n", "overlay.<a key>.<<"),
+            "a list of merges": (anchors + "entry: {<<: [*a, *b], id: rule-c}\n", "overlay.<a key>.<<"),
+            "a merge beside an explicit key": (anchors + "entry:\n  <<: *a\n  mode: ask\n", "overlay.<a key>.<<"),
         }
         for label, (text, where) in cases.items():
             with self.subTest(case=label), self.assertRaises(vo.OverlayError) as caught:
@@ -662,8 +664,9 @@ class Rule9LintTests(V2Case):
         def all_monitor(d):
             d["enforcement"]["rules"][0]["mode"] = "monitor"
             del d["enforcement"]["rules"][1]
-        self.assertEqual(vo.lint_overlay(vo.validate_structure(self.mutated(all_monitor))), [])
-        self.assertEqual(vo.lint_overlay(vo.validate_structure(load(EXAMPLE_V1))), [])
+            d["enforcement"].pop("exceptions")  # it relaxes the rule just removed
+        self.assertEqual(vo.lint_overlay(vo.validate_structure(self.mutated(all_monitor)), today=TODAY), [])
+        self.assertEqual(vo.lint_overlay(vo.validate_structure(load(EXAMPLE_V1)), today=TODAY), [])
 
     def test_a_kind_no_hook_acts_on_draws_a_warning(self):
         # Every accepted kind has a consumer now; a kind without one would draw this warning instead of mode warnings.
@@ -684,7 +687,7 @@ class Rule9LintTests(V2Case):
             d["enforcement"]["rules"].append({"id": "more-branches", "kind": "protected_branch", "mode": "ask", "values": ["stable"]})
         data = self.mutated(modes)
         self.assertValid(data)
-        warnings = vo.lint_overlay(vo.validate_structure(data))
+        warnings = vo.lint_overlay(vo.validate_structure(data), today=TODAY)
         # protected_branch has a host verification note (2026-11-17), so block on it draws no warning, and
         # deploy-hosts is in monitor.
         self.assertEqual(len(warnings), 1)
@@ -696,7 +699,7 @@ class Rule9LintTests(V2Case):
                       vo.lint_overlay(vo.validate_structure(blocked)))
         # Block on an enforced kind without a host verification note still warns.
         with mock.patch.object(vo, "HOST_VERIFIED_KINDS", ()):
-            warnings = vo.lint_overlay(vo.validate_structure(data))
+            warnings = vo.lint_overlay(vo.validate_structure(data), today=TODAY)
         self.assertIn("(protected-branches): mode block for kind protected_branch", warnings[0])
         # default_mode applies to a rule with no mode of its own.
         data = self.mutated(lambda d: (d["enforcement"].update(default_mode="ask"), d["enforcement"]["rules"][0].pop("mode")))

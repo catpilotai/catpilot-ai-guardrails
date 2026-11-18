@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/catpilotai/catpilot-ai-guardrails/docs/spec/overlay.v2.schema.json",
   "title": "Catpilot organization overlay, version 2",
-  "description": "Version 2 of the company rules file (docs/spec/OVERLAY_V2.md). Every model-facing list item is an object with a stable id and its phrase as text; an optional machine-only enforcement section holds rules that are never rendered into a prompt or returned by the server; optional topic contacts name who to ask about data, hosting, services or identity, with owner as the default. Version 1 files are checked against overlay.schema.json instead. A file with enforcement also carries a random salt, so the file's SHA-256, which a model sees, cannot confirm a guessed enforcement value. Cross-field rules are checked by tools/validate_overlay.py only, as in version 1: ids, aliases and template kinds unique across the file, use_instead resolving to an approved item, no enforcement host in a model-facing value, the secret and content scans (which allow an email address only in owner and a contact's name, and check a contact's intake_url as intake_url), and IP addresses refused as hosts. Never commit an overlay to a public repository.",
+  "description": "Version 2 of the company rules file (docs/spec/OVERLAY_V2.md). Every model-facing list item is an object with a stable id and its phrase as text; an optional machine-only enforcement section holds rules that are never rendered into a prompt or returned by the server; optional topic contacts name who to ask about data, hosting, services or identity, with owner as the default. Version 1 files are checked against overlay.schema.json instead. A file with enforcement also carries a random salt, so the file's SHA-256, which a model sees, cannot confirm a guessed enforcement value. Cross-field rules are checked by tools/validate_overlay.py only, as in version 1: ids, aliases, template kinds and enforcement rule and exception ids unique across the file, use_instead resolving to an approved item, an exception naming an enforcement rule, its allows matching that rule's kind and its expires_on no later than the file's, no enforcement host in a model-facing value, the secret and content scans (which allow an email address only in owner and a contact's name, and check a contact's intake_url as intake_url), and IP addresses refused as hosts. Never commit an overlay to a public repository.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -183,7 +183,7 @@
       "required": [
         "rules"
       ],
-      "description": "Machine-only. Never rendered into a prompt or returned by the server; read by hooks and the pull-request check once they ship. Validated only in this release.",
+      "description": "Machine-only. Never rendered into a prompt or returned by the server. tools/validate_overlay.py compile writes it as the policy the company-rules hook reads; the pull-request check will read it once it ships.",
       "properties": {
         "default_mode": {
           "$ref": "#/$defs/mode",
@@ -197,6 +197,15 @@
           "items": {
             "$ref": "#/$defs/rule"
           }
+        },
+        "exceptions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/exception"
+          },
+          "description": "Optional expiring exceptions (OVERLAY_V2.md §3.1). Each relaxes one enforcement rule, never a built-in check, until its expires_on, and is ignored after it."
         }
       }
     }
@@ -227,7 +236,7 @@
       "type": "string",
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
       "maxLength": 64,
-      "description": "Lowercase letters, digits and single hyphens. Unique across the file: item ids, aliases, template kinds and enforcement rule ids; never reused for a different thing."
+      "description": "Lowercase letters, digits and single hyphens. Unique across the file: item ids, aliases, template kinds, enforcement rule ids and exception ids; never reused for a different thing."
     },
     "phrase": {
       "type": "string",
@@ -357,6 +366,79 @@
         }
       ]
     },
+    "exception": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "rule",
+        "allows",
+        "approver_role",
+        "expires_on"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "rule": {
+          "$ref": "#/$defs/id",
+          "description": "The id of the rule in enforcement.rules this exception relaxes."
+        },
+        "allows": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Values of the rule's kind, checked by the validator against that kind. protected_branch: branches the rule stops protecting until expires_on (a trailing /* covers the prefix). deploy_host: extra approved hosts (a leading *. covers subdomains)."
+        },
+        "approver_role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "allOf": [
+            {
+              "not": {
+                "pattern": "[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}"
+              }
+            },
+            {
+              "not": {
+                "pattern": "[A-Za-z][A-Za-z0-9+.\\-]*://"
+              }
+            }
+          ],
+          "description": "The role that approved the exception, such as a job title; not a person's name, an email address or a URL."
+        },
+        "expires_on": {
+          "type": "string",
+          "format": "date",
+          "description": "The last day the exception applies; no later than the file's expires_on. After it the rule applies as written."
+        },
+        "where": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repositories"
+          ],
+          "properties": {
+            "repositories": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/repository"
+              }
+            }
+          },
+          "description": "Limits the exception to these repositories. Only the pull-request check reads it, taking the repository from the CI platform; hooks apply only exceptions without where."
+        }
+      }
+    },
     "branch": {
       "type": "string",
       "pattern": "^(?![-/])(?!.*\\.\\.)(?!.*//)(?!.*@\\{)(?!(?:.*/)?\\.)(?!.*\\.lock(?:/|$))(?!(?:@|HEAD)(?:/\\*)?$)[^\\s~^:?*\\[\\\\\\x00-\\x1f\\x7f]*[^\\s~^:?*\\[\\\\\\x00-\\x1f\\x7f/.](?:/\\*)?$",
@@ -366,6 +448,11 @@
       "type": "string",
       "pattern": "^(?:\\*\\.)?(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?![0-9]+$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
       "description": "A lowercase host name with at least one dot, optionally starting with *. to cover subdomains. No scheme, port, path, credentials or IP address."
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/(?!\\.\\.?$)[A-Za-z0-9._-]{1,100}$",
+      "description": "A repository as owner/name, as a CI platform names it. Unique ignoring case (the validator checks that)."
     }
   }
 }

@@ -19,7 +19,8 @@ host may appear in a model-facing value, and a file with `enforcement` carries
 a random `salt`, so the file's SHA-256, which a model sees, cannot confirm a
 guessed enforcement value. A key that
 appears twice in one mapping, and a YAML merge key (`<<`), are refused in
-both versions.
+both versions. `enforcement.exceptions` relax one enforcement rule until a date
+(§3.1): an exception never outlives the file and never touches a built-in check.
 
 A passing overlay is structurally valid. The validator does not know whether
 the listed hosting or services are actually approved; a named reviewer does.
@@ -29,8 +30,9 @@ version 2 (OVERLAY_V2.md §2.4). `python tools/validate_overlay.py salt FILE`
 sets a new random `salt` in a version 2 file, changing no other line.
 `python tools/validate_overlay.py compile FILE --out POLICY` validates the file
 and writes `enforcement` as the JSON policy the company-rules hook reads
-(catpilot_guard/company_rules.py), with each rule's mode resolved. The hook
-acts on `protected_branch` and `deploy_host` rules.
+(catpilot_guard/company_rules.py), with each rule's mode resolved and the
+exceptions copied. The hook acts on `protected_branch` and `deploy_host` rules,
+and applies the exceptions that have no `where`.
 """
 
 from __future__ import annotations
@@ -136,9 +138,19 @@ ENFORCED_KINDS = ("protected_branch", "deploy_host")
 # warning (§6.3 rule 9): protected_branch, denied on Claude Code, Codex and Copilot CLI
 # (evals/reports/2026.11.17-host-check-company-rules.md).
 HOST_VERIFIED_KINDS: tuple[str, ...] = ("protected_branch",)
-# The compiled policy's format (catpilot_guard/policy.py reads it).
+# The compiled policy's format (catpilot_guard/policy.py reads it). Still 1 with exceptions: the policy gains an optional
+# `exceptions` key, written only when the file has exceptions, so a file without them compiles byte for byte as before.
+# A hook from before exceptions refuses a policy with the key as malformed (policy_error), as it refuses any unknown key.
 POLICY_FORMAT = "catpilot-company-policy"
 POLICY_FORMAT_VERSION = 1
+# Expiring exceptions to enforcement rules (§3.1).
+EXCEPTIONS_MAX = 50
+EXCEPTION_FIELDS = ("id", "rule", "allows", "approver_role", "expires_on", "where")
+APPROVER_ROLE_MAX = 80
+# Lint warns about an exception this many days or fewer before its expires_on (§6.3 rule 9).
+EXCEPTION_WARN_DAYS = 14
+# `where.repositories`: owner/repo, as a CI platform names a repository. Only the pull-request check reads it.
+REPOSITORY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/(?!\.\.?$)[A-Za-z0-9._-]{1,100}")
 # The approved lists `use_instead` may name (§6.3 rule 6).
 USE_INSTEAD_LISTS = (("hosting", "approved"), ("services", "approved"))
 
@@ -190,6 +202,7 @@ FIELD_NAMES = frozenset(
     TOP_ALLOWED_V2
     + ("never_in_prompts", "ok_with_approval", "ok", "approved", "not_approved", "needs_review", "default", "never")
     + ("id", "text", "aliases", "kind", "location", "default_mode", "rules", "mode", "values", "use_instead")
+    + ("exceptions",) + EXCEPTION_FIELDS + ("repositories",)
     + CONTACT_TOPICS
     + CONTACT_FIELDS
 )
@@ -542,13 +555,13 @@ def _mode(value: object, label: str) -> str:
 
 
 def _enforcement(value: object, overlay: dict, ids: _Ids) -> dict:
-    """The machine-only section (§2.2, §6.3 rules 4 to 6). Error messages name a value's
+    """The machine-only section (§2.2, §3.1, §6.3 rules 4 to 6). Error messages name a value's
     position, never the value: a listed host or branch is not echoed anywhere."""
     if not isinstance(value, dict):
-        raise OverlayError("enforcement: expected an object with rules and optional default_mode")
-    extra = set(value) - {"default_mode", "rules"}
+        raise OverlayError("enforcement: expected an object with rules, and optional default_mode and exceptions")
+    extra = set(value) - {"default_mode", "rules", "exceptions"}
     if extra:
-        raise OverlayError(f"enforcement: {_count(extra, 'unknown field')}; it has rules and an optional default_mode")
+        raise OverlayError(f"enforcement: {_count(extra, 'unknown field')}; it has rules, and optional default_mode and exceptions")
     if "rules" not in value:
         raise OverlayError("enforcement: missing fields ['rules']")
     out = {"default_mode": _mode(value["default_mode"], "enforcement.default_mode") if "default_mode" in value else DEFAULT_MODE}
@@ -561,7 +574,86 @@ def _enforcement(value: object, overlay: dict, ids: _Ids) -> dict:
             targets.add(item["id"])
             targets.update(item.get("aliases", []))
     out["rules"] = [_rule(rule, f"enforcement.rules[{i}]", ids, targets) for i, rule in enumerate(rules)]
+    if "exceptions" in value:
+        exceptions = value["exceptions"]
+        if not isinstance(exceptions, list) or not 1 <= len(exceptions) <= EXCEPTIONS_MAX:
+            raise OverlayError(f"enforcement.exceptions: expected a list of 1 to {EXCEPTIONS_MAX} exceptions")
+        rules_by_id = {rule["id"]: rule for rule in out["rules"]}
+        out["exceptions"] = [
+            _exception(entry, f"enforcement.exceptions[{i}]", ids, rules_by_id, overlay["expires_on"]) for i, entry in enumerate(exceptions)
+        ]
     return out
+
+
+def _exception(value: object, label: str, ids: _Ids, rules_by_id: dict, file_expires: dt.date) -> dict:
+    """One expiring exception (§3.1): it relaxes the enforcement rule `rule` names until `expires_on`, which is no later
+    than the file's own. `allows` are values of that rule's kind: for protected_branch, branches the rule stops
+    protecting; for deploy_host, extra approved hosts. `where` limits it to repositories, and only the pull-request
+    check reads it. Messages name positions, never a value from enforcement."""
+    if not isinstance(value, dict):
+        raise OverlayError(f"{label}: expected an object with id, rule, allows, approver_role, expires_on and optional where")
+    extra = set(value) - set(EXCEPTION_FIELDS)
+    missing = set(EXCEPTION_FIELDS) - {"where"} - set(value)
+    if extra:
+        raise OverlayError(
+            f"{label}: {_count(extra, 'unknown field')}; an exception has id, rule, allows, approver_role, expires_on and "
+            "optional where, and no free text"
+        )
+    if missing:
+        raise OverlayError(f"{label}: missing fields {sorted(missing)}")
+    out = {"id": ids.add(value["id"], f"{label}.id")}
+    # Enforcement rules have no aliases, so an exception names its rule by id.
+    rule = rules_by_id.get(value["rule"]) if isinstance(value["rule"], str) else None
+    if rule is None:
+        raise OverlayError(f"{label}.rule: expected the id of a rule in enforcement.rules")
+    out["rule"] = rule["id"]
+    allows = value["allows"]
+    if not isinstance(allows, list) or not 1 <= len(allows) <= VALUES_MAX:
+        raise OverlayError(f"{label}.allows: expected a list of 1 to {VALUES_MAX} values")
+    seen = set()
+    for j, entry in enumerate(allows):
+        where = f"{label}.allows[{j}]"
+        if not isinstance(entry, str):
+            raise OverlayError(f"{where}: expected a quoted string")
+        problem = value_problem(rule["kind"], entry)
+        if problem:
+            raise OverlayError(f"{where}: {problem}; an exception allows values of its rule's kind, here {rule['kind']}")
+        normalized = normalize_value(rule["kind"], entry)
+        if rule["kind"] == "protected_branch":
+            normalized = normalized.casefold()  # the hook matches branches ignoring case (policy.branch_matches)
+        if normalized in seen:
+            raise OverlayError(f"{where}: duplicates an earlier value of this exception")
+        seen.add(normalized)
+    out["allows"] = list(allows)
+    role = _item(value["approver_role"], f"{label}.approver_role", max_len=APPROVER_ROLE_MAX)
+    if EMAIL_RE.search(role):
+        raise OverlayError(f"{label}.approver_role: expected a role, such as a job title, not an email address")
+    if URL_RE.search(role):
+        raise OverlayError(f"{label}.approver_role: expected a role, such as a job title, not a URL")
+    out["approver_role"] = role
+    expires = _date(value["expires_on"], f"{label}.expires_on")
+    if expires > file_expires:
+        raise OverlayError(f"{label}.expires_on: after the file's expires_on; an exception never outlives the file")
+    out["expires_on"] = expires
+    if "where" in value:
+        out["where"] = _where(value["where"], f"{label}.where")
+    return out
+
+
+def _where(value: object, label: str) -> dict:
+    if not isinstance(value, dict) or set(value) != {"repositories"}:
+        raise OverlayError(f"{label}: expected an object with repositories and nothing else")
+    repositories = value["repositories"]
+    if not isinstance(repositories, list) or not 1 <= len(repositories) <= VALUES_MAX:
+        raise OverlayError(f"{label}.repositories: expected a list of 1 to {VALUES_MAX} repositories")
+    seen = set()
+    for j, entry in enumerate(repositories):
+        if not isinstance(entry, str) or not REPOSITORY_RE.fullmatch(entry):
+            raise OverlayError(f"{label}.repositories[{j}]: expected a repository as owner/name")
+        if entry.lower() in seen:
+            raise OverlayError(f"{label}.repositories[{j}]: duplicates an earlier repository (case is ignored)")
+        seen.add(entry.lower())
+    return {"repositories": list(repositories)}
 
 
 def _rule(value: object, label: str, ids: _Ids, targets: set[str]) -> dict:
@@ -597,6 +689,8 @@ def _rule(value: object, label: str, ids: _Ids, targets: set[str]) -> dict:
         if problem:
             raise OverlayError(f"{where}: {problem}")
         normalized = normalize_value(kind, entry)
+        if kind == "protected_branch":
+            normalized = normalized.casefold()  # the hook matches branches ignoring case (policy.branch_matches)
         if normalized in seen:
             raise OverlayError(f"{where}: duplicates an earlier value of this rule")
         seen.add(normalized)
@@ -881,12 +975,13 @@ def _slug(text: str) -> str:
 
 def _enforcement_values_in_model_text(model: dict, enforcement: dict) -> list[str]:
     """§6.3 rule 7, an error (decision 5): no deploy_host, package_registry or
-    cloud_account value in a model-facing phrase, id or alias, or in organization,
-    owner or a contact's name, ignoring case and a leading `*.`. An id cannot hold a
+    cloud_account value, a rule's or an exception's, in a model-facing phrase, id or alias, an enforcement rule's or
+    exception's id (in deny reasons and evidence), or in organization, owner or a contact's name, ignoring case and a
+    leading `*.`. An id cannot hold a
     dot, so an id, alias or template kind is checked for the value with each run of
     other characters as one hyphen, the form `migrate` would give it.
     templates[].location, intake_url and a contact's intake_url are exempt. The error
-    names the rule, never the value."""
+    names the rule or exception, never the value."""
     texts: list[tuple[str, str]] = [("overlay.organization", model["organization"]), ("overlay.owner", model["owner"])]
     texts.extend((f"overlay.contacts.{topic}.name", contact["name"]) for topic, contact in (model.get("contacts") or {}).items())
     identifiers: list[tuple[str, str]] = []
@@ -895,19 +990,39 @@ def _enforcement_values_in_model_text(model: dict, enforcement: dict) -> list[st
         identifiers.append((f"overlay.{label}.id", item["id"]))
         identifiers.extend((f"overlay.{label}.aliases[{i}]", a) for i, a in enumerate(item.get("aliases", [])))
     identifiers.extend((f"overlay.templates[{i}].kind", t["kind"]) for i, t in enumerate(model.get("templates", [])))
+    # Enforcement ids too: a rule id is in every deny reason the model reads, and both kinds of id are in evidence.
+    identifiers.extend((f"enforcement.rules[{i}].id", rule["id"]) for i, rule in enumerate(enforcement["rules"]))
+    identifiers.extend((f"enforcement.exceptions[{i}].id", exc["id"]) for i, exc in enumerate(enforcement.get("exceptions", [])))
+    kinds = {rule["id"]: rule["kind"] for rule in enforcement["rules"]}
+    # Each rule's values, then each exception's allows, which are values of its rule's kind (§3.1).
+    sources = [(f"enforcement rule {rule['id']!r}", f"enforcement.rules[{i}]", rule["kind"], rule["values"])
+               for i, rule in enumerate(enforcement["rules"])]
+    sources += [(f"enforcement exception {exc['id']!r}", f"enforcement.exceptions[{i}]", kinds[exc["rule"]], exc["allows"])
+                for i, exc in enumerate(enforcement.get("exceptions", []))]
     errors = []
-    for rule in enforcement["rules"]:
-        if rule["kind"] not in HOST_KINDS:
+    own_ids = {f"enforcement rule {rule['id']!r}": rule["id"] for rule in enforcement["rules"]}
+    own_ids.update({f"enforcement exception {exc['id']!r}": exc["id"] for exc in enforcement.get("exceptions", [])})
+    all_slugs = [s for _, _, kind, values in sources if kind in HOST_KINDS
+                 for s in (_slug(n) for value in values for n in _needles(kind, value)) if s]
+    for name, position, kind, values in sources:
+        if kind not in HOST_KINDS:
             continue
-        needles = [n for value in rule["values"] for n in _needles(rule["kind"], value)]
+        needles = [n for value in values for n in _needles(kind, value)]
         slugs = [s for s in (_slug(n) for n in needles) if s]
-        message = f"names a value of enforcement rule {rule['id']!r}; enforcement values never appear in model-facing text"
+        # A source whose id holds any enforcement value (its own or another's) is named by position, never by that id.
+        if any(f"-{s}-" in f"-{own_ids[name]}-" for s in all_slugs):
+            name = position
+        message = f"names a value of {name}; enforcement values never appear in model-facing text"
         for path, text in texts:
             if any(n in text.lower() for n in needles):
                 errors.append(f"{path}: {message}")
         for path, ident in identifiers:
             if any(f"-{s}-" in f"-{ident}-" for s in slugs):
-                errors.append(f"{path}: {message}")
+                if path.startswith("enforcement."):
+                    # The id is the offending text, so the error names the source by position, never by id.
+                    errors.append(f"{path}: names a value of {position}; enforcement values never appear in model-facing text")
+                else:
+                    errors.append(f"{path}: {message}")
     return errors
 
 
@@ -920,20 +1035,22 @@ def validate_expiry(overlay: dict, today: dt.date | None = None) -> list[str]:
     return []
 
 
-def lint_overlay(overlay: dict) -> list[str]:
-    """Warnings that do not fail validation (§6.3 rule 9). Each names a rule by id, never a value.
+def lint_overlay(overlay: dict, today: dt.date | None = None) -> list[str]:
+    """Warnings that do not fail validation (§6.3 rule 9). Each names a rule or exception by id, never a value.
 
     - `ask` has no prompt on Codex, in the pull-request check or in a run with
       nobody to answer, and acts as `block` there (decision 2);
     - `block` on a kind whose consumer has no host verification note yet;
     - a kind no hook acts on in this release (ENFORCED_KINDS), in place of the
-      two above, since its mode does nothing yet.
-
-    Exceptions near expiry come with exceptions, in the next increment.
+      two above, since its mode does nothing yet;
+    - an exception within EXCEPTION_WARN_DAYS days of its expires_on, or already
+      past it, and so ignored (§3.1); and an exception with `where`, which no hook
+      applies, since only the pull-request check, not built yet, reads `where`.
     """
     enforcement = overlay.get("enforcement")
     if not enforcement:
         return []
+    today = today or dt.date.today()
     warnings = []
     for i, rule in enumerate(enforcement["rules"]):
         mode = rule.get("mode", enforcement["default_mode"])
@@ -950,6 +1067,23 @@ def lint_overlay(overlay: dict) -> list[str]:
         if mode == "block" and rule["kind"] not in HOST_VERIFIED_KINDS:
             warnings.append(
                 f"{where}: mode block for kind {rule['kind']}, which has no host verification note yet; consider monitor first"
+            )
+    for i, exception in enumerate(enforcement.get("exceptions", [])):
+        where = f"enforcement.exceptions[{i}] ({exception['id']})"
+        expires = exception["expires_on"]
+        if expires < today:
+            warnings.append(
+                f"{where}: expired on {expires.isoformat()} and is ignored; rule {exception['rule']} applies as written. "
+                "Remove it, or renew it with a reviewer"
+            )
+        elif (expires - today).days <= EXCEPTION_WARN_DAYS:
+            warnings.append(
+                f"{where}: expires on {expires.isoformat()}, within {EXCEPTION_WARN_DAYS} days; after that rule "
+                f"{exception['rule']} applies as written"
+            )
+        if "where" in exception:
+            warnings.append(
+                f"{where}: has where, so no hook applies it; only the pull-request check, which is not built yet, reads where"
             )
     return warnings
 
@@ -1167,8 +1301,10 @@ def compile_policy(overlay: dict, raw: bytes) -> dict | None:
 
     Each rule keeps its id, kind and values, gets its mode resolved (its own, else
     default_mode), and has use_instead resolved to the approved item's text. The policy
-    also carries the file's expires_on and the SHA-256 of its bytes. Nothing else from
-    the file is copied: no other list, no owner, no salt.
+    also carries the file's expires_on and the SHA-256 of its bytes, and, only when the
+    file has exceptions, `exceptions`: each with its id, the id of the rule it relaxes,
+    its allows, its expires_on, and its where when it has one (§3.1). Nothing else from
+    the file is copied: no other list, no owner, no salt, no approver_role.
     """
     enforcement = overlay.get("enforcement")
     if not enforcement:
@@ -1189,13 +1325,27 @@ def compile_policy(overlay: dict, raw: bytes) -> dict | None:
         if "use_instead" in rule:
             out["use_instead_text"] = texts[rule["use_instead"]]
         rules.append(out)
-    return {
+    policy = {
         "format": POLICY_FORMAT,
         "format_version": POLICY_FORMAT_VERSION,
         "source_sha256": hashlib.sha256(raw).hexdigest(),
         "expires_on": overlay["expires_on"].isoformat(),
         "rules": rules,
     }
+    exceptions = []
+    for exception in enforcement.get("exceptions", []):
+        out = {
+            "id": exception["id"],
+            "rule": exception["rule"],
+            "allows": list(exception["allows"]),
+            "expires_on": exception["expires_on"].isoformat(),
+        }
+        if "where" in exception:
+            out["where"] = {"repositories": list(exception["where"]["repositories"])}
+        exceptions.append(out)
+    if exceptions:
+        policy["exceptions"] = exceptions
+    return policy
 
 
 def policy_text(policy: dict) -> str:
@@ -1228,8 +1378,10 @@ HOST_EFFECTS = {
 }
 
 
-def effective_modes(policy: dict) -> list[str]:
-    """One line per rule: id, kind, mode, and what it does on Claude Code and on Codex. Never a value."""
+def effective_modes(policy: dict, today: dt.date | None = None) -> list[str]:
+    """One line per rule: id, kind, mode, and what it does on Claude Code and on Codex; then, when the policy has
+    exceptions, one line per exception: id, the rule it relaxes, its expiry, and whether the hooks apply it. Never a
+    value, and never an exception's allows or repositories."""
     lines = ["rule | kind | mode | Claude Code | Codex"]
     for rule in policy["rules"]:
         if rule["kind"] in ENFORCED_KINDS:
@@ -1237,6 +1389,18 @@ def effective_modes(policy: dict) -> list[str]:
         else:
             claude_code = codex = "not enforced in this release"
         lines.append(f"{rule['id']} | {rule['kind']} | {rule['mode']} | {claude_code} | {codex}")
+    exceptions = policy.get("exceptions") or []
+    if exceptions:
+        today = today or dt.date.today()
+        lines.append("exception | rule | expires_on | hooks")
+        for exception in exceptions:
+            if "where" in exception:
+                applied = "not applied: it has where, which only the pull-request check reads"
+            elif dt.date.fromisoformat(exception["expires_on"]) < today:
+                applied = "expired: ignored, the rule applies as written"
+            else:
+                applied = "applied until it expires"
+            lines.append(f"{exception['id']} | {exception['rule']} | {exception['expires_on']} | {applied}")
     return lines
 
 
@@ -1292,8 +1456,10 @@ def compile_main(argv: list[str]) -> int:
     for line in effective_modes(policy):
         print(line)
     count = len(policy["rules"])
+    excepted = len(policy.get("exceptions", []))
+    with_exceptions = f" and {excepted} exception{'' if excepted == 1 else 's'}" if excepted else ""
     print(
-        f"compiled {count} enforcement rule{'' if count == 1 else 's'}, expiring {policy['expires_on']}, to {args.out}. "
+        f"compiled {count} enforcement rule{'' if count == 1 else 's'}{with_exceptions}, expiring {policy['expires_on']}, to {args.out}. "
         "Install it root-owned, mode 644, where the company-rules hook's --policy names it.",
         file=sys.stderr,
     )
@@ -1392,10 +1558,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     if overlay["schema_version"] == 2:
         rules = len((overlay.get("enforcement") or {}).get("rules", []))
+        excepted = len((overlay.get("enforcement") or {}).get("exceptions", []))
         message += (
             f" Version 2, {rules} enforcement rule{'' if rules == 1 else 's'}: `compile` writes them as the policy the "
             "company-rules hook reads, which acts on protected_branch and deploy_host rules."
         )
+        if excepted:
+            message += f" {excepted} expiring exception{'' if excepted == 1 else 's'}, which `compile` copies into the policy too."
     print(message)
     return 0
 

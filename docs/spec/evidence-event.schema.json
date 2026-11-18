@@ -29,7 +29,7 @@
     },
     "event": {
       "enum": ["rules_delivered", "rules_expired", "deny", "ask", "would_deny", "policy_error", "input_error", "lookup"],
-      "description": "What happened. Written today: deny and input_error (hooks), ask, would_deny and policy_error (the company-rules hook), lookup (server), rules_delivered, rules_expired and policy_error (session-start script)."
+      "description": "What happened. Written today: deny and input_error (hooks), ask, would_deny and policy_error (the company-rules hook), lookup (server), rules_delivered, rules_expired and policy_error (session-start script). A company rule whose matches expiring exceptions all covered writes would_deny with exception_id."
     },
     "rule_id": {
       "type": "string",
@@ -37,9 +37,15 @@
       "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
       "description": "The id of the company rule that matched (docs/spec/OVERLAY_V2.md §2.1), on the company-rules hook's deny, ask and would_deny lines; one line per matching rule."
     },
+    "exception_id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "The id of an expiring exception that covered something the company rule rule_id names matched, when exceptions covered all of that rule's matches, so that the rule decided nothing (docs/spec/OVERLAY_V2.md §3.1). Only on the company-rules hook's would_deny lines, with rule_id and the rule's own mode, whether or not that mode would have decided anything; one line per exception that covered something the rule matched. Absent on every other line."
+    },
     "mode": {
       "enum": ["monitor", "ask", "block"],
-      "description": "The mode that applied to the company rule that matched (docs/spec/OVERLAY_V2.md §2.3): its own, or monitor once the rules file has expired. Written by the company-rules hook; the built-in checks have no mode."
+      "description": "The mode that applied to the company rule that matched (docs/spec/OVERLAY_V2.md §2.3): its own, or monitor once the rules file has expired. On a would_deny line with exception_id, the rule's own mode, whether or not that mode would have decided anything. Written by the company-rules hook; the built-in checks have no mode."
     },
     "policy_sha256": {
       "type": "string",
@@ -121,6 +127,12 @@
       "uniqueItems": true,
       "items": {"enum": ["audience", "credential_references", "data_classes", "data_provenance", "data_types", "hosting", "services", "write_access"]},
       "description": "Server, check_plan: the names of the fields the caller supplied, sorted. Never their values."
+    }
+  },
+  "dependentSchemas": {
+    "exception_id": {
+      "required": ["rule_id"],
+      "properties": {"source": {"const": "claude-code-hook"}, "event": {"const": "would_deny"}}
     }
   },
   "allOf": [

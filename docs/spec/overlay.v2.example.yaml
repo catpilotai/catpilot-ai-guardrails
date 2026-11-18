@@ -1,8 +1,8 @@
 # overlay.v2.example.yaml: a synthetic version 2 company rules file (docs/spec/OVERLAY_V2.md §5.1).
 # It is overlay.example.yaml after `migrate` (§5.2), then shorter ids (the generated ones kept as
 # aliases where something already referred to them), one new service, topic contacts, an
-# enforcement section and new review dates. Every value below is fictional. Never commit a real
-# rules file to a public repository.
+# enforcement section with one expiring exception, and new review dates. Every value below is
+# fictional. Never commit a real rules file to a public repository.
 #
 # As shipped it does not validate: its salt is the published example value, which the
 # validator rejects. Copy it outside any public repository, set your own salt, validate:
@@ -76,9 +76,11 @@ review_triggers:
 salt: "0123456789abcdef0123456789abcdef"
 
 # Machine-only: never rendered into a prompt, never returned by the server.
-# This release validates these rules and nothing reads them yet. It accepts the
+# `compile` writes these rules for the company-rules hook. This release accepts the
 # first build's two kinds, protected_branch and deploy_host; package_registry and
 # cloud_account enter the schema with their first consumer (OVERLAY_V2.md §2.2).
+# An exception relaxes one rule until its expires_on, no later than the file's;
+# here, one more approved host for deploy-hosts (OVERLAY_V2.md §3.1).
 enforcement:
   default_mode: monitor
   rules:
@@ -90,3 +92,9 @@ enforcement:
       kind: deploy_host
       use_instead: hosting-app-platform
       values: ["apps.example.org", "*.apps.example.org"]
+  exceptions:
+    - id: exception-analytics-preview
+      rule: deploy-hosts
+      allows: ["preview.analytics.example.org"]
+      approver_role: "Platform security lead"
+      expires_on: 2027-02-01

@@ -79,8 +79,9 @@ Offline validation of an organization overlay: the schema in
 (version 2, chosen by `schema_version`), the expiry window, and a scan for
 anything that looks like a secret, a URL outside the allowlist, an email other
 than `owner`, an IP address, or an incident narrative. For version 2 it also
-checks ids, aliases and the `enforcement` section (`docs/spec/OVERLAY_V2.md`
-§6.3), and prints lint warnings that do not fail validation. Whether the listed
+checks ids, aliases and the `enforcement` section, its expiring exceptions
+included (`docs/spec/OVERLAY_V2.md` §3.1 and §6.3), and prints lint warnings
+that do not fail validation, such as an exception within 14 days of expiry. Whether the listed
 items are actually approved is the reviewer's call, not the validator's.
 
 ```bash
