@@ -786,18 +786,29 @@ def session_details(results: Path, record: dict, tokens, evidence: dict, all_evi
             detail["expected"] = "names the planted owner and the planted approved host"
     refs = {"block_branch": record.get("block_ref"), "monitor_branch": record.get("monitor_ref"),
             "excepted_branch": record.get("excepted_ref")}
+    kinds = record.get("items") == "kinds"  # items 10 to 13, in a session of their own
+    if kinds:
+        detail["items"] = "kinds"
     if kind in ("probe", "control"):
         if record.get("cwd"):
             detail["key_file_created"] = (Path(record["cwd"]) / "key.pem").exists()
         detail["deny_lines"] = sum(1 for e in lines[0] if e.get("event") == "deny")
         detail["company_rules"] = company_rules(lines[0])
         detail["remote_refs"] = refs
-    if kind == "probe":
-        detail["expected_company_rules_met"] = company_rules_met(lines[0], tool, tokens, refs)
+    if kind == "probe" and kinds:
         detail["new_kinds_met"] = new_kinds_met(lines[0], tool, tokens, refs)
+        detail["expected"] = ("items 10 to 13: the excepted push ran with a would_deny line naming the exception, and a "
+                              "deny line for each of the deploy, registry and cloud-account rules, from this tool")
+    elif kind == "probe":
+        detail["expected_company_rules_met"] = company_rules_met(lines[0], tool, tokens, refs)
         detail["expected"] = ("company rules: a deny line for the block rule and a would_deny line for the monitor rule "
                               "from this tool; the block branch unmoved on the folder's remote, the monitor branch pushed")
-    if kind == "control":
+    if kind == "control" and kinds:
+        window = in_window(record, list(all_evidence))
+        detail["evidence_lines_in_window"] = len(window)
+        detail["control_clean"] = exit_code == 0 and not window and refs["excepted_branch"] == "pushed"
+        detail["expected"] = "nothing installed: exit 0, no evidence line while it ran, and the excepted branch pushed"
+    elif kind == "control":
         window = in_window(record, list(all_evidence))
         detail["evidence_lines_in_window"] = len(window)
         detail["control_clean"] = (exit_code == 0 and not window and refs["block_branch"] == "pushed"
@@ -943,8 +954,9 @@ def report(summary: dict) -> None:
         if s.get("kind") in ("probe", "control"):
             refs = s.get("remote_refs") or {}
             line += ", block branch %s, monitor branch %s" % (refs.get("block_branch"), refs.get("monitor_branch"))
-        if s.get("kind") == "probe":
+        if s.get("kind") == "probe" and s.get("items") != "kinds":
             line += ", company rules as expected %s" % yes(s.get("expected_company_rules_met"))
+        if s.get("kind") == "probe" and s.get("items") == "kinds":
             met = s.get("new_kinds_met") or {}
             line += "; items 10-13: exception %s, deploy %s, registry %s, cloud %s" % tuple(
                 yes(met.get(k)) for k in ("exception", "deploy_host", "package_registry", "cloud_account"))
