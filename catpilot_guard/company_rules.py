@@ -56,7 +56,7 @@ import sys
 from . import COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, event_for_host, write_decision, write_reason
 from . import policy as policy_module
 from .deploy_targets import deploy_targets, host_covered
-from .destructive import _simple_commands, git_push_rewrites
+from .destructive import commands_with_branch_context, git_push_rewrites
 
 MAX_INPUT_BYTES = 1_048_576
 HOOK_NAME = "pretooluse-company-rules"
@@ -116,15 +116,16 @@ def record_evidence(event: str, hook_event: object = None, host: str | None = No
         pass
 
 
-def matched_rules(command: str, cwd: object, policy: policy_module.Policy) -> list:
-    """The policy's rules this command fires, in policy order."""
+def matched_rules(command: str, cwd: object, policy: policy_module.Policy, branch_known: bool = True) -> list:
+    """The policy's rules this command fires, in policy order. branch_known False: no checkout's branch is the one the
+    command runs on (the pull-request check), so HEAD, a bare push and a current-branch substitution are unknown."""
     working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
     kinds = {rule.kind for rule in policy.rules}
     pushes = []
     if "protected_branch" in kinds:
-        for argv in _simple_commands(command):
+        for argv, branch_cwd in commands_with_branch_context(command, working_dir if branch_known else None):
             if argv[0] == "git":
-                push = git_push_rewrites(argv[1:], working_dir)
+                push = git_push_rewrites(argv[1:], branch_cwd)
                 if push is not None:
                     pushes.append(push)
     targets = deploy_targets(command, working_dir) if "deploy_host" in kinds else []

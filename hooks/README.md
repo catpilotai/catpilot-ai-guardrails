@@ -186,8 +186,33 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   a shell variable or a substitution (`git push --force origin $BRANCH`,
   `"${TARGET}"`, `${B:-main}`, a backtick) names a branch the hook cannot
   read, so it is blocked like an unreadable checked-out branch; an ordinary
-  push to a variable is not. An option's value (`-o ci.skip`,
-  `--push-option`, `--repo`) is not read as the remote.
+  push to a variable is not. Three exceptions:
+  - A substitution that asks git for the checked-out branch
+    (`"$(git branch --show-current)"`, `$(git rev-parse --abbrev-ref HEAD)`,
+    `$(git symbolic-ref --short HEAD)`, quoted or not, or in backticks) is read
+    as that branch.
+  - So are `HEAD` and `@`, and `heads/main` as `main`.
+  - The checked-out branch counts as unknown, and so blocked, after a command
+    earlier in the same line that may change it or the directory (`cd`,
+    `pushd`, `git checkout`, `git switch`, `git branch -m`, `gh pr checkout`,
+    `source`, `eval`), and anywhere in a line that sets `GIT_DIR` or
+    `GIT_WORK_TREE` or defines a function. A script run earlier in the line
+    that switches branches is not seen.
+
+  A word that starts with a variable may hold an option. When it is followed
+  by a literal word, with two literal words besides (`git push $F origin
+  main`, `git push origin $F main`), the push counts as a force push. A
+  trailing one (`git push origin main "$TAG"`) does not, so `git push $F
+  origin` with `F=--force` is not caught.
+
+  Also blocked:
+  - the matching refspec (`:`) with a force or a `+`;
+  - a bare push given `-c remote.<name>.push=...`;
+  - a bare push given `-c push.default=matching` with a force.
+
+  A matching or `remote.*.push` setting in git's config files is not read. An
+  option's value (`-o ci.skip`, `--push-option`, `--repo`) is not read as the
+  remote.
 - Database and cache resets: `prisma db push --accept-data-loss`, `prisma
   migrate reset --force`, `rails`/`rake` `db:drop`, `db:reset`,
   `db:schema:load`, and `db:structure:load`, Django `flush --noinput`,
@@ -283,10 +308,11 @@ check as `block` does. Not yet run in a real repository's CI.
   with a force or `--prune`, and a forced refspec pattern
   (`refs/heads/*:refs/heads/*`), match every rule. A force push or deletion
   whose branch the hook cannot read also matches every rule: a destination in
-  a variable or a substitution (`git push --force origin $BRANCH`), and a bare
+  a variable or a substitution (`git push --force origin $BRANCH`), a bare
   force push or a push to `HEAD` with no branch checked out (a detached
   `HEAD`, or no repository; the built-in check blocks the bare force push
-  there, not the push to `HEAD`). A value
+  there, not the push to `HEAD`), and the checked-out branch after a command
+  that may change it, as the destructive-operation check reads it (above). A value
   ending in `/*` covers every branch under the prefix; case is ignored. A
   value is a branch name: the validator refuses a `refs/` prefix and names
   longer than 255 characters. An ordinary push is not a match.

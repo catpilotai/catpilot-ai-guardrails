@@ -390,13 +390,30 @@ class EnvTests(unittest.TestCase):
         self.assertEqual(self.fired(self.doc(job_env="B: feature\n", extra_steps=checkout)), [])
         self.assertEqual(self.fired(self.doc(job_env="B: feature\n", extra_steps="      - uses: Actions/Checkout@v4\n")), [])
 
-    def test_a_composite_action_reads_env_only_before_a_code_step(self):
+    def test_a_composite_action_reads_no_env_value(self):
+        # The calling job's earlier steps may have set any variable through GITHUB_ENV (review of #133).
         head = "runs:\n  using: composite\n  steps:\n"
         push = "    - shell: bash\n      env:\n        B: feature\n      run: git push --force origin $B\n"
-        rules = [branch_rule()]
-        self.assertEqual(findings("action.yml", head + push, rules=rules), [])
-        self.assertEqual([r for _, r, _ in findings("action.yml", head + "    - shell: bash\n      run: ./prep.sh\n" + push, rules=rules)],
-                         ["protected-branches"])
+        self.assertEqual([r for _, r, _ in findings("action.yml", head + push, rules=[branch_rule()])], ["protected-branches"])
+
+    def test_a_job_with_an_action_from_another_repository_reads_no_env_value(self):
+        # Its pre: runs before the first step (review of #133).
+        later = "      - uses: some-org/js-action-with-pre@v1\n"
+        text = self.doc(job_env="B: feature\n") + later
+        self.assertEqual(self.fired(text), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(job_env="B: feature\n") + "      - uses: ./local-action\n"), [])
+        self.assertEqual(self.fired(self.doc(job_env="B: feature\n") + "      - uses: actions/checkout@v4\n"), [])
+
+    def test_the_branch_a_workflow_runs_on_is_unknown_even_inside_a_checkout(self):
+        # check_file's directory may sit inside a git work tree (a TMPDIR under a repository): its branch is not the
+        # one the workflow runs on (review of #133).
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").mkdir()
+            (Path(tmp) / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
+            for run in ('git push -f origin "$(git branch --show-current)"', "git push -f origin HEAD", "git push -f"):
+                with self.subTest(run=run):
+                    out = pr_check.check_file(".github/workflows/d.yml", self.doc(run=run).encode(), parsed([branch_rule()]), tmp)
+                    self.assertEqual([f.rule_id for f in out], ["protected-branches"])
 
     def test_resolve_script_never_resolves_the_expression_placeholder(self):
         env = {"CATPILOT_EXPRESSION": "feature", "B": "feature"}
@@ -445,7 +462,7 @@ class PushActionTests(unittest.TestCase):
                 TARGET: feature
             """)
         # JamesIves: gh-pages (not protected) and github.io (not approved); ad-m with no branch: unknown. The third
-        # step's env: is not read, since the steps before it can run code that sets TARGET: unknown.
+        # step's env: is not read, since actions from other repositories may run code (a pre:) that sets TARGET.
         self.assertEqual(findings(".github/workflows/d.yml", text),
                          [(7, "deploy-hosts", "error"), (10, "protected-branches", "error"), (13, "protected-branches", "error")])
         self.assertEqual(findings(".github/workflows/d.yml", text, rules=[branch_rule(values=["gh-pages"])]),
@@ -458,7 +475,7 @@ class PushActionTests(unittest.TestCase):
               env:
                 TARGET: feature
             """)
-        self.assertEqual(findings(".github/workflows/d.yml", first), [])
+        self.assertEqual(findings(".github/workflows/d.yml", first), [(7, "protected-branches", "error")])
 
 
 class ShellTests(unittest.TestCase):
@@ -473,17 +490,28 @@ class ShellTests(unittest.TestCase):
             - shell: ${{ matrix.shell }}
               run: echo ok
             """)
-        self.assertEqual(findings(".github/workflows/d.yml", text), [(8, None, "error"), (14, None, "error")])
+        # pwsh is not read either (review of #133).
+        self.assertEqual(findings(".github/workflows/d.yml", text), [(8, None, "error"), (12, None, "error"), (14, None, "error")])
         self.assertEqual(findings(".github/workflows/d.yml", text, rules=[host_rule("monitor")]),
-                         [(8, None, "warning"), (14, None, "warning")])
+                         [(8, None, "warning"), (12, None, "warning"), (14, None, "warning")])
+
+    def test_a_windows_runner_s_default_shell_is_not_read(self):
+        text = "name: ci\non: push\njobs:\n  w:\n    runs-on: windows-latest\n    steps:\n      - run: git push --force origin main\n" \
+               "  l:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n"
+        self.assertEqual(findings(".github/workflows/d.yml", text), [(7, None, "error")])
+        listed = text.replace("runs-on: windows-latest", "runs-on: [self-hosted, Windows]")
+        self.assertEqual(findings(".github/workflows/d.yml", listed), [(7, None, "error")])
+        bash = text.replace("      - run: git push --force origin main", "      - shell: bash\n        run: git push --force origin main")
+        self.assertEqual(findings(".github/workflows/d.yml", bash), [(8, "protected-branches", "error")])
 
     def test_only_plain_shell_options_are_read(self):
         readable = ["bash", "bash -e {0}", "bash --noprofile --norc -eo pipefail {0}", "sh -e {0}", "/bin/bash -x {0}",
-                    "pwsh", "pwsh -command \". '{0}'\"", "powershell -NoProfile -command \"& '{0}'\"", "pwsh.exe {0}",
-                    "bash +o posix {0}"]
+                    "bash +o posix {0}", "bash.exe {0}"]
+        # PowerShell is not read: `<# ... #>` would hide a command from shell rules (review of #133).
         unreadable = ["bash -c 'exec python3 \"$1\"' _ {0}", "bash -ec 'python3 $1' _ {0}", "sh -c 'perl {0}'",
                       "pwsh -command \"& python3 '{0}'\"", "bash --rcfile x {0}", "bash -o", "bash -o 'pipe fail' {0}",
-                      "bash {0} extra", "bash 'unbalanced", "pwsh -File other.ps1"]
+                      "bash {0} extra", "bash 'unbalanced", "pwsh -File other.ps1", "pwsh", "pwsh -command \". '{0}'\"",
+                      "powershell -NoProfile -command \"& '{0}'\"", "pwsh.exe {0}"]
         for shell in readable:
             with self.subTest(shell=shell):
                 self.assertTrue(pr_check._readable_shell(shell))

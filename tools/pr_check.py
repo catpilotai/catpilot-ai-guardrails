@@ -19,14 +19,16 @@ What it scans, exactly (by file name; every other file is ignored):
                                  values (workflow, then job, then step, the more specific winning) are read into
                                  `$X`, `${X}` and `${{ env.X }}`, but only until a step that can run code (any `run:`
                                  step, or any `uses:` but actions/checkout), which may set any variable for the steps
-                                 after it through GITHUB_ENV; any other variable or `${{ ... }}` stays unknown, so a
+                                 after it through GITHUB_ENV, and not at all in a job with an action from another
+                                 repository (its `pre:` runs before the first step); any other variable or `${{ ... }}` stays unknown, so a
                                  destination or a branch taken from one is one the check cannot read, which fires (as
                                  in the hook). A run step whose shell (its own, or `defaults.run.shell` of its job or
-                                 workflow) is not bash, sh, pwsh or powershell, with only the plain options `_readable_shell`
-                                 allows, cannot be read. Each step's `uses:`
+                                 workflow, or pwsh on a literal Windows runner) is not bash or sh, with only the plain
+                                 options `_readable_shell` allows, cannot be read; PowerShell is not read. Each step's `uses:`
                                  naming a deploy action (DEPLOY_ACTIONS) or a force-pushing action (PUSH_ACTIONS), and
                                  a `docker://` step's `entrypoint` and `args`, as a command
-  action.yml|yaml (anywhere)     the same, for the steps of a composite action (`runs.steps`, with step `env:` only);
+  action.yml|yaml (anywhere)     the same, for the steps of a composite action (`runs.steps`), with no env: value
+                                 substituted (the calling job may have set any variable);
                                  for a Docker action, `runs.entrypoint` with `runs.args`, and `runs.pre-entrypoint`
                                  and `runs.post-entrypoint`, as commands
   package.json (anywhere)        each value under `scripts`, as a command
@@ -69,8 +71,9 @@ is not the checkout's), so, like a variable, it fires every protected_branch rul
 
 Not covered: files the pull request does not add or change (an unchanged reusable workflow or script that a changed
 file calls), scripts a command runs (`npm run deploy` is not followed into package.json), reusable workflows and
-actions from other repositories, a variable that holds an option (`git push origin $F` with F=--force; a variable
-among two or more refspecs counts as a force), a Docker image's own entrypoint, deploy and push
+actions from other repositories, a variable that holds an option where no literal word follows it (`git push origin
+$F` with F=--force; `git push $F origin main` counts as a force), a PowerShell step (read as unreadable until a
+PowerShell reader exists), a Docker image's own entrypoint, deploy and push
 actions not listed below, and everything the hook does not cover (hooks/README.md, exact coverage).
 
 Standard library plus PyYAML. Python 3.11+ (tomllib).
@@ -119,7 +122,7 @@ WHAT = {
     "deploy_host": "this file deploys or publishes to a host the company has not approved",
 }
 UNREADABLE = "Catpilot pull-request check: could not read this file, so it was not checked against the company rules."
-UNREADABLE_STEP = ("Catpilot pull-request check: could not read this run step, whose shell is not bash, sh or PowerShell with plain options, "
+UNREADABLE_STEP = ("Catpilot pull-request check: could not read this run step, whose shell is not bash or sh with plain options, "
                    "so it was not checked against the company rules.")
 
 # Deploy actions a workflow step may name in `uses:`, by owner/repository, lowercase.
@@ -407,7 +410,9 @@ PUSH_ACTIONS = {
     "ad-m/github-push-action": {"branch_input": "branch", "default_branch": None,
                                 "force_inputs": ("force", "force_with_lease"), "force_default": False},
 }
-READABLE_SHELLS = ("bash", "sh", "pwsh", "powershell")
+# PowerShell is not read: its block comments (`<# ... #>`), backtick escapes and Invoke-Expression would hide a command
+# from POSIX shell rules, so a pwsh or powershell step is unreadable until a PowerShell reader exists.
+READABLE_SHELLS = ("bash", "sh")
 # An env: value substituted into a script only when it is this plain: anything else could change how the script
 # reads (a quote, a space, a `;`), so its variable stays unresolved, and unknown.
 SAFE_LITERAL = re.compile(r"[A-Za-z0-9._/@:+=,-]*")
@@ -584,13 +589,9 @@ def action_pushes(uses: str, inputs: dict) -> list:
 # hands the script to another program, is a shell the check does not read. `{0}` is the script file.
 POSIX_SHELL_WORD = re.compile(r"[-+][euxvlo]+|[-+][oO]|--(?:noprofile|norc|login|posix)|\{0\}")
 SHELL_OPTION_VALUE = re.compile(r"[a-z_]+")
-PWSH_WORD = re.compile(r"(?i)-(?:noprofile|nologo|noninteractive|nop)|\{0\}")
-PWSH_COMMAND = (". '{0}'", "& '{0}'")
-
-
 def _readable_shell(shell: str | None) -> bool:
-    """Whether a run step's shell is one this check reads: the default (None), or bash, sh, pwsh or powershell with
-    only plain options (`bash --noprofile --norc -eo pipefail {0}`, `pwsh -command ". '{0}'"`)."""
+    """Whether a run step's shell is one this check reads: the default (None, bash on a runner that is not Windows),
+    or bash or sh with only plain options (`bash --noprofile --norc -eo pipefail {0}`)."""
     if shell is None:
         return True
     if "${{" in shell:
@@ -608,21 +609,24 @@ def _readable_shell(shell: str | None) -> bool:
     rest, index = words[1:], 0
     while index < len(rest):
         word = rest[index]
-        if name in ("bash", "sh"):
-            if not POSIX_SHELL_WORD.fullmatch(word):
-                return False
-            if word[0] in "-+" and word[-1] in "oO" and not word.startswith("--"):  # -o, -eo, +O take a value
-                index += 1
-                if index >= len(rest) or not SHELL_OPTION_VALUE.fullmatch(rest[index]):
-                    return False
-        elif word.lower() in ("-command", "-c"):
-            index += 1
-            if index >= len(rest) or rest[index] not in PWSH_COMMAND:
-                return False
-        elif not PWSH_WORD.fullmatch(word):
+        if not POSIX_SHELL_WORD.fullmatch(word):
             return False
+        if word[0] in "-+" and word[-1] in "oO" and not word.startswith("--"):  # -o, -eo, +O take a value
+            index += 1
+            if index >= len(rest) or not SHELL_OPTION_VALUE.fullmatch(rest[index]):
+                return False
         index += 1
     return True
+
+
+def _windows_runner(job) -> bool:
+    """Whether a job's runs-on names a Windows runner literally, where a step with no shell runs pwsh. A runner given
+    by an expression (a matrix) is not known, and its steps are read as bash."""
+    for runs_on in _values(job, "runs-on"):
+        labels = runs_on.value if isinstance(runs_on, yaml.SequenceNode) else [runs_on]
+        if any(isinstance(label, yaml.ScalarNode) and "windows" in label.value.lower() for label in labels):
+            return True
+    return False
 
 
 def _default_shell(node, inherited: str | None) -> str | None:
@@ -701,10 +705,22 @@ def _runs_code(step) -> bool:
     return False
 
 
-def _steps_items(steps, levels: list, shell: str | None) -> list:
+def _runs_pre(step) -> bool:
+    """Whether a step's action may have a `pre:` (or `pre-entrypoint:`), which runs at the start of the job, before
+    the first step: any action from another repository but actions/checkout. Local actions cannot have one."""
+    for uses in _values(step, "uses"):
+        name = uses.value.strip().lower() if isinstance(uses, yaml.ScalarNode) else "?"
+        if not name.startswith(("./", "docker://")) and name.split("@", 1)[0] != "actions/checkout":
+            return True
+    return False
+
+
+def _steps_items(steps, levels: list, shell: str | None, code_ran: bool = False) -> list:
     """The items of one job's (or composite action's) steps, in order: env: values are substituted only until a step
-    that can run code, since it may set any variable for the steps after it."""
-    items, code_ran = [], False
+    that can run code, since it may set any variable for the steps after it. An action's `pre:` runs before the
+    first step, so a job with one substitutes nothing; code_ran True substitutes nothing either."""
+    items = []
+    code_ran = code_ran or any(_runs_pre(step) for step in steps.value)
     for step in steps.value:
         items.extend(_step_items(step, None if code_ran else levels, shell))
         code_ran = code_ran or _runs_code(step)
@@ -719,6 +735,8 @@ def scan_workflow(raw: str) -> list:
     for jobs in _values(root, "jobs"):
         for _, job in _pairs(jobs):
             shell = _default_shell(job, workflow_shell)
+            if shell is None and _windows_runner(job):
+                shell = "pwsh"  # GitHub's default shell on Windows runners
             for steps in _values(job, "steps"):
                 if isinstance(steps, yaml.SequenceNode):
                     items.extend(_steps_items(steps, [workflow_env, _env_level(job)], shell))
@@ -754,7 +772,8 @@ def scan_action(raw: str) -> list:
             items.extend(_docker_action_items(runs))
         for steps in _values(runs, "steps"):
             if isinstance(steps, yaml.SequenceNode):
-                items.extend(_steps_items(steps, [], None))
+                # The calling job's earlier steps may already have set any variable through GITHUB_ENV.
+                items.extend(_steps_items(steps, [], None, code_ran=True))
     return items
 
 
@@ -935,14 +954,14 @@ def hits_for(item, policy: policy_module.Policy, cwd: str) -> list:
             and any(not b or any(policy_module.branch_matches(v, b) for v in rule.values) for b in item.branches)
         ]
     text = _expressions_as_variables(item.text)
-    fired = matched_rules(text, cwd, policy)
+    fired = matched_rules(text, cwd, policy, branch_known=False)
     if not fired:
         return []
     ids = {rule.id for rule in fired}
     hits, placed = [], set()
     if item.exact:
         for line, logical in logical_lines(text, item.start_line):
-            for rule in matched_rules(logical, cwd, policy):
+            for rule in matched_rules(logical, cwd, policy, branch_known=False):
                 if rule.id in ids:
                     hits.append((line, rule))
                     placed.add(rule.id)

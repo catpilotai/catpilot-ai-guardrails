@@ -159,6 +159,21 @@ DENIED = {
     "force push to a command substitution": "git push --force origin `cat branch.txt`",
     "force push to another repository's branch": 'git push -f origin "$(git -C ../other branch --show-current)"',
     "a variable that may hold --force": "git push origin $F main",
+    # Review of #133: the checked-out branch is unknown after a command that may change it, or with GIT_DIR or a
+    # function standing in for git; a variable before literal words may hold --force; git's other spellings.
+    "substitution after cd": 'cd ../other && git push -f origin "$(git branch --show-current)"',
+    "HEAD after checkout": "git checkout main && git push --force-with-lease origin HEAD",
+    "bare push after switch": "git switch main; git push -f",
+    "substitution with a git function": 'git() { echo main; }; git push -f origin "$(git branch --show-current)"',
+    "bare push with GIT_DIR": "export GIT_DIR=../b/.git; git push -f",
+    "a variable before the remote": "git push $F origin main",
+    "a variable option cluster": "git push -$F origin main",
+    "a variable git option": "git $OPTS push -f origin main",
+    "forced matching refspec": "git push origin +:",
+    "matching refspec with --force": "git push --force origin :",
+    "forced matching push by config": "git -c push.default=matching push -f origin",
+    "push refspecs by config": "git -c remote.origin.push=+refs/heads/*:refs/heads/* push origin",
+    "heads/ prefix": "git push --force origin heads/main",
     "nice then timeout then bash -lc": "nice -n 10 timeout 60 bash -lc 'rm -rf ~'",
     "timeout around dropdb": "timeout 30 dropdb production_db",
     # The home directory by absolute path, and its credential directories.
@@ -237,6 +252,10 @@ ALLOWED = {
     "timeout tests": "timeout 60 pytest -q",
     "timeout force-with-lease feature": "timeout 60 git push --force-with-lease origin feature/x",
     "ordinary push to a variable": "git push origin $BRANCH",
+    "push with a trailing tag variable": 'git push origin main "$TAG"',
+    "push of two variables": 'git push origin "$BRANCH" "$TAG"',
+    "push to a variable remote": "git push $REMOTE main",
+    "ordinary matching push": "git push origin :",
     "force push a variable source to a feature branch": "git push -f origin ${SRC}:feature/x",
     "force push to a variable remote and a feature branch": "git push --force $REMOTE feature/x",
     "stdbuf tail": "stdbuf -oL tail -f app.log",
@@ -370,6 +389,8 @@ class DestructiveHookTests(unittest.TestCase):
                 with self.subTest(branch=branch):
                     head.write_text(f"ref: refs/heads/{branch}\n")
                     for command in ("git push -f", "git push --force-with-lease origin", "git push --force origin HEAD",
+                                    "git push -f origin @", "git push --force-with-lease origin $(git branch --show-current)",
+                                    "git push -f origin `git rev-parse --abbrev-ref HEAD`",
                                     'git push --force-with-lease origin "$(git branch --show-current)"',
                                     "git push -f origin '`git rev-parse --abbrev-ref HEAD`'".replace("'", '"'),
                                     'git push -f origin HEAD:"$(git symbolic-ref --short HEAD)"'):
