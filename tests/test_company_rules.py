@@ -664,7 +664,7 @@ class DeployTests(unittest.TestCase):
         path.write_text(json.dumps(settings), encoding="utf-8")
         verify = self.run_script("verify.sh")
         self.assertNotEqual(verify.returncode, 0)
-        self.assertRegex(verify.stdout, r"evidence has no would_deny line for|expected it to")
+        self.assertRegex(verify.stdout, r"evidence has no would_deny line for|expected it to|verify does not run it")
 
     def test_verify_fails_registered_commands_that_cannot_prove_they_read_the_rule(self):
         # Review of #134: a no-op that mentions the hook, the wrong --host, and a command writing evidence where verify
@@ -690,7 +690,7 @@ class DeployTests(unittest.TestCase):
                 path.write_text(json.dumps(settings), encoding="utf-8")
                 verify = self.run_script("verify.sh")
                 self.assertNotEqual(verify.returncode, 0, verify.stdout)
-                self.assertRegex(verify.stdout, r"evidence has no would_deny line for|expected it to")
+                self.assertRegex(verify.stdout, r"evidence has no would_deny line for|expected it to|verify does not run it")
         # Verify runs each command exactly as registered (review of #134): evidence sent anywhere but the standard
         # prefix's path cannot prove the rule was read, and fails with that reason; nothing is skipped.
         for prefix in ('CATPILOT_EVIDENCE_LOG="$HOME/Library/Logs/catpilot/evidence.jsonl"', "CATPILOT_EVIDENCE_SYSLOG=1", ""):
@@ -703,9 +703,32 @@ class DeployTests(unittest.TestCase):
                 path.write_text(json.dumps(settings), encoding="utf-8")
                 verify = self.run_script("verify.sh")
                 self.assertNotEqual(verify.returncode, 0, verify.stdout)
-                self.assertIn("or send its evidence somewhere verify cannot read", verify.stdout)
+                self.assertRegex(verify.stdout, r"or send its evidence somewhere verify cannot read|verify does not run it")
                 lines = [l for l in verify.stdout.splitlines() if "managed-settings.json" in l and "pretooluse-company-rules.py" in l]
                 self.assertFalse(any(l.startswith("skipped") for l in lines), lines)
+        # Verify never sends a probe line to a real sink (review of #134): a syslog or outside-$HOME command is not run.
+        import socket
+        listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.settimeout(0.5)
+        port = listener.getsockname()[1]
+        outside = self.tmp / "outside" / "evidence.jsonl"
+        for prefix in ("CATPILOT_EVIDENCE_SYSLOG=127.0.0.1:%d" % port, vo_prefix() + " CATPILOT_EVIDENCE_SYSLOG=127.0.0.1:%d" % port,
+                       "CATPILOT_EVIDENCE_LOG=%s" % outside):
+            with self.subTest(sink=prefix):
+                settings = json.loads(original)
+                for group in settings["hooks"]["PreToolUse"]:
+                    for hook in group["hooks"]:
+                        if "pretooluse-company-rules.py" in hook["command"]:
+                            hook["command"] = hook["command"].replace(vo_prefix(), prefix)
+                path.write_text(json.dumps(settings), encoding="utf-8")
+                verify = self.run_script("verify.sh")
+                self.assertNotEqual(verify.returncode, 0)
+                self.assertIn("verify does not run it", verify.stdout)
+                with self.assertRaises(socket.timeout):
+                    listener.recvfrom(65536)
+                self.assertFalse(outside.exists())
+        listener.close()
         # The standard prefix in another spelling still lands in verify's log.
         settings = json.loads(original)
         for group in settings["hooks"]["PreToolUse"]:

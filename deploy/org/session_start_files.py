@@ -1046,6 +1046,21 @@ def logged_rule(entries: list, rule_id: str, excepted: bool, expected: str, host
                and bool(e.get("exception_id")) == excepted for e in entries)
 
 
+HOME_EVIDENCE_VALUE = re.compile(r"""CATPILOT_EVIDENCE_LOG=(?:"?\$\{?HOME\}?"?/|~/)""")
+
+
+def evidence_elsewhere(command: str) -> str | None:
+    """Where a registered command sends its evidence other than under $HOME, read from its text without changing it:
+    "syslog" when it names CATPILOT_EVIDENCE_SYSLOG, "a path outside $HOME" when a CATPILOT_EVIDENCE_LOG= value does
+    not start with $HOME (or ~); else None. verify does not run such a command, so it sends nothing anywhere."""
+    if "CATPILOT_EVIDENCE_SYSLOG" in command:
+        return "syslog"
+    for match in re.finditer(r"CATPILOT_EVIDENCE_LOG=", command):
+        if not HOME_EVIDENCE_VALUE.match(command, match.start()):
+            return "a path outside $HOME"
+    return None
+
+
 def policy_hash(policy_file: Path) -> str | None:
     try:
         value = json.loads(policy_file.read_text(encoding="utf-8")).get("source_sha256")
@@ -1308,6 +1323,14 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             # Each probe runs the command exactly as registered, with HOME at verify's temporary home and no evidence
             # setting of verify's own, so the standard prefix ("$HOME/.catpilot-guardrails/evidence.jsonl") writes the
             # proof line where verify reads it. Rewriting the command could make it run differently than in a session.
+            # A command whose evidence would go anywhere else (syslog, a path outside $HOME) is not run, so verify
+            # sends nothing to a real sink, and fails: it cannot prove it read the rule.
+            elsewhere = evidence_elsewhere(command)
+            if elsewhere:
+                report.line("FAIL", "%s runs %s with its evidence sent to %s; verify does not run it, so nothing reaches a "
+                            "real sink, and cannot prove it reads the rule; verify reads the hook's evidence through the "
+                            "standard prefix %s" % (managed_file, COMPANY_HOOK, elsewhere, EVIDENCE_PREFIX))
+                continue
             for probe_cmd, modes, what, probe_rule, excepted in runs:
                 expected = expected_effect(host, modes, has_ask_flag(command))
                 verb = "lets through" if probe_cmd == "ls" else EFFECT_WORDS[expected]
