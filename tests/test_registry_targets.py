@@ -332,22 +332,33 @@ class RegistryTargetTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [])
 
-    def test_tabs_and_newlines_inside_a_url_are_removed_first(self):
-        # A WHATWG parser (npm, uv) removes them anywhere in the URL: `.<TAB>.` is `..` (npm fetched /x/left-pad).
+    def test_a_tab_or_newline_after_the_host_leaves_the_host_alone(self):
+        # A WHATWG parser (npm, uv) removes them, so `.<TAB>.` is `..` (npm fetched /x/left-pad); urllib3 (pip, twine,
+        # poetry) encodes one after removing dot segments, so there `.<TAB>.` is a name and /evil/.<TAB>./approved stays
+        # under /evil. The two cannot both be covered by a path, so only the host is read.
         for command in ("NPM_CONFIG_REGISTRY='https://registry.example.org/simple/.\t./x' npm install left-pad",
                         "uv pip install -i 'https://registry.example.org/simple/.\t./x' left-pad",
                         "npm install --registry 'https://registry.example.org/simple/.\n./x' left-pad",
-                        "npm install --registry 'https://registry.example.org/simple/.\r./x' left-pad"):
+                        "npm install --registry 'https://registry.example.org/simple/.\r./x' left-pad",
+                        "pip install -i 'https://registry.example.org/evil/.\t./simple' x",
+                        "PIP_INDEX_URL='https://registry.example.org/evil/.\t./simple' pip install x",
+                        "twine upload --repository-url 'https://registry.example.org/evil/.\n./simple/' dist/*",
+                        "poetry source add foo 'https://registry.example.org/evil/.\t./simple'",
+                        "npm install --registry 'https://registry.example.org/sim\tple' x",
+                        "npm install --registry 'https://registry.example.org/simple?x=\ty' x",
+                        # Any other control character in a segment too.
+                        "npm install --registry 'https://registry.example.org/simple/.\x0b./x' y"):
             with self.subTest(command=command):
-                self.assertEqual(targets(command), [(REGISTRY, "registry.example.org/x")])
-        self.assertEqual(targets("npm install --registry 'https://registry.example.org/sim\tple' x"),
-                         [(REGISTRY, "registry.example.org/simple")])
-        # Any other control character in a segment leaves the host alone.
-        self.assertEqual(targets("npm install --registry 'https://registry.example.org/simple/.\x0b./x' y"),
-                         [(REGISTRY, "registry.example.org")])
+                self.assertEqual(targets(command), [(REGISTRY, "registry.example.org")])
+        # In the scheme or the host, every parser that accepts it removes it: read without it.
+        for command in ("npm install --registry 'https://regis\ttry.example.org/simple' x",
+                        "npm install --registry 'ht\ttps://registry.example.org/simple' x",
+                        "npm install --registry 'https://registry.example.org\t/simple' x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "registry.example.org/simple")])
         # A list split on whitespace by pip and on spaces by uv: both readings.
         self.assertEqual(targets("UV_EXTRA_INDEX_URL='https://registry.example.org/simple/.\t./x' uv sync"),
-                         [(REGISTRY, "registry.example.org/simple"), (REGISTRY, "registry.example.org/x")])
+                         [(REGISTRY, "registry.example.org/simple"), (REGISTRY, "registry.example.org")])
 
     def test_percent_escapes_are_decoded_unless_they_could_escape(self):
         cases = {
@@ -361,10 +372,18 @@ class RegistryTargetTests(unittest.TestCase):
             "https://registry.example.org/simple/a%5cb": "registry.example.org",
             "https://registry.example.org/simple/a%3bb": "registry.example.org",
             "https://registry.example.org/simple/a%00b": "registry.example.org",
+            # Only dots and spaces, decoded or not, other than . and .. themselves: some servers trim them to `..`.
+            "https://registry.example.org/approved/..%20/evil/simple": "registry.example.org",
+            "https://registry.example.org/approved/%2e%2e%2e/evil/simple": "registry.example.org",
+            "https://registry.example.org/approved/.. /evil/simple": "registry.example.org",
+            "https://registry.example.org/approved/.../evil/simple": "registry.example.org",
+            # Only ASCII letters are lowercased: KELVIN SIGN (U+212A) is not `k`.
+            "https://registry.example.org/appro%E2%84%AAved/simple": "registry.example.org/appro\u212aved/simple",
         }
         for url, name in cases.items():
             with self.subTest(url=url):
                 self.assertEqual(targets("pip install -i '%s' x" % url), [(REGISTRY, name)])
+        self.assertFalse(registry_covered("registry.example.org/approkved", Target(REGISTRY, "registry.example.org/appro\u212aved")))
 
     def test_pip_config_with_its_own_options_before_set(self):
         for options in ("--timeout 30", "--log /tmp/l", "--proxy http://p:1", "--cert c.pem", "--cache-dir /tmp/c",
@@ -427,9 +446,67 @@ class RegistryTargetTests(unittest.TestCase):
         self.assertEqual(list(_simple_commands("env 'A-B=x/y' rm -rf /", assignments=seen)), [["rm", "-rf", "/"]])
         self.assertEqual(seen, ["A-B=x/y"])
 
-    def test_a_network_path_reference_is_unknown_where_only_a_url_is_taken(self):
-        self.assertEqual(targets("npm install --registry //evil.example/simple x"), [(UNKNOWN, None)])
-        self.assertEqual(targets("pip install -f //server/wheels x"), [])  # find-links: a path
+    def test_a_network_path_reference_or_unc_share_is_unknown(self):
+        # A URL parser's base decides its host; for find-links on Windows, //server/share and \\server\share are shares.
+        for command in ("npm install --registry //evil.example/simple x", "pip install -f //server/wheels x",
+                        "pip install -f '\\\\server\\wheels' x", "PIP_FIND_LINKS=//server/wheels pip install x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(UNKNOWN, None)])
+
+    # Third review of PR #135 (26c23c0).
+
+    def test_uv_flags_are_not_unknown_options(self):
+        # uv's own flags are known, so the command's options are never read as uv's (each of these denied in 26c23c0).
+        for command in ("uv run --frozen python -i script.py", "uv run --no-sync grep -i todo src/app.py",
+                        "uv run --locked pytest -f tests", "uv run --frozen sed -i s/a/b/ setup.cfg",
+                        "uv run --isolated --with ipython ipython -i startup.py", "uvx --isolated black --index pkg",
+                        "uv run --no-project ./tool.sh --find-links https://files.example.com/wheels",
+                        "uv run --module http.server -i 1", "uvx --offline cowsay -i hello", "uv run -qs script.py -i x",
+                        "uv run --frozen --no-sync --locked --isolated --offline --no-project --active pytest",
+                        "uv run --frozen --no-sync --all-extras --no-dev --exact --compile-bytecode --refresh pytest -q",
+                        "uvx --isolated --offline --no-cache --quiet --refresh --reinstall --upgrade ruff check",
+                        "poetry --no-ansi run pytest -i x", "pipenv run --system pytest -f x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
+
+    def test_a_runners_own_options_are_those_some_reading_takes(self):
+        url = "https://evil.example/simple"
+        # Before the command, after an option the reader does not know (read both ways), and with no command at all.
+        for command in ("uvx --new-option foo --index-url %s ruff", "uvx --new-option --index-url %s ruff",
+                        "uv run --new-option --index %s", "uv run --index %s", "uv run --unknown x -i %s pytest"):
+            command = command % url
+            with self.subTest(command=command):
+                self.assertIn((REGISTRY, "evil.example/simple"), targets(command))
+        # The command's own options are its own, past an unknown option too. (In `uvx --new-option black --index URL`
+        # one reading has --new-option take `black`, which makes --index uvx's own: that one is read.)
+        for command in ("uv run --new-option foo pytest -i %s", "uvx --isolated black --index %s"):
+            command = command % url
+            with self.subTest(command=command):
+                self.assertNotIn((REGISTRY, "evil.example/simple"), targets(command))
+
+    def test_config_set_anywhere_among_the_positional_arguments(self):
+        for command in ("npm config --location user set registry https://evil.example/", "npm config -location user set registry https://evil.example/",
+                        "npm --loca user config set registry https://evil.example/", "npm -location user config set registry https://evil.example/",
+                        "npm --prefi /tmp config set registry https://evil.example/", "npm ---location user config set registry https://evil.example/",
+                        "npm config --userc /tmp/rc set registry https://evil.example/", "pnpm --reporter silent config set registry https://evil.example/",
+                        "pnpm --workspace-root config set registry https://evil.example/", "npm --logl silent config set registry https://evil.example/",
+                        "npm --logl silent set registry https://evil.example/"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "evil.example")])
+        self.assertEqual(targets("npm --logl silent config get registry"), [])
+
+    def test_pip_general_options_abbreviated_before_the_subcommand(self):
+        for command in ("pip --cache-d install config set global.index-url https://evil.example/simple",
+                        "pip --ti download install -i https://evil.example/simple x",
+                        "pip --pyth list install -i https://evil.example/simple x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "evil.example/simple")])
+
+    def test_windows_cmd_and_bat_names(self):
+        for command in ("npm.cmd install --registry https://evil.example/ x", "npx.cmd -registry https://evil.example/ cowsay",
+                        "pnpm.CMD add x --registry https://evil.example/", "pip.bat install -i https://evil.example/ x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "evil.example")])
 
     def test_no_deprecation_warning(self):
         # re.split's maxsplit passed by position warns on Python 3.13+.
@@ -669,10 +746,12 @@ class VerifyProbeTests(unittest.TestCase):
 
     def test_the_copy_of_the_coverage_agrees(self):
         values = ("npm.example.org", "registry.npmjs.org", "pypi.org", "pypi.org/simple", "pypi.org/simple/", "pypi.org/Simple",
+                  "pypi.org/simple/k", "pypi.org/sikple",
                   "*.npmjs.org", "*.org", "*.pypi.org/simple", "registry.npmjs.org/x", "*.catpilot-verify.invalid",
                   "registry.catpilot-verify.invalid", "pypi.org/a//b")
         names = [name for _, name in self.helper.REGISTRY_PROBES] + ["pypi.org", "pypi.org/simple/x", "pypi.org/simple2",
-                                                                      "a.registry.npmjs.org", "pypi.org/a/b/c"]
+                                                                      "a.registry.npmjs.org", "pypi.org/a/b/c",
+                                                                      "pypi.org/simple/\u212a", "pypi.org/si\u212aple"]
         for value in values:
             for name in names:
                 with self.subTest(value=value, name=name):

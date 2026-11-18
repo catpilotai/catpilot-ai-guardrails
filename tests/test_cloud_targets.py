@@ -229,12 +229,18 @@ class CloudTargetTests(unittest.TestCase):
         for command, name in cases.items():
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [(ACCOUNT, name)])
-        # Another option's abbreviation with a value that is not an account names nothing.
+        # On aws, another option's abbreviation with a literal value that is not an account names nothing.
         for command in ("aws s3api put-object --bucket b --key k --ac private", "aws ec2 run-instances --a ami-123",
-                        "aws lambda add-permission --function-name f --sou s3 --action x",
-                        "az vm create -n x --s Standard_B1s", "az vm list --su prod"):
+                        "aws lambda add-permission --function-name f --sou s3 --action x"):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [])
+        # A variable or a missing value is unknown, as for the long forms; az's --subscription is a global argument of
+        # nearly every command, so --s and --su are read as it, a name included.
+        for command in ("aws quicksight list-users --aw $ACCT --namespace default", "aws organizations describe-account --a `cat id`",
+                        "echo x | xargs aws organizations describe-account --ac", "az group list --s MySubName",
+                        "az group list --s $SUB", "az vm list --su prod", "az vm create -n x --s Standard_B1s"):
+            with self.subTest(command=command):
+                self.assertEqual(set(targets(command)), {(UNKNOWN, None)})
 
     def test_a_variable_anywhere_in_the_partition_is_unknown(self):
         for command in ('aws lambda create-function --function-name f --role "arn:aws-${P}" --runtime python3.12',
@@ -259,6 +265,39 @@ class CloudTargetTests(unittest.TestCase):
         self.assertIn((UNKNOWN, None), targets("uv run --a 1 --b 2 --c 3 --d 4 aws s3 ls"))
         self.assertEqual(targets("uv run --no-build-isolation-package x aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x"),
                          [(ACCOUNT, "aws:999988887777")])
+
+    # Third review of PR #135 (26c23c0).
+
+    def test_a_dollar_after_a_word_ending_in_arn_is_not_an_arn(self):
+        for command, want in (
+                ('aws sns publish --topic-arn arn:aws:sns:us-east-1:111122223333:alerts --message "WARN: disk full on $HOST"',
+                 [(ACCOUNT, "aws:111122223333")]),
+                ("aws sns publish --topic-arn arn:aws:sns:us-east-1:111122223333:alerts --message 'Warn: cost is $5'",
+                 [(ACCOUNT, "aws:111122223333")]),
+                ("aws ssm send-command --document-name AWS-RunShellScript --parameters 'commands=[\"echo learn: $PATH\"]'", []),
+                ('aws ec2 create-tags --resources i-1 --tags Key=Note,Value="barn: $X"', []),
+                ('sam deploy --parameter-overrides Msg="warn: $X"', []), ('cdk deploy -c note="Learn: $X"', []),
+                ('aws iam get-role --role-name "arn:aws-us-gov-${X}:iam::1:role/x"', [(UNKNOWN, None)]),
+                ('aws iam get-role --role-name "arn:${P}:iam::1:role/x"', [(UNKNOWN, None)])):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), want)
+
+    def test_every_gsutil_project_option_is_read(self):
+        # getopt keeps the last of several, and -u and a subcommand's -p each name a project.
+        both = [(ACCOUNT, "gcp:good-project"), (ACCOUNT, "gcp:bad-project")]
+        for command in ("gsutil -u good-project mb -p bad-project gs://b", "gsutil -u good-project ls -p bad-project",
+                        "gsutil -u good-project -u bad-project ls gs://b", "gsutil mb -p good-project -p bad-project gs://b",
+                        "gsutil -mu good-project -u bad-project ls"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), both)
+
+    def test_windows_cmd_names(self):
+        for command, name in (("az.cmd account set --subscription %s" % GUID, "azure:" + GUID),
+                              ("gcloud.cmd config set project acme-other-1", "gcp:acme-other-1"),
+                              ("bq.cmd --project_id acme-other-1 ls", "gcp:acme-other-1"),
+                              ("gsutil.cmd -u acme-other-1 ls", "gcp:acme-other-1")):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(ACCOUNT, name)])
 
     def test_coverage_is_an_exact_match(self):
         cases = [

@@ -1091,9 +1091,13 @@ CLOUD_PROBES = (("aws sts assume-role --role-arn arn:aws:iam::000000000000:role/
                 ("az account set --subscription 00000000-0000-0000-0000-00000000c0de", "azure:00000000-0000-0000-0000-00000000c0de"))
 
 
+# Only ASCII letters are lowercased, as in catpilot_guard/registry_targets.py: KELVIN SIGN (U+212A) is not `k`.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
 def _path_segments(path: str) -> list:
     out = []
-    for segment in path.lower().split("/"):
+    for segment in path.translate(_ASCII_LOWER).split("/"):
         if segment in ("", "."):
             continue
         if segment == "..":
@@ -1107,7 +1111,7 @@ def _path_segments(path: str) -> list:
 def registry_covered(value: str, name: str) -> bool:
     """catpilot_guard/registry_targets.py's registry_covered for a registry it read (host[/path]), repeated so this
     helper imports only the standard library (a test checks the two agree)."""
-    value_host, _, value_path = value.lower().partition("/")
+    value_host, _, value_path = value.translate(_ASCII_LOWER).partition("/")
     target_host, _, target_path = name.partition("/")
     if value_host.startswith("*."):
         if not target_host.endswith("." + value_host[2:]):

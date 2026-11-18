@@ -6,11 +6,12 @@ drops (`NAME=value` before a command, on its own, or after `env`) and the argume
 and readonly. It looks through package runners (npx, bunx, pnpx, `npm exec`/`npm x`, `pnpm dlx`/`exec`, `yarn
 dlx`/`exec`, and the `-c` string of npx and `npm exec`) and through the runners runner_split names: `python -m MODULE`
 (also `-mMODULE` and `-Im MODULE`), `poetry run`, `uv run`, `uv tool run`, `uvx`, `pipenv run` and `bundle exec`, skipping
-each runner's own options; where a runner has an option this module does not know, both readings (a flag, or an option
-that takes the next word) are read, and the runner's own options are read up to the last place its command may start.
-A command is named without a Windows `.exe` (`pip.exe` is pip). It returns one Target for each registry the command
-names explicitly. A command that names none is no target: `npm install`, `pip install requests`, `docker pull ubuntu` and `twine upload dist/*` use
-the tool's configured or default registry, which the hook does not read. A Target is one of:
+each runner's own options, whose flags it knows (`uv run --frozen python -i x` runs python with -i); where a runner has
+an option this module does not know, both readings (a flag, or an option that takes the next word) are read, and the
+runner's own options are the ones some reading takes as its own. A command is named without a Windows `.exe`, `.cmd`
+or `.bat` (`pip.exe` is pip, `npm.cmd` is npm). It returns one Target for each registry the command names explicitly. A
+command that names none is no target: `npm install`, `pip install requests`, `docker pull ubuntu` and `twine upload
+dist/*` use the tool's configured or default registry, which the hook does not read. A Target is one of:
 
   a registry   host[/path]: the URL's host, lowercase, without credentials or port, and its path, lowercase, with empty
                and `.` segments dropped, `..` applied, percent escapes decoded and no trailing slash, or no path at all
@@ -19,8 +20,8 @@ the tool's configured or default registry, which the hook does not read. A Targe
   unknown      a registry the hook cannot read: a variable where the host would be (`--registry $REGISTRY`, `docker
                push $IMAGE`); a host that is not a dotted name (`localhost:5000/app`, an IP address, `[::1]`); a URL
                whose authority holds a backslash or a character a URL authority cannot hold, or an `http:`/`https:`
-               value without `//` after the colon, or a `//host` value where only a URL is taken (URL parsers disagree
-               on which host those name); a value option last in the command, with nothing after it (xargs or stdin
+               value without `//` after the colon (URL parsers disagree on which host those name); a `//host` or
+               `\\host` value (a network-path reference, or a Windows UNC share for find-links); a value option last in the command, with nothing after it (xargs or stdin
                supplies the value: `xargs npm install --registry`); a docker or podman push, pull, run or create with no
                image; a runner, docker run or create with more than three options this module does not know before
                its command or image, which may then sit after any of them. Known limit: the shared splitter cuts a
@@ -34,12 +35,14 @@ What is recognized, exactly:
                              `-registry`, `---reg=URL`, `-@acme:registry=URL`, `-reg`), anywhere in its arguments: an
                              install, a publish, a login, a runner's package source
   npm|pnpm config set, set   the keys `registry` and `@scope:registry`, as `KEY URL` or `KEY=URL`, anywhere after
-                             `config set` (also `npm c set` and `npm conf set`)
+                             `config set` or `set` wherever they are among the positional arguments (`npm --logl silent
+                             config set ...`; also `npm c set` and `npm conf set`)
   yarn config set            `registry`, `npmRegistryServer`, `npmPublishRegistry`, and either under `npmScopes.<scope>.`
   pip, pip3, pip3.N,         install, download, wheel, lock: `-i`/`--index-url`, its hidden alias `--pypi-url`,
   python[3[.N]] -m pip       `--extra-index-url`, `-f`/`--find-links`, as `OPT URL`, `OPT=URL` or `-iURL`; any
                              abbreviation of the long options (`--ind`, `--ext`, `--fi`, `--pyp`: pip takes a unique
-                             prefix); i or f at the end of a cluster of short options (`-Ui URL`)
+                             prefix); i or f at the end of a cluster of short options (`-Ui URL`); pip's general
+                             options before the subcommand, abbreviated too (`pip --cache-d DIR install ...`)
   pip config set             `<section>.index-url`, `.pypi-url`, `.extra-index-url`, `.find-links` (any case, `_` for
                              `-`), past pip's own options (`pip config --timeout 30 set ...`): each URL
   uv                         pip, add, remove, sync, lock, export, tree, venv, build, version and tool subcommands, and
@@ -65,15 +68,18 @@ What is recognized, exactly:
                              `direct` and `off` name none)
 
 A value is read as a URL: `scheme://[credentials@]host[:port][/path]`, skipping the credentials, variables in them
-included; tabs, newlines and carriage returns are removed first, as a WHATWG parser removes them (`.<TAB>.` is `..`),
-and the authority ends at the first /, \\, ? or #. A value without a scheme is read as https:// where the option only
-takes a URL, and as a local path, which names no registry, for find-links; a value starting with /, ./, ../ or ~, and a
-file:// URL, name none. A variable in the host is unknown. A path segment that holds a variable, a `\\` (a path
-separator to the WHATWG and urllib3 parsers), a `;` (`..;` is `..` to some servers) or a control character, or a
-percent escape that decodes to `.`, `..`, `/`, `\\`, `;`, a control character or another `%` (`%2e%2e`, `%252e`), may
-reach any path on the host once read, so the target is the host alone, which only a value with no path covers; any
-other escape is decoded (`My%20Project` is `my project`). In an image, which cannot hold `..`, a variable ends the path
-there instead (`ghcr.io/acme/$APP` is `ghcr.io/acme`).
+included; the authority ends at the first /, \\, ? or #. A tab, newline or carriage return in the scheme or host is
+removed, as every parser that accepts it removes it; one after the host leaves the host alone, since a WHATWG parser
+(npm, uv) removes it (`.<TAB>.` is `..`) and urllib3 (pip, twine, poetry) encodes it (`.<TAB>.` is a name). A value
+without a scheme is read as https:// where the option only takes a URL, and as a local path, which names no registry,
+for find-links; a value starting with /, ./, ../ or ~, and a file:// URL, name none. A variable in the host is unknown. A
+path segment that holds a variable, a `\\` (a path separator to the WHATWG and urllib3 parsers), a `;` (`..;` is `..`
+to some servers) or a control character, a percent escape that decodes to `/`, `\\`, `;`, a control character or
+another `%` (`%252e`), or a segment of only dots and spaces, decoded or not, other than `.` and `..` themselves
+(`%2e%2e`, `...`, `..%20`, which some servers trim to `..`), may reach any path on the host once read, so the target is
+the host alone, which only a value with no path covers; any other escape is decoded (`My%20Project` is `my project`).
+Only ASCII letters are lowercased (KELVIN SIGN is not `k`). In an image, which cannot hold `..`, a variable ends the
+path there instead (`ghcr.io/acme/$APP` is `ghcr.io/acme`).
 
 Coverage (registry_covered): a value `host` covers that host with any path; `host/path` covers that host when the
 target's path is that path or under it, by whole segments (`pypi.example.org/simple` covers `/simple` and
@@ -100,6 +106,7 @@ from __future__ import annotations
 
 import os
 import re
+import string
 from dataclasses import dataclass
 from urllib.parse import unquote
 
@@ -169,16 +176,31 @@ UV_VALUE_OPTIONS = UV_GLOBAL_VALUE_OPTIONS | {
     "--no-build-isolation-package", "-w",
     "--constraints", "-c", "--overrides", "--build-constraints", "-b", "--python-platform", "--torch-backend",
 }
+# uv's long flags (`uv run --help`, `uv tool run --help`), so a runner's command is found past them; its short flags
+# (-m, -n, -q, -s, -U, -v) take no value, as every short option not in UV_VALUE_OPTIONS.
+UV_FLAGS = {
+    "--active", "--all-extras", "--all-groups", "--all-packages", "--exact", "--inexact", "--frozen", "--locked",
+    "--gui-script", "--script", "--module", "--isolated", "--managed-python", "--no-managed-python", "--native-tls",
+    "--no-binary", "--no-build", "--no-build-isolation", "--no-config", "--no-default-groups", "--dev", "--no-dev",
+    "--only-dev", "--no-editable", "--no-env-file", "--no-index", "--no-progress", "--no-project",
+    "--no-python-downloads", "--no-sources", "--no-sync", "--offline", "--refresh", "--reinstall", "--upgrade",
+    "--compile-bytecode", "--no-cache", "--quiet", "--verbose", "--help", "--version", "--preview", "--no-preview",
+    "--show-resolution", "--no-install-project", "--no-install-workspace", "--no-install-local", "--lfs",
+}
 POETRY_GLOBAL_VALUE_OPTIONS = {"-C", "--directory", "-P", "--project"}
+POETRY_FLAGS = {"--ansi", "--no-ansi", "--no-plugins", "--no-cache", "--no-interaction", "--quiet", "--verbose", "--help",
+                "--version"}
 POETRY_VALUE_OPTIONS = POETRY_GLOBAL_VALUE_OPTIONS | {"--priority"}
 PIPENV_VALUE_OPTIONS = {"--python", "--pypi-mirror"}
+PIPENV_FLAGS = {"--system", "--verbose", "--quiet", "--help", "--site-packages", "--clear"}
 BUNDLE_VALUE_OPTIONS = {"--gemfile", "-r", "--retry"}
-# Runners and the words that start their command: {name: (options that take a value, verbs)}.
+BUNDLE_FLAGS = {"--keep-file-descriptors", "--verbose", "--no-color", "--help"}
+# Runners and the words that start their command: {name: (options that take a value, flags, verbs)}.
 RUN_VERBS = {
-    "poetry": (POETRY_GLOBAL_VALUE_OPTIONS, (("run",),)),
-    "uv": (UV_VALUE_OPTIONS, (("run",), ("tool", "run"))),
-    "pipenv": (PIPENV_VALUE_OPTIONS, (("run",),)),
-    "bundle": (BUNDLE_VALUE_OPTIONS, (("exec",),)),
+    "poetry": (POETRY_GLOBAL_VALUE_OPTIONS, POETRY_FLAGS, (("run",),)),
+    "uv": (UV_VALUE_OPTIONS, UV_FLAGS, (("run",), ("tool", "run"))),
+    "pipenv": (PIPENV_VALUE_OPTIONS, PIPENV_FLAGS, (("run",),)),
+    "bundle": (BUNDLE_VALUE_OPTIONS, BUNDLE_FLAGS, (("exec",),)),
 }
 PACKAGE_VERSION = re.compile(r"[@=<>!~\[;]")  # where a package spec's version or extras start (`ruff@0.6`, `x[cli]`)
 GEM_VALUE_OPTIONS = {"--config-file", "-s", "--source", "--host", "-a", "--add", "-r", "--remove", "-v", "--version", "-i",
@@ -262,9 +284,10 @@ URL_AUTHORITY = re.compile(r"[A-Za-z0-9\-._~!$&'()*+,;=:@\[\]%{}`]*")
 # A last label a WHATWG parser reads as an IPv4 number (`1.2.3.0x4` is 1.2.3.4).
 NUMERIC_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")
 PATH_ENDERS = ("\\", ";")
-# Removed from a URL before it is read, as a WHATWG parser (npm, uv) removes them anywhere in it: `.<TAB>.` is `..`.
-TAB_NEWLINE = re.compile(r"[\t\n\r]")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# A segment of only dots and spaces other than `.` and `..` (`...`, `.. `, `..%20`): some servers trim it to `..`.
+DOTS_AND_SPACES = re.compile(r"[. ]+")
+ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)  # `K` (U+212A) must not become `k`
 LOCAL_PREFIXES = ("/", "./", "../", "~")
 HOME_VARIABLES = {"$HOME", "${HOME}", "$PWD", "${PWD}"}  # a path under them is local
 
@@ -280,18 +303,22 @@ def _has_variable(text: str) -> bool:
 
 
 def _segment(raw: str) -> str | None:
-    """A URL path segment as a server reads it, lowercase, or None when it cannot be read safely: it holds a variable, a
-    `\\`, a `;` or a control character, or a percent escape that decodes to `.`, `..`, `/`, `\\`, `;`, a control character
-    or another `%` (which a second decoding would read). `My%20Project` is read as `my project`; `%2e%2e` is None."""
+    """A URL path segment as a server reads it, with ASCII letters lowercased, or None when it cannot be read safely: it
+    holds a variable, a `\\`, a `;` or a control character; a percent escape decodes to `/`, `\\`, `;`, a control
+    character or another `%` (which a second decoding would read); or it is only dots and spaces, decoded or not, other
+    than `.` and `..` themselves (`%2e%2e`, `...`, `..%20`). `My%20Project` is read as `my project`."""
     if _has_variable(raw) or CONTROL.search(raw) or any(c in raw for c in PATH_ENDERS):
         return None
+    if raw in ("", ".", ".."):
+        return raw
     if "%" in raw:
         decoded = unquote(raw)
-        if ("%" in decoded or "/" in decoded or decoded in (".", "..") or CONTROL.search(decoded)
-                or any(c in decoded for c in PATH_ENDERS)):
+        if "%" in decoded or "/" in decoded or CONTROL.search(decoded) or any(c in decoded for c in PATH_ENDERS):
             return None
         raw = decoded
-    return raw.lower()
+    if DOTS_AND_SPACES.fullmatch(raw):
+        return None
+    return raw.translate(ASCII_LOWER)
 
 
 def _host_target(host: str, path: str, image: bool = False) -> Target:
@@ -299,7 +326,7 @@ def _host_target(host: str, path: str, image: bool = False) -> Target:
     cannot read may be `..` once read (`%2e%2e`, `$X` holding `../..`, `..\\`, `..;`), which reaches any path on the host,
     so the target is the host alone, which only a value with no path covers. An image path cannot hold `..` (Docker's
     reference grammar), so there the path ends before that segment."""
-    host = host.lower().rstrip(".")
+    host = host.translate(ASCII_LOWER).rstrip(".")
     if (_has_variable(host) or host.startswith("[") or not HOST_NAME.fullmatch(host)
             or NUMERIC_LABEL.fullmatch(host.rsplit(".", 1)[-1])):
         return Target(UNKNOWN)
@@ -323,8 +350,16 @@ def _host_target(host: str, path: str, image: bool = False) -> Target:
 def url_target(value: str, path_without_scheme: bool = False) -> Target | None:
     """The registry a URL value names, unknown, or None for a local path or an empty value. A value without a scheme
     is a local path when path_without_scheme (find-links), and otherwise read as https://. Tabs, newlines and carriage
-    returns are removed first, as a WHATWG parser removes them."""
-    value = TAB_NEWLINE.sub("", value.strip()).strip()
+    returns are removed, as a WHATWG parser (npm, uv) removes them; urllib3 (pip, twine, poetry) keeps one in the path,
+    encoded, so after the host they leave the host alone (`.<TAB>.` is `..` to one and a name to the other)."""
+    cleaned: list = []
+    removed_at: list = []  # where in the cleaned value each removed character stood
+    for c in value.strip():
+        if c in "\t\n\r":
+            removed_at.append(len(cleaned))
+        else:
+            cleaned.append(c)
+    value = "".join(cleaned)
     if not value:
         return None
     match = SCHEME.match(value)
@@ -332,8 +367,8 @@ def url_target(value: str, path_without_scheme: bool = False) -> Target | None:
         if WEB_SCHEME.match(value):
             return Target(UNKNOWN)
         first = value.split("/", 1)[0]
-        if value.startswith("//") and not path_without_scheme:
-            return Target(UNKNOWN)  # a network-path reference: its host depends on the parser's base URL
+        if value.startswith(("//", "\\\\")):
+            return Target(UNKNOWN)  # a network-path reference, or a Windows UNC share for find-links
         if value == "." or value.startswith(LOCAL_PREFIXES) or value.lower().startswith("file:") or first in HOME_VARIABLES:
             return None
         if _has_variable(first):
@@ -351,6 +386,8 @@ def url_target(value: str, path_without_scheme: bool = False) -> Target | None:
     if rest[len(authority):len(authority) + 1] == "\\" or not URL_AUTHORITY.fullmatch(authority):
         return Target(UNKNOWN)
     path = re.split(r"[?#]", rest[len(authority):], maxsplit=1)[0]
+    if any(at > len(value) - len(rest) + len(authority) for at in removed_at):
+        path = ""  # a tab or newline after the host: the parsers disagree on the path
     host = authority.rsplit("@", 1)[-1]  # credentials, variables in them included, are skipped
     if host.startswith("["):
         return Target(UNKNOWN)
@@ -452,12 +489,13 @@ def _positionals(args: list, value_options: set, takes_value=None) -> list:
     return out
 
 
-def _command_starts(args: list, value_options: set, flags: set | frozenset = frozenset(), unsure: set | None = None) -> list:
+def _command_starts(args: list, value_options: set, flags: set | frozenset = frozenset(), unsure: set | None = None,
+                    consumed: set | None = None) -> list:
     """Where the first positional argument (a runner's command, an image) may start, past leading options. `--` ends
     the options; a short option in value_options takes the rest of its cluster or the next word. A long option in
     neither set may be a flag or take the next word, so both readings are kept, for up to three such options. unsure,
-    when given, gets "budget" when a fourth such option is read only as a flag, and "end" when a reading runs out of
-    arguments before a positional one."""
+    when given, gets "budget" when a fourth such option is read only as a flag. consumed, when given, gets the index of
+    every option, and of every known option's value, that some reading takes as the runner's own."""
     starts: list = []
     seen: set = set()  # (position, budget) already walked: each is walked once, so the work stays linear
 
@@ -474,10 +512,14 @@ def _command_starts(args: list, value_options: set, flags: set | frozenset = fro
             if arg == "-" or not arg.startswith("-"):
                 starts.append(i)
                 return
+            if consumed is not None:
+                consumed.add(i)
             if arg.startswith("--"):
                 if "=" in arg or arg in flags:
                     i += 1
                 elif arg in value_options:
+                    if consumed is not None and i + 1 < len(args):
+                        consumed.add(i + 1)
                     i += 2
                 else:
                     if budget:
@@ -491,9 +533,9 @@ def _command_starts(args: list, value_options: set, flags: set | frozenset = fro
                 if "-" + letter in value_options:
                     step = 1 if letters[k + 1:] else 2
                     break
+            if step == 2 and consumed is not None and i + 1 < len(args):
+                consumed.add(i + 1)
             i += step
-        if unsure is not None:
-            unsure.add("end")
 
     walk(0, 3)
     return sorted(set(starts))
@@ -526,14 +568,15 @@ def _python_module(args: list) -> list | None:
     return None
 
 
-def _run_split(args: list, offset: int, value_options: set, package: bool = False) -> tuple:
-    """(own arguments, inner argvs, unsure). The own arguments run up to the last place the command may start, or to the
-    end when a reading of the options finds no command, so a runner option after one this module does not know is
-    still read (`uvx --new-option x --index-url URL ruff`)."""
+def _run_split(args: list, offset: int, value_options: set, flags: set, package: bool = False) -> tuple:
+    """(own arguments, inner argvs, unsure). The own arguments are the options, with their values, that some reading of
+    the runner's options takes as its own, so a runner option after one this module does not know is still read
+    (`uvx --new-option x --index-url URL ruff`), and the command's own options are not (`uv run --frozen python -i x`)."""
     rest = args[offset:]
     unsure: set = set()
-    starts = _command_starts(rest, value_options, unsure=unsure)
-    own = args[:offset] + (rest[:starts[-1]] if starts and "end" not in unsure else rest)
+    consumed: set = set()
+    starts = _command_starts(rest, value_options, flags, unsure, consumed)
+    own = args[:offset] + [rest[i] for i in sorted(consumed)]
     inners = []
     for start in starts:
         command = PACKAGE_VERSION.split(rest[start], maxsplit=1)[0] if package else rest[start]
@@ -552,25 +595,29 @@ def runner_split(name: str, args: list) -> tuple | None:
         inner = _python_module(args)
         return None if inner is None else ([], [inner], False)
     if name == "uvx":
-        return _run_split(args, 0, UV_VALUE_OPTIONS, package=True)
+        return _run_split(args, 0, UV_VALUE_OPTIONS, UV_FLAGS, package=True)
     spec = RUN_VERBS.get(name)
     if spec is None:
         return None
-    value_options, verbs = spec
-    for start in _command_starts(args, value_options):
+    value_options, flags, verbs = spec
+    for start in _command_starts(args, value_options, flags):
         for verb in verbs:
             if args[start:start + len(verb)] == list(verb):
-                return _run_split(args, start + len(verb), value_options, package=verb == ("tool", "run"))
+                return _run_split(args, start + len(verb), value_options, flags, package=verb == ("tool", "run"))
     return None
 
 
 def _config_set(words: list, key_pattern, config_words=("config",)) -> list:
     """`config set KEY URL`, `config set KEY=URL`, or `set ...` (npm and pnpm's shorthand): the URL when KEY matches;
-    unknown for a matching KEY with no value after it."""
-    if words[:1] and words[0] in config_words and words[1:2] == ["set"]:
-        rest = words[2:]
-    elif words[:1] == ["set"]:
-        rest = words[1:]
+    unknown for a matching KEY with no value after it. The words are found anywhere among the positional arguments, so
+    the value of a global option this module does not know (`npm --logl silent config set ...`) does not hide them."""
+    for k, word in enumerate(words):
+        if word in config_words and words[k + 1:k + 2] == ["set"]:
+            rest = words[k + 2:]
+            break
+        if word == "set":
+            rest = words[k + 1:]
+            break
     else:
         return []
     out = []
@@ -596,12 +643,13 @@ def _npm_config(name: str, args: list) -> list:
 
 def _pip_subcommand(args: list) -> int | None:
     """The index of pip's subcommand: the first argument past the general options that names a pip command. A word that
-    names none is taken as the value of an option this module does not know (`pip --cache-d /tmp install`)."""
+    names none is taken as the value of an option this module does not know. A general option abbreviated
+    (`pip --cache-d install config set ...`) takes its value as pip does."""
     i = 0
     while i < len(args):
         arg = args[i]
         if arg.startswith("-") and len(arg) > 1:
-            i += 2 if (arg in PIP_VALUE_OPTIONS and "=" not in arg) else 1
+            i += 2 if "=" not in arg and (arg in PIP_VALUE_OPTIONS or _pip_config_takes_value(arg)) else 1
             continue
         if arg in PIP_COMMANDS:
             return i
@@ -658,7 +706,7 @@ def _uv_index_targets(args: list) -> list:
 def _uv(args: list) -> list:
     """uv's subcommands other than its runners: index options anywhere for those that resolve or install, and the
     publish URLs for `uv publish` (whose --index is a name)."""
-    for start in _command_starts(args, UV_VALUE_OPTIONS):
+    for start in _command_starts(args, UV_VALUE_OPTIONS, UV_FLAGS):
         command = args[start]
         if command == "publish":
             return [_url(v, local) for v, local in _values(args, UV_PUBLISH_LONG)]
@@ -823,9 +871,10 @@ def _is_runner(name: str, args: list) -> bool:
 
 
 def command_name(word: str) -> str:
-    """A command word as the readers compare it: its base name, lowercase, without a Windows `.exe`."""
+    """A command word as the readers compare it: its base name, lowercase, without a Windows `.exe`, `.cmd` or `.bat`
+    (npm.cmd, az.cmd, gcloud.cmd)."""
     name = os.path.basename(word).lower()
-    return name[:-4] if name.endswith(".exe") else name
+    return name[:-4] if name.endswith((".exe", ".cmd", ".bat")) else name
 
 
 def _argv_targets(argv: list, depth: int, flags: bool = True) -> list:
@@ -893,7 +942,7 @@ def registry_targets(command: str, cwd: str | None = None, depth: int = 0, split
 
 def _segments(path: str) -> list:
     out: list = []
-    for segment in path.lower().split("/"):
+    for segment in path.translate(ASCII_LOWER).split("/"):
         if segment in ("", "."):
             continue
         if segment == "..":
@@ -909,7 +958,7 @@ def registry_covered(value: str, target: Target) -> bool:
     at or under it by whole segments, and `*.D` every name under D with the same path rule. Unknown: nothing covers it."""
     if target.kind != REGISTRY or not target.name:
         return False
-    value_host, _, value_path = value.lower().partition("/")
+    value_host, _, value_path = value.translate(ASCII_LOWER).partition("/")
     target_host, _, target_path = target.name.partition("/")
     if value_host.startswith("*."):
         if not target_host.endswith("." + value_host[2:]):
