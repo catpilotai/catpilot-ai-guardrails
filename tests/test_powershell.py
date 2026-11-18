@@ -128,6 +128,7 @@ ALLOWED = {
     "pipeline of matches without -Recurse": "Get-ChildItem -Recurse -Include *.pyc | Remove-Item -Force",
     "pipeline from a subfolder": "Get-ChildItem .\\dist | Remove-Item -Recurse -Force",
     "each item of the working directory": "Get-ChildItem | ForEach-Object { Remove-Item $_ -Recurse -Force }",
+    "items held in a variable": "$files = Get-ChildItem -Recurse *.log; $files | Remove-Item -Recurse",
     "each item's FullName": "Get-ChildItem .\\tmp | ForEach-Object { Remove-Item $_.FullName -Recurse -Force }",
     "git status and diff": "git status; git diff --stat",
     "git log": "git log --oneline -10",

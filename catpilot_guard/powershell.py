@@ -670,14 +670,15 @@ def _paths(name: str, args: list) -> list:
 def _feed_removals(pipeline: list) -> list:
     """The pipeline with each Remove-Item that has no path of its own given the paths the pipeline feeds it: the
     first command's, when that is Get-ChildItem, Get-Item or Resolve-Path, or the first element itself when it is a
-    quoted path or a variable."""
+    quoted path or a variable that names a place ($HOME, $env:USERPROFILE, ...). A variable that holds items
+    (`$files | Remove-Item -Recurse`) is not read."""
     if len(pipeline) < 2:
         return pipeline
     head = pipeline[0]
     head_name = _command_name(head[0]) if getattr(head[0], "literal", True) else None
     if head_name in GET_ITEM:
         fed = _paths(head_name, head[1:])
-    elif len(head) == 1 and (not head[0].bare or head[0].startswith("$")):
+    elif len(head) == 1 and (not head[0].bare or PLACE.match(head[0].lower().replace("/", "\\"))):
         fed = [head[0]]
     else:
         return pipeline

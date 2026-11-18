@@ -205,6 +205,11 @@ class WindowsPolicyFileTests(unittest.TestCase):
             self.icacls(path, "/setowner", "*" + ADMINISTRATORS)
             self.icacls(path, "/inheritance:r", "/grant:r", "*%s:%sF" % (ADMINISTRATORS, inherit), "*%s:%sF" % (SYSTEM, inherit),
                         "*%s:%sRX" % (USERS, inherit))
+            # An explicit entry the directory was created with (Python 3.8's runner gives the creating account one)
+            # survives /inheritance:r: remove every principal install.ps1 would not grant.
+            for _, _, _, sid in pol._windows_security(name=str(path))[1]:
+                if sid and sid not in (ADMINISTRATORS, SYSTEM, USERS):
+                    self.icacls(path, "/remove:g", "*" + sid)
 
     def load(self):
         try:
