@@ -212,7 +212,19 @@ class WindowsPolicyFileTests(unittest.TestCase):
         except pol.PolicyError as exc:
             if exc.args[0] == "unreadable":
                 self.skipTest("this process cannot read a file only Administrators may write (not elevated)")
-            raise
+            self.fail("%s: %s" % (exc.args[0], self.describe()))
+
+    def describe(self) -> str:
+        """What the check saw, for a failure message: each path's attributes, owner and access entries."""
+        out = []
+        for path in (self.dir, self.file):
+            try:
+                info = os.lstat(path)
+                out.append("%s attributes=%#x mode=%o security=%r" % (
+                    path.name, getattr(info, "st_file_attributes", 0), info.st_mode, pol._windows_security(name=str(path))))
+            except OSError as exc:
+                out.append("%s: %r" % (path.name, exc))
+        return "; ".join(out)
 
     def label(self, path=None) -> str:
         with self.assertRaises(pol.PolicyError) as caught:
@@ -267,7 +279,7 @@ class WindowsPolicyFileTests(unittest.TestCase):
 
     def test_a_missing_file(self):
         self.lock_down()
-        self.assertEqual(self.label(self.dir / "absent.json"), "missing")
+        self.assertEqual(self.label(self.dir / "absent.json"), "missing", self.describe())
 
 
 if __name__ == "__main__":

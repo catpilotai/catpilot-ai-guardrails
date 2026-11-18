@@ -31,6 +31,10 @@ MODULES = MODULES_3_8 + (
 SKIPPED = {
     "test_destructive_hook.DestructiveHookTests.test_running_users_home_by_absolute_path":
         "sets HOME; Windows's os.path.expanduser reads USERPROFILE (test_powershell covers the Windows home)",
+    "test_registry_targets.HookProcessTests.test_denies_and_logs_content_free":
+        "places the policy with POSIX permissions; on Windows its access list is checked (test_windows covers that)",
+    "test_cloud_targets.HookProcessTests.test_denies_and_logs_content_free":
+        "places the policy with POSIX permissions; on Windows its access list is checked (test_windows covers that)",
 }
 
 
