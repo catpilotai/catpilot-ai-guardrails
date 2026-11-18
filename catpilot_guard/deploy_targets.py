@@ -1,34 +1,40 @@
 """What a shell command deploys or publishes to: the targets the company-rules hook checks against deploy_host rules.
 
 deploy_targets(command) splits the command the way the destructive-operation check does (pipes, `;`, `&&`, each line,
-wrappers such as sudo, env and timeout, and `bash -c` bodies), looks through package runners (npx, pnpm dlx, yarn dlx,
-npm exec, bunx), and returns one Target for each deploy or publish it recognizes. A Target is one of:
+wrappers such as sudo, env and timeout, and `bash -c` bodies), looks through package runners (npx, bunx, pnpx,
+`npm exec`/`npm x`, `pnpm dlx`/`exec`, `yarn dlx`/`exec`), reading a package name with a version (`vercel@latest`) or
+a package whose command has another name (`netlify-cli`, `firebase-tools`, `@railway/cli`, `@aws-amplify/cli`), and
+returns one Target for each deploy or publish it recognizes. A Target is one of:
 
   a host       a name the command names itself, such as the destination of `scp dist/ deploy@web1.example.org:/srv`
                or the domain given to `surge`
   a suffix     a hosting service's own domain, when the command deploys there under a name the command does not
                show: `vercel` deploys to a *.vercel.app name, `netlify deploy` to *.netlify.app, and so on
-  unknown      a destination the hook cannot read, such as `rsync dist/ $HOST:/srv`
+  unknown      a destination the hook cannot read: a variable (`rsync dist/ $HOST:/srv`), an SSH alias without a dot
+               (`scp f prod:/srv`, from ~/.ssh/config), an IPv6 or other address in brackets
 
-What is recognized, exactly (DEPLOYERS below, and _copy_destination):
+What is recognized, exactly:
 
-  vercel, vc                 with no subcommand, or deploy, redeploy, promote, rollback      suffix vercel.app
-  netlify, ntl               deploy                                                          suffix netlify.app
-  fly, flyctl                deploy, launch (unless --no-deploy)                             suffix fly.dev
-  firebase                   deploy                                                          suffix web.app
-  wrangler                   deploy, publish                                                 suffix workers.dev
-  wrangler pages             deploy, publish                                                 suffix pages.dev
-  surge                      any run; its domain argument when given                         host, else suffix surge.sh
-  gh-pages                   any run                                                         suffix github.io
-  railway                    up                                                              suffix up.railway.app
-  amplify                    publish                                                         suffix amplifyapp.com
-  git push heroku ...        a push to a remote named heroku                                 suffix herokuapp.com
-  scp, rsync                 a destination of the form [user@]host:path or rsync://host/...  host, or unknown when the
-                                                                                             host is a variable
+  vercel, vc         every run except help, version and the non-deploy subcommands in VERCEL_OTHER   suffix vercel.app
+  netlify, ntl       deploy                                                                          suffix netlify.app
+  fly, flyctl        deploy, launch (unless --no-deploy), machine run / machines run                 suffix fly.dev
+  firebase           deploy, hosting:channel:deploy                                                  suffix web.app
+  wrangler           deploy, publish, versions deploy, versions upload                               suffix workers.dev
+  wrangler pages     deploy, publish                                                                 suffix pages.dev
+  surge              every run except help, version and its account commands (SURGE_OTHER); its   host, else suffix
+                     domain argument when given                                                      surge.sh
+  gh-pages           every run except help and version                                               suffix github.io
+  railway            up, redeploy                                                                    suffix up.railway.app
+  amplify            publish                                                                         suffix amplifyapp.com
+  git push           to a remote named heroku, or to a git.heroku.com URL                            suffix herokuapp.com
+  scp, rsync         an upload: a remote destination after the first path ([user@]host:path,          host, or unknown
+                     scp://, sftp://, rsync://)
 
-Not recognized: a deploy a script or a CI job runs internally, a vendor this list does not name, a custom domain set in
-a project file rather than on the command line (the service's own suffix is the target then), `ssh` sessions, `curl`
-uploads, container pushes (a registry is a package_registry matter) and cloud object copies (a cloud_account matter).
+Every scp or rsync upload to another machine counts, a backup to a dev box included, and a host without a dot cannot be
+listed in a rule, so a deploy_host rule fires on those too: start such rules in monitor. Not recognized: a deploy a
+script or CI job runs internally, a vendor this list does not name, a custom domain set in a project file (the service's
+own domain is the target then), `ssh` sessions, `curl` uploads, container pushes (a package_registry matter) and cloud
+object copies (a cloud_account matter).
 
 Standard library only. Python 3.8+.
 """
@@ -38,45 +44,58 @@ import os
 import re
 from dataclasses import dataclass
 
-from .destructive import _simple_commands, _unwrap_runner
+from .destructive import _simple_commands, _skip_options
 
 HOST = "host"
 SUFFIX = "suffix"
 UNKNOWN = "unknown"
 
-# name -> (deploying subcommands, or None for "every run"; the suffix; deploys with no subcommand at all)
-DEPLOYERS = {
-    "vercel": ({"deploy", "redeploy", "promote", "rollback"}, "vercel.app", True),
-    "vc": ({"deploy", "redeploy", "promote", "rollback"}, "vercel.app", True),
-    "netlify": ({"deploy"}, "netlify.app", False),
-    "ntl": ({"deploy"}, "netlify.app", False),
-    "fly": ({"deploy", "launch"}, "fly.dev", False),
-    "flyctl": ({"deploy", "launch"}, "fly.dev", False),
-    "firebase": ({"deploy"}, "web.app", False),
-    "railway": ({"up"}, "up.railway.app", False),
-    "amplify": ({"publish"}, "amplifyapp.com", False),
-    "gh-pages": (None, "github.io", True),
+HELP_OR_VERSION = {"-h", "--help", "-v", "--version", "-V", "help", "version"}
+VERCEL_OTHER = {
+    "env", "link", "pull", "whoami", "login", "logout", "build", "dev", "ls", "list", "logs", "inspect", "domains",
+    "domain", "dns", "certs", "cert", "alias", "aliases", "secrets", "secret", "teams", "team", "switch", "projects",
+    "project", "init", "remove", "rm", "bisect", "git", "integration", "integrations", "telemetry", "target", "targets",
+    "blob", "install", "i", "open", "help", "version", "cache", "redirects", "mcp", "microfrontends", "guidance",
 }
+SURGE_OTHER = {"login", "logout", "whoami", "list", "teardown", "token", "plan", "card", "invite", "revoke", "ssl",
+               "encrypt", "files", "audit", "dns", "zone", "nuke", "help", "version"}
+# name -> (deploying first words, deploying first-two-word pairs, the suffix)
+DEPLOYERS = {
+    "netlify": ({"deploy"}, set(), "netlify.app"),
+    "fly": ({"deploy", "launch"}, {("machine", "run"), ("machines", "run")}, "fly.dev"),
+    "firebase": ({"deploy", "hosting:channel:deploy"}, set(), "web.app"),
+    "railway": ({"up", "redeploy"}, set(), "up.railway.app"),
+    "amplify": ({"publish"}, set(), "amplifyapp.com"),
+}
+ALIASES = {"vc": "vercel", "ntl": "netlify", "flyctl": "fly"}
+# npm package names whose command has another name.
+PACKAGES = {"netlify-cli": "netlify", "firebase-tools": "firebase", "@railway/cli": "railway", "@aws-amplify/cli": "amplify",
+            "@vercel/cli": "vercel"}
+RUNNERS = {"npx", "bunx", "pnpx"}
 # Options of these tools that take a value, so the value is not read as the subcommand.
 VALUE_OPTIONS = {
-    "vercel": {"--token", "-t", "--scope", "-S", "--cwd", "--local-config", "-A", "--global-config", "-Q", "--team", "-T"},
-    "vc": {"--token", "-t", "--scope", "-S", "--cwd", "--local-config", "-A", "--global-config", "-Q", "--team", "-T"},
-    "netlify": {"--auth", "--cwd", "--filter"},
-    "ntl": {"--auth", "--cwd", "--filter"},
-    "fly": {"-a", "--app", "-c", "--config", "-t", "--access-token", "-o", "--org"},
-    "flyctl": {"-a", "--app", "-c", "--config", "-t", "--access-token", "-o", "--org"},
-    "firebase": {"-P", "--project", "--token", "--config", "-c"},
+    "vercel": {"--token", "-t", "--scope", "-S", "--cwd", "--local-config", "-A", "--global-config", "-Q", "--team", "-T",
+               "--target", "-e", "--env", "-b", "--build-env", "-m", "--meta", "--regions", "--archive"},
+    "netlify": {"--auth", "--cwd", "--filter", "--site", "-s", "--dir", "-d", "--functions", "-f", "--message", "-m",
+                "--alias", "--context", "--prod-if-unlocked"},
+    "fly": {"-a", "--app", "-c", "--config", "-t", "--access-token", "-o", "--org", "-i", "--image", "-r", "--region",
+            "--strategy", "-e", "--env", "--build-arg", "--dockerfile"},
+    "firebase": {"-P", "--project", "--token", "--config", "-c", "--only", "--except", "-m", "--message"},
     "railway": {"-s", "--service", "-e", "--environment"},
     "amplify": set(),
-    "wrangler": {"-c", "--config", "-e", "--env", "--cwd"},
+    "wrangler": {"-c", "--config", "-e", "--env", "--cwd", "--name", "--compatibility-date", "--project-name", "--branch"},
+    "surge": {"--domain", "-d", "--project", "-p"},
 }
 HOST_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+")
+REMOTE_URI = re.compile(r"^(?:scp|sftp|rsync)://", re.IGNORECASE)
 SCP_VALUE_OPTIONS = {"-P", "-i", "-o", "-F", "-c", "-l", "-S", "-J", "-D", "-X"}
 RSYNC_VALUE_OPTIONS = {"-e", "--rsh", "--exclude", "--include", "--exclude-from", "--include-from", "--files-from",
                        "--filter", "-f", "--port", "--password-file", "--log-file", "--bwlimit", "--chmod", "--chown",
                        "--temp-dir", "-T", "--partial-dir", "--compare-dest", "--copy-dest", "--link-dest", "-M",
                        "--remote-option", "--rsync-path", "--timeout", "--contimeout", "--block-size", "-B", "--max-size",
-                       "--min-size", "--suffix", "--backup-dir", "--out-format", "--info", "--debug"}
+                       "--min-size", "--suffix", "--backup-dir", "--out-format", "--info", "--debug", "--max-delete",
+                       "--modify-window", "--iconv", "--sockopts", "--usermap", "--groupmap", "--checksum-choice",
+                       "--compress-choice", "--compress-level", "--skip-compress", "--address"}
 
 
 @dataclass(frozen=True)
@@ -101,60 +120,109 @@ def _positionals(args: list, value_options: set) -> list:
     return out
 
 
+def _package_command(raw: str) -> str:
+    """The command a package runner starts for a package spec: `vercel@latest` -> vercel, `@railway/cli@3` -> railway."""
+    spec = raw.strip()
+    if spec.startswith("@"):
+        scope, _, rest = spec[1:].partition("/")
+        name = "@" + scope + "/" + rest.split("@", 1)[0] if rest else spec
+    else:
+        name = spec.split("@", 1)[0]
+    name = name.lower()
+    if name in PACKAGES:
+        return PACKAGES[name]
+    return os.path.basename(name)
+
+
+def _tool(argv: list) -> tuple:
+    """(command name, its arguments), looking through package runners. The name is lowercase: macOS runs `VERCEL` too."""
+    name, args = os.path.basename(argv[0]).lower(), list(argv[1:])
+    raw = None
+    if name in RUNNERS:
+        i = 0
+        while i < len(args) and args[i].startswith("-"):
+            i += 2 if args[i] in ("-p", "--package", "-c", "--call") else 1
+        if i < len(args):
+            raw, args = args[i], args[i + 1:]
+    elif name == "npm" and args[:1] in (["exec"], ["x"]):
+        rest = _skip_options(args[1:], {"-p", "--package", "-w", "--workspace", "-c", "--call"})
+        if rest:
+            raw, args = rest[0], rest[1:]
+    elif name in ("yarn", "pnpm"):
+        rest = _skip_options(args, {"--cwd", "-C", "--dir", "--filter", "-F"})
+        if rest[:1] in (["dlx"], ["exec"]):
+            rest = _skip_options(rest[1:], {"-p", "--package"})
+            if rest:
+                raw, args = rest[0], rest[1:]
+    if raw is not None:
+        name = _package_command(raw)
+        if args[:1] == ["--"]:
+            args = args[1:]
+    return ALIASES.get(name, name), args
+
+
 def _deployer(name: str, args: list) -> Target | None:
+    if any(arg in HELP_OR_VERSION for arg in args[:1]) or any(arg in ("-h", "--help", "--version") for arg in args):
+        return None
+    words = _positionals(args, VALUE_OPTIONS.get(name, set()))
+    if name == "vercel":
+        if not args:
+            return Target(SUFFIX, "vercel.app")
+        if words and words[0].lower() in VERCEL_OTHER:
+            return None
+        return Target(SUFFIX, "vercel.app")  # `vercel`, `vercel deploy`, `vercel dist`, `vercel --prod`, ...
     if name == "wrangler":
-        words = _positionals(args, VALUE_OPTIONS["wrangler"])
         if words[:1] == ["pages"] and words[1:2] and words[1] in ("deploy", "publish"):
             return Target(SUFFIX, "pages.dev")
         if words[:1] and words[0] in ("deploy", "publish"):
             return Target(SUFFIX, "workers.dev")
+        if words[:1] == ["versions"] and words[1:2] and words[1] in ("deploy", "upload"):
+            return Target(SUFFIX, "workers.dev")
         return None
     if name == "surge":
-        # surge [project] [domain], or --domain DOMAIN
+        if words and words[0].lower() in SURGE_OTHER:
+            return None
         domain = None
         for i, arg in enumerate(args):
             if arg in ("--domain", "-d") and i + 1 < len(args):
                 domain = args[i + 1]
             elif arg.startswith("--domain="):
                 domain = arg[len("--domain="):]
-        words = _positionals(args, {"--domain", "-d", "--project", "-p"})
         if domain is None and len(words) >= 2:
             domain = words[1]
         if domain is not None:
             host = domain.lower().split("://", 1)[-1].split("/", 1)[0]
             return Target(HOST, host) if HOST_NAME.fullmatch(host) else Target(UNKNOWN)
         return Target(SUFFIX, "surge.sh")
+    if name == "gh-pages":
+        return Target(SUFFIX, "github.io")
     spec = DEPLOYERS.get(name)
-    if spec is None:
+    if spec is None or not words:
         return None
-    subcommands, suffix, bare = spec
-    if subcommands is None:
-        return Target(SUFFIX, suffix)
-    words = _positionals(args, VALUE_OPTIONS.get(name, set()))
-    if not words:
-        return Target(SUFFIX, suffix) if bare else None
-    word = words[0]
-    if name in ("fly", "flyctl") and word == "launch" and "--no-deploy" in args:
+    firsts, pairs, suffix = spec
+    if name == "fly" and words[0] == "launch" and "--no-deploy" in args:
         return None
-    if word in subcommands:
+    if words[0] in firsts or tuple(words[:2]) in pairs:
         return Target(SUFFIX, suffix)
-    if bare and name in ("vercel", "vc") and (os.sep in word or word in (".", "..")):
-        return Target(SUFFIX, suffix)  # `vercel ./dist` deploys that directory
     return None
 
 
 def _remote_host(spec: str) -> Target | None:
-    """The host of an scp/rsync remote spec ([user@]host:path, rsync://[user@]host/path), or None for a local path."""
-    if spec.startswith("rsync://"):
-        rest = spec[len("rsync://"):].split("/", 1)[0]
-        host = rest.rsplit("@", 1)[-1].split(":", 1)[0]
+    """The host of a remote copy spec ([user@]host:path, scp://, sftp://, rsync://), or None for a local path."""
+    if REMOTE_URI.match(spec):
+        rest = spec.split("://", 1)[1].split("/", 1)[0]
+        host = rest.rsplit("@", 1)[-1]
+        if host.startswith("["):
+            return Target(UNKNOWN)
+        host = host.split(":", 1)[0]
     else:
         if ":" not in spec or spec.startswith(("/", "./", "../", "~")):
             return None
-        before = spec.split(":", 1)[0]
-        if "/" in before:  # a local path with a colon in it
+        if spec.startswith("[") or "@[" in spec:
+            return Target(UNKNOWN)  # an address in brackets, IPv6 or otherwise
+        host = spec.split(":", 1)[0].rsplit("@", 1)[-1]
+        if "/" in host:  # a local path with a colon in it
             return None
-        host = before.rsplit("@", 1)[-1].strip("[]")
     if not host:
         return None
     if "$" in host or "`" in host:
@@ -163,29 +231,34 @@ def _remote_host(spec: str) -> Target | None:
 
 
 def _copy_destination(name: str, args: list) -> Target | None:
-    options = SCP_VALUE_OPTIONS if name == "scp" else RSYNC_VALUE_OPTIONS
-    words = _positionals(args, options)
-    if len(words) < 2:
-        return None
-    return _remote_host(words[-1])  # an upload: the destination is remote
+    """An upload's remote destination: the last remote-looking path after the first. A download, whose remote is the
+    first path and whose destination is local, is not a deploy."""
+    words = _positionals(args, SCP_VALUE_OPTIONS if name == "scp" else RSYNC_VALUE_OPTIONS)
+    remotes = [target for target in (_remote_host(word) for word in words[1:]) if target is not None]
+    return remotes[-1] if remotes else None
 
 
 def _git_push_heroku(args: list) -> Target | None:
     index = 0
     while index < len(args) and args[index].startswith("-"):
-        index += 2 if args[index] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else 1
+        index += 2 if args[index] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+                                      "--config-env") else 1
     if index >= len(args) or args[index] != "push":
         return None
     words = _positionals(args[index + 1:], {"-o", "--push-option", "--repo", "--receive-pack", "--exec", "--recurse-submodules"})
-    return Target(SUFFIX, "herokuapp.com") if words[:1] == ["heroku"] else None
+    if not words:
+        return None
+    remote = words[0].lower()
+    if remote == "heroku" or "git.heroku.com" in remote.split("/")[2:3] or remote.startswith("git@heroku.com:"):
+        return Target(SUFFIX, "herokuapp.com")
+    return None
 
 
 def deploy_targets(command: str) -> list:
     """Every deploy or publish target the command names, in order."""
     targets = []
     for argv in _simple_commands(command):
-        name, args = _unwrap_runner(argv[0], argv[1:])
-        name = os.path.basename(name)
+        name, args = _tool(argv)
         if name in ("scp", "rsync"):
             target = _copy_destination(name, args)
         elif name == "git":
@@ -199,8 +272,7 @@ def deploy_targets(command: str) -> list:
 
 def host_covered(value: str, target: Target) -> bool:
     """Whether a deploy_host value covers a target. An exact value covers that host; `*.D` covers every host under D,
-    and a suffix target under D (a service's own domain is a subdomain of nothing the company lists otherwise). An
-    unknown target is covered by nothing."""
+    and a suffix target under or equal to D. An unknown target is covered by nothing."""
     value = value.lower()
     if target.kind == UNKNOWN or not target.name:
         return False

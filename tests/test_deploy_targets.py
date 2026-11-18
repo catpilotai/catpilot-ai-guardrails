@@ -37,6 +37,15 @@ class DeployTargetTests(unittest.TestCase):
             "amplify publish": "amplifyapp.com", "git push heroku main": "herokuapp.com",
             "cd app && npm run build && vercel --prod": "vercel.app", "bash -lc 'netlify deploy --prod'": "netlify.app",
             "npm run build\nnetlify deploy --prod": "netlify.app",
+            # Runners with versions and package names, and options the first version misread (review of #130).
+            "npx vercel@latest --prod": "vercel.app", "pnpm dlx vercel@latest": "vercel.app", "npm exec vercel -- --prod": "vercel.app",
+            "npx wrangler@latest deploy": "workers.dev", "npx netlify-cli deploy --prod": "netlify.app",
+            "npx firebase-tools deploy": "web.app", "npx @railway/cli up": "up.railway.app", "VERCEL --prod": "vercel.app",
+            "vercel --target production": "vercel.app", "vercel -e FOO=bar --prod": "vercel.app", "vercel --build-env A=b": "vercel.app",
+            "vercel dist --prod": "vercel.app", "vercel my-site": "vercel.app",
+            "firebase hosting:channel:deploy preview": "web.app", "wrangler versions deploy": "workers.dev",
+            "wrangler versions upload": "workers.dev", "railway redeploy": "up.railway.app", "fly machine run nginx": "fly.dev",
+            "git push https://git.heroku.com/app.git main": "herokuapp.com",
         }
         for command, suffix in cases.items():
             with self.subTest(command=command):
@@ -52,6 +61,11 @@ class DeployTargetTests(unittest.TestCase):
             "surge --domain x.surge.sh": [(HOST, "x.surge.sh")],
             "rsync -avz dist/ $HOST:/srv": [(UNKNOWN, None)],
             "scp dist/* ${DEPLOY_HOST}:/srv": [(UNKNOWN, None)],
+            "rsync dist/ web.example.org:/srv --max-delete 10": [(HOST, "web.example.org")],
+            "scp f scp://deploy@web.example.org/srv": [(HOST, "web.example.org")],
+            "scp f [::1]:/srv": [(UNKNOWN, None)],
+            "scp f deploy@[::ffff:10.0.0.1]:/srv": [(UNKNOWN, None)],
+            "scp notes.txt devbox:/tmp": [(UNKNOWN, None)],  # an SSH alias without a dot cannot be listed
         }
         for command, want in cases.items():
             with self.subTest(command=command):
@@ -61,7 +75,10 @@ class DeployTargetTests(unittest.TestCase):
         for command in ("vercel env ls", "vercel dev", "vercel login", "netlify status", "netlify dev", "flyctl launch --no-deploy",
                         "fly logs", "firebase login", "wrangler dev", "railway logs", "git push origin main", "git push",
                         "scp deploy@web1.example.org:/srv/log.txt .", "scp file.txt ./copy", "rsync -av src/ dst/",
-                        "rsync -av rsync://mirror.example.net/x ./local", "ls", "echo vercel --prod", "npm run deploy"):
+                        "rsync -av rsync://mirror.example.net/x ./local", "ls", "echo vercel --prod", "npm run deploy",
+                        "vercel --version", "vercel -v", "vercel --help", "fly deploy --help", "gh-pages --help",
+                        "surge whoami", "surge list", "surge teardown x.surge.sh", "vercel env pull", "vercel link",
+                        "rsync -av host:/x ./local --max-delete 5"):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [])
 

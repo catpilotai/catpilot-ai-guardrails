@@ -276,18 +276,31 @@ blocked on stale values, and each match still writes `would_deny`.
   of the rule covers fires the rule. `catpilot_guard/deploy_targets.py` reads
   the target, through the same splitting and wrappers, and through package
   runners (`npx`, `pnpm dlx`, `yarn dlx`, `npm exec`, `bunx`):
-  - a hosting service's own domain, for `vercel`/`vc` (no subcommand, `deploy`,
-    `redeploy`, `promote`, `rollback`), `netlify deploy`, `fly`/`flyctl`
-    `deploy` or `launch` (unless `--no-deploy`), `firebase deploy`, `wrangler
-    deploy`/`publish` and `wrangler pages deploy`, `surge`, `gh-pages`,
-    `railway up`, `amplify publish` and `git push heroku`: the service's names
-    end in `vercel.app`, `netlify.app`, `fly.dev`, `web.app`, `workers.dev`,
-    `pages.dev`, `surge.sh`, `github.io`, `up.railway.app`, `amplifyapp.com`
-    and `herokuapp.com`, so only a value `*.vercel.app` (and so on) covers one;
-  - a named host: the remote destination of `scp` or `rsync` (`[user@]host:path`,
-    `rsync://host/...`), and the domain given to `surge`;
-  - a destination it cannot read, such as `rsync dist/ $HOST:/srv`, which no
-    value covers.
+  - a hosting service's own domain, for `vercel`/`vc` (every run except help,
+    version and its non-deploy subcommands such as `env`, `link`, `pull`,
+    `whoami`, `dev`, `build`), `netlify deploy`, `fly`/`flyctl` `deploy`,
+    `launch` (unless `--no-deploy`) or `machine run`, `firebase deploy` and
+    `hosting:channel:deploy`, `wrangler deploy`/`publish`/`versions deploy`/
+    `versions upload` and `wrangler pages deploy`, `surge` (except its account
+    commands), `gh-pages`, `railway up`/`redeploy`, `amplify publish`, and
+    `git push` to a remote named `heroku` or a `git.heroku.com` URL: the
+    service's names end in `vercel.app`, `netlify.app`, `fly.dev`, `web.app`,
+    `workers.dev`, `pages.dev`, `surge.sh`, `github.io`, `up.railway.app`,
+    `amplifyapp.com` and `herokuapp.com`, so only a value `*.vercel.app` (and so
+    on) covers one. A runner's package spec is read with its version and by its
+    package name (`npx vercel@latest`, `npx netlify-cli`, `npx firebase-tools`,
+    `npx @railway/cli`);
+  - a named host: the remote destination of an `scp` or `rsync` upload
+    (`[user@]host:path`, `scp://`, `sftp://`, `rsync://`), and the domain given
+    to `surge`;
+  - a destination it cannot read, which no value covers: a variable (`rsync
+    dist/ $HOST:/srv`), an address in brackets (IPv6), or an SSH alias without
+    a dot (`scp f prod:/srv`, from `~/.ssh/config`), since every value needs a
+    dot.
+
+  Every `scp` or `rsync` upload to another machine counts, a backup to a dev
+  box included, so start a `deploy_host` rule in `monitor` and read the
+  `would_deny` counts before you block.
 
   A value `*.D` covers every name under `D`; any other value covers that host
   only. Each `deploy_host` rule is its own allow-list, so list every approved

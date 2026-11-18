@@ -1171,7 +1171,8 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             runs.append((command, modes,
                          "a deploy to a host rule %s does not allow (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
         if probe is None and deploy is None:
-            report.line("note", "the %s policy has no protected_branch or deploy_host rule, so only a harmless command is probed" % host)
+            report.line("note", "no rule probe for %s: the policy has no protected_branch rule, and no deploy_host rule or none "
+                        "that a probe deploy falls outside, so only a harmless command is probed" % host)
         log = home / ("verify-company-%s.jsonl" % host)
         for command, modes, what in runs:
             expected = expected_effect(host, modes, ask_enabled=False)  # run directly, without --ask
