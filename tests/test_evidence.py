@@ -239,7 +239,7 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(props["fields"]["items"]["enum"], sorted(re.findall(r'"(\w+)":', supplied)))
         server_tools = re.findall(r"@server\.tool\([^)]*\)\n    def (\w+)\(", server_src)
         self.assertEqual(len(server_tools), 4)
-        self.assertEqual(props["tool"]["enum"], ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"] + server_tools)
+        self.assertEqual(props["tool"]["enum"], ["Bash", "PowerShell", "Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"] + server_tools)
 
     def test_the_schema_refuses_free_text_and_unknown_values(self):
         line = self.minimal()
