@@ -371,10 +371,32 @@ class EnvTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(self.fired(text), ["protected-branches"])
 
-    def test_a_step_that_writes_github_env_leaves_only_step_values(self):
-        writer = '      - run: echo "B=main" >> "$GITHUB_ENV"\n'
-        self.assertEqual(self.fired(self.doc(job_env="B: feature\n", extra_steps=writer)), ["protected-branches"])
-        self.assertEqual(self.fired(self.doc(job_env="B: main\n", step_env="B: feature\n", extra_steps=writer)), [])
+    def test_no_env_value_is_read_after_a_step_that_can_run_code(self):
+        # A step can set any variable for later steps through GITHUB_ENV without naming it (review of #133).
+        earlier = [
+            '      - run: echo "B=main" >> "$GITHUB_ENV"\n',
+            '      - run: echo "B=main" >> "$(echo github_env | tr a-z A-Z | sed s/^/$/ | xargs -I{} sh -c \'echo {}\')"\n',
+            '      - run: npm run build\n',
+            "      - uses: actions/github-script@v7\n        with:\n          script: core.exportVariable('B', 'main')\n",
+            "      - uses: ./local-action\n",
+        ]
+        for step in earlier:
+            with self.subTest(step=step):
+                self.assertEqual(self.fired(self.doc(job_env="B: feature\n", extra_steps=step)), ["protected-branches"])
+                self.assertEqual(self.fired(self.doc(step_env="B: feature\n", extra_steps=step)), ["protected-branches"])
+                self.assertEqual(self.fired(self.doc(step_env="H: web1.apps.example.org\n", run="scp -r dist deploy@$H:/srv",
+                                                     extra_steps=step)), ["deploy-hosts"])
+        checkout = "      - uses: actions/checkout@v4\n"
+        self.assertEqual(self.fired(self.doc(job_env="B: feature\n", extra_steps=checkout)), [])
+        self.assertEqual(self.fired(self.doc(job_env="B: feature\n", extra_steps="      - uses: Actions/Checkout@v4\n")), [])
+
+    def test_a_composite_action_reads_env_only_before_a_code_step(self):
+        head = "runs:\n  using: composite\n  steps:\n"
+        push = "    - shell: bash\n      env:\n        B: feature\n      run: git push --force origin $B\n"
+        rules = [branch_rule()]
+        self.assertEqual(findings("action.yml", head + push, rules=rules), [])
+        self.assertEqual([r for _, r, _ in findings("action.yml", head + "    - shell: bash\n      run: ./prep.sh\n" + push, rules=rules)],
+                         ["protected-branches"])
 
     def test_resolve_script_never_resolves_the_expression_placeholder(self):
         env = {"CATPILOT_EXPRESSION": "feature", "B": "feature"}
@@ -422,11 +444,21 @@ class PushActionTests(unittest.TestCase):
               env:
                 TARGET: feature
             """)
-        # JamesIves: gh-pages (not protected) and github.io (not approved); ad-m with no branch: unknown.
+        # JamesIves: gh-pages (not protected) and github.io (not approved); ad-m with no branch: unknown. The third
+        # step's env: is not read, since the steps before it can run code that sets TARGET: unknown.
         self.assertEqual(findings(".github/workflows/d.yml", text),
-                         [(7, "deploy-hosts", "error"), (10, "protected-branches", "error")])
+                         [(7, "deploy-hosts", "error"), (10, "protected-branches", "error"), (13, "protected-branches", "error")])
         self.assertEqual(findings(".github/workflows/d.yml", text, rules=[branch_rule(values=["gh-pages"])]),
-                         [(7, "protected-branches", "error"), (10, "protected-branches", "error")])
+                         [(7, "protected-branches", "error"), (10, "protected-branches", "error"), (13, "protected-branches", "error")])
+        first = workflow("""\
+            - uses: ad-m/github-push-action@v0.8.0
+              with:
+                branch: ${{ env.TARGET }}
+                force: true
+              env:
+                TARGET: feature
+            """)
+        self.assertEqual(findings(".github/workflows/d.yml", first), [])
 
 
 class ShellTests(unittest.TestCase):
@@ -444,6 +476,20 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(findings(".github/workflows/d.yml", text), [(8, None, "error"), (14, None, "error")])
         self.assertEqual(findings(".github/workflows/d.yml", text, rules=[host_rule("monitor")]),
                          [(8, None, "warning"), (14, None, "warning")])
+
+    def test_only_plain_shell_options_are_read(self):
+        readable = ["bash", "bash -e {0}", "bash --noprofile --norc -eo pipefail {0}", "sh -e {0}", "/bin/bash -x {0}",
+                    "pwsh", "pwsh -command \". '{0}'\"", "powershell -NoProfile -command \"& '{0}'\"", "pwsh.exe {0}",
+                    "bash +o posix {0}"]
+        unreadable = ["bash -c 'exec python3 \"$1\"' _ {0}", "bash -ec 'python3 $1' _ {0}", "sh -c 'perl {0}'",
+                      "pwsh -command \"& python3 '{0}'\"", "bash --rcfile x {0}", "bash -o", "bash -o 'pipe fail' {0}",
+                      "bash {0} extra", "bash 'unbalanced", "pwsh -File other.ps1"]
+        for shell in readable:
+            with self.subTest(shell=shell):
+                self.assertTrue(pr_check._readable_shell(shell))
+        for shell in unreadable:
+            with self.subTest(shell=shell):
+                self.assertFalse(pr_check._readable_shell(shell))
 
     def test_defaults_run_shell_at_job_and_workflow_level(self):
         workflow_default = "name: ci\non: push\ndefaults:\n  run:\n    shell: cmd\njobs:\n  a:\n    runs-on: windows-latest\n" \

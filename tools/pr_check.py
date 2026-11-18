@@ -17,10 +17,13 @@ What it scans, exactly (by file name; every other file is ignored):
   .github/workflows/*.yml|yaml   each step's `run:` script, through the hook's matching for protected_branch and
   (any letter case)              deploy_host rules (the hook's command splitting reads every line). Literal `env:`
                                  values (workflow, then job, then step, the more specific winning) are read into
-                                 `$X`, `${X}` and `${{ env.X }}`; any other variable or `${{ ... }}` stays unknown, so
-                                 a destination or a branch taken from one is one the check cannot read, which fires
-                                 (as in the hook). A run step whose shell (its own, or `defaults.run.shell` of its job
-                                 or workflow) is not bash, sh, pwsh or powershell cannot be read. Each step's `uses:`
+                                 `$X`, `${X}` and `${{ env.X }}`, but only until a step that can run code (any `run:`
+                                 step, or any `uses:` but actions/checkout), which may set any variable for the steps
+                                 after it through GITHUB_ENV; any other variable or `${{ ... }}` stays unknown, so a
+                                 destination or a branch taken from one is one the check cannot read, which fires (as
+                                 in the hook). A run step whose shell (its own, or `defaults.run.shell` of its job or
+                                 workflow) is not bash, sh, pwsh or powershell, with only the plain options `_readable_shell`
+                                 allows, cannot be read. Each step's `uses:`
                                  naming a deploy action (DEPLOY_ACTIONS) or a force-pushing action (PUSH_ACTIONS), and
                                  a `docker://` step's `entrypoint` and `args`, as a command
   action.yml|yaml (anywhere)     the same, for the steps of a composite action (`runs.steps`, with step `env:` only);
@@ -66,8 +69,8 @@ is not the checkout's), so, like a variable, it fires every protected_branch rul
 
 Not covered: files the pull request does not add or change (an unchanged reusable workflow or script that a changed
 file calls), scripts a command runs (`npm run deploy` is not followed into package.json), reusable workflows and
-actions from other repositories, a variable an action exports for later steps (only a step writing GITHUB_ENV is
-seen, and then the workflow's and job's env: values are not used), a Docker image's own entrypoint, deploy and push
+actions from other repositories, a variable that holds an option (`git push origin $F` with F=--force; a variable
+among two or more refspecs counts as a force), a Docker image's own entrypoint, deploy and push
 actions not listed below, and everything the hook does not cover (hooks/README.md, exact coverage).
 
 Standard library plus PyYAML. Python 3.11+ (tomllib).
@@ -116,7 +119,7 @@ WHAT = {
     "deploy_host": "this file deploys or publishes to a host the company has not approved",
 }
 UNREADABLE = "Catpilot pull-request check: could not read this file, so it was not checked against the company rules."
-UNREADABLE_STEP = ("Catpilot pull-request check: could not read this run step, whose shell is not bash, sh or PowerShell, "
+UNREADABLE_STEP = ("Catpilot pull-request check: could not read this run step, whose shell is not bash, sh or PowerShell with plain options, "
                    "so it was not checked against the company rules.")
 
 # Deploy actions a workflow step may name in `uses:`, by owner/repository, lowercase.
@@ -577,12 +580,49 @@ def action_pushes(uses: str, inputs: dict) -> list:
     return [spec["default_branch"] if value is None or not value.strip() else literal_branch(value)]
 
 
+# The shells a run step may name, with the options each may carry; anything else, such as `bash -c '...' _ {0}`, which
+# hands the script to another program, is a shell the check does not read. `{0}` is the script file.
+POSIX_SHELL_WORD = re.compile(r"[-+][euxvlo]+|[-+][oO]|--(?:noprofile|norc|login|posix)|\{0\}")
+SHELL_OPTION_VALUE = re.compile(r"[a-z_]+")
+PWSH_WORD = re.compile(r"(?i)-(?:noprofile|nologo|noninteractive|nop)|\{0\}")
+PWSH_COMMAND = (". '{0}'", "& '{0}'")
+
+
 def _readable_shell(shell: str | None) -> bool:
-    """Whether a run step's shell is one this check reads: the default (None), bash, sh, pwsh or powershell."""
+    """Whether a run step's shell is one this check reads: the default (None), or bash, sh, pwsh or powershell with
+    only plain options (`bash --noprofile --norc -eo pipefail {0}`, `pwsh -command ". '{0}'"`)."""
     if shell is None:
         return True
-    words = shell.split()
-    return bool(words) and "${{" not in shell and os.path.basename(words[0]).lower() in READABLE_SHELLS
+    if "${{" in shell:
+        return False
+    try:
+        words = shlex.split(shell)
+    except ValueError:
+        return False
+    if not words:
+        return False
+    name = os.path.basename(words[0]).lower()
+    name = name[:-4] if name.endswith(".exe") else name
+    if name not in READABLE_SHELLS:
+        return False
+    rest, index = words[1:], 0
+    while index < len(rest):
+        word = rest[index]
+        if name in ("bash", "sh"):
+            if not POSIX_SHELL_WORD.fullmatch(word):
+                return False
+            if word[0] in "-+" and word[-1] in "oO" and not word.startswith("--"):  # -o, -eo, +O take a value
+                index += 1
+                if index >= len(rest) or not SHELL_OPTION_VALUE.fullmatch(rest[index]):
+                    return False
+        elif word.lower() in ("-command", "-c"):
+            index += 1
+            if index >= len(rest) or rest[index] not in PWSH_COMMAND:
+                return False
+        elif not PWSH_WORD.fullmatch(word):
+            return False
+        index += 1
+    return True
 
 
 def _default_shell(node, inherited: str | None) -> str | None:
@@ -609,8 +649,10 @@ def _docker_command(*parts) -> str:
     return " ".join(part for part in parts if part and part.strip())
 
 
-def _step_items(step, levels: list, default_shell: str | None) -> list:
-    env = _merge_env(levels + [_env_level(step)])
+def _step_items(step, levels: list | None, default_shell: str | None) -> list:
+    """A step's commands, targets and pushes. levels None: an earlier step may have changed any variable, so no
+    env: value is substituted, not even the step's own (GitHub does not document whether it beats GITHUB_ENV)."""
+    env = {} if levels is None else _merge_env(levels + [_env_level(step)])
     shell = _scalar(step, "shell")
     shell = default_shell if shell is None else shell
     inputs = None
@@ -647,22 +689,39 @@ def _compose(raw: str):
         raise Unreadable() from None
 
 
+def _runs_code(step) -> bool:
+    """Whether a step can run code, and so write GITHUB_ENV (which can be done without naming it): any `run:`, and any
+    `uses:` but actions/checkout."""
+    if _values(step, "run"):
+        return True
+    for uses in _values(step, "uses"):
+        name = uses.value.strip().lower().split("@", 1)[0] if isinstance(uses, yaml.ScalarNode) else ""
+        if name != "actions/checkout":
+            return True
+    return False
+
+
+def _steps_items(steps, levels: list, shell: str | None) -> list:
+    """The items of one job's (or composite action's) steps, in order: env: values are substituted only until a step
+    that can run code, since it may set any variable for the steps after it."""
+    items, code_ran = [], False
+    for step in steps.value:
+        items.extend(_step_items(step, None if code_ran else levels, shell))
+        code_ran = code_ran or _runs_code(step)
+    return items
+
+
 def scan_workflow(raw: str) -> list:
     root = _compose(raw)
-    # A step that writes GITHUB_ENV can change any variable for the steps after it, over the workflow's and the job's
-    # env:, so only a step's own env: is then read as written.
-    writes_env = "GITHUB_ENV" in raw
     workflow_env = _env_level(root)
     workflow_shell = _default_shell(root, None)
     items = []
     for jobs in _values(root, "jobs"):
         for _, job in _pairs(jobs):
-            levels = [] if writes_env else [workflow_env, _env_level(job)]
             shell = _default_shell(job, workflow_shell)
             for steps in _values(job, "steps"):
                 if isinstance(steps, yaml.SequenceNode):
-                    for step in steps.value:
-                        items.extend(_step_items(step, levels, shell))
+                    items.extend(_steps_items(steps, [workflow_env, _env_level(job)], shell))
     return items
 
 
@@ -695,8 +754,7 @@ def scan_action(raw: str) -> list:
             items.extend(_docker_action_items(runs))
         for steps in _values(runs, "steps"):
             if isinstance(steps, yaml.SequenceNode):
-                for step in steps.value:
-                    items.extend(_step_items(step, [], None))
+                items.extend(_steps_items(steps, [], None))
     return items
 
 

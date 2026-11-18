@@ -375,6 +375,12 @@ def current_branch(cwd: str, git_dir_path: str | None = None) -> str | None:
 
 
 BRACED_EXPANSION = re.compile(r"\$\{[^}]*\}")
+# A destination that is the shell asking git for the checked-out branch, read as that branch: `"$(git branch
+# --show-current)"`, `$(git rev-parse --abbrev-ref HEAD)`, `$(git symbolic-ref --short HEAD)`, or one in backticks.
+CURRENT_BRANCH_SUBSTITUTION = re.compile(
+    r"(?:\$\(|`)\s*git\s+(?:branch\s+--show-current|rev-parse\s+--abbrev-ref\s+HEAD|symbolic-ref\s+(?:-q\s+)?--short\s+HEAD)"
+    r"\s*(?:\)|`)"
+)
 # git push options that take their value as the next argument.
 PUSH_VALUE_OPTIONS = {"--push-option", "--repo", "--receive-pack", "--exec", "--recurse-submodules"}
 # git's own options, before the subcommand, that take their value as the next argument. -C and --git-dir also say
@@ -394,9 +400,11 @@ def git_push_rewrites(args: list[str], cwd: str) -> tuple[bool, list[str | None]
     branches are the destination branches a force push (--force, -f, --force-with-lease, --force-if-includes or a
     +refspec), a deletion (--delete, -d, or an empty source `:branch`) aims at, with refs/heads/ stripped and HEAD
     read as the checked-out branch ("" when that is unknown). A destination the command does not spell out, one
-    holding a shell variable or a command substitution (`$BRANCH`, `"${TARGET}"`, a backtick), is None: unknown. A
-    bare force push, with no refspec, adds the checked-out branch, or None when it is detached or there is no
-    repository. The built-in check (_git_finding) treats None as protected, and the company-rules hook
+    holding a shell variable or a command substitution (`$BRANCH`, `"${TARGET}"`, a backtick), is None: unknown,
+    except a substitution that asks git for the checked-out branch (CURRENT_BRANCH_SUBSTITUTION), read as the branch
+    checked out where the shell runs (None when detached). A variable among two or more refspecs may hold an option
+    (`git push origin $F main`, F=--force), so the push then counts as a force push. A bare force push, with no
+    refspec, adds the checked-out branch, or None when it is detached or there is no repository. The built-in check (_git_finding) treats None as protected, and the company-rules hook
     (catpilot_guard/company_rules.py) fires every protected_branch rule on it; both read pushes this way.
     """
     index, repo, git_dir_path = 0, cwd, None
@@ -449,6 +457,10 @@ def git_push_rewrites(args: list[str], cwd: str) -> tuple[bool, list[str | None]
         else:
             positional.append(arg)
     mirror = mirror or (every and (force or prune))
+    refspecs = positional[1:]
+    if len(refspecs) > 1 and any(spec.startswith(("$", "`")) and not CURRENT_BRANCH_SUBSTITUTION.fullmatch(spec)
+                                 for spec in refspecs):
+        force = True  # a word that starts with a variable may hold --force
     branches: list[str | None] = []
     if not mirror:
         for spec in positional[1:]:
@@ -461,6 +473,9 @@ def git_push_rewrites(args: list[str], cwd: str) -> tuple[bool, list[str | None]
                 branches = []
                 break
             if not (delete or plus or force or (":" in spec and source == "")):
+                continue
+            if CURRENT_BRANCH_SUBSTITUTION.fullmatch(destination):
+                branches.append(current_branch(cwd))  # the shell runs it where it is, not in -C's repository
                 continue
             if "$" in destination or "`" in destination:
                 branches.append(None)  # a variable or a substitution: the branch is unknown

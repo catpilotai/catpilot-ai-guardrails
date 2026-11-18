@@ -349,7 +349,7 @@ Push actions, read for `protected_branch` rules (the input names and defaults ar
 
 A branch input that is not a literal name is unknown and fires every `protected_branch` rule; a force input that is not a literal `false` counts as a force.
 
-**Unknown is not clean.** A force push or deletion whose branch the check cannot read fires every `protected_branch` rule, as it does in the hook: a variable with no literal `env:` value, a `${{ … }}` (`${{ github.event.repository.default_branch }}`), a variable the script sets itself, and a bare force push or a push to `HEAD`, since the branch a workflow runs on is not the checkout's. An `env:` value is read only when it is plain (letters, digits and `. _ / @ : + = , -`), and when a step writes `GITHUB_ENV`, which can change any variable for later steps, only each step's own `env:` is read.
+**Unknown is not clean.** A force push or deletion whose branch the check cannot read fires every `protected_branch` rule, as it does in the hook: a variable with no literal `env:` value, a `${{ … }}` (`${{ github.event.repository.default_branch }}`), a variable the script sets itself, and a bare force push or a push to `HEAD`, since the branch a workflow runs on is not the checkout's. An `env:` value is read only when it is plain (letters, digits and `. _ / @ : + = , -`), and only until a step that can run code: any `run:` step, or any `uses:` but `actions/checkout`. Such a step can change any variable for the steps after it through `GITHUB_ENV`, without the file naming it (a package script, `core.exportVariable`), so after it every variable is unknown, a step's own `env:` included, since GitHub does not document whether that beats `GITHUB_ENV`.
 
 **Modes.**
 
@@ -388,7 +388,8 @@ What it does not protect against:
 - Files the pull request does not add or change: an unchanged reusable workflow, composite action or script that a changed file calls.
 - What a command calls: `npm run deploy` is not followed into `package.json`, nor `./deploy.sh` into the script.
 - Reusable workflows and actions from other repositories, deploy and push actions not in the tables, and a Docker image's own entrypoint when the step or action does not name one.
-- A variable an action exports for the steps after it (`core.exportVariable`): the check reads `env:` values as written, and sees only a step's own write to `GITHUB_ENV`.
+- A variable that holds an option: `git push origin $F` with `F=--force` reads as an ordinary push (a variable among two or more refspecs does count as a force).
+- A run step's shell with options beyond the plain ones (`bash -eo pipefail {0}`, `pwsh -command ". '{0}'"`) is reported as unreadable, not read.
 - The built-in protected branches, which are the hooks' own list: the check applies company rules only.
 - Merge queues: a required check must also report on `merge_group`, which the template does not handle.
 - Everything the hook does not cover ([exact coverage](../hooks/README.md#exact-coverage-3)).

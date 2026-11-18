@@ -156,7 +156,9 @@ DENIED = {
     "force push to a defaulted variable": "git push -f origin ${B:-main}",
     "force push HEAD to a variable": "git push origin +HEAD:$DEST",
     "delete a variable branch": "git push origin --delete $OLD",
-    "force push to a command substitution": "git push --force origin `git branch --show-current`",
+    "force push to a command substitution": "git push --force origin `cat branch.txt`",
+    "force push to another repository's branch": 'git push -f origin "$(git -C ../other branch --show-current)"',
+    "a variable that may hold --force": "git push origin $F main",
     "nice then timeout then bash -lc": "nice -n 10 timeout 60 bash -lc 'rm -rf ~'",
     "timeout around dropdb": "timeout 30 dropdb production_db",
     # The home directory by absolute path, and its credential directories.
@@ -367,7 +369,10 @@ class DestructiveHookTests(unittest.TestCase):
             for branch, expected in (("main", "deny"), ("release/2026.10", "deny"), ("feature/x", None)):
                 with self.subTest(branch=branch):
                     head.write_text(f"ref: refs/heads/{branch}\n")
-                    for command in ("git push -f", "git push --force-with-lease origin", "git push --force origin HEAD"):
+                    for command in ("git push -f", "git push --force-with-lease origin", "git push --force origin HEAD",
+                                    'git push --force-with-lease origin "$(git branch --show-current)"',
+                                    "git push -f origin '`git rev-parse --abbrev-ref HEAD`'".replace("'", '"'),
+                                    'git push -f origin HEAD:"$(git symbolic-ref --short HEAD)"'):
                         payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(repo)})
                         out = json.loads(run_hook(payload).stdout)
                         decision = out.get("hookSpecificOutput", {}).get("permissionDecision")
