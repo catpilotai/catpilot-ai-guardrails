@@ -192,6 +192,12 @@ DENIED = {
     "bash's pairing makes a deletion": "git push origin {x},:main}",
     "a sequence-looking brace": "git push origin {a..}x,:main}",
     "braces in git's own words": "git {push,-f} origin main",
+    # Final review of e90ad42: both readings (expanded and as written) count; git's options are walked; bash's port.
+    "a quoted brace in git's -c value": "git -c 'a.b=c{,}' push --force origin main",
+    "a mirror setting past the limit": "T=true git --config-env=remote.origin.mirror=T{,}{,}{,}{,}{,}{,}{,} push",
+    "a quoted brace as --repo's value": "git push --repo '{,}' origin +main",
+    "a stray brace and a sequence-looking body": "git push origin +{:/}{,}?sec..d:main}",
+    "push as git's own option value": "git --work-tree push {push,-f} origin main",
     "nested literal braces then a force push": "git push origin " + "{x" * 3000 + "}" * 3000 + "; git push --force origin main",
     # git splits a refspec at its last colon; braces make several refspecs; X+=1 and A[0]=1 are assignments.
     "refspec with a colon in its source": 'git push --force origin ":/rewritten feature:main"',
@@ -293,6 +299,9 @@ ALLOWED = {
     "push with a trailing tag variable": 'git push origin main "$TAG"',
     "many tags": "git push origin v{1..100}",
     "many tags with prune": "git push --prune origin v{1..100}",
+    "many release tags": "git push origin release-{1..100}",
+    "many release candidates": "git push origin v1.0.0-rc{1..100}",
+    "a brace list in git's -c value": "git -c x.y={a,b} push",
     "all branches to a remote list": "git push --all {origin,v{1..70}}",
     "delete a tag held in a variable": "git push origin :refs/tags/$TAG",
     "delete a tag by --delete": "git push --delete origin refs/tags/$T",
@@ -473,6 +482,9 @@ class DestructiveHookTests(unittest.TestCase):
             "setsid env GIT_DIR=x git push -f", "time -p GIT_DIR=x git push -f", "builtin export GIT_DIR=x; git push -f",
             "sudo --chdir=../main git push -f", "read GIT_DIR; export GIT_DIR; git push -f",
             "git $X a=b switch main && git push -f",
+            # A word past the limit, read from a feature branch so the bare-push fallback cannot cover for it.
+            "git push -o {x,--force,origin,main,v{1..70}}", "git push -f {,}{,}{,}{,}{,}{,}{,} origin",
+            "git push -d -o {x,origin,main,v{1..70}}",
             # A mirror or push setting applies to a bare push (git refuses refspecs with a mirror) (review of 816c933).
             "git config remote.origin.mirror true && git push origin", "git config set remote.origin.push '+refs/*' && git push",
             "git config push.default matching && git push -f origin", "git remote add --mirror=push bk url && git push bk",
@@ -564,13 +576,21 @@ class DestructiveHookTests(unittest.TestCase):
         start = time.monotonic()
         self.assertIsNone(expand_braces("{,}" * 23))  # past the limit, and quickly
         expand_braces("{" * 5000)
+        expand_braces("{" * 250 + "y" * 3800 + "{a,b}" * 6)  # inside the caps, the worst the review found
+        expand_braces("{x" * 1000 + "}" * 1000)
         self.assertLess(time.monotonic() - start, 2)
+        self.assertIsNone(expand_braces("{a,b}" + "x" * 5000))  # over the length cap
+        self.assertIsNone(expand_braces("{a}" * 300))  # over the brace-count cap
+        self.assertEqual(expand_braces("+{:/}{,}?sec..d:main}"), ["+:/}?sec..d:main", "+:/}?sec..d:main"])
         # GIT_CONFIG_PARAMETERS: a value chunk is never a key; a key holding a variable counts unless an insteadOf.
         harmful = lambda value: git_config_assignment_harmful("GIT_CONFIG_PARAMETERS", value)
         self.assertFalse(harmful("'http.extraheader'='Authorization: Bearer $TOKEN'"))
         self.assertFalse(harmful("'user.name'='$NAME'"))
         self.assertTrue(harmful("'$S.mirror'='true'"))
         self.assertFalse(harmful("'url.$X.insteadOf'='https://x/'"))
+        self.assertTrue(harmful("'user.name'='x' $MORE"))  # outside any pair: it may hold any key
+        self.assertTrue(harmful("'a.b'='x'\\''y' 'remote.origin.mirror'='true'"))
+        self.assertFalse(harmful("'user.name'='O'\\''Brien'"))  # git's escaped quote inside a value
         self.assertTrue(harmful("'remote.origin.mirror=true'"))
 
     def test_works_without_its_sibling_hooks(self):

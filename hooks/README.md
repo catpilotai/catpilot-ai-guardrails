@@ -189,11 +189,14 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   `HEAD`): `git push --force origin $BRANCH`, `"${TARGET}"`, `${B:-main}`,
   `release/$V`, `"ma$X"` and `"$P/main"` are blocked, while `feature/$TICKET`,
   `"v$VERSION"` and a tag (`:refs/tags/$TAG`) are not. Braces are expanded as
-  bash expands and pairs them, in git's own words too and before options are
-  read (`:{feature,develop}` deletes both; `{-f,}` is a force; `{x},main}` is
-  `x}` and `main`); a word that would make more than 64, or one over 4,096
+  bash 5.2 expands them (a port of its brace_expand), in git's own words too
+  and before options are read (`:{feature,develop}` deletes both; `{-f,}` is
+  a force; `{x},main}` is `x}` and `main`). Since the shell's quotes are gone
+  by then, each push is also read with its words as written, and the stricter
+  reading counts. A word that would make more than 64, or one over 4,096
   characters, is unknown where it stands, and unless it is plain text and
-  braces it may be `--force`, a `+` or `:` refspec or an option. A variable whose value
+  braces (a `-` inside a name such as `release-{1..100}` is plain) it may be
+  `--force`, a `+` or `:` refspec or an option. A variable whose value
   holds a space or a colon, which splits the word or the refspec, is not seen;
   in the pull-request check a `${{ ... }}` that names a context a pull
   request's author sets (`github.event.*` other than a number, `github.head_ref`)

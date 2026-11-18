@@ -389,121 +389,168 @@ EXPANSION = re.compile(r"\$\{[^}]*\}|\$\([^)]*\)|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9
 
 
 BRACE_LIMIT = 64  # more words than this from one brace expansion is unknown
+BRACE_WORD_LIMIT = 4096  # a word with braces longer than this is unknown at once
 
 
 def expand_braces(word: str, limit: int = BRACE_LIMIT):
-    words = _expand_braces_keep_empty(word, limit)
-    return None if words is None else [w for w in words if w != ""]
-
-
-def _top_level_dots(body: str) -> bool:
-    depth = 0
-    for i, ch in enumerate(body):
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-        elif depth == 0 and body.startswith("..", i) and i + 2 < len(body):
-            return True
-    return False
-
-
-def _expand_braces_keep_empty(word: str, limit: int = BRACE_LIMIT):
-    """The words bash makes of `word` by brace expansion (`{a,b}`, `{1..3}`, `{a..c}`, nested), or None when there
-    would be more than limit. `${...}` is parameter expansion, not a brace: collapse it first. Quoting is already gone,
-    so a quoted literal brace is expanded too (stricter)."""
-    def closing(text: str, start: int):
-        """The `}` that closes the brace at start as bash's parser finds it: one at the brace's own level closes it only
-        after a comma or a `..` (not just before the `}`) at that level; before that it is an ordinary character
-        (`{x},main}` is `x}` and `main`). The word's length is capped, so a scan per brace stays cheap."""
-        depth, satisfied, i = 0, False, start
-        while i < len(text):
-            ch = text[i]
-            if ch == "{" and (i == 0 or text[i - 1] != "$"):
-                depth += 1
-            elif ch == "}" and depth > 1:
-                depth -= 1
-            elif ch == "}" and depth == 1:
-                if satisfied:
-                    return i
-            elif depth == 1 and (ch == "," or (text.startswith("..", i) and i + 2 < len(text) and text[i + 2] != "}")):
-                satisfied = True
-            i += 1
+    """The words bash makes of `word` by brace expansion, or None when there would be more than limit (or the word is
+    over BRACE_WORD_LIMIT characters). A port of bash 5.2's braces.c brace_expand (the review of #133 checked it against
+    bash on 12,000 words): a `}` closes a brace only after a comma or a `..` at its level, `{x}` alone stays literal,
+    sequences take steps and zero padding, and a word a brace makes empty is dropped. `${...}` is parameter expansion,
+    not a brace: callers collapse it first. Quoting is already gone, so a quoted brace is expanded too (stricter)."""
+    if "{" not in word:
+        return [word]
+    if len(word) > BRACE_WORD_LIMIT or word.count("{") > 4 * limit:
+        return None
+    try:
+        return [w for w in _brace_expand(word, limit) if w != ""]
+    except (_TooManyWords, RecursionError):
         return None
 
-    def parts(body: str):
-        out, depth, current = [], 0, ""
-        for ch in body:
-            if ch == "{":
-                depth += 1
-            elif ch == "}" and depth > 0:
-                depth -= 1  # a `}` with no open brace before it is an ordinary character (`{x},main}`)
-            if ch == "," and depth == 0:
-                out.append(current)
-                current = ""
+
+
+class _TooManyWords(Exception):
+    pass
+
+def _brace_gobbler(text, i, satisfy):
+    level = 0
+    commas = 0 if satisfy == "}" else 1
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == "$" and i + 1 < n and text[i + 1] == "{":
+            i += 2  # pass_next: skip the {
+            level += 1
+            continue
+        if c == satisfy and level == 0 and commas > 0:
+            if c == "{" and (i == 0) and (i + 1 < n and text[i + 1] == "}"):
+                i += 1
+                continue
+            return i, c
+        if c == "{":
+            level += 1
+        elif c == "}" and level:
+            level -= 1
+        elif satisfy == "}" and c == "," and level == 0:
+            commas += 1
+        elif satisfy == "}" and text.startswith("..", i) and (i + 2 >= n or text[i + 2] != satisfy) and level == 0:
+            commas += 1
+        i += 1
+    return i, ""
+
+def _legal_number(s):
+    s2 = s.strip()
+    return re.fullmatch(r"[+-]?\d+", s2) is not None and s2 == s.strip()
+
+def _brace_sequence(text, limit):
+    t = text.find("..")
+    if t < 0:
+        return None
+    lhs, rhs = text[:t], text[t + 2:]
+    if not lhs or not rhs:
+        return None
+    if re.fullmatch(r"\s*[+-]?\d+\s*", lhs):
+        lt = "int"; lv = int(lhs)
+    elif lhs[0].isascii() and lhs[0].isalpha() and len(lhs) == 1:
+        lt = "char"
+    else:
+        lt = "bad"
+    m = re.match(r"[+-]?\d+", rhs)
+    if rhs[0].isdigit() or (rhs[0] in "+-" and len(rhs) > 1 and rhs[1].isdigit()):
+        rt = "int"; rv = int(m.group(0)); ep = m.end()
+        if ep < len(rhs) and rhs[ep] != ".":
+            rt = "bad"
+    elif rhs[0].isascii() and rhs[0].isalpha() and (len(rhs) == 1 or rhs[1] == "."):
+        rt = "char"; ep = 1
+    else:
+        rt = "bad"; ep = 0
+    incr = 1
+    if rt != "bad":
+        rest = rhs[ep:]
+        if rest.startswith("..") and len(rest) > 2:
+            m2 = re.match(r"[+-]?\d+", rest[2:])
+            if m2:
+                incr = int(m2.group(0)); rest = rest[2 + m2.end():]
             else:
-                current += ch
-        out.append(current)
-        return out
+                rest = rest[2:]
+        if rest != "":
+            rt = "bad"
+    if lt != rt or lt == "bad":
+        return None
+    if lt == "char":
+        a, b = ord(lhs[0]), ord(rhs[0]); width = 0
+    else:
+        a, b = lv, rv
+        lhs_l = len(lhs); rhs_l = len(rhs[:ep])
+        width = 0
+        if (lhs_l > 1 and lhs[0] == "0") or (lhs_l > 2 and lhs[:2] == "-0"):
+            width = lhs_l
+        if ((rhs_l > 1 and rhs[0] == "0") or (rhs_l > 2 and rhs[:2] == "-0")) and width < rhs_l:
+            width = rhs_l
+    incr = abs(incr) or 1
+    vals = range(a, b + 1, incr) if a <= b else range(a, b - 1, -incr)
+    if len(vals) > limit:
+        raise _TooManyWords
+    if lt == "char":
+        return [chr(v) for v in vals]
+    return [("-" if v < 0 else "") + str(abs(v)).zfill(width - (1 if v < 0 else 0)) if width else str(v) for v in vals]
 
-    def sequence(body: str):
-        numbers = re.fullmatch(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?", body)
-        if numbers:
-            a, b = int(numbers.group(1)), int(numbers.group(2))
-            step = abs(int(numbers.group(3) or 1)) or 1
-            values = range(a, b + 1, step) if a <= b else range(a, b - 1, -step)
-            if len(values) > limit:
-                return None
-            ends = (numbers.group(1).lstrip("-"), numbers.group(2).lstrip("-"))
-            width = max(len(numbers.group(1)), len(numbers.group(2))) if any(e.startswith("0") and len(e) > 1 for e in ends) else 0
-            return [str(v).zfill(width) if width else str(v) for v in values]  # `{01..03}` pads as bash does
-        letters = re.fullmatch(r"([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?", body)
-        if letters:
-            a, b = ord(letters.group(1)), ord(letters.group(2))
-            step = abs(int(letters.group(3) or 1)) or 1
-            return [chr(c) for c in (range(a, b + 1, step) if a <= b else range(a, b - 1, -step))]
-        return []
-
-    if "{" in word and (len(word) > 4096 or word.count("{") > 4 * limit):
-        return None  # unknown, and quickly: bash would make more than any refspec needs
-    search = 0
+def _brace_expand(text, limit=64):
+    i = 0
+    n = len(text)
+    c = ""
     while True:
-        start = word.find("{", search)
-        while start > 0 and word[start - 1] == "$":
-            start = word.find("{", start + 1)
-        if start < 0:
-            return [word]
-        end = closing(word, start)
-        if end is None:
-            search = start + 1  # an unmatched `{` is literal: look further on, as bash does
-            continue
-        body = word[start + 1:end]
-        alternatives = parts(body)
-        if len(alternatives) < 2:
-            alternatives = sequence(body)
-            if alternatives is None:
-                return None
-            if not alternatives and _top_level_dots(body):
-                if "," in body:
-                    alternatives = [body]  # bash drops these braces
-                else:
-                    search = end + 1  # literal through its closing brace
-                    continue
-        if not alternatives:
-            search = start + 1  # a literal brace: look further on
-            continue
-        words = []
-        for alternative in alternatives:
-            try:
-                expanded = _expand_braces_keep_empty(word[:start] + alternative + word[end + 1:], limit)
-            except RecursionError:
-                return None
-            if expanded is None:
-                return None
-            words.extend(expanded)
-            if len(words) > limit:
-                return None
-        return words
+        i, c = _brace_gobbler(text, i, "{")
+        if c:
+            j, c2 = _brace_gobbler(text, i + 1, "}")
+            if not c2:
+                i += 1
+                continue
+            break
+        break
+    preamble = text[:i]
+    if c != "{":
+        return [preamble]
+    start = i + 1
+    i, c = _brace_gobbler(text, start, "}")
+    if not c:
+        return [text]
+    amble = text[start:i]
+    if "," not in amble:
+        tack = _brace_sequence(amble, limit)
+        if tack is None:
+            if i + 1 < n:
+                tack = [text[start - 1:i + 1]]
+            else:
+                return [text]
+    else:
+        tack = _brace_amble(amble, limit)
+    result = [preamble + t for t in tack]
+    post = text[i + 1:]
+    if post:
+        tail = _brace_expand(post, limit)
+        if len(result) * len(tail) > limit:
+            raise _TooManyWords
+        result = [r + t for r in result for t in tail]
+    if len(result) > limit:
+        raise _TooManyWords
+    return result
+
+def _brace_amble(text, limit):
+    result = []
+    i = start = 0
+    while True:
+        i, c = _brace_gobbler(text, i, ",")
+        result.extend(_brace_expand(text[start:i], limit))
+        if len(result) > limit:
+            raise _TooManyWords
+        if not c:
+            break
+        i += 1
+        start = i
+    return result
+
+
 # The pull-request check's stand-in for a `${{ ... }}` expression (tools/pr_check.py EXPRESSION_VARIABLE).
 OPAQUE_EXPANSION = "CATPILOT_EXPRESSION"
 
@@ -542,6 +589,17 @@ GIT_VALUE_OPTIONS = {"-c", "--work-tree", "--namespace", "--super-prefix", "--co
 
 
 def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str | None]] | None:
+    """Both readings: braces expanded (unquoted) and words as written (quoted, empty words kept); the stricter wins."""
+    expanded = _git_push_rewrites(args, cwd, True)
+    if not any("{" in word or word == "" for word in args):
+        return expanded
+    raw = _git_push_rewrites(args, cwd, False)
+    if expanded is None or raw is None:
+        return expanded if raw is None else raw
+    return expanded[0] or raw[0], expanded[1] + raw[1]
+
+
+def _git_push_rewrites(args: list[str], cwd: str | None, expand: bool) -> tuple[bool, list[str | None]] | None:
     """What a `git` command's push would rewrite or delete: None when it is not a push, else (mirror, branches).
 
     `args` are git's arguments without its name. mirror is True when the push can rewrite or delete every branch:
@@ -576,18 +634,23 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     else:
         environment_config = False
     repo = cwd
-    if any("{" in word for word in args):
+    if expand and any("{" in word for word in args):
         # The shell expands braces in every word, git's own and the subcommand's included (`git {push,-f} origin main`).
-        head = []
-        for position, word in enumerate(args):
-            if word == "push" or "{" not in word:
-                head.append(word)
-                if word == "push":
-                    head.extend(args[position + 1:])  # the push's own words are expanded below, with placeholders
-                    break
-                continue
-            words = expand_braces(BRACED_EXPANSION.sub("$VAR", word))
+        # Walk git's own options as git reads them (a value option's value is not the subcommand), expanding each word,
+        # until the subcommand; the push's own words are expanded below, with placeholders.
+        head, position = [], 0
+        while position < len(args):
+            word = args[position]
+            position += 1
+            words = [word] if "{" not in word else expand_braces(BRACED_EXPANSION.sub("$VAR", word))
             head.extend(words if words is not None else ["$CATPILOT_BRACES"])
+            look = 0
+            while look < len(head) and head[look].startswith(("-", "$", "`")):
+                look += 2 if head[look] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env") \
+                    or head[look] in GIT_VALUE_OPTIONS else 1
+            if look < len(head):
+                break  # the subcommand is reached
+        head.extend(args[position:])
         args = head
     index, git_dir_path, configs, unknown = 0, None, [], cwd is None
     while index < len(args) and (args[index].startswith("-") or args[index].startswith(("$", "`"))):
@@ -628,11 +691,12 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     # are read after it. A word past the limit is a variable placeholder: unknown wherever it stands, and possibly --force.
     rest, too_many, unsure = [], False, False
     for word in args[index + 1:]:
-        words = expand_braces(BRACED_EXPANSION.sub("$VAR", word))
+        words = expand_braces(BRACED_EXPANSION.sub("$VAR", word)) if expand else [word]
         if words is None:
             rest.append("$CATPILOT_BRACES")
             too_many = True
-            unsure = unsure or re.search(r"[^\w./{},]", word) is not None  # `{,}--force`, `{+main,..}`, `:{a,..}`, `$F`
+            # `{,}--force`, `{+main,..}`, `:{a,..}`, `$F`; not a `-` inside a name (`release-{1..100}`).
+            unsure = unsure or re.search(r"(?:^|[{,}])[-+]|[^\w./{},+-]", word) is not None
         else:
             rest.extend(words)
     i = 0
@@ -797,7 +861,7 @@ def git_config_assignment_harmful(name: str, value: str | None) -> bool:
             return True
         # `'key'='value'` or `'key=value'` pairs: the key is what comes before the first `=` of each quoted chunk.
         # The key of each `'key'='value'` or `'key=value'` pair; a value chunk is never a key.
-        pair = r"'([^']*)'(?:='[^']*')?"
+        pair = r"'((?:[^']|'\\'')*)'(?:='(?:[^']|'\\'')*')?"  # git's `'\''` inside a quoted value (`O'\''Brien`)
         if re.sub(pair, "", value).strip() or OPAQUE_EXPANSION in value:
             return True  # `$MORE` or an escaped quote outside a pair, or an expression whose text may close the quote
         keys = [m.group(1).split("=", 1)[0] for m in re.finditer(pair, value)]
