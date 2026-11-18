@@ -568,6 +568,8 @@ class DestructiveHookTests(unittest.TestCase):
             "{origin,}": ["origin"], "{01..03}": ["01", "02", "03"], "{a..e..2}": ["a", "c", "e"], "x{y{a,b}": ["x{ya", "x{yb"],
             ":{{feature,main}": [":{feature", ":{main"], "{:/..:{main,x}}": [":/..:main", ":/..:x"], "a{b}c": ["a{b}c"],
             "{a,{b,c}}": ["a", "b", "c"], "v{1..3}": ["v1", "v2", "v3"],
+            # Review of b2474bd: a failed sequence stays literal before more braces, and a leading `{}` stays literal.
+            "{a..b..c}{x,:main}": ["{a..b..c}x", "{a..b..c}:main"], "{},main}": ["{},main}"],
         }
         for word, want in cases.items():
             with self.subTest(word=word):
@@ -583,6 +585,17 @@ class DestructiveHookTests(unittest.TestCase):
         self.assertIsNone(expand_braces("{a,b}" + "x" * 5000))  # over the length cap
         self.assertIsNone(expand_braces("{a}" * 300))  # over the brace-count cap
         self.assertEqual(expand_braces("+{:/}{,}?sec..d:main}"), ["+:/}?sec..d:main", "+:/}?sec..d:main"])
+        # One budget per command (review of b2474bd): a crafted word spends it, and every later word with braces is
+        # unknown, so many crafted words cannot outlast the hook's timeout.
+        from catpilot_guard.destructive import BRACE_SCAN_LIMIT, BraceBudget
+        budget = BraceBudget()
+        self.assertIsNone(expand_braces("{" * 250 + "y" * 3800 + "{a,b}" * 6, budget=budget))
+        self.assertLess(budget.left, 0)
+        self.assertIsNone(expand_braces("{main,x}", budget=budget))
+        self.assertEqual(expand_braces("{main,x}"), ["main", "x"])  # a fresh budget
+        budget = BraceBudget()
+        expand_braces("{a,b}" * 6 + "z" * 4000, budget=budget)  # what it makes counts as well as what it scans
+        self.assertLess(budget.left, BRACE_SCAN_LIMIT - 64 * 4000)
         # GIT_CONFIG_PARAMETERS: a value chunk is never a key; a key holding a variable counts unless an insteadOf.
         harmful = lambda value: git_config_assignment_harmful("GIT_CONFIG_PARAMETERS", value)
         self.assertFalse(harmful("'http.extraheader'='Authorization: Bearer $TOKEN'"))
@@ -593,6 +606,26 @@ class DestructiveHookTests(unittest.TestCase):
         self.assertTrue(harmful("'a.b'='x'\\''y' 'remote.origin.mirror'='true'"))
         self.assertFalse(harmful("'user.name'='O'\\''Brien'"))  # git's escaped quote inside a value
         self.assertTrue(harmful("'remote.origin.mirror=true'"))
+
+    def test_crafted_braces_cannot_outlast_the_timeout_or_hide_a_push(self):
+        # Review of b2474bd: thirty crafted words took about 9 s; one budget per command keeps them well inside the
+        # 10 s timeout, and a word past the limit before git's subcommand that holds `push` is an unknown push.
+        import time
+        crafted = " ".join(["{" * 250 + "y" * 3800 + "{a,b}" * 6] * 30)
+        cases = [
+            ("git push origin %s; git push --force origin main" % crafted, "deny"),
+            ("git push origin %s; git push -f origin {main,feature}" % crafted, "deny"),  # later braces are unknown
+            ("git push origin %s; git push origin {main,feature}" % crafted, None),  # but a plain push stays allowed
+            ("git {push,-f,origin,feature:main,HEAD:refs/tmp/{1..64}}", "deny"),
+            ("git -c a.b=c {push,-f,origin,feature:main,HEAD:refs/tmp/{1..64}}", "deny"),
+            ("git {status,log,diff,show,HEAD:refs/tmp/{1..64}}", None),
+        ]
+        for command, expected in cases:
+            with self.subTest(command=command[:80]):
+                start = time.monotonic()
+                out = json.loads(run_hook(json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/tmp"})).stdout)
+                self.assertEqual(out.get("hookSpecificOutput", {}).get("permissionDecision"), expected)
+                self.assertLess(time.monotonic() - start, 5)
 
     def test_works_without_its_sibling_hooks(self):
         with tempfile.TemporaryDirectory() as tmp:

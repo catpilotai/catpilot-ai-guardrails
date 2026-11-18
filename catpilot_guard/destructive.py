@@ -402,29 +402,52 @@ EXPANSION = re.compile(r"\$\{[^}]*\}|\$\([^)]*\)|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9
 
 BRACE_LIMIT = 64  # more words than this from one brace expansion is unknown
 BRACE_WORD_LIMIT = 4096  # a word with braces longer than this is unknown at once
+# Characters the expansion may scan for one whole command, every word and both hooks' readings of it counted apart: a
+# crafted word scans its text once per brace (about a million characters for one 4 KB word), and the hook must finish
+# well inside its timeout (review of #133). Past it, every later word with braces is unknown.
+BRACE_SCAN_LIMIT = 400_000
 
 
-def expand_braces(word: str, limit: int = BRACE_LIMIT):
+class BraceBudget:
+    """The scanning one command may still spend on brace expansion (BRACE_SCAN_LIMIT), shared by its words."""
+
+    def __init__(self, chars: int = BRACE_SCAN_LIMIT):
+        self.left = chars
+
+    def spend(self, chars: int) -> None:
+        self.left -= chars
+        if self.left < 0:
+            raise _TooManyWords
+
+
+def expand_braces(word: str, limit: int = BRACE_LIMIT, budget: BraceBudget | None = None):
     """The words bash makes of `word` by brace expansion, or None when there would be more than limit (or the word is
     over BRACE_WORD_LIMIT characters). A port of bash 5.2's braces.c brace_expand (the review of #133 checked it against
     bash on 12,000 words): a `}` closes a brace only after a comma or a `..` at its level, `{x}` alone stays literal,
     sequences take steps and zero padding, and a word a brace makes empty is dropped. `${...}` is parameter expansion,
-    not a brace: callers collapse it first. Quoting is already gone, so a quoted brace is expanded too (stricter)."""
+    not a brace: callers collapse it first. Quoting is already gone, so a quoted brace is expanded too (stricter).
+    budget, shared by a command's words, also makes the word None once spent; without one the word gets a fresh one."""
     if "{" not in word:
         return [word]
     if len(word) > BRACE_WORD_LIMIT or word.count("{") > 4 * limit:
         return None
+    budget = budget if budget is not None else BraceBudget()
+    if budget.left < 0:
+        return None
     try:
-        return [w for w in _brace_expand(word, limit) if w != ""]
+        words = [w for w in _brace_expand(word, limit, budget) if w != ""]
+        budget.spend(sum(len(w) for w in words))  # every word made is read again by the caller
     except (_TooManyWords, RecursionError):
         return None
+    return words
 
 
 
 class _TooManyWords(Exception):
     pass
 
-def _brace_gobbler(text, i, satisfy):
+def _brace_gobbler(text, i, satisfy, budget):
+    start = i
     level = 0
     commas = 0 if satisfy == "}" else 1
     n = len(text)
@@ -438,6 +461,7 @@ def _brace_gobbler(text, i, satisfy):
             if c == "{" and (i == 0) and (i + 1 < n and text[i + 1] == "}"):
                 i += 1
                 continue
+            budget.spend(i - start + 1)
             return i, c
         if c == "{":
             level += 1
@@ -448,6 +472,7 @@ def _brace_gobbler(text, i, satisfy):
         elif satisfy == "}" and text.startswith("..", i) and (i + 2 >= n or text[i + 2] != satisfy) and level == 0:
             commas += 1
         i += 1
+    budget.spend(i - start + 1)
     return i, ""
 
 def _legal_number(s):
@@ -507,14 +532,14 @@ def _brace_sequence(text, limit):
         return [chr(v) for v in vals]
     return [("-" if v < 0 else "") + str(abs(v)).zfill(width - (1 if v < 0 else 0)) if width else str(v) for v in vals]
 
-def _brace_expand(text, limit=64):
+def _brace_expand(text, limit, budget):
     i = 0
     n = len(text)
     c = ""
     while True:
-        i, c = _brace_gobbler(text, i, "{")
+        i, c = _brace_gobbler(text, i, "{", budget)
         if c:
-            j, c2 = _brace_gobbler(text, i + 1, "}")
+            j, c2 = _brace_gobbler(text, i + 1, "}", budget)
             if not c2:
                 i += 1
                 continue
@@ -524,7 +549,7 @@ def _brace_expand(text, limit=64):
     if c != "{":
         return [preamble]
     start = i + 1
-    i, c = _brace_gobbler(text, start, "}")
+    i, c = _brace_gobbler(text, start, "}", budget)
     if not c:
         return [text]
     amble = text[start:i]
@@ -536,11 +561,11 @@ def _brace_expand(text, limit=64):
             else:
                 return [text]
     else:
-        tack = _brace_amble(amble, limit)
+        tack = _brace_amble(amble, limit, budget)
     result = [preamble + t for t in tack]
     post = text[i + 1:]
     if post:
-        tail = _brace_expand(post, limit)
+        tail = _brace_expand(post, limit, budget)
         if len(result) * len(tail) > limit:
             raise _TooManyWords
         result = [r + t for r in result for t in tail]
@@ -548,12 +573,12 @@ def _brace_expand(text, limit=64):
         raise _TooManyWords
     return result
 
-def _brace_amble(text, limit):
+def _brace_amble(text, limit, budget):
     result = []
     i = start = 0
     while True:
-        i, c = _brace_gobbler(text, i, ",")
-        result.extend(_brace_expand(text[start:i], limit))
+        i, c = _brace_gobbler(text, i, ",", budget)
+        result.extend(_brace_expand(text[start:i], limit, budget))
         if len(result) > limit:
             raise _TooManyWords
         if not c:
@@ -600,9 +625,10 @@ PUSH_VALUE_OPTIONS = {"--push-option", "--repo", "--receive-pack", "--exec", "--
 GIT_VALUE_OPTIONS = {"-c", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--list-cmds"}
 
 
-def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str | None]] | None:
-    """Both readings: braces expanded (unquoted) and words as written (quoted, empty words kept); the stricter wins."""
-    expanded = _git_push_rewrites(args, cwd, True)
+def git_push_rewrites(args: list[str], cwd: str | None, budget: BraceBudget | None = None) -> tuple[bool, list[str | None]] | None:
+    """Both readings: braces expanded (unquoted) and words as written (quoted, empty words kept); the stricter wins.
+    budget is the command's BraceBudget, shared by its git commands; None gives this one a fresh one."""
+    expanded = _git_push_rewrites(args, cwd, True, budget if budget is not None else BraceBudget())
     if not any("{" in word or word == "" for word in args):
         return expanded
     raw = _git_push_rewrites(args, cwd, False)
@@ -611,7 +637,7 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     return expanded[0] or raw[0], expanded[1] + raw[1]
 
 
-def _git_push_rewrites(args: list[str], cwd: str | None, expand: bool) -> tuple[bool, list[str | None]] | None:
+def _git_push_rewrites(args: list[str], cwd: str | None, expand: bool, budget: BraceBudget | None = None) -> tuple[bool, list[str | None]] | None:
     """What a `git` command's push would rewrite or delete: None when it is not a push, else (mirror, branches).
 
     `args` are git's arguments without its name. mirror is True when the push can rewrite or delete every branch:
@@ -654,7 +680,11 @@ def _git_push_rewrites(args: list[str], cwd: str | None, expand: bool) -> tuple[
         while position < len(args):
             word = args[position]
             position += 1
-            words = [word] if "{" not in word else expand_braces(BRACED_EXPANSION.sub("$VAR", word))
+            words = [word] if "{" not in word else expand_braces(BRACED_EXPANSION.sub("$VAR", word), budget=budget)
+            if words is None and "push" in word:
+                # Past the limit, the word may hold the subcommand itself (`git {push,-f,origin,main,...}`): a push that
+                # rewrites a branch nobody can read.
+                return False, [None]
             head.extend(words if words is not None else ["$CATPILOT_BRACES"])
             look = 0
             while look < len(head) and head[look].startswith(("-", "$", "`")):
@@ -703,7 +733,7 @@ def _git_push_rewrites(args: list[str], cwd: str | None, expand: bool) -> tuple[
     # are read after it. A word past the limit is a variable placeholder: unknown wherever it stands, and possibly --force.
     rest, too_many, unsure = [], False, False
     for word in args[index + 1:]:
-        words = expand_braces(BRACED_EXPANSION.sub("$VAR", word)) if expand else [word]
+        words = expand_braces(BRACED_EXPANSION.sub("$VAR", word), budget=budget) if expand else [word]
         if words is None:
             rest.append("$CATPILOT_BRACES")
             too_many = True
@@ -1101,8 +1131,8 @@ def commands_with_branch_context(command: str, cwd: str | None):
             branch_cwd = None
 
 
-def _git_finding(args: list[str], cwd: str | None) -> bool:
-    push = git_push_rewrites(args, cwd)
+def _git_finding(args: list[str], cwd: str | None, budget: BraceBudget | None = None) -> bool:
+    push = git_push_rewrites(args, cwd, budget)
     if push is None:
         return False
     mirror, branches = push
@@ -1296,11 +1326,12 @@ def find_destructive_op(command: str, cwd: str | None = None) -> tuple[str, str]
         if pattern.search(command):
             return label, remediation
     working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
+    budget = BraceBudget()  # one for the whole command, so many crafted words cannot outlast the hook's timeout
     for argv, branch_cwd in commands_with_branch_context(command, working_dir):
         name, args = argv[0], argv[1:]
         if name == "rm" and _rm_finding(args):
             return RM_LABEL, RM_NOTE
-        if name == "git" and _git_finding(args, branch_cwd):
+        if name == "git" and _git_finding(args, branch_cwd, budget):
             return GIT_LABEL, GIT_NOTE
         if name == "kubectl" and _kubectl_finding(args):
             return KUBECTL_LABEL, KUBECTL_NOTE

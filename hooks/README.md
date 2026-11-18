@@ -198,7 +198,12 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   reading counts. A word that would make more than 64, or one over 4,096
   characters, is unknown where it stands, and unless it is plain text and
   braces (a `-` inside a name such as `release-{1..100}` is plain) it may be
-  `--force`, a `+` or `:` refspec or an option. A variable whose value
+  `--force`, a `+` or `:` refspec or an option; before git's subcommand, one
+  holding `push` is a push to an unknown branch. The expansion has one budget
+  per command (400,000 characters scanned and made, far past any real
+  command), so crafted braces cannot keep the hook past its timeout: once it
+  is spent, every later word with braces is unknown in the same way. A
+  braced command name (`{git,push,...}`) is not expanded. A variable whose value
   holds a space or a colon, which splits the word or the refspec, is not seen;
   in the pull-request check a `${{ ... }}` that names a context a pull
   request's author sets (`github.event.*` other than a number, `github.head_ref`)

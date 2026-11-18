@@ -85,7 +85,7 @@ from . import COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, eve
 from . import policy as policy_module
 from .cloud_targets import account_covered, cloud_targets
 from .deploy_targets import deploy_targets, host_covered
-from .destructive import BranchPattern, commands_with_branch_context, git_push_rewrites, pattern_may_match
+from .destructive import BraceBudget, BranchPattern, commands_with_branch_context, git_push_rewrites, pattern_may_match
 from .registry_targets import registry_covered, registry_targets, split_command
 
 MAX_INPUT_BYTES = 1_048_576
@@ -164,9 +164,10 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy, today
     kinds = {rule.kind for rule in policy.rules}
     pushes = []
     if "protected_branch" in kinds:
+        budget = BraceBudget()  # one for the whole command (destructive.BRACE_SCAN_LIMIT)
         for argv, branch_cwd in commands_with_branch_context(command, working_dir if branch_known else None):
             if argv[0] == "git":
-                push = git_push_rewrites(argv[1:], branch_cwd)
+                push = git_push_rewrites(argv[1:], branch_cwd, budget)
                 if push is not None:
                     pushes.append(push)
     # One split of the command for the deploy, registry and account readers: a long command is split once, not per kind.
