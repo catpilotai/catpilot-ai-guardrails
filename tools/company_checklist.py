@@ -17,8 +17,9 @@ sidecar from `sidecar()`: what the session-start script
 (`catpilot_guard/session_start.py`) needs at run time, and no rule text.
 
 A version 2 rules file renders only its model-facing parts
-(`validate_overlay.model_facing`): ids and text, never `enforcement` and
-never aliases. A version 1 file renders exactly as before.
+(`validate_overlay.model_facing`): ids and text, and its topic contacts
+(OVERLAY_V2.md §3.1), never `enforcement` and never aliases. A version 1
+file renders exactly as before.
 """
 
 from __future__ import annotations
@@ -87,14 +88,24 @@ def render(overlay: dict, raw: bytes) -> str:
     caller that passes the full validated file still renders no
     `enforcement` value. The printed hash is still the whole source file's:
     it names the exact reviewed input, as the sidecar and evidence do.
+
+    A file with topic contacts lists them in the YAML like any other field,
+    and the sentence on whom to ask names them; without contacts the text is
+    unchanged.
     """
-    policy_yaml = yaml.safe_dump(validate_overlay.model_facing(overlay), sort_keys=False, allow_unicode=True).rstrip("\n")
+    model = validate_overlay.model_facing(overlay)
+    policy_yaml = yaml.safe_dump(model, sort_keys=False, allow_unicode=True).rstrip("\n")
+    if validate_overlay.topic_contacts(model):
+        ask = ("ask the contact listed under contacts for a question about its topic (data, hosting, "
+               "services, or identity: who can open it), and its named owner for anything else. ")
+    else:
+        ask = "ask its named owner. "
     return (
         CHECKLIST_INSTRUCTION
         + "\n\n## Company policy\n\n"
         + "Apply the checklist using the reviewed company policy below. Listed approvals supply "
-        "company confirmation; for decisions the policy does not cover, ask its named owner. "
-        "Respect the review and expiry dates. This is a static snapshot validated when the run "
+        "company confirmation; for decisions the policy does not cover, " + ask
+        + "Respect the review and expiry dates. This is a static snapshot validated when the run "
         "started.\n\n"
         + f"Overlay SHA-256: {hashlib.sha256(raw).hexdigest()}\n\n"
         + "```yaml\n"

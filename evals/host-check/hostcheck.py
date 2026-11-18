@@ -3,9 +3,10 @@
 
   rules --example FILE --out FILE --tokens FILE [--token HEX] [--today YYYY-MM-DD]
         the version 2 example rules file with the owner and the first approved host replaced by values that carry a
-        random token, so an answer that contains them came from the installed rules, and the enforcement section
-        replaced by two protected_branch rules, one in block and one in monitor, whose ids and values carry the
-        token. run.sh then gives the file a new salt with tools/validate_overlay.py salt.
+        random token, so an answer that contains them came from the installed rules, its topic contacts removed, so
+        the owner is the one person to name, and the enforcement section replaced by two protected_branch rules, one
+        in block and one in monitor, whose ids and values carry the token. run.sh then gives the file a new salt with
+        tools/validate_overlay.py salt.
   backdate-sidecar --src FILE --out FILE
         a copy of company-checklist.json with reviewed_on and expires_on set to 2026-01-01 and 2026-02-01
   backdate-claude-md --src FILE --out FILE
@@ -51,6 +52,7 @@ OWNER_LINE = 'owner: "%s"\n'
 # The version 2 example's first approved host; only its text changes, its id and aliases stay.
 FIRST_HOST = 'hosting:\n  approved:\n    - {id: hosting-app-platform, text: "%s"'
 ENFORCEMENT_LINE = re.compile(r"^enforcement:[ \t]*$", re.MULTILINE)
+CONTACTS_LINE = re.compile(r"contacts:[ \t]*$")
 # The two company rules the probes test (run.sh items 8 and 9). The values carry the token, so they cannot collide
 # with a branch anyone uses, and neither is on the built-in protected list, so only the company rule can act.
 BLOCK_RULE = "kit-block-%s"
@@ -120,10 +122,33 @@ def replace_enforcement(text: str, token: str) -> str:
     return "".join(lines) + ENFORCEMENT.format(token=token)
 
 
+def drop_contacts(text: str) -> str:
+    """The text without its top-level contacts section (OVERLAY_V2.md §3.1), the comment lines just above it and
+    one blank line after it. The question asks which hosting is approved and who to ask, and the kit checks that the
+    answer names the planted owner; with a hosting contact in the rules, that contact is the right answer instead.
+    A file without contacts comes back unchanged."""
+    lines = text.splitlines(True)
+    found = [i for i, line in enumerate(lines) if CONTACTS_LINE.match(line)]
+    if not found:
+        return text
+    if len(found) != 1:
+        raise KitError("the example rules file has more than one contacts section; update evals/host-check/hostcheck.py")
+    start = end = found[0]
+    end += 1
+    while end < len(lines) and lines[end].startswith((" ", "\t")):
+        end += 1
+    while start > 0 and lines[start - 1].startswith("#"):
+        start -= 1
+    if end < len(lines) and not lines[end].strip():
+        end += 1
+    return "".join(lines[:start] + lines[end:])
+
+
 def make_rules(example: str, token: str, today: dt.date) -> tuple:
-    """(rules text, token values). The owner and the first approved host's text are replaced, the enforcement
-    section becomes the kit's two rules, and nothing else changes, unless the example's dates would make the build
-    refuse it; then they move to today and 180 days on. The salt is left for tools/validate_overlay.py salt."""
+    """(rules text, token values). The owner and the first approved host's text are replaced, the topic contacts
+    and their comment are removed (drop_contacts), the enforcement section becomes the kit's two rules, and nothing
+    else changes, unless the example's dates would make the build refuse it; then they move to today and 180 days
+    on. The salt is left for tools/validate_overlay.py salt."""
     if not TOKEN.fullmatch(token):
         raise KitError("the token must be six lowercase hex digits")
     values = token_values(token)
@@ -132,6 +157,7 @@ def make_rules(example: str, token: str, today: dt.date) -> tuple:
             raise KitError("the example rules file no longer has %s as %r; update evals/host-check/hostcheck.py" % (what, wanted))
     text = example.replace(OWNER_LINE % ORIGINAL_OWNER, OWNER_LINE % values["owner"])
     text = text.replace(FIRST_HOST % ORIGINAL_HOST, FIRST_HOST % values["approved_host"])
+    text = drop_contacts(text)
     text = replace_enforcement(text, token)
     dates = {m.group("key"): m.group("value") for m in DATE_LINE.finditer(text)}
     if set(dates) != {"reviewed_on", "expires_on"} or len(DATE_LINE.findall(text)) != 2:

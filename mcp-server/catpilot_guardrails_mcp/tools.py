@@ -103,6 +103,9 @@ FIELD_COMPONENT = {
     "services": "third-party-services",
     "write_access": "when-to-ask-a-human",
 }
+# The topic contact (docs/spec/OVERLAY_V2.md §3.1) for each field that has one. write_access and
+# credential_references have none: a decision from them goes to the owner.
+FIELD_TOPIC = {"data_classes": "data", "hosting": "hosting", "services": "services", "audience": "identity"}
 # The severity each component has carried since the first release; a prohibited decision is high.
 COMPONENT_SEVERITY = {
     "data-in-prompts": "high",
@@ -575,13 +578,34 @@ def _named_services(services: list[str] | None) -> list[str]:
 EMAIL_ADDRESS_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
 
+def _deciding_topic(outcome: str, decisions: list[dict]) -> str | None:
+    """The topic whose contact `who_to_ask` names (OVERLAY_V2.md §3.1), or None for the owner.
+
+    The outcome is the worst outcome across the decisions, so the fields that decided it are
+    the fields of the decisions whose outcome equals it. Only an outcome that itself calls for a
+    person, `prohibited` or `requires_review`, has a deciding field: a permitted plan has a
+    permitted decision from every field, and an unknown one is waiting on the caller's answers,
+    so any person to ask then comes from a hint, which names no field. When every deciding
+    decision comes from one field with a topic (data_classes: data, hosting, services,
+    audience: identity), that topic; several items of one field are still one field. Decisions
+    at the outcome from two or more fields (a tie), or from write_access or
+    credential_references, which have no topic, give None.
+    """
+    if outcome not in ("prohibited", "requires_review"):
+        return None
+    fields = {d["field"] for d in decisions if d["outcome"] == outcome}
+    if len(fields) != 1:
+        return None
+    return FIELD_TOPIC.get(fields.pop())
+
+
 def _build_escalation_draft(
     description: str,
-    owner: str,
+    recipient: str,
     decisions: list[dict],
     risks: list[dict],
     next_step: str,
-    overlay: dict | None,
+    intake_url: str | None,
 ) -> dict:
     clean_desc = " ".join(description.strip().split())
     short_desc = clean_desc if len(clean_desc) <= 72 else clean_desc[:69].rstrip() + "..."
@@ -602,14 +626,13 @@ def _build_escalation_draft(
         f"In the meantime: {safe_alt}\n\n"
         f"Could you confirm the approved path or next step?"
     )
-    email_match = EMAIL_ADDRESS_RE.search(owner)
+    email_match = EMAIL_ADDRESS_RE.search(recipient)
     mailto_url = None
     if email_match:
         addr = email_match.group(0)
         mailto_url = f"mailto:{addr}?subject={quote(subject)}&body={quote(body)}"
-    intake_url = overlay.get("intake_url") if overlay else None
     return {
-        "to": owner,
+        "to": recipient,
         "subject": subject,
         "body": body,
         "mailto_url": mailto_url,
@@ -1081,11 +1104,21 @@ def check_plan(
     else:
         next_step = "No checkpoint was triggered by the words in this plan; that is not approval. Build with made-up data, keep the audience small, and run check_plan again before connecting anything or sharing."
     owner = (o["owner"] if o else guidance["slots"]["owner"])
+    # A version 2 file's topic contacts (§3.1): who_to_ask and the escalation draft go to the contact for the
+    # field that decided the outcome (_deciding_topic), else to the owner. A contact's intake_url, when it has
+    # one, replaces the file's own in the draft.
+    contacts = policy.contacts if o else {}
+    contact_topic = _deciding_topic(outcome, decisions) if contacts else None
+    contact = contacts.get(contact_topic) if contact_topic else None
+    if contact is None:
+        contact_topic = None
+    who_to_ask = contact["name"] if contact else owner
+    intake_url = (contact or {}).get("intake_url") or (o.get("intake_url") if o else None)
     # When a human has to look before anything is built, the next step names who, ahead of the checkpoint's
     # own advice: a review conversation outranks a data-hygiene tip. A prohibited plan keeps its fix first.
     if ask_a_human and outcome != "prohibited":
         draft = comps["when-to-ask-a-human"]["do"][0]
-        ask_first = f"Tell the person who to check with before going further: {owner.rstrip('.')}. {draft}"
+        ask_first = f"Tell the person who to check with before going further: {who_to_ask.rstrip('.')}. {draft}"
         next_step = ask_first if next_step == draft else f"{ask_first} Until they answer: {next_step}"
     # A not_deployed hosting value has already been answered; do not still ask where it lives.
     default_checklist_components = ["data-in-prompts", "access-and-identity"]
@@ -1097,9 +1130,12 @@ def check_plan(
         if question not in checklist:
             checklist.append(question)
     escalation_draft = (
-        _build_escalation_draft(description, owner, decisions, risks, next_step, o)
+        _build_escalation_draft(description, who_to_ask, decisions, risks, next_step, intake_url)
         if ask_a_human else None
     )
+    # Only a policy that publishes topic contacts adds `contact_topic`, so answers from a version 1 file, or
+    # none, keep their exact shape.
+    contact_key = {"contact_topic": contact_topic} if contacts else {}
     return {
         "outcome": outcome,
         "decisions": decisions,
@@ -1107,7 +1143,8 @@ def check_plan(
         "risks": risks,
         "next_step": next_step,
         "ask_a_human": ask_a_human,
-        "who_to_ask": owner,
+        "who_to_ask": who_to_ask,
+        **contact_key,
         "escalation_draft": escalation_draft,
         "checklist": checklist,
         "labels": labels,
@@ -1166,6 +1203,9 @@ def list_approved(category: str, guidance: dict, policy: PolicyState) -> dict:
         items = dict(o["data_classes"]) if o else {"never_in_prompts": slots["data_never_in_prompts"], "ok_with_approval": slots["data_ok_with_approval"], "ok": slots["data_ok"]}
     else:
         items = {"owner": o["owner"]} if o else {"owner": slots["owner"]}
+        # A version 2 file's topic contacts (OVERLAY_V2.md §3.1), beside the owner, who stays the default.
+        if o and policy.contacts:
+            items["contacts"] = {topic: dict(contact) for topic, contact in policy.contacts.items()}
     if o:
         source, last_reviewed = f"company overlay for {policy.source['organization']}", policy.source["reviewed_on"]
     else:
