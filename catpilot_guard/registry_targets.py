@@ -20,13 +20,15 @@ dist/*` use the tool's configured or default registry, which the hook does not r
   unknown      a registry the hook cannot read: a variable where the host would be (`--registry $REGISTRY`, `docker
                push $IMAGE`); a host that is not a dotted name (`localhost:5000/app`, an IP address, `[::1]`); a URL
                whose authority holds a backslash or a character a URL authority cannot hold, or an `http:`/`https:`
-               value without `//` after the colon (URL parsers disagree on which host those name); a `//host` or
-               `\\host` value (a network-path reference, or a Windows UNC share for find-links); a value option last in the command, with nothing after it (xargs or stdin
-               supplies the value: `xargs npm install --registry`); a docker or podman push, pull, run or create with no
-               image; a runner, docker run or create with more than three options this module does not know before
-               its command or image, which may then sit after any of them. Known limit: the shared splitter cuts a
-               command at an unquoted `$(` (`docker run -v $(pwd):/app node:20 ...`), so such a run has no image and
-               is unknown, which fires the rule; quote it (`-v "$(pwd)":/app`)
+               value without `//` after the colon (URL parsers disagree on which host those name); a value starting
+               with two separators in any mix of / and \\ (`//host`, `\\host`, `\\/host`: a network-path reference, or
+               a Windows UNC share for find-links), and a file: URL that names a host other than localhost or a share
+               (`file://host/w`, `file:////host/w`); a value option last in the command, with nothing after it (xargs
+               or stdin supplies the value: `xargs npm install --registry`); a docker or podman push, pull, run or
+               create with no image; a runner, docker run or create with more than three options this module does not
+               know before its command or image, which may then sit after any of them. Known limit: the shared
+               splitter cuts a command at an unquoted `$(` (`docker run -v $(pwd):/app node:20 ...`), so such a run
+               has no image and is unknown, which fires the rule; quote it (`-v "$(pwd)":/app`)
 
 What is recognized, exactly:
 
@@ -72,14 +74,15 @@ included; the authority ends at the first /, \\, ? or #. A tab, newline or carri
 removed, as every parser that accepts it removes it; one after the host leaves the host alone, since a WHATWG parser
 (npm, uv) removes it (`.<TAB>.` is `..`) and urllib3 (pip, twine, poetry) encodes it (`.<TAB>.` is a name). A value
 without a scheme is read as https:// where the option only takes a URL, and as a local path, which names no registry,
-for find-links; a value starting with /, ./, ../ or ~, and a file:// URL, name none. A variable in the host is unknown. A
-path segment that holds a variable, a `\\` (a path separator to the WHATWG and urllib3 parsers), a `;` (`..;` is `..`
-to some servers) or a control character, a percent escape that decodes to `/`, `\\`, `;`, a control character or
-another `%` (`%252e`), or a segment of only dots and spaces, decoded or not, other than `.` and `..` themselves
-(`%2e%2e`, `...`, `..%20`, which some servers trim to `..`), may reach any path on the host once read, so the target is
-the host alone, which only a value with no path covers; any other escape is decoded (`My%20Project` is `my project`).
-Only ASCII letters are lowercased (KELVIN SIGN is not `k`). In an image, which cannot hold `..`, a variable ends the
-path there instead (`ghcr.io/acme/$APP` is `ghcr.io/acme`).
+for find-links; a value starting with /, ./, ../ or ~, and a local file: URL (`file:///srv/w`, `file://localhost/w`),
+name none. A variable in the host is unknown. A path segment that holds a variable, a `\\` (a path separator to the
+WHATWG and urllib3 parsers), a `;` (`..;` is `..` to some servers), a control character or a character outside ASCII
+(FULLWIDTH FULL STOP and other lookalikes a server may normalize to `.`), a percent escape that decodes to `/`, `\\`,
+`;`, a control character, a character outside ASCII or another `%` (`%252e`), or a segment of only dots and spaces,
+decoded or not, other than `.` and `..` themselves (`%2e%2e`, `...`, `..%20`, which some servers trim to `..`), may
+reach any path on the host once read, so the target is the host alone, which only a value with no path covers; any
+other escape is decoded (`My%20Project` is `my project`). In an image, which cannot hold `..`, a variable ends the path
+there instead (`ghcr.io/acme/$APP` is `ghcr.io/acme`).
 
 Coverage (registry_covered): a value `host` covers that host with any path; `host/path` covers that host when the
 target's path is that path or under it, by whole segments (`pypi.example.org/simple` covers `/simple` and
@@ -120,7 +123,6 @@ NPM_FAMILY = {"npm", "pnpm", "yarn", "bun", "npx", "bunx", "pnpx"}
 SCOPED_REGISTRY_FLAG = re.compile(r"^@[^:=\s]+:registry$")  # after the leading dashes, which nopt strips
 NPM_CONFIG_KEY = re.compile(r"^(?:registry|@[^:=\s]+:registry)$")
 YARN_CONFIG_KEY = re.compile(r"^(?:registry|npmRegistryServer|npmPublishRegistry|npmScopes\.[^.\s]+\.(?:npmRegistryServer|npmPublishRegistry))$")
-NPM_CONFIG_WORDS = {"config", "c", "con", "conf", "confi"}  # npm takes `c` as an alias and a unique prefix of a command
 NPM_VALUE_OPTIONS = {"-w", "--workspace", "-C", "--dir", "--filter", "-F", "--prefix", "--userconfig", "--globalconfig", "-L",
                      "--location", "--loglevel", "--cache"}
 PIP_NAME = re.compile(r"^pip(?:[0-9]+(?:\.[0-9]+)?)?$")
@@ -305,8 +307,9 @@ def _has_variable(text: str) -> bool:
 def _segment(raw: str) -> str | None:
     """A URL path segment as a server reads it, with ASCII letters lowercased, or None when it cannot be read safely: it
     holds a variable, a `\\`, a `;` or a control character; a percent escape decodes to `/`, `\\`, `;`, a control
-    character or another `%` (which a second decoding would read); or it is only dots and spaces, decoded or not, other
-    than `.` and `..` themselves (`%2e%2e`, `...`, `..%20`). `My%20Project` is read as `my project`."""
+    character or another `%` (which a second decoding would read); it is only dots and spaces, decoded or not, other
+    than `.` and `..` themselves (`%2e%2e`, `...`, `..%20`); or it holds a character outside ASCII, decoded or not
+    (FULLWIDTH FULL STOP and other lookalikes a server may normalize to `.`). `My%20Project` is read as `my project`."""
     if _has_variable(raw) or CONTROL.search(raw) or any(c in raw for c in PATH_ENDERS):
         return None
     if raw in ("", ".", ".."):
@@ -316,7 +319,7 @@ def _segment(raw: str) -> str | None:
         if "%" in decoded or "/" in decoded or CONTROL.search(decoded) or any(c in decoded for c in PATH_ENDERS):
             return None
         raw = decoded
-    if DOTS_AND_SPACES.fullmatch(raw):
+    if DOTS_AND_SPACES.fullmatch(raw) or any(ord(c) > 127 for c in raw):
         return None
     return raw.translate(ASCII_LOWER)
 
@@ -347,6 +350,12 @@ def _host_target(host: str, path: str, image: bool = False) -> Target:
     return Target(REGISTRY, "/".join([host] + segments))
 
 
+def _two_separators(text: str) -> bool:
+    """Whether text starts with two path separators in any mix of `/` and `\\`, as a UNC share or a network-path
+    reference does."""
+    return len(text) >= 2 and text[0] in "/\\" and text[1] in "/\\"
+
+
 def url_target(value: str, path_without_scheme: bool = False) -> Target | None:
     """The registry a URL value names, unknown, or None for a local path or an empty value. A value without a scheme
     is a local path when path_without_scheme (find-links), and otherwise read as https://. Tabs, newlines and carriage
@@ -367,8 +376,8 @@ def url_target(value: str, path_without_scheme: bool = False) -> Target | None:
         if WEB_SCHEME.match(value):
             return Target(UNKNOWN)
         first = value.split("/", 1)[0]
-        if value.startswith(("//", "\\\\")):
-            return Target(UNKNOWN)  # a network-path reference, or a Windows UNC share for find-links
+        if _two_separators(value) or value.lower().startswith("file:") and _two_separators(value[5:]):
+            return Target(UNKNOWN)  # a network-path reference, or a Windows UNC share (`//h/w`, `\\h\w`, `\/h/w`)
         if value == "." or value.startswith(LOCAL_PREFIXES) or value.lower().startswith("file:") or first in HOME_VARIABLES:
             return None
         if _has_variable(first):
@@ -377,9 +386,12 @@ def url_target(value: str, path_without_scheme: bool = False) -> Target | None:
             return None
         rest = value
     else:
-        if match.group(1).lower() == "file":
-            return None
         rest = value[match.end():]
+        if match.group(1).lower() == "file":
+            # A local file, unless it names a host (`file://h/w`, a UNC share on Windows) or a share (`file:////h/w`).
+            host = re.split(r"[/\\?#]", rest, maxsplit=1)[0]
+            local = host.lower() in ("", "localhost") and not _two_separators(rest[len(host):])
+            return None if local else Target(UNKNOWN)
     # The authority ends at /, ?, # or a backslash, which the WHATWG parser (npm, uv) and urllib3 (pip, twine, poetry)
     # take as the start of the path, though Python's urllib.parse does not: a backslash there is unknown.
     authority = re.split(r"[/\\?#]", rest, maxsplit=1)[0]
@@ -607,19 +619,14 @@ def runner_split(name: str, args: list) -> tuple | None:
     return None
 
 
-def _config_set(words: list, key_pattern, config_words=("config",)) -> list:
-    """`config set KEY URL`, `config set KEY=URL`, or `set ...` (npm and pnpm's shorthand): the URL when KEY matches;
-    unknown for a matching KEY with no value after it. The words are found anywhere among the positional arguments, so
-    the value of a global option this module does not know (`npm --logl silent config set ...`) does not hide them."""
-    for k, word in enumerate(words):
-        if word in config_words and words[k + 1:k + 2] == ["set"]:
-            rest = words[k + 2:]
-            break
-        if word == "set":
-            rest = words[k + 1:]
-            break
-    else:
+def _config_set(words: list, key_pattern) -> list:
+    """`config set KEY URL`, `config set KEY=URL`, or `set ...` (npm and pnpm's shorthand; `npm c set`, `npm conf set`):
+    the URL when KEY matches; unknown for a matching KEY with no value after it. `set` is found anywhere among the
+    positional arguments, so the value of a global option this module does not know (`npm --logl silent config set
+    ...`) does not hide it, and whatever names config before it does not matter."""
+    if "set" not in words:
         return []
+    rest = words[words.index("set") + 1:]
     out = []
     for i, word in enumerate(rest):  # a matching key anywhere, so an option's value cannot shift the pairs
         key, sep, value = word.partition("=")
@@ -635,7 +642,7 @@ def _config_set(words: list, key_pattern, config_words=("config",)) -> list:
 def _npm_config(name: str, args: list) -> list:
     """npm, pnpm and yarn's `config set` of a registry key."""
     if name in ("npm", "pnpm"):
-        return _config_set(_positionals(args, NPM_VALUE_OPTIONS, _registry_option), NPM_CONFIG_KEY, NPM_CONFIG_WORDS)
+        return _config_set(_positionals(args, NPM_VALUE_OPTIONS, _registry_option), NPM_CONFIG_KEY)
     if name == "yarn":
         return _config_set(_positionals(args, {"--cwd"}, _registry_option), YARN_CONFIG_KEY)
     return []

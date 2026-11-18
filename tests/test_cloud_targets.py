@@ -282,9 +282,29 @@ class CloudTargetTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), want)
 
+    # Fourth review of PR #135 (9c2f010).
+
+    def test_short_aws_abbreviations_with_a_file_or_json_value(self):
+        for command in ("aws inspector2 enable --a file://ids.json", "aws inspector2 enable --ac fileb://ids.bin",
+                        "aws quicksight list-users --aw file://acct.txt --namespace default",
+                        "aws lambda add-permission --function-name f --sou '{\"a\":1}' --action x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(UNKNOWN, None)])
+        self.assertEqual(targets("aws inspector2 enable --a '[\"999988887777\"]' --resource-types EC2"),
+                         [(ACCOUNT, "aws:999988887777"), (UNKNOWN, None)])
+        self.assertEqual(targets("aws inspector2 enable --a 999988887777 111122223333 --resource-types EC2"),
+                         [(ACCOUNT, "aws:999988887777"), (ACCOUNT, "aws:111122223333")])
+        # Only the first value is read as a possible account: --ac here is --acl, and the rest are positional.
+        for command in ("aws s3 cp --ac private x s3://b/$KEY", "aws s3 cp --ac private x s3://b/999988887777x",
+                        "aws codebuild create-project --source '{\"type\":\"S3\"}' --name x",
+                        "aws codebuild create-project --source $SRC --name x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
+
     def test_every_gsutil_project_option_is_read(self):
         # getopt keeps the last of several, and -u and a subcommand's -p each name a project.
         both = [(ACCOUNT, "gcp:good-project"), (ACCOUNT, "gcp:bad-project")]
+        self.assertEqual(targets("gsutil -u bad-project -- ls gs://b"), [(ACCOUNT, "gcp:bad-project")])
         for command in ("gsutil -u good-project mb -p bad-project gs://b", "gsutil -u good-project ls -p bad-project",
                         "gsutil -u good-project -u bad-project ls gs://b", "gsutil mb -p good-project -p bad-project gs://b",
                         "gsutil -mu good-project -u bad-project ls"):
