@@ -676,6 +676,7 @@ class DeployTests(unittest.TestCase):
         original = path.read_text(encoding="utf-8")
         for label, rewrite in {
             "a no-op": lambda c: "echo '{}' # pretooluse-company-rules.py CATPILOT_EVIDENCE_LOG=",
+            "syntax glued to the evidence value": lambda c: c.replace(vo_prefix(), "CATPILOT_EVIDENCE_SYSLOG=1;exit;"),
             "the wrong host": lambda c: c.replace("--host claude-code", "--host codex") if "--host claude-code" in c else c + " --host codex",
         }.items():
             with self.subTest(case=label):
@@ -688,13 +689,22 @@ class DeployTests(unittest.TestCase):
                 verify = self.run_script("verify.sh")
                 self.assertNotEqual(verify.returncode, 0, verify.stdout)
                 self.assertRegex(verify.stdout, r"evidence has no would_deny line for|with a command verify cannot check")
-        # Evidence sent elsewhere in a session is pointed at verify's log for the probes, so a working hook passes.
-        for prefix in ('CATPILOT_EVIDENCE_LOG="$HOME/Library/Logs/catpilot/evidence.jsonl"', "CATPILOT_EVIDENCE_SYSLOG=1"):
+        # Evidence sent elsewhere in a session is pointed at verify's log for the probes, so a working company hook is
+        # wired, not skipped (review of #134). Only the company hook's command changes.
+        for prefix in ('CATPILOT_EVIDENCE_LOG="$HOME/Library/Logs/catpilot/evidence.jsonl"', "CATPILOT_EVIDENCE_SYSLOG=1",
+                       'CATPILOT_EVIDENCE_LOG="$HOME"/.catpilot-guardrails/evidence.jsonl'):
             with self.subTest(prefix=prefix):
-                path.write_text(original.replace(vo_prefix().replace('"', '\\"'), prefix.replace('"', '\\"')), encoding="utf-8")
-                self.assertIn(prefix.split("=")[0], path.read_text(encoding="utf-8"))
+                settings = json.loads(original)
+                for group in settings["hooks"]["PreToolUse"]:
+                    for hook in group["hooks"]:
+                        if "pretooluse-company-rules.py" in hook["command"]:
+                            hook["command"] = hook["command"].replace(vo_prefix(), prefix)
+                path.write_text(json.dumps(settings), encoding="utf-8")
                 verify = self.run_script("verify.sh")
                 self.assertEqual(verify.returncode, 0, verify.stdout)
+                lines = [l for l in verify.stdout.splitlines() if "managed-settings.json" in l and "pretooluse-company-rules.py" in l]
+                self.assertEqual(sum(l.startswith("wired") for l in lines), 3, lines)
+                self.assertFalse(any(l.startswith("skipped") for l in lines), lines)
         path.write_text(original, encoding="utf-8")
         self.assertEqual(self.run_script("verify.sh").returncode, 0)
 
@@ -708,7 +718,10 @@ class DeployTests(unittest.TestCase):
         (hooks / "pretooluse-company-rules.py").write_text((hooks / "pretooluse-destructive-ops.py").read_text())
         verify = self.run_script("verify.sh")
         self.assertNotEqual(verify.returncode, 0)
-        self.assertIn("rule line for protected-branches", verify.stdout)
+        # Both runs, on the deciding probe: the hook run directly, and the registered command.
+        self.assertRegex(verify.stdout, r"pretooluse-company-rules.py --host claude-code gave the expected decision on a force push"
+                                        r"[^\n]*no rule line for protected-branches")
+        self.assertRegex(verify.stdout, r"which gave the expected decision on a force push[^\n]*no rule line for protected-branches")
         (hooks / "pretooluse-company-rules.py").write_text(original)
         # A stale copy of the policy: the hook decides, but from another policy.
         policy = self.cc / "catpilot-guardrails" / "policy" / "company-policy.json"
@@ -721,7 +734,8 @@ class DeployTests(unittest.TestCase):
         path.write_text(path.read_text(encoding="utf-8").replace("company-policy.json", "company-policy-stale.json"), encoding="utf-8")
         verify = self.run_script("verify.sh")
         self.assertNotEqual(verify.returncode, 0)
-        self.assertIn("a stale copy", verify.stdout)
+        self.assertRegex(verify.stdout, r"which gave the expected decision on a force push[^\n]*no rule line for protected-branches"
+                                        r"[^\n]*a stale copy")
 
     def test_verify_fails_a_registered_hook_without_a_policy(self):
         self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)

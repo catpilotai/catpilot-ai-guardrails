@@ -983,7 +983,7 @@ def expected_effect(host: str, modes: list, ask_enabled: bool) -> str:
 def has_ask_flag(command: str) -> bool:
     return "--ask" in _split(command)
 EFFECT_WORDS = {"deny": "denies", "ask": "asks the person about", "none": "logs, without blocking,"}
-COMPANY_LOG = ".catpilot-guardrails/evidence.jsonl"  # where the registered command's own prefix sends evidence
+COMPANY_LOG = ".catpilot-guardrails/evidence.jsonl"  # verify's log for the registered commands' probes (probe_command)
 
 
 def company_event(host: str, command: str, cwd: Path) -> str:
@@ -1046,26 +1046,32 @@ def logged_rule(entries: list, rule_id: str, excepted: bool, expected: str, host
                and bool(e.get("exception_id")) == excepted for e in entries)
 
 
-LEADING_ASSIGNMENT = re.compile(r"""\s*([A-Za-z_][A-Za-z0-9_]*)=(?:"(?:[^"\\]|\\.)*"|'[^']*'|[^\s'"]*)(?=\s)""")
+# A leading NAME=value word: quoted, escaped and plain parts, but no shell operator (`;`, `&`, `|`, `<`, `>`, `(`, `)`,
+# a backtick), so syntax glued to a value (`X=v;exit;`) is never removed with it.
+LEADING_ASSIGNMENT = re.compile(r"""\s*([A-Za-z_][A-Za-z0-9_]*)=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s'"\\;&|<>()`])*(?=\s)""")
 
 
 def probe_command(command: str, log: Path) -> tuple:
-    """(command to run, problem): the registered command with its leading CATPILOT_EVIDENCE_LOG and
-    CATPILOT_EVIDENCE_SYSLOG assignments replaced by CATPILOT_EVIDENCE_LOG=<log>, so verify reads what it wrote
-    wherever it would send its evidence in a session. A command that names either variable anywhere else cannot be
-    rewritten: (None, the reason)."""
-    position, kept = 0, []
+    """(command to run, problem): the registered command without its leading CATPILOT_EVIDENCE_LOG and
+    CATPILOT_EVIDENCE_SYSLOG assignments, run with CATPILOT_EVIDENCE_LOG=<log> in its environment, so verify reads
+    what it wrote wherever it would send its evidence in a session; a command with neither runs unchanged. A command
+    that names either variable anywhere else cannot be checked: (None, the reason)."""
+    position, kept, removed = 0, [], False
     while True:
         match = LEADING_ASSIGNMENT.match(command, position)
         if not match:
             break
         if match.group(1) not in ("CATPILOT_EVIDENCE_LOG", "CATPILOT_EVIDENCE_SYSLOG"):
             kept.append(match.group(0).strip())
+        else:
+            removed = True
         position = match.end()
     rest = command[position:]
     if "CATPILOT_EVIDENCE_LOG" in rest or "CATPILOT_EVIDENCE_SYSLOG" in rest:
         return None, "names CATPILOT_EVIDENCE_LOG or CATPILOT_EVIDENCE_SYSLOG other than as a leading assignment"
-    return " ".join(["CATPILOT_EVIDENCE_LOG=%s" % shlex.quote(str(log))] + kept + [rest.strip()]), None
+    if not removed:
+        return command, None  # verify's environment already points the evidence at log
+    return " ".join(kept + [rest.strip()]), None
 
 
 def policy_hash(policy_file: Path) -> str | None:
@@ -1231,9 +1237,10 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
     """For each tool with a compiled policy: the files, the hook run directly on a harmless command and on a probe
     for the first protected_branch rule (and the first deploy_host rule), and the hook as the tool's managed file
     registers it. A policy the hook refuses (wrong owner, writable by others, malformed) shows as a policy_error line,
-    which is a FAIL here. A probe expected to decide nothing (a monitor rule, an expired file, an excepted branch)
-    must also write a would_deny line for its rule, with an exception_id exactly when excepted, since a hook that
-    reads no rule decides nothing too; and the harmless command must write no rule line."""
+    which is a FAIL here. Every rule probe must also leave the evidence line that shows the hook read the rule from
+    this policy for this host (logged_rule: would_deny when it decides nothing, with an exception_id exactly when
+    excepted), since a hook that reads no rule, another hook or a stale policy can give the same decision; and the
+    harmless command must leave no rule line."""
     report = Report()
     tools = [(CLAUDE_CODE, cc_dir), (CODEX, codex_dir)] + ([(COPILOT, copilot_dir)] if copilot_dir is not None else [])
     for host, managed in tools:
