@@ -102,7 +102,8 @@ registered.
 
 `deploy/org/verify.sh` checks both copies and their hashes, the marked
 section, the expiry date, the script run directly for each tool, and each
-registered command run through a shell, writing no evidence line.
+registered command run through a shell, with its evidence under verify's
+temporary home as long as the command keeps install.sh's prefix.
 `deploy/org/uninstall.sh` removes the copies, the marked section (and the
 `CLAUDE.md` when nothing else is in it), and a managed file that is still
 byte-for-byte what `install.sh` wrote. Why the managed `CLAUDE.md` rather

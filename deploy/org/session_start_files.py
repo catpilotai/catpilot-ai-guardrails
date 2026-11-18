@@ -618,8 +618,9 @@ def judge(report: Report, label: str, host: str, state: str, rules, result, succ
 def clean_env(home: Path) -> dict:
     """This environment without the evidence variables, with HOME at verify.sh's temporary directory, so neither a
     variable from the environment nor a command's own CATPILOT_EVIDENCE_LOG="$HOME/..." writes anywhere real."""
-    env = {k: v for k, v in os.environ.items() if k not in ("CATPILOT_EVIDENCE_LOG", "CATPILOT_EVIDENCE_SYSLOG")}
-    env["HOME"] = str(home)
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("CATPILOT_EVIDENCE_LOG", "CATPILOT_EVIDENCE_SYSLOG", "BASH_ENV", "ENV") and not k.startswith("BASH_FUNC_")}
+    env["HOME"] = str(home)  # BASH_ENV, ENV and exported functions could set an evidence sink before a probe runs
     return env
 
 
@@ -1050,13 +1051,14 @@ def logged_rule(entries: list, rule_id: str, excepted: bool, expected: str, host
 
 def standard_company_command(command: str, hook: Path, host: str, policy_file: Path) -> bool:
     """Whether a registered company-rules command is exactly the one install.sh writes for this tool (the standard
-    evidence prefix, python3, this hook, --host, this policy), with --ask allowed after --host or at the end. verify
+    evidence prefix, python3, this hook, --host, this policy), with one --ask allowed after the hook, after --host or at
+    the end. verify
     runs only such a command: any other (a wrapper, an env file, another evidence sink, another policy or host) could
     send its probe lines somewhere real or behave differently than verify can see, so it is not run."""
     ask = r"(?: --ask)?"
-    pattern = (re.escape(EVIDENCE_PREFIX) + r' python3 "' + re.escape(str(hook)) + r'" --host ' + re.escape(host) + ask
-               + r' --policy "' + re.escape(str(policy_file)) + r'"' + ask)
-    return re.fullmatch(pattern, command.strip()) is not None and command.count("--ask") <= 1
+    pattern = (re.escape(EVIDENCE_PREFIX) + r' python3 "' + re.escape(str(hook)) + r'"' + ask + r' --host ' + re.escape(host)
+               + ask + r' --policy "' + re.escape(str(policy_file)) + r'"' + ask)
+    return re.fullmatch(pattern, command.strip(" \t\n")) is not None and _split(command).count("--ask") <= 1
 
 
 def policy_hash(policy_file: Path) -> str | None:

@@ -311,6 +311,28 @@ class DecisionTests(unittest.TestCase):
                 cr.decide(event, "claude-code", parsed())
 
 
+class StandardCommandTests(unittest.TestCase):
+    """verify runs a company-rules command only when it is exactly the one install.sh writes, for each tool."""
+
+    def test_each_tool_s_install_command_matches(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ssf_for_standard", ORG / "session_start_files.py")
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        for managed in ("/etc/claude-code", "/Library/Application Support/ClaudeCode", "/opt/a (x+y)[1]{2}|b^c*d?.e"):
+            root = Path(helper.tree(managed))
+            hook, policy = root / "hooks" / helper.COMPANY_HOOK, root / "policy" / helper.POLICY_NAME
+            for host, command in (("claude-code", helper.company_hook_command(managed, "claude-code")),
+                                  ("codex", helper.company_hook_command(managed, "codex")),
+                                  ("copilot-cli", helper.copilot_command(managed, helper.COMPANY_HOOK, enforce_policy=True))):
+                with self.subTest(managed=managed, host=host):
+                    self.assertTrue(helper.standard_company_command(command, hook, host, policy))
+                    self.assertTrue(helper.standard_company_command(command + " --ask", hook, host, policy))
+                    self.assertTrue(helper.standard_company_command(command.replace('" --host', '" --ask --host'), hook, host, policy))
+                    self.assertFalse(helper.standard_company_command(command + "; true", hook, host, policy))
+                    self.assertFalse(helper.standard_company_command(command + " --ask --ask", hook, host, policy))
+
+
 class ArgumentTests(unittest.TestCase):
     def test_parse_args(self):
         cases = [
@@ -737,6 +759,12 @@ class DeployTests(unittest.TestCase):
             "a wrapper": lambda c: "bash -c " + shlex.quote(c),
             "an env file": lambda c: "set -a; . /etc/catpilot.env; set +a; " + c,
             "HOME moved": lambda c: "HOME=/tmp/elsewhere; " + c,
+            # The match is anchored at both ends and pins the interpreter, the hook and one --ask (final review).
+            "a command after it": lambda c: c + "; true",
+            "a command joined after it": lambda c: c + " && true",
+            "another hook path": lambda c: c.replace("/hooks/pretooluse-company-rules.py", "/hooks/../hooks/pretooluse-company-rules.py"),
+            "another interpreter": lambda c: c.replace(" python3 ", " python3.99 "),
+            "two --ask": lambda c: c + " --ask --ask",
         }.items():
             with self.subTest(case=label):
                 settings = json.loads(original)
