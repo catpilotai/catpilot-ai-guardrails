@@ -276,11 +276,10 @@ blocked on stale values, and each match still writes `would_deny`.
   of the rule covers fires the rule. `catpilot_guard/deploy_targets.py` reads
   the target, through the same splitting and wrappers, and through package
   runners (`npx`, `pnpm dlx`, `yarn dlx`, `npm exec`, `bunx`):
-  - a hosting service's own domain, for `vercel`/`vc` (with no first word or
-    `deploy`/`redeploy`/`promote`/`rollback`, or a first word that is a path or
-    a directory where the command runs; not help, version, its non-deploy
-    subcommands such as `env`, `link`, `pull`, `whoami`, `dev`, `build`, `curl`,
-    or a first word it does not know), `netlify deploy`, `fly`/`flyctl` `deploy`,
+  - a hosting service's own domain, for `vercel`/`vc` (every run except help,
+    version and its non-deploy subcommands, such as `env`, `link`, `pull`,
+    `whoami`, `dev`, `build`, `curl`; any other first word is the directory it
+    deploys, which may not exist until a build before it runs), `netlify deploy`, `fly`/`flyctl` `deploy`,
     `launch` (unless `--no-deploy`) or `machine run`, `firebase deploy` and
     `hosting:channel:deploy`, `wrangler deploy`/`publish`/`versions deploy`/
     `versions upload` and `wrangler pages deploy`, `surge` (except its account
@@ -294,9 +293,9 @@ blocked on stale values, and each match still writes `would_deny`.
     `npx @railway/cli`), as are `yarn`/`pnpm` scripts and tools (`yarn vercel`,
     `pnpm dlx`, `yarn workspace web vercel`) and `npx -c '...'` strings;
   - a named host: the remote destination of an `scp` or `rsync` upload
-    (`[user@]host:path`, `scp://`, `sftp://`, `rsync://`; a copy whose sources
-    are all remote is a download, not an upload), and the domain given to
-    `surge`;
+    (`[user@]host:path`, `scp://`, `sftp://`, `rsync://`): the last path, when
+    it is remote, whatever the sources; a copy to a local path is a download.
+    Also the domain given to `surge`;
   - a destination it cannot read, which no value covers: a variable (`rsync
     dist/ $HOST:/srv`), an address in brackets (IPv6), or an SSH alias without
     a dot (`scp f prod:/srv`, from `~/.ssh/config`), since every value needs a

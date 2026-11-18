@@ -137,12 +137,16 @@ def _package_command(raw: str) -> str:
 
 
 def _call_string(args: list) -> str | None:
-    """The command string given with -c/--call to npx or npm exec, which runs it as a shell command."""
-    for i, arg in enumerate(args):
-        if arg in ("-c", "--call") and i + 1 < len(args):
-            return args[i + 1]
+    """The command string given with -c/--call to npx or npm exec, which runs it as a shell command. Only the runner's
+    own options count, before the package name: a tool's own -c after it (wrangler's config file) is the tool's."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        arg = args[i]
+        if arg in ("-c", "--call"):
+            return args[i + 1] if i + 1 < len(args) else None
         if arg.startswith("--call="):
             return arg[len("--call="):]
+        i += 2 if arg in ("-p", "--package", "-w", "--workspace") else 1
     return None
 
 
@@ -185,14 +189,11 @@ def _deployer(name: str, args: list, cwd: str | None = None) -> Target | None:
             return Target(SUFFIX, "vercel.app")
         if not words or words[0].lower() in ("deploy", "redeploy", "promote", "rollback"):
             return Target(SUFFIX, "vercel.app")  # `vercel --prod`, `vercel deploy`, ...
-        first = words[0]
-        if first.lower() in VERCEL_OTHER:
+        if words[0].lower() in VERCEL_OTHER:
             return None
-        # Any other first word is a directory to deploy (`vercel dist`) or a subcommand this list does not know
-        # (`vercel curl`): a path, or a directory that exists where the command runs, is a deploy.
-        if "/" in first or first.startswith(".") or (cwd and os.path.isdir(os.path.join(cwd, first))):
-            return Target(SUFFIX, "vercel.app")
-        return None
+        # Any other first word is a directory to deploy (`vercel dist`), which may not exist until the build before
+        # it runs. VERCEL_OTHER lists the subcommands that are not deploys.
+        return Target(SUFFIX, "vercel.app")
     if name == "wrangler":
         if words[:1] == ["pages"] and words[1:2] and words[1] in ("deploy", "publish"):
             return Target(SUFFIX, "pages.dev")
@@ -253,20 +254,19 @@ def _remote_host(spec: str) -> Target | None:
 
 
 def _copy_destination(name: str, args: list) -> Target | None:
-    """An upload's remote destination: the last remote path after the first. A download, whose destination is local, is
-    not a deploy: the destination is the last path, unless an option value the list does not know trails it, so a
-    local last path counts as the destination only when no remote path comes after a local one."""
+    """A copy's remote destination. The destination is the last path: when it is remote, that host, whatever the
+    sources (a remote-to-remote copy included). When it is local the copy is a download, unless a remote path follows
+    a local one, which means an option value this list does not know trails the real destination."""
     words = _positionals(args, SCP_VALUE_OPTIONS if name == "scp" else RSYNC_VALUE_OPTIONS)
     if len(words) < 2:
         return None
     kinds = [_remote_host(word) for word in words]
-    last_remote = max((i for i, target in enumerate(kinds) if target is not None), default=-1)
-    if last_remote < 1:
-        return None
-    local_before = any(target is None for target in kinds[:last_remote])
-    if not local_before:
-        return None  # every path up to the last remote one is remote: a download or remote-to-local copy
-    return kinds[last_remote]
+    if kinds[-1] is not None:
+        return kinds[-1]
+    for i in range(len(kinds) - 2, 0, -1):
+        if kinds[i] is not None and any(k is None for k in kinds[:i]):
+            return kinds[i]
+    return None
 
 
 def _git_push_heroku(args: list) -> Target | None:
@@ -298,7 +298,7 @@ def deploy_targets(command: str, cwd: str | None = None, depth: int = 0) -> list
     for argv in _simple_commands(command):
         base = os.path.basename(argv[0]).lower()
         if depth < 3 and (base in RUNNERS or (base == "npm" and argv[1:2] in (["exec"], ["x"]))):
-            call = _call_string(argv[1:])
+            call = _call_string(argv[2:] if base == "npm" else argv[1:])
             if call is not None:  # npx -c 'vercel --prod' runs the string as a shell command
                 targets.extend(deploy_targets(call, cwd, depth + 1))
                 continue

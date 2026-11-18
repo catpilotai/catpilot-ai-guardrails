@@ -82,20 +82,26 @@ class DeployTargetTests(unittest.TestCase):
                         "vercel --version", "vercel -v", "vercel --help", "fly deploy --help", "gh-pages --help",
                         "surge whoami", "surge list", "surge teardown x.surge.sh", "vercel env pull", "vercel link",
                         "rsync -av host:/x ./local --max-delete 5", "vercel curl /api/hello", "vercel httpstat /",
-                        "vercel rolling-release start", "vercel webhooks ls", "vercel my-site",
+                        "vercel rolling-release start", "vercel webhooks ls",
                         "scp web.example.org:/a web.example.org:/b .", "scp -r h1:/a h2:/b ./out"):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [])
 
-    def test_a_vercel_directory_counts_where_it_exists(self):
-        import os
-        import tempfile
+    def test_a_vercel_directory_counts_whether_or_not_it_exists_yet(self):
+        # The build before it may create it (review of #130); VERCEL_OTHER lists the words that are not deploys.
+        for command in ("vercel dist --prod", "vercel my-site", "npm run build && vercel dist --prod", "vercel --cwd site dist"):
+            with self.subTest(command=command):
+                self.assertEqual([(t.kind, t.name) for t in deploy_targets(command)], [(SUFFIX, "vercel.app")])
 
-        with tempfile.TemporaryDirectory() as cwd:
-            os.mkdir(os.path.join(cwd, "dist"))
-            self.assertEqual([(t.kind, t.name) for t in deploy_targets("vercel dist --prod", cwd)], [(SUFFIX, "vercel.app")])
-            self.assertEqual(deploy_targets("vercel my-site", cwd), [])  # no such directory: an unknown subcommand
-            self.assertEqual([(t.kind, t.name) for t in deploy_targets("vercel ./my-site", cwd)], [(SUFFIX, "vercel.app")])
+    def test_a_tools_own_c_option_is_not_a_runner_call(self):
+        self.assertEqual(targets("npx wrangler deploy -c wrangler.prod.toml"), [(SUFFIX, "workers.dev")])
+        self.assertEqual(targets("npx firebase-tools deploy -c firebase.json"), [(SUFFIX, "web.app")])
+        self.assertEqual(targets("npm exec --call='netlify deploy'"), [(SUFFIX, "netlify.app")])
+
+    def test_remote_to_remote_copies_name_the_destination(self):
+        self.assertEqual(targets("scp build.example.org:/app.tgz prod.example.org:/srv/"), [(HOST, "prod.example.org")])
+        self.assertEqual(targets("scp -3 a.example.org:x b.example.org:y"), [(HOST, "b.example.org")])
+        self.assertEqual(targets("scp remote.example.org:/a ./local web.example.org:/srv"), [(HOST, "web.example.org")])
 
     def test_coverage(self):
         cases = [
