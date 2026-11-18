@@ -191,7 +191,9 @@ def settings_with_session_start(base: str, cc_dir: str, enforce: bool = False) -
             raise UsageError("hooks.PreToolUse in managed-settings.json must be a list")
         pretooluse.append({
             "matcher": "Bash",
-            "hooks": [{"type": "command", "command": company_hook_command(cc_dir, CLAUDE_CODE), "timeout": TIMEOUT_SECONDS}],
+            # A hook that cannot start or times out blocks the call instead of letting it run (Claude Code 2.1.295+).
+            "hooks": [{"type": "command", "command": company_hook_command(cc_dir, CLAUDE_CODE), "timeout": TIMEOUT_SECONDS,
+                       "onFailure": "block"}],
         })
     groups = data["hooks"].setdefault("SessionStart", [])
     if not isinstance(groups, list):
