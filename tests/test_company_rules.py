@@ -350,6 +350,9 @@ class BranchContextTests(unittest.TestCase):
             self.assertEqual([r.id for r in cr.matched_rules('git push -f origin "$B"', tmp, hotfix)], ["protected-branches"])
             self.assertEqual([r.id for r in cr.matched_rules("git push origin :refs/tags/$T", tmp, policy)], [])
             self.assertEqual([r.id for r in cr.matched_rules('git push -f origin "$P/main"', tmp, policy)], ["protected-branches"])
+            # A company value spelled refs/heads/ reads as the branch (review of 0b0f13f).
+            spelled = parsed([branch_rule(values=("refs/heads/main",))])
+            self.assertEqual([r.id for r in cr.matched_rules('git push -f origin "ma$X"', tmp, spelled)], ["protected-branches"])
             # No checkout's branch is the workflow's (the pull-request check): unknown, so it fires.
             self.assertEqual([r.id for r in cr.matched_rules("git push -f", tmp, policy, branch_known=False)], ["protected-branches"])
 

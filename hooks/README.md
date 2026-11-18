@@ -183,12 +183,18 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   of those branches, and `git push --mirror`, `--all` or `--branches` with a
   force or `--prune`, and a forced or pruned refspec pattern
   (`refs/heads/*:refs/heads/*`). A force push or deletion whose destination
-  holds a shell variable or a substitution is read as a pattern in which each
-  one could be anything, and blocked when that pattern could name a protected
-  branch: `git push --force origin $BRANCH`, `"${TARGET}"`, `${B:-main}`,
-  `release/$V` and `"$P/main"` are blocked, while `feature/$TICKET`,
-  `"v$VERSION"` and a tag (`:refs/tags/$TAG`) are not. An ordinary push to a
-  variable is not read at all. Three exceptions:
+  holds a shell variable or a substitution is read as its literal text up to
+  the first expansion followed by anything, and blocked when that could name a
+  protected branch (also spelled `heads/X` or `refs/heads/X`, or as `@` or
+  `HEAD`): `git push --force origin $BRANCH`, `"${TARGET}"`, `${B:-main}`,
+  `release/$V`, `"ma$X"` and `"$P/main"` are blocked, while `feature/$TICKET`,
+  `"v$VERSION"` and a tag (`:refs/tags/$TAG`) are not. A variable whose value
+  holds a space or a colon, which splits the word or the refspec, is not seen;
+  in the pull-request check a `${{ ... }}` in a destination is unknown, since
+  GitHub puts its text in before the shell runs. Brace expansion
+  (`{main,feature}`) is unknown, and a refspec splits at its last colon, as git
+  splits it. An ordinary push to a variable is not read at all. Three
+  exceptions:
   - A substitution that asks git for the checked-out branch, as one quoted
     word (`"$(git branch --show-current)"`, `"$(git rev-parse --abbrev-ref
     HEAD)"`, `"$(git symbolic-ref --short HEAD)"`, or the same in backticks),
@@ -205,9 +211,9 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
     `git switch feature-y && git push --force-with-lease` is blocked too.
   - It is unknown for the whole line when the line, or a `bash -c` body in
     it, defines a function (`name()`, `function name`), assigns `GIT_DIR`,
-    `GIT_WORK_TREE` or `GIT_COMMON_DIR`, or gives env a directory (`env -C`,
-    `--chdir`); and for one git command when a variable comes before its
-    subcommand. A line that assigns a `GIT_CONFIG_*` variable, which can set
+    `GIT_WORK_TREE` or `GIT_COMMON_DIR` (also `export GIT_DIR` and `read
+    GIT_DIR`), or gives env or sudo a directory (`env -C`, `--chdir`), behind
+    any wrapper; and when a variable comes before a git command's subcommand. A line that assigns a `GIT_CONFIG_*` variable, which can set
     `remote.<name>.mirror`, makes any push in it count as a mirror. These are
     read as shell words, with assignments only where they are assignments, so
     a mention inside a quoted message does not count. A script run earlier in
@@ -225,7 +231,9 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   - a bare push given `-c remote.<name>.push=...` or `--config-env` for it;
   - a bare push given `-c push.default=matching` with a force;
   - a bare force push given `-c push.default=upstream` or a `branch.*`
-    setting, whose destination is then unknown.
+    setting, whose destination is then unknown;
+  - any push after `git config` sets `remote.<name>.mirror`,
+    `remote.<name>.push` or `push.default` earlier in the line.
 
   These settings in git's config files are not read. An
   option's value (`-o ci.skip`, `--push-option`, `--repo`) is not read as the

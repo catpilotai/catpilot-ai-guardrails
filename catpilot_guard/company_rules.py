@@ -143,8 +143,9 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy, branc
     fired = []
     for rule in policy.rules:
         if rule.kind == "protected_branch":
-            # An unknown branch (None: a variable, a substitution, or a bare force push with no branch checked out;
-            # "": HEAD with no branch checked out) could be any branch, so it fires every protected_branch rule.
+            # An unknown branch (None: a variable with nothing literal before it, a bare force push with no branch
+            # checked out; "": HEAD with no branch checked out) could be any branch, so it fires every protected_branch
+            # rule; a BranchPattern fires the rules it could match (_branch_hits).
             hit = any(mirror or any(_branch_hits(rule, branch) for branch in branches) for mirror, branches in pushes)
         elif rule.kind == "deploy_host":
             hit = any(not any(host_covered(value, target) for value in rule.values) for target in targets)

@@ -417,6 +417,20 @@ class EnvTests(unittest.TestCase):
                     out = pr_check.check_file(".github/workflows/d.yml", self.doc(run=run).encode(), parsed([branch_rule()]), tmp)
                     self.assertEqual([f.rule_id for f in out], ["protected-branches"])
 
+    def test_git_environment_from_env_names(self):
+        # GIT_CONFIG_* in any env: level may make a push a mirror; GIT_DIR points git elsewhere (review of 0b0f13f).
+        mirror = "GIT_CONFIG_COUNT: '1'\nGIT_CONFIG_KEY_0: remote.origin.mirror\nGIT_CONFIG_VALUE_0: 'true'\n"
+        self.assertEqual(self.fired(self.doc(step_env=mirror, run="git push origin feature")), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(job_env=mirror, run="git push origin feature")), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(job_env="${{ fromJSON(vars.ENV) }}\n", run="git push origin feature")), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(step_env="GIT_DIR: ../x/.git\n", run="git push -f")), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(step_env="OTHER: x\n", run="git push origin feature")), [])
+
+    def test_an_expression_in_a_destination_is_unknown(self):
+        # GitHub puts the text in before the shell runs, so it may end the word or the refspec.
+        self.assertEqual(self.fired(self.doc(run='git push --force origin "fea${{ inputs.x }}"')), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(run='git push --force origin "feature/${{ inputs.x }}"')), ["protected-branches"])
+
     def test_resolve_script_never_resolves_the_expression_placeholder(self):
         env = {"CATPILOT_EXPRESSION": "feature", "B": "feature"}
         self.assertIn("$CATPILOT_EXPRESSION", pr_check.resolve_script("git push -f origin ${{ github.ref_name }}", env))
@@ -513,6 +527,10 @@ class ShellTests(unittest.TestCase):
                                  [(7, "protected-branches", "error")])
                 self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "echo ok")), [])
                 # Bash that only looks like PowerShell to a careless match stays readable (review of #133).
+                for powershell in ("'git push --force origin main' | iex", "iex -Command 'x'", "& ('gi'+'t') push --force origin main"):
+                    self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "\"%s\"" % powershell)), [(7, None, "error")], powershell)
+                fence = "|\n          cat > notes.md <<'EOF'\n          ```\n          ok\n          ```\n          EOF\n"
+                self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, fence)), [])
                 for bash in ("make test |& tee log", "iex -S mix", "case $x in a) echo;& b) echo;; esac"):
                     self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "\"%s\"" % bash)), [], bash)
                 continued = "|\n          git push origin main `\n            --force\n"

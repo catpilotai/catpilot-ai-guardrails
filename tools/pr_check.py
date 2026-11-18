@@ -28,8 +28,10 @@ What it scans, exactly (by file name; every other file is ignored):
                                  labels) is not bash or sh, with only the plain options `_readable_shell` allows,
                                  cannot be read; PowerShell is not read. On a runner the check cannot read (a matrix
                                  expression, a group with no labels) a step with no shell is read as bash, unless it
-                                 holds what only PowerShell reads (`<#`, `Invoke-Expression`, `iex (`, the `&` call
-                                 operator, a backtick ending a line), and then it cannot be read. Each step's `uses:`
+                                 holds what only PowerShell reads (`<#`, `Invoke-Expression`, `iex` but `iex -S`,
+                                 the `&` call operator, a space and a backtick ending a line), and then it cannot be
+                                 read. The names in env: at every level say whether git is pointed elsewhere
+                                 (GIT_DIR) or may mirror (GIT_CONFIG_*, or an env: that is an expression). Each step's `uses:`
                                  naming a deploy action (DEPLOY_ACTIONS) or a force-pushing action (PUSH_ACTIONS), and
                                  a `docker://` step's `entrypoint` and `args`, as a command
   action.yml|yaml (anywhere)     the same, for the steps of a composite action (`runs.steps`), with no env: value
@@ -650,9 +652,9 @@ def _windows_runner(job) -> bool:
 # What only PowerShell reads as a command or a comment, in a step that may run in pwsh (a runner the check cannot
 # read): such a step is unreadable rather than read with shell rules.
 POWERSHELL_ONLY = re.compile(
-    r"<#|#>|\binvoke-expression\b|\biex\s+[($\"']|\bstart-process\b"
-    r"|^\s*&\s+[\"'$\w]|[;|]\s+&\s+[\"'$\w]"  # the call operator; not bash's `|&` or a case's `;&`
-    r"|`\r?$",  # PowerShell's line continuation
+    r"<#|#>|\binvoke-expression\b|\biex\b(?!\s+-S\b)|\bstart-process\b"
+    r"|^\s*&\s+[\"'$\w({]|[;|]\s+&\s+[\"'$\w({]"  # the call operator; not bash's `|&` or a case's `;&`
+    r"|\s`\r?$",  # PowerShell's line continuation, a backtick after a space (not a markdown fence)
     re.IGNORECASE | re.MULTILINE)
 
 
@@ -666,9 +668,9 @@ def _default_shell(node, inherited: str | None) -> str | None:
     return inherited
 
 
-def _run_item(key, value, env: dict) -> Commands:
+def _run_item(key, value, env: dict, git_env: str = "") -> Commands:
     key_line = key.start_mark.line + 1
-    text = resolve_script(value.value, env)
+    text = git_env + resolve_script(value.value, env)  # git_env stays on the first line, so line numbers hold
     if value.style == "|":
         return Commands(value.start_mark.line + 2, text, key_line, exact=True)
     if value.style == ">":
@@ -680,10 +682,32 @@ def _docker_command(*parts) -> str:
     return " ".join(part for part in parts if part and part.strip())
 
 
-def _step_items(step, levels: list | None, default_shell: str | None, maybe_pwsh: bool = False) -> list:
+GIT_CONFIG_NAME = re.compile(r"GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM)")
+GIT_PLACE_NAMES = {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}
+
+
+def _git_environment(all_levels: list) -> str:
+    """What the `env:` names a step runs with say about git, as an assignment the hook's reader sees at the start of
+    each script: GIT_CONFIG_* may make a push a mirror, GIT_DIR and the like point git elsewhere. An `env:` that is an
+    expression may set any of them. Read from every level, values or not."""
+    names, opaque = set(), False
+    for values, level_opaque in all_levels:
+        names |= set(values)
+        opaque = opaque or level_opaque
+    if opaque or any(GIT_CONFIG_NAME.fullmatch(name) for name in names):
+        return "GIT_CONFIG_COUNT=1; "
+    if names & GIT_PLACE_NAMES:
+        return "GIT_DIR=elsewhere; "
+    return ""
+
+
+def _step_items(step, levels: list | None, default_shell: str | None, maybe_pwsh: bool = False,
+                all_levels: list | None = None) -> list:
     """A step's commands, targets and pushes. levels None: an earlier step may have changed any variable, so no
-    env: value is substituted, not even the step's own (GitHub does not document whether it beats GITHUB_ENV)."""
+    env: value is substituted, not even the step's own (GitHub does not document whether it beats GITHUB_ENV).
+    all_levels: the workflow's and job's env:, read for the names git reads (_git_environment) even then."""
     env = {} if levels is None else _merge_env(levels + [_env_level(step)])
+    git_env = _git_environment((all_levels or []) + [_env_level(step)])
     shell = _scalar(step, "shell")
     shell = default_shell if shell is None else shell
     inputs = None
@@ -693,7 +717,7 @@ def _step_items(step, levels: list | None, default_shell: str | None, maybe_pwsh
             continue
         if key.value == "run":
             if _readable_shell(shell) and not (shell is None and maybe_pwsh and POWERSHELL_ONLY.search(value.value)):
-                items.append(_run_item(key, value, env))
+                items.append(_run_item(key, value, env, git_env))
             else:
                 items.append(UnreadableStep(key.start_mark.line + 1))
         elif key.value == "uses":
@@ -705,11 +729,12 @@ def _step_items(step, levels: list | None, default_shell: str | None, maybe_pwsh
                 items.append(Targets(line, tuple(targets)))
             pushes = action_pushes(value.value, inputs)
             if pushes:
-                items.append(Pushes(line, tuple(pushes)))
+                # With GIT_CONFIG_* the action's push may be a mirror: any branch.
+                items.append(Pushes(line, tuple(None for _ in pushes) if git_env.startswith("GIT_CONFIG") else tuple(pushes)))
             if value.value.strip().lower().startswith("docker://"):
                 command = _docker_command(inputs.get("entrypoint"), inputs.get("args"))
                 if command:
-                    items.append(Commands(line, _expressions_as_variables(command), line))
+                    items.append(Commands(line, git_env + _expressions_as_variables(command), line))
     return items
 
 
@@ -757,7 +782,7 @@ def _steps_items(steps, levels: list, shell: str | None, code_ran: bool = False,
     items = []
     code_ran = code_ran or any(_runs_pre(step) for step in steps.value)
     for step in steps.value:
-        items.extend(_step_items(step, None if code_ran else levels, shell, maybe_pwsh))
+        items.extend(_step_items(step, None if code_ran else levels, shell, maybe_pwsh, all_levels=levels))
         code_ran = code_ran or _runs_code(step)
     return items
 
