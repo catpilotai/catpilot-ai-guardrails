@@ -388,7 +388,80 @@ BRACED_EXPANSION = re.compile(r"\$\{[^}]*\}")
 EXPANSION = re.compile(r"\$\{[^}]*\}|\$\([^)]*\)|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]|`[^`]*`?|\$")
 
 
-BRACE_EXPANSION = re.compile(r"\{[^{}]*(?:,|\.\.)[^{}]*\}")
+BRACE_LIMIT = 64  # more words than this from one brace expansion is unknown
+
+
+def expand_braces(word: str, limit: int = BRACE_LIMIT):
+    """The words bash makes of `word` by brace expansion (`{a,b}`, `{1..3}`, `{a..c}`, nested), or None when there
+    would be more than limit. `${...}` is parameter expansion, not a brace: collapse it first. Quoting is already gone,
+    so a quoted literal brace is expanded too (stricter)."""
+    def matching(text: str, start: int):
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{" and (i == 0 or text[i - 1] != "$"):
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return i
+        return None
+
+    def parts(body: str):
+        out, depth, current = [], 0, ""
+        for ch in body:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            if ch == "," and depth == 0:
+                out.append(current)
+                current = ""
+            else:
+                current += ch
+        out.append(current)
+        return out
+
+    def sequence(body: str):
+        numbers = re.fullmatch(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?", body)
+        if numbers:
+            a, b = int(numbers.group(1)), int(numbers.group(2))
+            step = abs(int(numbers.group(3) or 1)) or 1
+            values = range(a, b + 1, step) if a <= b else range(a, b - 1, -step)
+            return [str(v) for v in values] if len(values) <= limit else None
+        letters = re.fullmatch(r"([A-Za-z])\.\.([A-Za-z])", body)
+        if letters:
+            a, b = ord(letters.group(1)), ord(letters.group(2))
+            return [chr(c) for c in (range(a, b + 1) if a <= b else range(a, b - 1, -1))]
+        return []
+
+    search = 0
+    while True:
+        start = word.find("{", search)
+        while start > 0 and word[start - 1] == "$":
+            start = word.find("{", start + 1)
+        if start < 0:
+            return [word]
+        end = matching(word, start)
+        if end is None:
+            return [word]
+        body = word[start + 1:end]
+        alternatives = parts(body)
+        if len(alternatives) < 2:
+            alternatives = sequence(body)
+            if alternatives is None:
+                return None
+        if not alternatives:
+            search = start + 1  # a literal brace: look further on
+            continue
+        words = []
+        for alternative in alternatives:
+            expanded = expand_braces(word[:start] + alternative + word[end + 1:], limit)
+            if expanded is None:
+                return None
+            words.extend(expanded)
+            if len(words) > limit:
+                return None
+        return words
 # The pull-request check's stand-in for a `${{ ... }}` expression (tools/pr_check.py EXPRESSION_VARIABLE).
 OPAQUE_EXPANSION = "CATPILOT_EXPRESSION"
 
@@ -528,6 +601,15 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
         else:
             positional.append(arg)
     mirror = mirror or (every and (force or prune))
+    # The shell expands braces before git sees the words (`:{feature,develop}`, `{origin,HEAD:main}`).
+    expanded_words, too_many = [], False
+    for word in positional:
+        words = expand_braces(BRACED_EXPANSION.sub("$VAR", word))
+        if words is None:
+            too_many = True
+        else:
+            expanded_words.extend(words)
+    positional = expanded_words
 
     def variable(word: str) -> bool:
         return word.startswith(("$", "`")) and not CURRENT_BRANCH_SUBSTITUTION.fullmatch(word)
@@ -542,8 +624,9 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
         return current_branch(repo, git_dir_path) if known else None
 
     settings = [c.replace(" ", "") for c in configs]
-    if environment_config and len(positional) <= 1:
-        mirror = True  # a refspec overrides remote.<name>.push, and git refuses one with remote.<name>.mirror
+    if environment_config and all(variable(word) for word in positional[1:]):
+        mirror = True  # a bare push, or refspecs that may all be empty; a refspec overrides remote.<name>.push,
+        # and git refuses one with remote.<name>.mirror
     if any(re.fullmatch(r"remote\..+\.mirror=(?!false$|no$|off$|0$).*", c) or re.fullmatch(r"remote\..+\.mirror", c) for c in settings):
         mirror = True  # remote.<name>.mirror makes a push behave as --mirror
     if len(positional) <= 1 and any(c.startswith("remote.") and ".push=" in c for c in settings):
@@ -553,14 +636,10 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     if len(positional) <= 1 and any(c in ("push.default=upstream", "push.default=tracking") or c.startswith("branch.")
                                     for c in settings):
         known = False  # the bare push goes to the configured upstream, not to a branch of the same name
-    branches: list[str | None] = []
+    branches: list[str | None] = [None] if too_many else []
     if not mirror:
         for spec in positional[1:]:
             plus = spec.startswith("+")
-            if BRACE_EXPANSION.search(spec):
-                if delete or plus or force or "{" in spec.split(":", 1)[0] or spec.startswith(("{", "+{")):
-                    branches.append(None)  # `{HEAD:main,feature}`: the shell makes it several refspecs
-                continue
             if spec.lstrip("+") == ":":
                 if plus or force:
                     mirror, branches = True, []  # the matching refspec: every branch both sides have
@@ -579,9 +658,6 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
             if CURRENT_BRANCH_SUBSTITUTION.fullmatch(destination):
                 # The shell runs it where it is, not in -C's repository.
                 branches.append(None if cwd is None or unknown else current_branch(cwd))
-                continue
-            if BRACE_EXPANSION.search(destination):
-                branches.append(None)  # `{main,feature}`: the shell makes it several refspecs
                 continue
             if "$" in destination or "`" in destination:
                 # A variable or a substitution: a glob of what it could be, the literal text before it and then
@@ -638,8 +714,36 @@ COMMAND_PREFIX_WORDS = {"{", "!", "then", "do", "else", "elif", "if", "while", "
 REBASE_VALUE_OPTIONS = {"--onto", "-X", "-s", "--strategy", "--strategy-option", "-x", "--exec", "-C"}
 
 
+HARMFUL_CONFIG_KEY = re.compile(r"remote\..+\.(?:mirror|push)|push\.default|include\..*|includeif\..*", re.IGNORECASE)
+
+
+def git_config_assignment_harmful(name: str, value: str | None) -> bool:
+    """Whether a GIT_CONFIG_* variable may make a push a mirror or send it elsewhere. COUNT and VALUE_n alone do not;
+    KEY_n does unless its literal key is harmless (a url.<...>.insteadOf whose subsection holds an expression is still
+    an insteadOf); GIT_CONFIG_PARAMETERS does unless every key in its literal value is harmless; GIT_CONFIG_GLOBAL and
+    GIT_CONFIG_SYSTEM do unless they are /dev/null. value None: not a literal."""
+    if name == "GIT_CONFIG_COUNT" or name.startswith("GIT_CONFIG_VALUE_"):
+        return False
+    if name.startswith("GIT_CONFIG_KEY_"):
+        if value is None or "$" in value:
+            key = (value or "").lower()
+            return not (key.startswith("url.") and key.endswith(".insteadof"))
+        return bool(HARMFUL_CONFIG_KEY.fullmatch(value))
+    if name == "GIT_CONFIG_PARAMETERS":
+        if value is None:
+            return True
+        # `'key'='value'` or `'key=value'` pairs: the key is what comes before the first `=` of each quoted chunk.
+        chunks = re.findall(r"'([^']*)'", value)
+        keys = [chunk.split("=", 1)[0] for chunk in chunks if "." in chunk.split("=", 1)[0]]
+        return not keys or any(HARMFUL_CONFIG_KEY.fullmatch(key) for key in keys)
+    if name in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
+        return value != "/dev/null"
+    return True
+
+
 class _ConfiguredByEnvironment:
-    """The branch context of a line that sets GIT_CONFIG_*: any push in it may be a mirror."""
+    """The branch context of a line that sets a harmful GIT_CONFIG_* (or a command that set a mirror setting): a bare
+    push in it, or one whose refspecs are all variables, may be a mirror."""
 
 
 CONFIGURED_BY_ENVIRONMENT = _ConfiguredByEnvironment()
@@ -698,25 +802,42 @@ GIT_CONFIG_READ_OPTIONS = {"--get", "--get-all", "--get-regexp", "--get-urlmatch
                            "--remove-section", "--rename-section", "--show-origin", "--show-scope", "--name-only"}
 
 
-def _sets_mirror_config(argv: list[str]) -> bool:
-    """Whether argv sets what makes a later bare push rewrite every branch: `git config` (or `git config set`) of
-    remote.<name>.mirror, remote.<name>.push, push.default=matching or an include, or `git remote add --mirror`. A
-    read (`--get`, one positional) does not."""
+GIT_CONFIG_VALUE_OPTIONS = {"-f", "--file", "--blob", "--type", "--comment", "--default", "--value"}
+
+
+def _config_setting(argv: list[str]) -> str | None:
+    """What argv sets that changes a later bare push: "mirror" for `git config` (or `git config set`) of a true
+    remote.<name>.mirror, remote.<name>.push or an include, or `git remote add --mirror[=push]`; "unknown" for
+    push.default matching, upstream or tracking (a bare force push then goes to branches the line does not name);
+    else None. A read (`--get`, one positional) sets nothing."""
     if os.path.basename(argv[0]) != "git":
-        return False
+        return None
     sub, rest, _ = _git_subcommand(argv[1:])
     if sub == "remote":
-        return rest[:1] == ["add"] and any(a == "--mirror" or a.startswith("--mirror=") for a in rest)
+        mirrors = rest[:1] == ["add"] and any(a in ("--mirror", "--mirror=push") for a in rest)
+        return "mirror" if mirrors else None
     if sub != "config" or any(a in GIT_CONFIG_READ_OPTIONS for a in rest):
-        return False
-    words = [a for a in rest if not a.startswith("-")]
+        return None
+    words, skip = [], False
+    for a in rest:
+        if skip:
+            skip = False
+        elif a in GIT_CONFIG_VALUE_OPTIONS:
+            skip = True  # `-f FILE`, `--type bool`: the value is not the key
+        elif not a.startswith("-"):
+            words.append(a)
     if words[:1] == ["set"]:
         words = words[1:]
     if len(words) < 2:
-        return False
+        return None
     key, value = words[0].lower(), words[1].lower()
-    return bool(re.fullmatch(r"remote\..+\.(?:mirror|push)|include\.path|includeif\..+\.path", key)) or \
-        (key == "push.default" and value in ("matching", "upstream", "tracking"))
+    if re.fullmatch(r"remote\..+\.mirror", key):
+        return None if value in ("false", "no", "off", "0") else "mirror"
+    if re.fullmatch(r"remote\..+\.push|include\.path|includeif\..+\.path", key):
+        return "mirror"
+    if key == "push.default" and value in ("matching", "upstream", "tracking"):
+        return "unknown"
+    return None
 
 
 def _shell_bodies(command: str, depth: int = 0) -> list[str]:
@@ -759,6 +880,9 @@ def _points_git_elsewhere(command: str) -> str | None:
                 continue
             if token == "--chdir" or token.startswith("--chdir="):
                 found = found or "elsewhere"  # env's or sudo's, wherever it comes
+            if env_options and skip:
+                skip, previous = skip - 1, token  # -u's value, then env's options go on
+                continue
             if env_options:
                 if token.startswith("-"):
                     if token in ("-C", "--chdir") or token.startswith("--chdir=") or (not token.startswith("--") and "C" in token[1:]):
@@ -777,7 +901,11 @@ def _points_git_elsewhere(command: str) -> str | None:
                 found = found or "elsewhere"
             if (at_start or assigning) and (ASSIGNMENT_WORD.match(token) or re.fullmatch(r"GIT_[A-Z_0-9]+", token)):
                 if GIT_CONFIG_ASSIGNMENT.match(token):
-                    return "config"
+                    name, _, value = token.partition("=")
+                    if git_config_assignment_harmful(name.rstrip("+"), value if "=" in token else None):
+                        return "config"
+                    previous = token
+                    continue
                 if GIT_ENVIRONMENT_ASSIGNMENT.match(token):
                     found = found or "elsewhere"
                 previous = token
@@ -814,16 +942,18 @@ def commands_with_branch_context(command: str, cwd: str | None):
     `git init`, `git rebase <upstream> <branch>`, `git stash branch`, `git branch -m`, `gh pr checkout`, `source`,
     `eval`, or a git subcommand given another repository), and for the whole line when it, or a shell body in it,
     defines a function, assigns GIT_DIR, GIT_WORK_TREE or GIT_COMMON_DIR, or gives env a directory. A line that assigns
-    GIT_CONFIG_* yields CONFIGURED_BY_ENVIRONMENT, which makes any push in it a mirror. A command can only make the
+    a harmful GIT_CONFIG_* (git_config_assignment_harmful), or follows a command that sets a mirror setting, yields
+    CONFIGURED_BY_ENVIRONMENT, which makes a bare push a mirror. A command can only make the
     branch unknown, never name it. A script or program run earlier in the line that switches branches is not seen, nor
     a git alias or a setting in git's config files."""
     pointed = _points_git_elsewhere(command)
     branch_cwd = CONFIGURED_BY_ENVIRONMENT if pointed == "config" else (None if pointed else cwd)
     for argv in _simple_commands(command):
         yield argv, branch_cwd
-        if _sets_mirror_config(argv):
-            branch_cwd = CONFIGURED_BY_ENVIRONMENT  # `git config remote.origin.mirror true && git push origin x`
-        elif branch_cwd is not CONFIGURED_BY_ENVIRONMENT and _changes_branch(argv):
+        setting = _config_setting(argv)
+        if setting == "mirror":
+            branch_cwd = CONFIGURED_BY_ENVIRONMENT  # `git config remote.origin.mirror true && git push origin`
+        elif branch_cwd is not CONFIGURED_BY_ENVIRONMENT and (setting == "unknown" or _changes_branch(argv)):
             branch_cwd = None
 
 

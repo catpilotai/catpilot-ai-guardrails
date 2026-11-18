@@ -29,7 +29,7 @@ What it scans, exactly (by file name; every other file is ignored):
                                  cannot be read; PowerShell is not read. On a runner the check cannot read (a matrix
                                  expression, a group with no labels) a step with no shell is read as bash, unless it
                                  holds what only PowerShell reads (`<#`, `Invoke-Expression`, `iex` but `iex -S`,
-                                 the `&` call operator, a space and a backtick ending a line), and then it cannot be
+                                 the `&` call operator, a single backtick ending a line), and then it cannot be
                                  read. The names in env: at every level say whether git is pointed elsewhere
                                  (GIT_DIR) or may mirror (GIT_CONFIG_*, or an env: that is an expression). Each step's `uses:`
                                  naming a deploy action (DEPLOY_ACTIONS) or a force-pushing action (PUSH_ACTIONS), and
@@ -113,6 +113,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from catpilot_guard import policy as policy_module  # noqa: E402
 from catpilot_guard.company_rules import matched_rules  # noqa: E402
+from catpilot_guard.destructive import git_config_assignment_harmful  # noqa: E402
 from catpilot_guard.deploy_targets import HOST, HOST_NAME, SUFFIX, UNKNOWN, Target, deploy_targets, host_covered  # noqa: E402
 
 MAX_FILE_BYTES = 1_048_576
@@ -306,16 +307,20 @@ def _strings(value: object) -> list:
     return []
 
 
-# Contexts whose value is a number or a commit hash, which cannot end a word or a refspec: read like a shell variable.
-SAFE_CONTEXT = re.compile(r"\$\{\{\s*github\.(?:run_id|run_number|run_attempt|sha|event\.pull_request\.number|event\.number)\s*\}\}")
+# Contexts a pull request's author can set (GitHub's script-injection guidance: event titles, bodies, messages, branch
+# names), unless the value is a number. Their text, which GitHub puts in before the shell runs, may end the word or the
+# refspec, so a destination taken from one is unknown; any other expression (step outputs, inputs, env, matrix, vars)
+# is the workflow's own and reads like a shell variable: `v${{ steps.v.outputs.major }}` is `v*`.
+ATTACKER_CONTEXT = re.compile(r"\bgithub\s*\.\s*(?:event\b(?!\s*\.\s*(?:number|pull_request\s*\.\s*number)\b)|head_ref\b)")
 
 
 def _expressions_as_variables(text: str) -> str:
-    """Each `${{ ... }}` as a shell variable, keeping the line count, so a value taken from one is unreadable. One that
-    can hold any text, which GitHub puts in before the shell runs, is the opaque placeholder; a number or a hash
-    (SAFE_CONTEXT) is an ordinary variable, so `bot/update-${{ github.run_id }}` reads as `bot/update-*`."""
-    text = SAFE_CONTEXT.sub("$CATPILOT_NUMBER", text)
-    return EXPRESSION.sub(lambda m: EXPRESSION_VARIABLE + "\n" * m.group(0).count("\n"), text)
+    """Each `${{ ... }}` as a shell variable, keeping the line count, so a value taken from one is unreadable: the
+    opaque placeholder for an expression that names an ATTACKER_CONTEXT, an ordinary variable for any other."""
+    def placeholder(m) -> str:
+        name = EXPRESSION_VARIABLE if ATTACKER_CONTEXT.search(m.group(0)) else "$CATPILOT_WORKFLOW_VALUE"
+        return name + "\n" * m.group(0).count("\n")
+    return EXPRESSION.sub(placeholder, text)
 
 
 def logical_lines(text: str, first_line: int) -> list:
@@ -462,6 +467,11 @@ def _scalar(node, name: str) -> str | None:
     return found
 
 
+class RawValue(str):
+    """A GIT_CONFIG_* env: value that is not a plain literal, kept as written so _git_environment can read its key's
+    literal parts; never substituted into a script."""
+
+
 def _env_level(node) -> tuple:
     """The `env:` of a workflow, job or step: (literal values by name, opaque). A value that is not a SAFE_LITERAL is
     None (unknown); opaque is True when an `env:` is not a mapping (an expression), which may set any name."""
@@ -473,7 +483,12 @@ def _env_level(node) -> tuple:
         for key, value in _pairs(env):
             if isinstance(key, yaml.ScalarNode):
                 literal = isinstance(value, yaml.ScalarNode) and SAFE_LITERAL.fullmatch(value.value)
-                values[key.value] = value.value if literal else None
+                if literal:
+                    values[key.value] = value.value
+                elif key.value.startswith("GIT_CONFIG_") and isinstance(value, yaml.ScalarNode):
+                    values[key.value] = RawValue(value.value)
+                else:
+                    values[key.value] = None
     return values, opaque
 
 
@@ -494,7 +509,7 @@ def resolve_script(text: str, env: dict) -> str:
     mentions without `$`) is not replaced, since the script may change it; nor is any other variable, which stays
     unknown."""
     def literal(name: str) -> str | None:
-        if env.get(name) is None:
+        if env.get(name) is None or isinstance(env.get(name), RawValue):
             return None
         if re.search(r"(?<![\w$])(?<!\$\{)%s(?!\w)" % re.escape(name), EXPRESSION.sub("", text)):
             return None
@@ -508,7 +523,8 @@ def resolve_script(text: str, env: dict) -> str:
 
 def resolve_input(value: str, env: dict) -> str:
     """An action input with each `${{ env.X }}` whose value is a literal replaced by it."""
-    return ENV_EXPRESSION.sub(lambda m: env[m.group(1)] if env.get(m.group(1)) is not None else m.group(0), value)
+    return ENV_EXPRESSION.sub(lambda m: env[m.group(1)] if env.get(m.group(1)) is not None and not isinstance(env.get(m.group(1)), RawValue)
+                              else m.group(0), value)
 
 
 def _scalar_inputs(step, env: dict) -> dict:
@@ -703,17 +719,8 @@ def _git_environment(all_levels: list) -> str:
         merged.update(values)
         opaque = opaque or level_opaque
 
-    def harmless(name: str) -> bool:
-        # A GIT_CONFIG_KEY_n naming a setting that cannot make a mirror (safe.directory, url.*.insteadOf), its
-        # VALUE_n and COUNT; anything else, or a key that is not a literal, may.
-        if name == "GIT_CONFIG_COUNT" or name.startswith("GIT_CONFIG_VALUE_"):
-            return True
-        if name.startswith("GIT_CONFIG_KEY_"):
-            key = (merged.get(name) or "").lower()
-            return bool(key) and not re.fullmatch(r"remote\..+\.(?:mirror|push)|push\.default|include\..*|includeif\..*", key)
-        return name == "GIT_CONFIG_GLOBAL" and merged.get(name) == "/dev/null"
-    if opaque or any(GIT_CONFIG_NAME.fullmatch(name) and not harmless(name) for name in names):
-        return "GIT_CONFIG_COUNT=1; "
+    if opaque or any(GIT_CONFIG_NAME.fullmatch(name) and git_config_assignment_harmful(name, merged.get(name)) for name in names):
+        return "GIT_CONFIG_GLOBAL=from-env; "  # an assignment the reader always counts (git_config_assignment_harmful)
     if names & GIT_PLACE_NAMES:
         return "GIT_DIR=elsewhere; "
     return ""

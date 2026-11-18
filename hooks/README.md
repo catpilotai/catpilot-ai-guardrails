@@ -188,12 +188,14 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   protected branch (also spelled `heads/X` or `refs/heads/X`, or as `@` or
   `HEAD`): `git push --force origin $BRANCH`, `"${TARGET}"`, `${B:-main}`,
   `release/$V`, `"ma$X"` and `"$P/main"` are blocked, while `feature/$TICKET`,
-  `"v$VERSION"` and a tag (`:refs/tags/$TAG`) are not. A variable whose value
+  `"v$VERSION"` and a tag (`:refs/tags/$TAG`) are not. Braces are expanded as
+  bash expands them (`:{feature,develop}` deletes both), up to 64 words. A variable whose value
   holds a space or a colon, which splits the word or the refspec, is not seen;
-  in the pull-request check a `${{ ... }}` in a destination is unknown, since
-  GitHub puts its text in before the shell runs. Brace expansion
-  (`{main,feature}`) is unknown, and a refspec splits at its last colon, as git
-  splits it. An ordinary push to a variable is not read at all. Three
+  in the pull-request check a `${{ ... }}` that names a context a pull
+  request's author sets (`github.event.*` other than a number, `github.head_ref`)
+  is unknown, since GitHub puts its text in before the shell runs, and any other
+  expression reads like a shell variable. A refspec splits at its last colon, as
+  git splits it. An ordinary push to a variable is not read at all. Three
   exceptions:
   - A substitution that asks git for the checked-out branch, as one quoted
     word (`"$(git branch --show-current)"`, `"$(git rev-parse --abbrev-ref
@@ -217,8 +219,11 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
     command's start, among a declaration's names (`export FOO GIT_DIR=...`),
     or behind a wrapper and its option values (`sudo -u bob`, `nice -n 5`,
     `timeout 60`); and when a variable comes before a git command's
-    subcommand, other than as the value of `-C`, `-c` or `--git-dir`. A line that assigns a `GIT_CONFIG_*` variable, which can set
-    `remote.<name>.mirror`, makes any push in it count as a mirror. These are
+    subcommand, other than as the value of `-C`, `-c` or `--git-dir`. A line
+    that assigns a `GIT_CONFIG_*` variable that can set `remote.<name>.mirror`
+    (not `GIT_CONFIG_COUNT` or `VALUE_n` alone, a key such as `safe.directory`
+    or `url.*.insteadOf`, or `GIT_CONFIG_GLOBAL=/dev/null`) makes a bare push
+    in it count as a mirror. These are
     read as shell words, with assignments only where they are assignments, so
     a mention inside a quoted message does not count. A script run earlier in
     the line that switches branches is not seen, nor a git alias (`git co`).

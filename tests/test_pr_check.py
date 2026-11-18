@@ -430,12 +430,22 @@ class EnvTests(unittest.TestCase):
         safe = "GIT_CONFIG_COUNT: '1'\nGIT_CONFIG_KEY_0: safe.directory\nGIT_CONFIG_VALUE_0: /w\n"
         self.assertEqual(self.fired(self.doc(step_env=safe, run="git push origin")), [])
         self.assertEqual(self.fired(self.doc(step_env="GIT_CONFIG_GLOBAL: /dev/null\n", run="git push origin")), [])
+        token = "GIT_CONFIG_COUNT: '1'\nGIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.T }}@github.com/.insteadOf\n"
+        self.assertEqual(self.fired(self.doc(step_env=token, run="git push origin")), [])
+        params = "GIT_CONFIG_PARAMETERS: \"'safe.directory'='/w'\"\n"
+        self.assertEqual(self.fired(self.doc(step_env=params, run="git push origin")), [])
+        bad = "GIT_CONFIG_PARAMETERS: \"'remote.origin.mirror=true'\"\n"
+        self.assertEqual(self.fired(self.doc(step_env=bad, run="git push origin")), ["protected-branches"])
         self.assertEqual(self.fired(self.doc(step_env="OTHER: x\n", run="git push origin feature")), [])
 
     def test_an_expression_in_a_destination_is_unknown(self):
         # GitHub puts the text in before the shell runs, so it may end the word or the refspec.
-        self.assertEqual(self.fired(self.doc(run='git push --force origin "fea${{ inputs.x }}"')), ["protected-branches"])
-        self.assertEqual(self.fired(self.doc(run='git push --force origin "feature/${{ inputs.x }}"')), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(run='git push --force origin "fea${{ github.head_ref }}"')), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(run='git push --force origin "feature/${{ github.event.pull_request.title }}"')), ["protected-branches"])
+        # The workflow's own values read like shell variables (GitHub's script-injection guidance names the event and
+        # head_ref as untrusted): a major-version tag move is not a protected branch (review of fe2f878).
+        self.assertEqual(self.fired(self.doc(run='git push -f origin "v${{ steps.semver.outputs.major }}"')), [])
+        self.assertEqual(self.fired(self.doc(run='git push -f origin "${{ inputs.branch }}"')), ["protected-branches"])
         # A tag is no branch, whatever the expression; a number or a hash cannot end the word (review of 816c933).
         self.assertEqual(self.fired(self.doc(run="git push --force origin refs/tags/${{ inputs.t }}")), [])
         self.assertEqual(self.fired(self.doc(run="git push --force origin bot/update-${{ github.run_id }}")), [])
@@ -444,7 +454,7 @@ class EnvTests(unittest.TestCase):
 
     def test_resolve_script_never_resolves_the_expression_placeholder(self):
         env = {"CATPILOT_EXPRESSION": "feature", "B": "feature"}
-        self.assertIn("$CATPILOT_EXPRESSION", pr_check.resolve_script("git push -f origin ${{ github.ref_name }}", env))
+        self.assertIn("$CATPILOT_EXPRESSION", pr_check.resolve_script("git push -f origin ${{ github.head_ref }}", env))
         self.assertEqual(pr_check.resolve_script("git push -f origin $B", env), "git push -f origin feature")
 
 
