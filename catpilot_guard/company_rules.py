@@ -14,7 +14,12 @@ Scope, stated exactly:
     rewrites every branch. Pushes are read the way the built-in destructive-operation check reads them
     (destructive.git_push_rewrites), through the same wrappers and `bash -c` bodies. A value ending in `/*`
     covers every branch under that prefix; case is ignored, as in the built-in check.
-  - Kind deploy_host: accepted in the policy and not acted on yet.
+  - Kind deploy_host, an allow-list: fires on a deploy or publish whose target no value of the rule covers.
+    catpilot_guard/deploy_targets.py says which commands deploy and to what: a named host (`scp dist/
+    deploy@web1.example.org:/srv`), a hosting service's own domain when the command shows no name (`vercel --prod`
+    deploys under vercel.app, so only a value `*.vercel.app` covers it), or a destination it cannot read (`rsync dist/
+    $HOST:/srv`), which no value covers. A value `*.D` covers every name under D; any other value covers that host.
+    Each deploy_host rule is its own allow-list, so list every approved host in one rule.
   - Modes (§2.3): block denies. monitor decides nothing and writes a would_deny line. ask acts as block unless
     the hook's own command line has --ask (decision 2: ask means a person decides first). A Claude Code run with
     a program that approves (`claude -p` with a permission-prompt tool, an Agent SDK canUseTool callback) sends
@@ -48,6 +53,7 @@ import sys
 
 from . import COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, event_for_host, write_decision, write_reason
 from . import policy as policy_module
+from .deploy_targets import deploy_targets, host_covered
 from .destructive import _simple_commands, git_push_rewrites
 
 MAX_INPUT_BYTES = 1_048_576
@@ -60,6 +66,7 @@ OPTIONS = ("--host", "--policy")
 ASK_FLAG = "--ask"  # a flag, not an option: it takes no value
 WHAT = {
     "protected_branch": "this push force-pushes to or deletes a branch the company protects",
+    "deploy_host": "this command deploys or publishes to a host the company has not approved",
 }
 
 
@@ -110,24 +117,28 @@ def record_evidence(event: str, hook_event: object = None, host: str | None = No
 def matched_rules(command: str, cwd: object, policy: policy_module.Policy) -> list:
     """The policy's rules this command fires, in policy order."""
     working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
+    kinds = {rule.kind for rule in policy.rules}
     pushes = []
-    for argv in _simple_commands(command):
-        if argv[0] == "git":
-            push = git_push_rewrites(argv[1:], working_dir)
-            if push is not None:
-                pushes.append(push)
-    if not pushes:
-        return []
+    if "protected_branch" in kinds:
+        for argv in _simple_commands(command):
+            if argv[0] == "git":
+                push = git_push_rewrites(argv[1:], working_dir)
+                if push is not None:
+                    pushes.append(push)
+    targets = deploy_targets(command, working_dir) if "deploy_host" in kinds else []
     fired = []
     for rule in policy.rules:
-        if rule.kind != "protected_branch":
-            continue
-        for mirror, branches in pushes:
-            if mirror or any(
-                branch and any(policy_module.branch_matches(value, branch) for value in rule.values) for branch in branches
-            ):
-                fired.append(rule)
-                break
+        if rule.kind == "protected_branch":
+            hit = any(
+                mirror or any(branch and any(policy_module.branch_matches(v, branch) for v in rule.values) for branch in branches)
+                for mirror, branches in pushes
+            )
+        elif rule.kind == "deploy_host":
+            hit = any(not any(host_covered(value, target) for value in rule.values) for target in targets)
+        else:
+            hit = False
+        if hit:
+            fired.append(rule)
     return fired
 
 

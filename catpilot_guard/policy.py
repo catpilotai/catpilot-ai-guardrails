@@ -36,7 +36,7 @@ MODES = ("monitor", "ask", "block")
 # The kinds a compiled policy may carry: those the validator accepts (tools/validate_overlay.py ACCEPTED_KINDS).
 # ENFORCED_KINDS are the ones the company-rules hook acts on; a rule of another known kind is carried and skipped.
 KINDS = ("protected_branch", "deploy_host")
-ENFORCED_KINDS = ("protected_branch",)
+ENFORCED_KINDS = ("protected_branch", "deploy_host")
 RULES_MAX = 50
 VALUES_MAX = 100
 VALUE_MAX_CHARS = 255

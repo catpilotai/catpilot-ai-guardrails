@@ -666,6 +666,10 @@ class Rule9LintTests(V2Case):
         self.assertEqual(vo.lint_overlay(vo.validate_structure(load(EXAMPLE_V1))), [])
 
     def test_a_kind_no_hook_acts_on_draws_a_warning(self):
+        # Every accepted kind has a consumer now; a kind without one would draw this warning instead of mode warnings.
+        patch = mock.patch.object(vo, "ENFORCED_KINDS", ("protected_branch",))
+        patch.start()
+        self.addCleanup(patch.stop)
         warnings = vo.lint_overlay(vo.validate_structure(self.data))
         self.assertIn(
             "enforcement.rules[1] (deploy-hosts): kind deploy_host is validated and compiled, and no hook acts on it in this release",
@@ -681,11 +685,15 @@ class Rule9LintTests(V2Case):
         data = self.mutated(modes)
         self.assertValid(data)
         warnings = vo.lint_overlay(vo.validate_structure(data))
-        # protected_branch has a host verification note (2026-11-17), so block on it draws no warning.
-        self.assertEqual(len(warnings), 2)
-        self.assertIn("(deploy-hosts): kind deploy_host is validated and compiled", warnings[0])
-        self.assertIn("(more-branches): mode ask differs by host", warnings[1])
-        self.assertIn("acts as block", warnings[1])
+        # protected_branch has a host verification note (2026-11-17), so block on it draws no warning, and
+        # deploy-hosts is in monitor.
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("(more-branches): mode ask differs by host", warnings[0])
+        self.assertIn("acts as block", warnings[0])
+        # Block on deploy_host, which has no host verification note yet, warns.
+        blocked = self.mutated(lambda d: d["enforcement"]["rules"][1].update(mode="block"))
+        self.assertIn("enforcement.rules[1] (deploy-hosts): mode block for kind deploy_host, which has no host verification note yet; consider monitor first",
+                      vo.lint_overlay(vo.validate_structure(blocked)))
         # Block on an enforced kind without a host verification note still warns.
         with mock.patch.object(vo, "HOST_VERIFIED_KINDS", ()):
             warnings = vo.lint_overlay(vo.validate_structure(data))
@@ -697,9 +705,13 @@ class Rule9LintTests(V2Case):
     def test_the_cli_prints_warnings_and_still_passes(self):
         out, err = io.StringIO(), io.StringIO()
         with tempfile.TemporaryDirectory() as tmp, pin_today(TODAY), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = vo.main([str(salted_copy(tmp))])
+            path = salted_copy(tmp)
+            path.write_text(path.read_text(encoding="utf-8").replace(
+                "    - id: deploy-hosts              # default_mode applies: monitor\n      kind: deploy_host\n",
+                "    - id: deploy-hosts\n      kind: deploy_host\n      mode: block\n"), encoding="utf-8")
+            code = vo.main([str(path)])
         self.assertEqual(code, 0, err.getvalue())
-        self.assertIn("WARNING: enforcement.rules[1] (deploy-hosts)", err.getvalue())
+        self.assertIn("WARNING: enforcement.rules[1] (deploy-hosts): mode block for kind deploy_host", err.getvalue())
         self.assertIn("OK: overlay for Example Org", out.getvalue())
         self.assertIn("2 enforcement rules: `compile` writes them as the policy the company-rules hook reads", out.getvalue())
         for value in ("release/*", "hotfix/*", "apps.example.org", TEST_SALT):

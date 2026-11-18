@@ -8,7 +8,7 @@ enforcement for that path only. Everything else in the repository is advice.
 | --- | --- | --- | --- | --- |
 | `claude-code/pretooluse-secrets.py` | Claude Code | `Bash` tool, PreToolUse | Denies a shell command that contains a literal credential (the secret-blocking patterns) with a plain-language reason. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md); earlier rows in the tested-runtimes table. |
 | `claude-code/pretooluse-write-secrets.py` (formerly `pretooluse-write-private-key.py`, kept as a compatibility entry point) | Claude Code; Codex (`apply_patch`) | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, and Codex's `apply_patch`, PreToolUse | Denies file content that contains a PEM private-key header or a literal credential matching the secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input, a missing sibling file, or any internal error. | Claude Code 2.1.312, 2026-10-27, under both file names: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
-| `claude-code/pretooluse-company-rules.py` | Claude Code; Codex; Copilot CLI | `Bash` tool, PreToolUse | The company's own enforcement rules, from a compiled policy (`tools/validate_overlay.py compile`): denies, asks the person about, or only logs a force push or deletion aimed at a branch the company protects, by each rule's mode (`block`, `ask`, `monitor`). Names the rule and the approved alternative, never a listed value. Never returns allow. A policy it cannot use applies no company rule and is logged; the built-in hooks are unaffected. Fails closed on malformed input. | Claude Code 2.1.326, Codex CLI 0.169.0 and Copilot CLI 1.0.113, 2026-11-17, `block` and `monitor` with a control run (on Copilot, probe and control in separate runs at one commit): [`evals/reports/2026.11.17-host-check-company-rules.md`](../evals/reports/2026.11.17-host-check-company-rules.md). |
+| `claude-code/pretooluse-company-rules.py` | Claude Code; Codex; Copilot CLI | `Bash` tool, PreToolUse | The company's own enforcement rules, from a compiled policy (`tools/validate_overlay.py compile`): denies, asks the person about, or only logs a force push or deletion aimed at a branch the company protects, or a deploy to a host it has not approved, by each rule's mode (`block`, `ask`, `monitor`). Names the rule and the approved alternative, never a listed value. Never returns allow. A policy it cannot use applies no company rule and is logged; the built-in hooks are unaffected. Fails closed on malformed input. | Claude Code 2.1.326, Codex CLI 0.169.0 and Copilot CLI 1.0.113, 2026-11-17, `block` and `monitor` with a control run (on Copilot, probe and control in separate runs at one commit): [`evals/reports/2026.11.17-host-check-company-rules.md`](../evals/reports/2026.11.17-host-check-company-rules.md). |
 | `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` tool, PreToolUse | Parses the command like a shell and denies a high-blast-radius operation (partial cloud-config resets, auto-approved infrastructure destroys, `kubectl delete` of a namespace or with `--all`, a recursive delete of root, a system directory, home, a credential directory, or a bare variable, a force push or deletion aimed at a protected branch, credential exfiltration pipes) with the safer alternative. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 
 Each file in `claude-code/` is a thin shim. The check itself is a module of the
@@ -272,8 +272,45 @@ blocked on stale values, and each match still writes `would_deny`.
   covers every branch under the prefix; case is ignored. A value is a branch
   name: the validator refuses a `refs/` prefix and names longer than 255
   characters. An ordinary push is not a match.
-- Kind `deploy_host`: validated and compiled, and not acted on yet. `compile`
-  and the validator say so.
+- Kind `deploy_host`, an allow-list: a deploy or publish whose target no value
+  of the rule covers fires the rule. `catpilot_guard/deploy_targets.py` reads
+  the target, through the same splitting and wrappers, and through package
+  runners (`npx`, `pnpm dlx`, `yarn dlx`, `npm exec`, `bunx`):
+  - a hosting service's own domain, for `vercel`/`vc` (every run except help,
+    version and its non-deploy subcommands, such as `env`, `link`, `pull`,
+    `whoami`, `dev`, `build`, `curl`; any other first word is the directory it
+    deploys, which may not exist until a build before it runs), `netlify deploy`, `fly`/`flyctl` `deploy`,
+    `launch` (unless `--no-deploy`) or `machine run`, `firebase deploy` and
+    `hosting:channel:deploy`, `wrangler deploy`/`publish`/`versions deploy`/
+    `versions upload` and `wrangler pages deploy`, `surge` (except its account
+    commands), `gh-pages`, `railway up`/`redeploy`, `amplify publish`, and
+    `git push` to a remote named `heroku` or a `git.heroku.com` URL: the
+    service's names end in `vercel.app`, `netlify.app`, `fly.dev`, `web.app`,
+    `workers.dev`, `pages.dev`, `surge.sh`, `github.io`, `up.railway.app`,
+    `amplifyapp.com` and `herokuapp.com`, so only a value `*.vercel.app` (and so
+    on) covers one. A runner's package spec is read with its version and by its
+    package name (`npx vercel@latest`, `npx netlify-cli`, `npx firebase-tools`,
+    `npx @railway/cli`), as are `yarn`/`pnpm` scripts and tools (`yarn vercel`,
+    `pnpm dlx`, `yarn workspace web vercel`) and `npx -c '...'` strings;
+  - a named host: the remote destination of an `scp` or `rsync` upload
+    (`[user@]host:path`, `scp://`, `sftp://`, `rsync://`): the last path, when
+    it is remote, whatever the sources; a copy to a local path is a download.
+    Also the domain given to `surge`;
+  - a destination it cannot read, which no value covers: a variable (`rsync
+    dist/ $HOST:/srv`), an address in brackets (IPv6), or an SSH alias without
+    a dot (`scp f prod:/srv`, from `~/.ssh/config`), since every value needs a
+    dot.
+
+  Every `scp` or `rsync` upload to another machine counts, a backup to a dev
+  box included, so start a `deploy_host` rule in `monitor` and read the
+  `would_deny` counts before you block.
+
+  A value `*.D` covers every name under `D`; any other value covers that host
+  only. Each `deploy_host` rule is its own allow-list, so list every approved
+  host in one rule. Not covered: a deploy a script or CI job runs, a vendor not
+  listed here, a custom domain set in a project file (the service's own domain
+  is the target then), `ssh` sessions, `curl` uploads, container pushes and
+  cloud object copies.
 - The reason names the rule ids and the approved alternative, never a listed
   value, and never repeats the command. Evidence lines carry the rule id, the
   mode that applied and the policy's hash, never a command or a value.

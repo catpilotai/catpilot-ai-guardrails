@@ -29,9 +29,8 @@ version 2 (OVERLAY_V2.md §2.4). `python tools/validate_overlay.py salt FILE`
 sets a new random `salt` in a version 2 file, changing no other line.
 `python tools/validate_overlay.py compile FILE --out POLICY` validates the file
 and writes `enforcement` as the JSON policy the company-rules hook reads
-(catpilot_guard/company_rules.py), with each rule's mode resolved. In this
-release the hook acts on `protected_branch` rules; `deploy_host` rules are
-validated and compiled, and nothing acts on them yet.
+(catpilot_guard/company_rules.py), with each rule's mode resolved. The hook
+acts on `protected_branch` and `deploy_host` rules.
 """
 
 from __future__ import annotations
@@ -132,7 +131,7 @@ HOST_KINDS = ("deploy_host", "package_registry", "cloud_account")
 # Kinds a hook acts on in this release, through the compiled policy (`compile`) and the
 # company-rules hook (catpilot_guard/company_rules.py). A rule of another accepted kind is
 # validated and compiled, and nothing acts on it yet.
-ENFORCED_KINDS = ("protected_branch",)
+ENFORCED_KINDS = ("protected_branch", "deploy_host")
 # Kinds with a host verification note for their consumer, so `block` on them draws no lint
 # warning (§6.3 rule 9): protected_branch, denied on Claude Code, Codex and Copilot CLI
 # (evals/reports/2026.11.17-host-check-company-rules.md).
@@ -1395,7 +1394,7 @@ def main(argv: list[str] | None = None) -> int:
         rules = len((overlay.get("enforcement") or {}).get("rules", []))
         message += (
             f" Version 2, {rules} enforcement rule{'' if rules == 1 else 's'}: `compile` writes them as the policy the "
-            "company-rules hook reads, which acts on protected_branch rules in this release."
+            "company-rules hook reads, which acts on protected_branch and deploy_host rules."
         )
     print(message)
     return 0
