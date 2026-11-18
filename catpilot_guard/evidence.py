@@ -37,8 +37,8 @@ except ImportError:  # Windows has no fcntl: each line is still one write, witho
 SCHEMA_VERSION = 1
 # The closed list. Written today: deny and input_error (hooks), ask, would_deny and policy_error (the
 # company-rules hook), lookup (server), and rules_delivered, rules_expired and policy_error (the session-start
-# script); see docs/spec/EVIDENCE.md. A company rule an expiring exception relaxed writes would_deny with
-# exception_id: adding an event would change this list, which needs a new schema version (EVIDENCE.md §6).
+# script); see docs/spec/EVIDENCE.md. A company rule whose matches expiring exceptions all covered writes
+# would_deny with exception_id: adding an event would change this list, which needs a new schema version (EVIDENCE.md §6).
 EVENTS = ("rules_delivered", "rules_expired", "deny", "ask", "would_deny", "policy_error", "input_error", "lookup")
 MODES = ("monitor", "ask", "block")
 
@@ -94,7 +94,7 @@ def build_line(event: str, source: str, fields: dict | None = None) -> dict:
         if key == "mode" and value is not None and value not in MODES:
             raise ValueError("unknown mode")
         line[key] = value
-    # An exception id says which exception relaxed the rule a company-rules hook's would_deny line names
+    # An exception id says which exception covered matches of the rule a company-rules hook's would_deny line names
     # (OVERLAY_V2.md §3.1); on any other line, or without the rule, it would say nothing true. The schema refuses the same.
     if line.get("exception_id") is not None and (event != "would_deny" or source != HOOK_SOURCE or line.get("rule_id") is None):
         raise ValueError("exception_id belongs on a hook's would_deny line with its rule_id")

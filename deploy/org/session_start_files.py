@@ -829,11 +829,13 @@ def codex_event(tool: str, command: str, cwd: Path) -> str:
                        "tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)})
 
 
-def run_hook(argv: list, event: str, home: Path, timeout: int):
+def run_hook(argv: list, event: str, home: Path, timeout: int, extra_env: dict | None = None):
     """A CompletedProcess, or a sentence saying why there is none."""
+    env = clean_env(home)
+    env.update(extra_env or {})
     try:
         return subprocess.run(argv, input=event, capture_output=True, encoding="utf-8", errors="replace",
-                              timeout=timeout, env=clean_env(home), cwd=str(home))
+                              timeout=timeout, env=env, cwd=str(home))
     except subprocess.TimeoutExpired:
         return "did not finish within the %ds hook timeout" % timeout
     except OSError as exc:
@@ -1034,10 +1036,19 @@ def _log_entries(log: Path) -> list:
 
 
 def logged_would_deny(entries: list, rule_id: str, excepted: bool) -> bool:
-    """Whether the company-rules hook wrote a would_deny line for rule_id, carrying an exception_id when the probe was
-    excepted: the proof that a run which decided nothing still read the rule."""
+    """Whether the company-rules hook wrote a would_deny line for rule_id, carrying an exception_id exactly when the
+    probe was excepted: the proof that a run which decided nothing still read the rule, and its exceptions."""
     return any(e.get("event") == "would_deny" and e.get("hook") == "pretooluse-company-rules" and e.get("rule_id") == rule_id
-               and (not excepted or bool(e.get("exception_id"))) for e in entries)
+               and bool(e.get("exception_id")) == excepted for e in entries)
+
+
+def logged_a_rule(entries: list) -> bool:
+    """Whether the company-rules hook wrote a deny, ask or would_deny line: never right for a harmless command."""
+    return any(e.get("hook") == "pretooluse-company-rules" and e.get("event") in ("deny", "ask", "would_deny") for e in entries)
+
+
+# What the hook was expected to do, for a FAIL line: "expected it to deny a force push ...".
+EXPECTED_WORDS = {"deny": "deny", "ask": "ask the person about", "none": "log, without blocking,"}
 
 
 def policy_errors(log: Path) -> list:
@@ -1184,8 +1195,11 @@ def company_commands(host: str, managed: Path, prefer_tomllib: bool):
 def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, prefer_tomllib: bool = True,
                          copilot_dir: Path | None = None) -> int:
     """For each tool with a compiled policy: the files, the hook run directly on a harmless command and on a probe
-    for the first protected_branch rule, and the hook as the tool's managed file registers it. A policy the hook
-    refuses (wrong owner, writable by others, malformed) shows as a policy_error line, which is a FAIL here."""
+    for the first protected_branch rule (and the first deploy_host rule), and the hook as the tool's managed file
+    registers it. A policy the hook refuses (wrong owner, writable by others, malformed) shows as a policy_error line,
+    which is a FAIL here. A probe expected to decide nothing (a monitor rule, an expired file, an excepted branch)
+    must also write a would_deny line for its rule, with an exception_id exactly when excepted, since a hook that
+    reads no rule decides nothing too; and the harmless command must write no rule line."""
     report = Report()
     tools = [(CLAUDE_CODE, cc_dir), (CODEX, codex_dir)] + ([(COPILOT, copilot_dir)] if copilot_dir is not None else [])
     for host, managed in tools:
@@ -1241,17 +1255,20 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             except OSError as exc:
                 result = "could not start (%s)" % exc.__class__.__name__
             got = company_decision(result, copilot=(host == COPILOT))
+            added = _log_entries(log)[before:]
             if got == expected and expected == "none" and probe_rule is not None and \
-                    not logged_would_deny(_log_entries(log)[before:], probe_rule, excepted):
+                    not logged_would_deny(added, probe_rule, excepted):
                 # Deciding nothing is also what a hook that reads no rule does: the would_deny line is the proof.
                 report.line("FAIL", "%s --host %s decided nothing on %s, as expected, but wrote no would_deny line for %s%s, "
                             "so it may not have read the rule" % (COMPANY_HOOK, host, what, probe_rule,
-                                                                  " with the exception's id" if excepted else ""))
+                                                                  " with the exception's id" if excepted else " without an exception id"))
+            elif got == expected and probe_rule is None and logged_a_rule(added):
+                report.line("FAIL", "%s --host %s let %s through but wrote a company-rule line for it" % (COMPANY_HOOK, host, what))
             elif got == expected:
                 word = "passes" if command == "ls" else {"deny": "denies", "ask": "asks", "none": "logs"}[expected]
                 report.line(word, "%s --host %s %s %s" % (COMPANY_HOOK, host, verb, what))
             else:
-                report.line("FAIL", "%s --host %s: expected it to %s %s, got %s" % (COMPANY_HOOK, host, expected, what, got))
+                report.line("FAIL", "%s --host %s: expected it to %s %s, got %s" % (COMPANY_HOOK, host, EXPECTED_WORDS[expected], what, got))
         for label in sorted(set(policy_errors(log))):
             report.line("FAIL", "the company-rules hook for %s could not use its policy (%s); it applies no company rule "
                         "until this is fixed: the policy and its directory must be owned like the hooks and writable only "
@@ -1276,15 +1293,29 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             if "CATPILOT_EVIDENCE_SYSLOG" in command:
                 report.line("skipped", "%s command for %s (it forwards evidence to syslog; check it in a session)" % (managed_file, COMPANY_HOOK))
                 continue
-            for probe_command, modes, what, _, _ in runs:
+            # A command without its own CATPILOT_EVIDENCE_LOG prefix gets this one; the standard prefix names the same
+            # file under verify's temporary home. Another path of the command's own cannot be read back.
+            own_log = "CATPILOT_EVIDENCE_LOG=" in command and EVIDENCE_PREFIX not in command
+            for probe_command, modes, what, probe_rule, excepted in runs:
                 expected = expected_effect(host, modes, has_ask_flag(command))
                 verb = "lets through" if probe_command == "ls" else EFFECT_WORDS[expected]
-                got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_command, home), home, timeout),
+                before = len(_log_entries(registered_log))
+                got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_command, home), home, timeout,
+                                                {"CATPILOT_EVIDENCE_LOG": str(registered_log)}),
                                        copilot=(host == COPILOT))
-                if got == expected:
+                proven = expected != "none" or probe_rule is None or \
+                    logged_would_deny(_log_entries(registered_log)[before:], probe_rule, excepted)
+                if got == expected and proven:
                     report.line("wired", "%s runs %s, which %s %s" % (managed_file, COMPANY_HOOK, verb, what))
+                elif got == expected and own_log:
+                    report.line("note", "%s runs %s, which decided nothing on %s, as expected; it writes evidence to a path of "
+                                "its own, so verify cannot confirm it read rule %s" % (managed_file, COMPANY_HOOK, what, probe_rule))
+                elif got == expected:
+                    report.line("FAIL", "%s runs %s, which decided nothing on %s, as expected, but wrote no would_deny line for "
+                                "%s%s, so it may not read the rule (a --policy it cannot load, say)" % (
+                                    managed_file, COMPANY_HOOK, what, probe_rule, " with the exception's id" if excepted else " without an exception id"))
                 else:
-                    report.line("FAIL", "%s command for %s: expected it to %s %s, got %s" % (managed_file, COMPANY_HOOK, expected, what, got))
+                    report.line("FAIL", "%s command for %s: expected it to %s %s, got %s" % (managed_file, COMPANY_HOOK, EXPECTED_WORDS[expected], what, got))
             for label in sorted(set(policy_errors(registered_log))):
                 report.line("FAIL", "%s runs %s with a policy it could not use (%s)" % (managed_file, COMPANY_HOOK, label))
     return 0

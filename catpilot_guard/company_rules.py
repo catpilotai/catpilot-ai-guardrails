@@ -53,7 +53,7 @@ Scope, stated exactly:
   - Fails closed on its input: a hook event it cannot read exits 2, which the host treats as a block.
 
 Evidence lines (CATPILOT_EVIDENCE_LOG): deny, ask, would_deny and policy_error with the rule id, the mode that
-applied, the policy's source SHA-256 and the session id, and on a would_deny line an exception caused, the exception id.
+applied, the policy's source SHA-256 and the session id, and on a would_deny line for a rule whose matches exceptions all covered, the exception id.
 Never a command, a branch, a value or a path.
 
 Standard library only. Python 3.8+.
@@ -228,7 +228,7 @@ def decide(event: dict, host: str | None, policy: policy_module.Policy | None, t
     effects = []
     for rule, excepted_by in matched:
         mode = "monitor" if expired else rule.mode
-        # A rule an exception relaxed decides nothing, whatever its mode.
+        # A rule whose matches exceptions all covered decides nothing, whatever its mode.
         effect = None if excepted_by else {"block": "deny", "ask": "ask" if asking else "deny", "monitor": None}[mode]
         effects.append((rule, mode, effect, excepted_by))
     final = "deny" if any(e == "deny" for _, _, e, _ in effects) else "ask" if any(e == "ask" for _, _, e, _ in effects) else None

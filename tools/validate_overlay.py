@@ -995,10 +995,12 @@ def _enforcement_values_in_model_text(model: dict, enforcement: dict) -> list[st
     identifiers.extend((f"enforcement.exceptions[{i}].id", exc["id"]) for i, exc in enumerate(enforcement.get("exceptions", [])))
     kinds = {rule["id"]: rule["kind"] for rule in enforcement["rules"]}
     # Each rule's values, then each exception's allows, which are values of its rule's kind (§3.1).
-    sources = [(f"enforcement rule {rule['id']!r}", rule["kind"], rule["values"]) for rule in enforcement["rules"]]
-    sources += [(f"enforcement exception {exc['id']!r}", kinds[exc["rule"]], exc["allows"]) for exc in enforcement.get("exceptions", [])]
+    sources = [(f"enforcement rule {rule['id']!r}", f"enforcement.rules[{i}]", rule["kind"], rule["values"])
+               for i, rule in enumerate(enforcement["rules"])]
+    sources += [(f"enforcement exception {exc['id']!r}", f"enforcement.exceptions[{i}]", kinds[exc["rule"]], exc["allows"])
+                for i, exc in enumerate(enforcement.get("exceptions", []))]
     errors = []
-    for name, kind, values in sources:
+    for name, position, kind, values in sources:
         if kind not in HOST_KINDS:
             continue
         needles = [n for value in values for n in _needles(kind, value)]
@@ -1009,7 +1011,11 @@ def _enforcement_values_in_model_text(model: dict, enforcement: dict) -> list[st
                 errors.append(f"{path}: {message}")
         for path, ident in identifiers:
             if any(f"-{s}-" in f"-{ident}-" for s in slugs):
-                errors.append(f"{path}: {message}")
+                if path.startswith("enforcement."):
+                    # The id is the offending text, so the error names the source by position, never by id.
+                    errors.append(f"{path}: names a value of {position}; enforcement values never appear in model-facing text")
+                else:
+                    errors.append(f"{path}: {message}")
     return errors
 
 

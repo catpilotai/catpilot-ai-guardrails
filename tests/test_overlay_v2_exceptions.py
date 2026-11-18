@@ -225,8 +225,10 @@ class ValidationTests(ExceptionCase):
                     self.assertNotIn("preview.analytics", error)
         # Enforcement ids too: a rule id is in deny reasons, and both are in evidence (review of #134).
         data = self.mutated(lambda d: d["enforcement"]["exceptions"][0].update(id="exception-preview-analytics-example-org"))
-        self.assertIn("enforcement.exceptions[0].id: names a value of enforcement exception 'exception-preview-analytics-example-org'; "
+        self.assertIn("enforcement.exceptions[0].id: names a value of enforcement.exceptions[0]; "
                       "enforcement values never appear in model-facing text", self.errors(data))
+        for error in self.errors(data):
+            self.assertNotIn("example-org", error)  # the id is the offending text: never repeated
         rules = self.data["enforcement"]["rules"]
         index = next(i for i, r in enumerate(rules) if r["kind"] == "deploy_host")
         value = next(v for v in rules[index]["values"] if not v.startswith("*."))
@@ -237,11 +239,20 @@ class ValidationTests(ExceptionCase):
             for exc in d["enforcement"]["exceptions"]:
                 if exc["rule"] == "deploy-hosts":
                     exc["rule"] = renamed
-        self.assertTrue(any(e.startswith("enforcement.rules[%d].id: names a value of enforcement rule" % index)
-                            for e in self.errors(self.mutated(rename))))
+        errors = self.errors(self.mutated(rename))
+        self.assertIn("enforcement.rules[%d].id: names a value of enforcement.rules[%d]; enforcement values never appear in "
+                      "model-facing text" % (index, index), errors)
+        for error in errors:
+            self.assertNotIn(renamed, error)
         # A branch exception's values are ordinary words, as a protected_branch rule's are: no rule 7 error.
         data = self.with_exceptions(exception(allows=["external"]))
         self.assertEqual(self.errors(data), [])
+
+    def test_rule_branch_values_are_deduplicated_ignoring_case(self):
+        rules = self.data["enforcement"]["rules"]
+        index = next(i for i, r in enumerate(rules) if r["kind"] == "protected_branch")
+        data = self.mutated(lambda d: d["enforcement"]["rules"][index]["values"].append(d["enforcement"]["rules"][index]["values"][0].upper()))
+        self.assertRejects(data, "values[%d]: duplicates an earlier value of this rule" % len(rules[index]["values"]))
 
     def test_the_secret_scan_covers_exceptions(self):
         data = self.with_exceptions(exception(approver_role="token=abcdef123456"), exception(id="exception-key", allows=["AKIAIOSFODNN7EXAMPLE"]))
@@ -788,6 +799,20 @@ class VerifyProbeTests(unittest.TestCase):
             got = effect(cr.decide(bash(command), "claude-code", policy, today=TODAY))
         self.assertEqual(got, expected, command)
         return expected
+
+    def test_logged_would_deny_needs_the_rule_and_an_exception_id_exactly_when_excepted(self):
+        line = {"event": "would_deny", "hook": "pretooluse-company-rules", "rule_id": "protected-branches"}
+        with_id = dict(line, exception_id="exception-x")
+        check = self.helper.logged_would_deny
+        self.assertTrue(check([line], "protected-branches", False))
+        self.assertTrue(check([with_id], "protected-branches", True))
+        self.assertFalse(check([line], "protected-branches", True))  # excepted, but no exception was applied
+        self.assertFalse(check([with_id], "protected-branches", False))  # an exception applied where none covers
+        self.assertFalse(check([line], "deploy-hosts", False))
+        self.assertFalse(check([dict(line, event="deny")], "protected-branches", False))
+        self.assertFalse(check([dict(line, hook="pretooluse-destructive-ops")], "protected-branches", False))
+        self.assertTrue(self.helper.logged_a_rule([dict(line, event="deny")]))
+        self.assertFalse(self.helper.logged_a_rule([{"event": "policy_error", "hook": "pretooluse-company-rules"}]))
 
     def test_the_branch_probe_picks_a_branch_no_exception_allows(self):
         cases = {

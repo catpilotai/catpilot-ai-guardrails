@@ -41,7 +41,7 @@ value for them, and are left out otherwise.
 | `policy_sha256` | server, session start, company-rules hook | SHA-256 of the company rules file's bytes. Server: on every call where the file was read and parsed, error answers included; absent with no file, a missing file, or one that fails the structure check. Session start: the hash the private build recorded, on `rules_delivered` and `rules_expired`. Company-rules hook: the hash its compiled policy records, on `deny`, `ask` and `would_deny`. |
 | `block_chars`, `block_lines` | session start | On `rules_delivered`: the size of `company-checklist.md` in characters and in lines. Sizes only, so an administrator can see a block that is over a host's budget. |
 | `rule_id` | company-rules hook | The id of the company rule that matched ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.1), on `deny`, `ask` and `would_deny`. When several rules match one command, each writes its own line. |
-| `mode` | company-rules hook | The mode that applied to that rule: `monitor`, `ask` or `block` ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.3), and `monitor` for every rule once the rules file has expired. On a `would_deny` line with `exception_id`, the rule's own mode, which the exception set aside. The built-in checks have no mode. |
+| `mode` | company-rules hook | The mode that applied to that rule: `monitor`, `ask` or `block` ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.3), and `monitor` for every rule once the rules file has expired. On a `would_deny` line with `exception_id`, the rule's own mode, whether or not that mode would have decided anything. The built-in checks have no mode. |
 | `exception_id` | company-rules hook | The id of an expiring exception that covered something the rule `rule_id` names matched ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §3.1), when exceptions covered all of that rule's matches, so the rule decided nothing. Written whether or not the rule would have decided anything (a `monitor` rule would not) and whether or not another rule decided the command. Only on `would_deny`, always with `rule_id`: one line per exception that covered something the rule matched. Absent unless exceptions covered all of the rule's matches. Same shape as `rule_id`. |
 | `hook` | hooks | `pretooluse-secrets`, `pretooluse-write-secrets`, `pretooluse-destructive-ops` or `pretooluse-company-rules`. |
 | `tool` | all | Hooks: the tool checked (`Bash`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, or Codex's `apply_patch`). Server: the MCP tool called. |
@@ -106,7 +106,7 @@ value to any other list, keeps version 1. The `session-start` source, the
 `codex` host, and the `session_source`, `block_chars`, `block_lines` and
 `exception_id` fields were added this way, so a session-start line is version
 1 too, and so is a hook line with `host` `codex`. That rule is why an
-exception that changed a decision writes `would_deny` with `exception_id`
+exception that covered all of a rule's matches writes `would_deny` with `exception_id`
 rather than an event of its own. Validate a line
 against the schema in the release that wrote it.
 

@@ -95,7 +95,7 @@ def summarize_lines(lines: list[str]) -> dict[str, Any]:
             rule_id = entry.get("rule_id")
             exception_id = entry.get("exception_id")
             if event == "would_deny" and isinstance(exception_id, str) and exception_id and isinstance(rule_id, str) and rule_id:
-                # An expiring exception relaxed the rule: counted apart, so would_deny keeps counting what monitor mode
+                # Expiring exceptions covered the rule's matches: counted apart, so would_deny keeps counting what monitor mode
                 # or an expired file would have blocked.
                 used = company_by_exception.setdefault(exception_id, {"rule": rule_id, "count": 0})
                 used["rule"], used["count"] = rule_id, used["count"] + 1

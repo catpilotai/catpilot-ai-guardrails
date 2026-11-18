@@ -531,6 +531,11 @@ class CompileTests(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), "{}")
 
 
+def vo_prefix() -> str:
+    """The evidence prefix install.sh puts on each hook command."""
+    return 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl"'
+
+
 class DeployTests(unittest.TestCase):
     """install.sh --overlay with an enforcement section, verify.sh and uninstall.sh, as root would run them."""
 
@@ -604,6 +609,43 @@ class DeployTests(unittest.TestCase):
         verify = self.run_script("verify.sh")
         self.assertNotEqual(verify.returncode, 0)
         self.assertIn("but wrote no would_deny line for trial-branches", verify.stdout)
+
+    def test_verify_needs_the_exception_id_on_an_excepted_probe(self):
+        until = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+        text = self.rules.read_text(encoding="utf-8").replace(
+            "  exceptions:\n",
+            '  exceptions:\n    - {id: exception-all-branches, rule: protected-branches, allows: ["main", "release/*", "hotfix/*"], '
+            'approver_role: "Release manager", expires_on: %s}\n' % until, 1)
+        self.rules.write_text(text, encoding="utf-8")
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        verify = self.run_script("verify.sh")
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+        self.assertIn("allowed by an active exception: the rule decides nothing", verify.stdout)
+        self.assertRegex(verify.stdout, r"wired\s+\S*managed-settings.json runs pretooluse-company-rules.py, which logs")
+        for managed in (self.cc, self.codex):
+            (managed / "catpilot-guardrails" / "hooks" / "pretooluse-company-rules.py").write_text("print('{}')\n")
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("but wrote no would_deny line for protected-branches with the exception's id", verify.stdout)
+
+    def test_verify_fails_a_registered_command_that_reads_no_rule(self):
+        # Review of #134: the registered command, not only the hook run directly, must show it read the rule. Here it
+        # has no evidence prefix and a --policy it cannot load, so on an all-monitor policy it decides nothing.
+        text = self.rules.read_text(encoding="utf-8").replace("      mode: block\n", "      mode: monitor\n", 1)
+        self.rules.write_text(text, encoding="utf-8")
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        self.assertEqual(self.run_script("verify.sh").returncode, 0)
+        path = self.cc / "managed-settings.json"
+        settings = json.loads(path.read_text(encoding="utf-8"))
+        for group in settings["hooks"]["PreToolUse"]:
+            for hook in group["hooks"]:
+                if "pretooluse-company-rules.py" in hook["command"]:
+                    command = hook["command"].replace(vo_prefix(), "").strip()
+                    hook["command"] = re.sub(r'--policy "[^"]*"', '--policy "/nonexistent/company-policy.json"', command)
+        path.write_text(json.dumps(settings), encoding="utf-8")
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("so it may not read the rule", verify.stdout)
 
     def test_verify_fails_a_registered_hook_without_a_policy(self):
         self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
