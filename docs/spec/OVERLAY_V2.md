@@ -148,7 +148,10 @@ time.
 A `compile` step, designed with the hook work, writes a JSON policy with the
 enforcement rules, `expires_on` and the source file's SHA-256. A hook reads it
 only from a path on its own command line, root-owned like the hook scripts,
-never from the project, the home directory or an environment variable.
+never from the project, the home directory or an environment variable. On
+Windows "root-owned" is read from the access list: owned by Administrators,
+SYSTEM or TrustedInstaller, and writable by no one else
+([`WINDOWS.md`](./WINDOWS.md) §3.1).
 
 A deny reason would read, for example: "Catpilot company rule `deploy-hosts`:
 this deploy targets a host the company has not approved. Use instead: Internal
