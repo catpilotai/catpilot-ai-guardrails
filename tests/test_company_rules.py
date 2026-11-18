@@ -626,7 +626,7 @@ class DeployTests(unittest.TestCase):
             (managed / "catpilot-guardrails" / "hooks" / "pretooluse-company-rules.py").write_text("print('{}')\n")
         verify = self.run_script("verify.sh")
         self.assertNotEqual(verify.returncode, 0)
-        self.assertIn("its evidence has no would_deny line for protected-branches from this policy, with the exception's id", verify.stdout)
+        self.assertIn("its evidence has no would_deny line for protected-branches with the exception's id from this policy", verify.stdout)
         # A hook that logs the rule but ignores the exception (no exception_id) fails too (review of #134).
         stub = (
             "import json, os, sys\n"
@@ -664,7 +664,7 @@ class DeployTests(unittest.TestCase):
         path.write_text(json.dumps(settings), encoding="utf-8")
         verify = self.run_script("verify.sh")
         self.assertNotEqual(verify.returncode, 0)
-        self.assertIn("verify found no would_deny line for", verify.stdout)
+        self.assertRegex(verify.stdout, r"evidence has no would_deny line for|with a command verify cannot check")
 
     def test_verify_fails_registered_commands_that_cannot_prove_they_read_the_rule(self):
         # Review of #134: a no-op that mentions the hook, the wrong --host, and a command writing evidence where verify
@@ -677,7 +677,6 @@ class DeployTests(unittest.TestCase):
         for label, rewrite in {
             "a no-op": lambda c: "echo '{}' # pretooluse-company-rules.py CATPILOT_EVIDENCE_LOG=",
             "the wrong host": lambda c: c.replace("--host claude-code", "--host codex") if "--host claude-code" in c else c + " --host codex",
-            "evidence elsewhere": lambda c: c.replace(vo_prefix(), 'CATPILOT_EVIDENCE_LOG=/dev/null'),
         }.items():
             with self.subTest(case=label):
                 settings = json.loads(original)
@@ -688,9 +687,41 @@ class DeployTests(unittest.TestCase):
                 path.write_text(json.dumps(settings), encoding="utf-8")
                 verify = self.run_script("verify.sh")
                 self.assertNotEqual(verify.returncode, 0, verify.stdout)
-                self.assertIn("verify found no would_deny line for", verify.stdout)
+                self.assertRegex(verify.stdout, r"evidence has no would_deny line for|with a command verify cannot check")
+        # Evidence sent elsewhere in a session is pointed at verify's log for the probes, so a working hook passes.
+        for prefix in ('CATPILOT_EVIDENCE_LOG="$HOME/Library/Logs/catpilot/evidence.jsonl"', "CATPILOT_EVIDENCE_SYSLOG=1"):
+            with self.subTest(prefix=prefix):
+                path.write_text(original.replace(vo_prefix().replace('"', '\\"'), prefix.replace('"', '\\"')), encoding="utf-8")
+                self.assertIn(prefix.split("=")[0], path.read_text(encoding="utf-8"))
+                verify = self.run_script("verify.sh")
+                self.assertEqual(verify.returncode, 0, verify.stdout)
         path.write_text(original, encoding="utf-8")
         self.assertEqual(self.run_script("verify.sh").returncode, 0)
+
+    def test_verify_fails_a_hook_that_decides_without_reading_the_rule(self):
+        # On the example's block rule the probe decides (deny), and the proof line is still needed (review of #134).
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        self.assertEqual(self.run_script("verify.sh").returncode, 0)
+        hooks = self.cc / "catpilot-guardrails" / "hooks"
+        original = (hooks / "pretooluse-company-rules.py").read_text()
+        # Another hook under the company hook's name: it denies a force push to main, but reads no company rule.
+        (hooks / "pretooluse-company-rules.py").write_text((hooks / "pretooluse-destructive-ops.py").read_text())
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("rule line for protected-branches", verify.stdout)
+        (hooks / "pretooluse-company-rules.py").write_text(original)
+        # A stale copy of the policy: the hook decides, but from another policy.
+        policy = self.cc / "catpilot-guardrails" / "policy" / "company-policy.json"
+        stale = policy.with_name("company-policy-stale.json")
+        data = json.loads(policy.read_text(encoding="utf-8"))
+        data["source_sha256"] = "f" * 64
+        stale.write_text(json.dumps(data), encoding="utf-8")
+        os.chmod(stale, 0o644)
+        path = self.cc / "managed-settings.json"
+        path.write_text(path.read_text(encoding="utf-8").replace("company-policy.json", "company-policy-stale.json"), encoding="utf-8")
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("a stale copy", verify.stdout)
 
     def test_verify_fails_a_registered_hook_without_a_policy(self):
         self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)

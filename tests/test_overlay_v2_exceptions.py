@@ -236,6 +236,11 @@ class ValidationTests(ExceptionCase):
         self.assertIn("overlay.owner: names a value of enforcement.exceptions[0]; enforcement values never appear in model-facing text", errors)
         for error in errors:
             self.assertNotIn("example-org", error)
+        # An id holding another source's value is named by position too (review of #134).
+        crossed = self.mutated(lambda d: (d["enforcement"]["exceptions"][0].update(id="exception-apps-example-org"),
+                                          d.update(owner="ops@preview.analytics.example.org")))
+        for error in self.errors(crossed):
+            self.assertNotIn("apps-example-org", error)
         rules = self.data["enforcement"]["rules"]
         index = next(i for i, r in enumerate(rules) if r["kind"] == "deploy_host")
         value = next(v for v in rules[index]["values"] if not v.startswith("*."))
@@ -807,19 +812,46 @@ class VerifyProbeTests(unittest.TestCase):
         self.assertEqual(got, expected, command)
         return expected
 
-    def test_logged_would_deny_needs_the_rule_and_an_exception_id_exactly_when_excepted(self):
-        line = {"event": "would_deny", "hook": "pretooluse-company-rules", "rule_id": "protected-branches"}
-        with_id = dict(line, exception_id="exception-x")
-        check = self.helper.logged_would_deny
-        self.assertTrue(check([line], "protected-branches", False))
-        self.assertTrue(check([with_id], "protected-branches", True))
-        self.assertFalse(check([line], "protected-branches", True))  # excepted, but no exception was applied
-        self.assertFalse(check([with_id], "protected-branches", False))  # an exception applied where none covers
-        self.assertFalse(check([line], "deploy-hosts", False))
-        self.assertFalse(check([dict(line, event="deny")], "protected-branches", False))
-        self.assertFalse(check([dict(line, hook="pretooluse-destructive-ops")], "protected-branches", False))
+    def test_logged_rule_needs_this_rule_policy_and_host(self):
+        line = {"event": "would_deny", "hook": "pretooluse-company-rules", "rule_id": "protected-branches", "host": "codex",
+                "policy_sha256": "a" * 64}
+        check = lambda entries, **kw: self.helper.logged_rule(
+            entries, kw.get("rule", "protected-branches"), kw.get("excepted", False), kw.get("expected", "none"),
+            kw.get("host", "codex"), kw.get("sha", "a" * 64))
+        self.assertTrue(check([line]))
+        self.assertTrue(check([dict(line, exception_id="exception-x")], excepted=True))
+        self.assertFalse(check([line], excepted=True))  # excepted, but no exception was applied
+        self.assertFalse(check([dict(line, exception_id="exception-x")]))  # an exception where none covers
+        self.assertFalse(check([line], rule="deploy-hosts"))
+        self.assertFalse(check([line], host="claude-code"))
+        self.assertFalse(check([line], sha="b" * 64))  # a stale --policy
+        self.assertFalse(check([dict(line, hook="pretooluse-destructive-ops")]))
+        self.assertFalse(check([dict(line, event="deny")]))  # deciding nothing writes would_deny, never deny
+        self.assertTrue(check([dict(line, event="deny")], expected="deny"))
+        self.assertTrue(check([line], expected="deny"))  # a monitor rule beside a block rule that denies
         self.assertTrue(self.helper.logged_a_rule([dict(line, event="deny")]))
         self.assertFalse(self.helper.logged_a_rule([{"event": "policy_error", "hook": "pretooluse-company-rules"}]))
+
+    def test_probe_command_points_the_evidence_at_verify_s_log(self):
+        log = Path("/tmp/verify log.jsonl")
+        hook = 'python3 "/x/pretooluse-company-rules.py" --host codex --policy "/x/p.json"'
+        quoted = "CATPILOT_EVIDENCE_LOG='/tmp/verify log.jsonl' "
+        cases = {
+            'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" ' + hook: quoted + hook,
+            "CATPILOT_EVIDENCE_LOG=/var/log/x.jsonl " + hook: quoted + hook,
+            "CATPILOT_EVIDENCE_SYSLOG=1 " + hook: quoted + hook,
+            "LANG=C CATPILOT_EVIDENCE_SYSLOG=1 " + hook: quoted + "LANG=C " + hook,
+            hook: quoted + hook,
+        }
+        for command, want in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(self.helper.probe_command(command, log), (want, None))
+        for command in ("echo '{}' # pretooluse-company-rules.py CATPILOT_EVIDENCE_SYSLOG=1",
+                        hook + " CATPILOT_EVIDENCE_LOG=/dev/null", "env CATPILOT_EVIDENCE_LOG=/x " + hook):
+            with self.subTest(command=command):
+                runnable, problem = self.helper.probe_command(command, log)
+                self.assertIsNone(runnable)
+                self.assertIn("other than as a leading assignment", problem)
 
     def test_the_branch_probe_picks_a_branch_no_exception_allows(self):
         cases = {
