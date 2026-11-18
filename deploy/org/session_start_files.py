@@ -1016,6 +1016,30 @@ def company_decision(result, copilot: bool = False) -> str:
     return found if found in ("deny", "ask") else "printed something other than a deny, an ask or the empty decision"
 
 
+def _log_entries(log: Path) -> list:
+    """The JSON objects in an evidence log verify itself pointed the hook at."""
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    entries = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def logged_would_deny(entries: list, rule_id: str, excepted: bool) -> bool:
+    """Whether the company-rules hook wrote a would_deny line for rule_id, carrying an exception_id when the probe was
+    excepted: the proof that a run which decided nothing still read the rule."""
+    return any(e.get("event") == "would_deny" and e.get("hook") == "pretooluse-company-rules" and e.get("rule_id") == rule_id
+               and (not excepted or bool(e.get("exception_id"))) for e in entries)
+
+
 def policy_errors(log: Path) -> list:
     """The labels of the policy_error lines in an evidence log verify itself pointed the hook at."""
     try:
@@ -1186,22 +1210,24 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
         if not report.present(hook):
             continue
         probe = first_branch_probe(policy_file)
-        runs = [("ls", [], "a harmless command")]
+        runs = [("ls", [], "a harmless command", None, False)]
         if probe is not None:
             rule_id, mode, command, expired, modes, excepted = probe
             excepted_note = ", allowed by an active exception: the rule decides nothing" if excepted else ""
             runs.append((command, modes, "a force push to a branch rule %s protects (%s%s%s)" % (
-                rule_id, mode, ", expired: monitor" if expired else "", excepted_note)))
+                rule_id, mode, ", expired: monitor" if expired else "", excepted_note), rule_id, excepted))
         deploy = first_deploy_probe(policy_file)
         if deploy is not None:
             rule_id, mode, command, expired, modes = deploy
             runs.append((command, modes,
-                         "a deploy to a host rule %s does not allow (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
+                         "a deploy to a host rule %s does not allow (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else ""),
+                         rule_id, False))
         if probe is None and deploy is None:
             report.line("note", "no rule probe for %s: the policy has no protected_branch rule, and no deploy_host rule or none "
                         "that a probe deploy falls outside, so only a harmless command is probed" % host)
         log = home / ("verify-company-%s.jsonl" % host)
-        for command, modes, what in runs:
+        for command, modes, what, probe_rule, excepted in runs:
+            before = len(_log_entries(log))
             expected = expected_effect(host, modes, ask_enabled=False)  # run directly, without --ask
             verb = "lets through" if command == "ls" else EFFECT_WORDS[expected]
             env = clean_env(home)
@@ -1215,7 +1241,13 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             except OSError as exc:
                 result = "could not start (%s)" % exc.__class__.__name__
             got = company_decision(result, copilot=(host == COPILOT))
-            if got == expected:
+            if got == expected and expected == "none" and probe_rule is not None and \
+                    not logged_would_deny(_log_entries(log)[before:], probe_rule, excepted):
+                # Deciding nothing is also what a hook that reads no rule does: the would_deny line is the proof.
+                report.line("FAIL", "%s --host %s decided nothing on %s, as expected, but wrote no would_deny line for %s%s, "
+                            "so it may not have read the rule" % (COMPANY_HOOK, host, what, probe_rule,
+                                                                  " with the exception's id" if excepted else ""))
+            elif got == expected:
                 word = "passes" if command == "ls" else {"deny": "denies", "ask": "asks", "none": "logs"}[expected]
                 report.line(word, "%s --host %s %s %s" % (COMPANY_HOOK, host, verb, what))
             else:
@@ -1244,7 +1276,7 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             if "CATPILOT_EVIDENCE_SYSLOG" in command:
                 report.line("skipped", "%s command for %s (it forwards evidence to syslog; check it in a session)" % (managed_file, COMPANY_HOOK))
                 continue
-            for probe_command, modes, what in runs:
+            for probe_command, modes, what, _, _ in runs:
                 expected = expected_effect(host, modes, has_ask_flag(command))
                 verb = "lets through" if probe_command == "ls" else EFFECT_WORDS[expected]
                 got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_command, home), home, timeout),

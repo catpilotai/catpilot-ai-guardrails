@@ -40,8 +40,10 @@ Scope, stated exactly:
     hosts, covered as the rule's values cover them. A rule fires when something it matches is covered by no active
     exception; `git push --mirror` and the other pushes that can rewrite every branch are never excepted. When active
     exceptions cover everything a rule matched, the rule decides nothing and writes a would_deny line carrying the
-    exception_id of each exception that covered a match, with the rule's own mode: the line records that the exception
-    changed the decision. An expired exception is ignored, and none outlives the policy.
+    exception_id of each exception that covered a match, with the rule's own mode: the line records that exceptions
+    covered all of the rule's matches, whether or not the rule would have decided anything (in monitor mode it would
+    not) and whether or not another rule decides the command. An expired exception is ignored, and none outlives the
+    policy.
   - A deny or ask reason names the rule ids and the approved alternative (use_instead_text), never a listed
     value, and never repeats the command.
   - A policy that is missing, unreadable, malformed, owned by the wrong user or writable by others, or
@@ -58,6 +60,7 @@ Standard library only. Python 3.8+.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import sys
@@ -216,6 +219,7 @@ def decide(event: dict, host: str | None, policy: policy_module.Policy | None, t
         raise ValueError("command must be a string")
     if policy is None or not command:
         return {}
+    today = today or dt.date.today()  # one date for the exceptions and the file's expiry, even across midnight
     matched = matched_rules(command, event.get("cwd"), policy, today)
     if not matched:
         return {}
@@ -230,8 +234,8 @@ def decide(event: dict, host: str | None, policy: policy_module.Policy | None, t
     final = "deny" if any(e == "deny" for _, _, e, _ in effects) else "ask" if any(e == "ask" for _, _, e, _ in effects) else None
     for rule, mode, effect, excepted_by in effects:
         if excepted_by:
-            # The exception changed the decision: one would_deny line per exception that covered a match, with the
-            # rule's own mode, the one the exception set aside (OVERLAY_V2.md §3.1).
+            # Exceptions covered all of the rule's matches: one would_deny line per exception that covered a match,
+            # with the rule's own mode (OVERLAY_V2.md §3.1).
             for exception_id in excepted_by:
                 record_evidence("would_deny", event, host, tool="Bash", rule_id=rule.id, mode=mode, exception_id=exception_id,
                                 policy_sha256=policy.source_sha256)

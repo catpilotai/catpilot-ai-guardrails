@@ -5,7 +5,7 @@ Reads one or more files written by CATPILOT_EVIDENCE_LOG from the Claude Code
 hooks (pretooluse-secrets, pretooluse-write-secrets, pretooluse-destructive-ops; entries
 from before the write hook's rename, logged as pretooluse-write-private-key, are counted
 under its new name), the company-rules hook (pretooluse-company-rules: deny, ask and
-would_deny per rule id, how often each expiring exception relaxed its rule, and policy errors by label)
+would_deny per rule id, how often each expiring exception covered its rule's matches, and policy errors by label)
 and the reference MCP server (get_guidance, check_plan, get_template, list_approved).
 
 Because the evidence log never records command text, file paths, file content,
@@ -216,14 +216,14 @@ def render_markdown(summary: dict[str, Any]) -> str:
             "## Company rules (`pretooluse-company-rules`)",
             "",
             "`would_deny` counts what a rule in monitor mode, or an expired rules file, would have blocked. What an "
-            "expiring exception let through is counted under the exception.",
+            "expiring exception covered (all of a rule's matches) is counted under the exception.",
         ]
         if company["by_rule"]:
             out += ["", "| Rule | deny | ask | would_deny |", "| --- | --- | --- | --- |"]
             for rule, counts in company["by_rule"].items():
                 out.append(f"| `{rule}` | {counts['deny']} | {counts['ask']} | {counts['would_deny']} |")
         if company["by_exception"]:
-            out += ["", "| Exception | Rule it relaxed | Times it relaxed the rule |", "| --- | --- | --- |"]
+            out += ["", "| Exception | Rule | Times it covered the rule's matches |", "| --- | --- | --- |"]
             for exception, used in company["by_exception"].items():
                 out.append(f"| `{exception}` | `{used['rule']}` | {used['count']} |")
         if company["policy_errors"]:

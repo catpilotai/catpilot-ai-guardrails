@@ -353,8 +353,8 @@ enforcement:
   `where`: a repository name read from a working tree is something the agent
   can change. To scope an exception to a group of machines, deploy a different
   file to them.
-- When an exception changes a decision, evidence records its
-  `exception_id`.
+- When exceptions cover everything a rule matched, evidence records each
+  one's `exception_id`, whether or not the rule would have decided anything.
 
 *How it was built (enforcement exceptions only):*
 

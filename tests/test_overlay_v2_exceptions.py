@@ -154,13 +154,16 @@ class ValidationTests(ExceptionCase):
                                   "allows[1]: duplicates an earlier value of this exception"),
             "a duplicate branch": (lambda d: d["enforcement"].update(exceptions=[exception(allows=[HIDDEN, HIDDEN])]),
                                    "allows[1]: duplicates an earlier value of this exception"),
+            # The hook matches branches ignoring case, so these are the same branch (review of #134).
+            "a duplicate branch in another case": (lambda d: d["enforcement"].update(exceptions=[exception(allows=["main", "MAIN"])]),
+                                                   "allows[1]: duplicates an earlier value of this exception"),
             "an empty role": (lambda d: d["enforcement"].update(exceptions=[exception(approver_role=" ")]), "approver_role: expected a nonempty phrase"),
             "an email as the role": (lambda d: d["enforcement"].update(exceptions=[exception(approver_role=HIDDEN + "@example.org")]),
                                      "approver_role: expected a role, such as a job title, not an email address"),
             "a URL as the role": (lambda d: d["enforcement"].update(exceptions=[exception(approver_role="https://" + hidden_host + "/lead")]),
                                   "approver_role: expected a role, such as a job title, not a URL"),
             "an 81-character role": (lambda d: d["enforcement"].update(exceptions=[exception(approver_role="r" * 81)]), "longer than 80 characters"),
-            "a control character in the role": (lambda d: d["enforcement"].update(exceptions=[exception(approver_role="Lead " + HIDDEN)]),
+            "a control character in the role": (lambda d: d["enforcement"].update(exceptions=[exception(approver_role="Lead\u2028" + HIDDEN)]),
                                                 "control characters are not allowed"),
             "an expiry after the file's": (lambda d: d["enforcement"].update(exceptions=[exception(expires_on=dt.date(2027, 5, 18))]),
                                            "enforcement.exceptions[0].expires_on: after the file's expires_on; an exception never outlives the file"),
@@ -220,6 +223,22 @@ class ValidationTests(ExceptionCase):
                 self.assertTrue(errors, label)
                 for error in errors:
                     self.assertNotIn("preview.analytics", error)
+        # Enforcement ids too: a rule id is in deny reasons, and both are in evidence (review of #134).
+        data = self.mutated(lambda d: d["enforcement"]["exceptions"][0].update(id="exception-preview-analytics-example-org"))
+        self.assertIn("enforcement.exceptions[0].id: names a value of enforcement exception 'exception-preview-analytics-example-org'; "
+                      "enforcement values never appear in model-facing text", self.errors(data))
+        rules = self.data["enforcement"]["rules"]
+        index = next(i for i, r in enumerate(rules) if r["kind"] == "deploy_host")
+        value = next(v for v in rules[index]["values"] if not v.startswith("*."))
+        renamed = "deploy-" + value.replace(".", "-")
+
+        def rename(d):
+            d["enforcement"]["rules"][index]["id"] = renamed
+            for exc in d["enforcement"]["exceptions"]:
+                if exc["rule"] == "deploy-hosts":
+                    exc["rule"] = renamed
+        self.assertTrue(any(e.startswith("enforcement.rules[%d].id: names a value of enforcement rule" % index)
+                            for e in self.errors(self.mutated(rename))))
         # A branch exception's values are ordinary words, as a protected_branch rule's are: no rule 7 error.
         data = self.with_exceptions(exception(allows=["external"]))
         self.assertEqual(self.errors(data), [])

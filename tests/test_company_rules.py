@@ -589,6 +589,22 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
         self.assertIn("denies a force push to a branch rule trial-branches protects (monitor)", verify.stdout)
 
+    def test_verify_fails_a_hook_that_decides_nothing_without_reading_the_rule(self):
+        # A probe that expects no decision (a monitor rule, or one an exception covers) also needs the would_deny line,
+        # since a hook that reads no rule decides nothing too (review of #134).
+        text = self.rules.read_text(encoding="utf-8").replace(
+            "  rules:\n", '  rules:\n    - {id: trial-branches, kind: protected_branch, mode: monitor, values: ["trial-zq/*"]}\n', 1)
+        self.rules.write_text(text, encoding="utf-8")
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        verify = self.run_script("verify.sh")
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+        self.assertIn("logs, without blocking, a force push to a branch rule trial-branches protects (monitor)", verify.stdout)
+        for managed in (self.cc, self.codex):
+            (managed / "catpilot-guardrails" / "hooks" / "pretooluse-company-rules.py").write_text("print('{}')\n")
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("but wrote no would_deny line for trial-branches", verify.stdout)
+
     def test_verify_fails_a_registered_hook_without_a_policy(self):
         self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
         for managed in (self.cc, self.codex):

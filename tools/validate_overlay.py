@@ -619,6 +619,8 @@ def _exception(value: object, label: str, ids: _Ids, rules_by_id: dict, file_exp
         if problem:
             raise OverlayError(f"{where}: {problem}; an exception allows values of its rule's kind, here {rule['kind']}")
         normalized = normalize_value(rule["kind"], entry)
+        if rule["kind"] == "protected_branch":
+            normalized = normalized.casefold()  # the hook matches branches ignoring case (policy.branch_matches)
         if normalized in seen:
             raise OverlayError(f"{where}: duplicates an earlier value of this exception")
         seen.add(normalized)
@@ -687,6 +689,8 @@ def _rule(value: object, label: str, ids: _Ids, targets: set[str]) -> dict:
         if problem:
             raise OverlayError(f"{where}: {problem}")
         normalized = normalize_value(kind, entry)
+        if kind == "protected_branch":
+            normalized = normalized.casefold()  # the hook matches branches ignoring case (policy.branch_matches)
         if normalized in seen:
             raise OverlayError(f"{where}: duplicates an earlier value of this rule")
         seen.add(normalized)
@@ -971,8 +975,9 @@ def _slug(text: str) -> str:
 
 def _enforcement_values_in_model_text(model: dict, enforcement: dict) -> list[str]:
     """§6.3 rule 7, an error (decision 5): no deploy_host, package_registry or
-    cloud_account value, a rule's or an exception's, in a model-facing phrase, id or alias, or in organization,
-    owner or a contact's name, ignoring case and a leading `*.`. An id cannot hold a
+    cloud_account value, a rule's or an exception's, in a model-facing phrase, id or alias, an enforcement rule's or
+    exception's id (in deny reasons and evidence), or in organization, owner or a contact's name, ignoring case and a
+    leading `*.`. An id cannot hold a
     dot, so an id, alias or template kind is checked for the value with each run of
     other characters as one hyphen, the form `migrate` would give it.
     templates[].location, intake_url and a contact's intake_url are exempt. The error
@@ -985,6 +990,9 @@ def _enforcement_values_in_model_text(model: dict, enforcement: dict) -> list[st
         identifiers.append((f"overlay.{label}.id", item["id"]))
         identifiers.extend((f"overlay.{label}.aliases[{i}]", a) for i, a in enumerate(item.get("aliases", [])))
     identifiers.extend((f"overlay.templates[{i}].kind", t["kind"]) for i, t in enumerate(model.get("templates", [])))
+    # Enforcement ids too: a rule id is in every deny reason the model reads, and both kinds of id are in evidence.
+    identifiers.extend((f"enforcement.rules[{i}].id", rule["id"]) for i, rule in enumerate(enforcement["rules"]))
+    identifiers.extend((f"enforcement.exceptions[{i}].id", exc["id"]) for i, exc in enumerate(enforcement.get("exceptions", [])))
     kinds = {rule["id"]: rule["kind"] for rule in enforcement["rules"]}
     # Each rule's values, then each exception's allows, which are values of its rule's kind (§3.1).
     sources = [(f"enforcement rule {rule['id']!r}", rule["kind"], rule["values"]) for rule in enforcement["rules"]]
