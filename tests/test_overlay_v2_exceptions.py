@@ -6,8 +6,8 @@
 - compile and the policy: the exceptions round-trip through compile and the hook's parser, deterministically; a file
   without exceptions compiles as before; the printout names exceptions by id, rule and expiry, never a value; the
   parser refuses malformed exceptions.
-- The company-rules hook: active and expired exceptions for both kinds, `where` ignored, a push that rewrites every
-  branch never excepted, and a built-in deny never relaxed.
+- The company-rules hook: active and expired exceptions for every kind, `where` ignored, a push that rewrites every
+  branch never excepted, an unknown registry or account never excepted, and a built-in deny never relaxed.
 - Evidence: the would_deny line with exception_id, the writer and the schema refusing it elsewhere, and the summary.
 - Lint warnings, and verify's probes keeping honest about exceptions.
 """
@@ -402,7 +402,7 @@ class CompileTests(ExceptionCase):
                 code = vo.main(["compile", str(rules), "--out", str(out_file)])
             self.assertEqual(code, 0, err.getvalue())
             self.assertIn("exception-analytics-preview | deploy-hosts | 2027-02-01 |", out.getvalue())
-            self.assertIn("compiled 2 enforcement rules and 1 exception", err.getvalue())
+            self.assertIn("compiled 4 enforcement rules and 1 exception", err.getvalue())
             self.assertEqual(pol.parse(out_file.read_bytes()).exceptions[0].id, "exception-analytics-preview")
             for value in ("preview.analytics", "Platform security lead", "apps.example.org", "hotfix/*"):
                 self.assertNotIn(value, out.getvalue() + err.getvalue())
@@ -734,7 +734,9 @@ class EvidenceTests(unittest.TestCase):
 
 class LintTests(ExceptionCase):
     def lint(self, *entries, today=TODAY):
-        return vo.lint_overlay(vo.validate_structure(self.with_exceptions(*entries)), today=today)
+        # The exceptions' warnings only: the example's cloud-accounts rule is in ask, which draws its own.
+        warnings = vo.lint_overlay(vo.validate_structure(self.with_exceptions(*entries)), today=today)
+        return [w for w in warnings if w.startswith("enforcement.exceptions")]
 
     def test_an_exception_near_or_past_its_expiry_warns(self):
         expires = dt.date(2027, 1, 1)
@@ -863,6 +865,318 @@ class VerifyProbeTests(unittest.TestCase):
         every = [policy_exception(rule="deploy-hosts", allows=[f"*.{suffix}" for _, suffix in self.helper.DEPLOY_PROBES])]
         self.write(every)
         self.assertIsNone(self.helper.first_deploy_probe(self.path, today=TODAY))
+
+
+
+# ----------------------------------------------------------------- package_registry and cloud_account
+
+
+ALLOW_LIST_RULES = [
+    {"id": "package-registries", "kind": "package_registry", "mode": "block", "values": ["registry.npmjs.org", "pypi.org/simple"]},
+    {"id": "cloud-accounts", "kind": "cloud_account", "mode": "block", "values": ["aws:111122223333", "gcp:good-project"]},
+]
+
+
+class AllowListKindValidationTests(ExceptionCase):
+    """An exception's allows are values of its rule's kind, checked by that kind's grammar (value_problem)."""
+
+    def test_registry_and_account_allows_follow_their_rule_s_kind(self):
+        accepted = {
+            "registries": exception(id="exception-mirror", rule="package-registries",
+                                    allows=["mirror.example.net/simple", "*.mirror.example.net", "npm.example.net"]),
+            "accounts": exception(id="exception-sandbox", rule="cloud-accounts",
+                                  allows=["aws:999988887777", "gcp:sandbox-project", "azure:11111111-2222-3333-4444-555555555555"]),
+        }
+        for label, entry in accepted.items():
+            with self.subTest(case=label):
+                self.assertEqual(self.errors(self.with_exceptions(entry)), [])
+        hidden_registry = HIDDEN + ".example.net"
+        rejected = {
+            "a URL for a registry": (exception(id="exception-mirror", rule="package-registries", allows=["https://" + hidden_registry]),
+                                     "here package_registry"),
+            "a .. segment": (exception(id="exception-mirror", rule="package-registries", allows=[hidden_registry + "/simple/.."]),
+                             "here package_registry"),
+            "an account for a registry rule": (exception(id="exception-mirror", rule="package-registries", allows=["aws:999988887777"]),
+                                               "here package_registry"),
+            "a registry for an account rule": (exception(id="exception-sandbox", rule="cloud-accounts", allows=[hidden_registry]),
+                                               "here cloud_account"),
+            "an uppercase AWS prefix": (exception(id="exception-sandbox", rule="cloud-accounts", allows=["AWS:999988887777"]),
+                                        "here cloud_account"),
+            "a registry duplicated by a trailing slash": (
+                exception(id="exception-mirror", rule="package-registries", allows=[hidden_registry + "/simple", hidden_registry + "/simple/"]),
+                "duplicates an earlier value of this exception"),
+        }
+        for label, (entry, fragment) in rejected.items():
+            with self.subTest(case=label):
+                message = self.assertRejects(self.with_exceptions(entry), fragment)
+                self.assertNotIn(HIDDEN, message)
+
+    def test_rule_7_covers_an_exception_s_registries_and_accounts(self):
+        mirror = exception(id="exception-mirror", rule="package-registries", allows=["mirror.example.net/simple"])
+        sandbox = exception(id="exception-sandbox", rule="cloud-accounts", allows=["aws:999988887777"])
+        for label, (entry, mutate, source) in {
+            "registry host in a phrase": (mirror, lambda d: d["hosting"]["approved"][1].update(text="Mirror at mirror.example.net"),
+                                          "enforcement exception 'exception-mirror'"),
+            "account id in a phrase": (sandbox, lambda d: d["hosting"]["approved"][1].update(text="Sandbox 999988887777"),
+                                       "enforcement exception 'exception-sandbox'"),
+        }.items():
+            with self.subTest(case=label):
+                data = self.mutated(lambda d: (d["enforcement"].update(exceptions=[entry]), mutate(d)))
+                errors = [e for e in self.errors(data) if source in e]
+                self.assertTrue(errors, label)
+                for error in errors:
+                    self.assertNotIn("mirror.example.net", error)
+                    self.assertNotIn("999988887777", error)
+        # An exception id holding a value is named by position, never by that id.
+        data = self.mutated(lambda d: d["enforcement"].update(exceptions=[dict(mirror, id="exception-mirror-example-net")]))
+        self.assertIn("enforcement.exceptions[0].id: names a value of enforcement.exceptions[0]; "
+                      "enforcement values never appear in model-facing text", self.errors(data))
+        # So is a rule id holding an exception's account (a rule id is in deny reasons).
+        rules = self.data["enforcement"]["rules"]
+        index = next(i for i, r in enumerate(rules) if r["kind"] == "cloud_account")
+        data = self.mutated(lambda d: (d["enforcement"]["rules"][index].update(id="cloud-accounts-999988887777"),
+                                       d["enforcement"].update(exceptions=[dict(sandbox, rule="cloud-accounts-999988887777")])))
+        errors = self.errors(data)
+        self.assertIn("enforcement.rules[%d].id: names a value of enforcement.exceptions[0]; enforcement values never appear in "
+                      "model-facing text" % index, errors)
+        for error in errors:
+            self.assertNotIn("999988887777", error)
+
+    def test_compile_carries_them_and_prints_them_without_values(self):
+        data = self.with_exceptions(
+            exception(id="exception-mirror", rule="package-registries", allows=[HIDDEN + ".example.net/simple"]),
+            exception(id="exception-sandbox", rule="cloud-accounts", allows=["aws:730194628517"], expires_on=dt.date(2026, 11, 1)),
+        )
+        overlay = vo.validate_structure(data)
+        policy = vo.compile_policy(overlay, b"rules file bytes")
+        parsed_back = pol.parse(vo.policy_text(policy).encode())
+        self.assertEqual([(e.id, e.rule, e.allows) for e in parsed_back.exceptions],
+                         [("exception-mirror", "package-registries", (HIDDEN + ".example.net/simple",)),
+                          ("exception-sandbox", "cloud-accounts", ("aws:730194628517",))])
+        lines = vo.effective_modes(policy, today=TODAY)
+        self.assertIn("exception-mirror | package-registries | 2027-01-01 | applied until it expires", lines)
+        self.assertIn("exception-sandbox | cloud-accounts | 2026-11-01 | expired: ignored, the rule applies as written", lines)
+        for leaked in (HIDDEN, "730194628517"):
+            self.assertNotIn(leaked, "\n".join(lines))
+
+    def test_lint_warns_about_their_exceptions_as_for_every_kind(self):
+        entry = exception(id="exception-mirror", rule="package-registries", allows=["mirror.example.net"], expires_on=dt.date(2027, 1, 1))
+        warnings = vo.lint_overlay(vo.validate_structure(self.with_exceptions(entry)), today=dt.date(2026, 12, 25))
+        self.assertIn("enforcement.exceptions[0] (exception-mirror): expires on 2027-01-01, within 14 days; after that rule "
+                      "package-registries applies as written", warnings)
+        entry = exception(id="exception-sandbox", rule="cloud-accounts", allows=["aws:999988887777"], where={"repositories": ["o/r"]})
+        warnings = vo.lint_overlay(vo.validate_structure(self.with_exceptions(entry)), today=TODAY)
+        self.assertIn("enforcement.exceptions[0] (exception-sandbox): has where, so no hook applies it; only the pull-request "
+                      "check, which is not built yet, reads where", warnings)
+
+
+class AllowListKindHookTests(unittest.TestCase):
+    """The company-rules hook: for package_registry and cloud_account, an exception's allows extend the rule's values."""
+
+    def setUp(self):
+        self.lines = []
+        patcher = mock.patch.object(cr, "record_evidence", lambda event, hook_event=None, host=None, **f: self.lines.append((event, f)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def decide(self, command, exceptions=None, today=TODAY):
+        self.lines.clear()
+        return effect(cr.decide(bash(command), "claude-code", parsed(exceptions, ALLOW_LIST_RULES), today=today))
+
+    def events(self):
+        return [(e, f["rule_id"], f["mode"], f.get("exception_id")) for e, f in self.lines]
+
+    def test_a_registry_exception_adds_approved_registries(self):
+        exceptions = [policy_exception(id="exception-mirror", rule="package-registries", allows=["mirror.example.net/simple"]),
+                      policy_exception(id="exception-npm", rule="package-registries", allows=["*.npm.example.net"])]
+        self.assertEqual(self.decide("pip install -i https://mirror.example.net/simple/ x", exceptions), "none")
+        self.assertEqual(self.events(), [("would_deny", "package-registries", "block", "exception-mirror")])
+        # Two matches, each covered by a different exception: one line per exception used, in policy order.
+        self.assertEqual(self.decide("npm i --registry https://a.npm.example.net/ x && pip install -i https://mirror.example.net/simple x",
+                                     exceptions), "none")
+        self.assertEqual(self.events(), [("would_deny", "package-registries", "block", "exception-mirror"),
+                                         ("would_deny", "package-registries", "block", "exception-npm")])
+        # Covered by the rule's own values: no exception was needed, and nothing is written.
+        self.assertEqual(self.decide("npm install --registry https://registry.npmjs.org/ x", exceptions), "none")
+        self.assertEqual(self.lines, [])
+        # A match no rule value and no exception covers fires the rule, and a path outside the exception's is such a match.
+        for command in ("pip install -i https://other.example.net/simple x", "pip install -i https://mirror.example.net/other x",
+                        "pip install -i https://mirror.example.net/simple x --extra-index-url https://evil.example.net/simple"):
+            with self.subTest(command=command):
+                self.assertEqual(self.decide(command, exceptions), "deny")
+                self.assertEqual(self.events(), [("deny", "package-registries", "block", None)])
+
+    def test_an_account_exception_adds_approved_accounts(self):
+        exceptions = [policy_exception(id="exception-sandbox", rule="cloud-accounts", allows=["aws:999988887777", "gcp:sandbox-project"])]
+        self.assertEqual(self.decide("aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x --role-session-name s", exceptions),
+                         "none")
+        self.assertEqual(self.events(), [("would_deny", "cloud-accounts", "block", "exception-sandbox")])
+        self.assertEqual(self.decide("gcloud config set project sandbox-project", exceptions), "none")
+        self.assertEqual(self.decide("gcloud config set project other-project", exceptions), "deny")
+        self.assertEqual(self.decide("gcloud config set project sandbox-project && gcloud run deploy --project other-project",
+                                     exceptions), "deny")
+
+    def test_nothing_covers_an_unknown_target(self):
+        # A target the hook cannot read is covered by no value, so by no exception either, whatever it allows.
+        registry = [policy_exception(id="exception-mirror", rule="package-registries", allows=["mirror.example.net", "*.example.net"])]
+        for command in ("npm install --registry $REGISTRY x", "echo u | xargs pip install -i",
+                        "npm install --registry 'https://evil.example.net\\@mirror.example.net/' x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.decide(command, registry), "deny")
+        account = [policy_exception(id="exception-sandbox", rule="cloud-accounts", allows=["aws:999988887777"])]
+        for command in ("aws sts assume-role --role-arn $ROLE --role-session-name s", "gcloud run deploy --project $P",
+                        "az account set -s 'Pay-As-You-Go'"):
+            with self.subTest(command=command):
+                self.assertEqual(self.decide(command, account), "deny")
+
+    def test_expired_where_and_other_rule_exceptions_are_not_applied(self):
+        command = "pip install -i https://mirror.example.net/simple x"
+        for label, exception_entry in {
+            "expired": policy_exception(id="exception-mirror", rule="package-registries", allows=["mirror.example.net"],
+                                        expires_on="2026-11-16"),
+            "where": policy_exception(id="exception-mirror", rule="package-registries", allows=["mirror.example.net"],
+                                      where={"repositories": ["o/r"]}),
+            "another rule's": policy_exception(id="exception-mirror", rule="cloud-accounts", allows=["aws:999988887777"]),
+        }.items():
+            with self.subTest(case=label):
+                self.assertEqual(self.decide(command, [exception_entry]), "deny")
+        # The file's own expiry: every rule in monitor, and no exception applies.
+        self.lines.clear()
+        result = cr.decide(bash(command), "claude-code",
+                           parsed([policy_exception(id="exception-mirror", rule="package-registries", allows=["mirror.example.net"],
+                                                    expires_on="2026-11-01")], ALLOW_LIST_RULES, expires="2026-11-10"), today=TODAY)
+        self.assertEqual(effect(result), "none")
+        self.assertEqual(self.events(), [("would_deny", "package-registries", "monitor", None)])
+
+    def test_reasons_and_lines_carry_no_registry_or_account(self):
+        exceptions = [policy_exception(id="exception-mirror", rule="package-registries", allows=[HIDDEN + ".example.net"]),
+                      policy_exception(id="exception-sandbox", rule="cloud-accounts", allows=["aws:730194628517"])]
+        for command, expected in {"pip install -i https://%s.example.net/simple x" % HIDDEN: "none",
+                                  "pip install -i https://%s-other.example.net/simple x" % HIDDEN: "deny",
+                                  "aws organizations describe-account --account-id 730194628517": "none",
+                                  "aws organizations describe-account --account-id 730194628518": "deny"}.items():
+            with self.subTest(command=command):
+                self.lines.clear()
+                result = cr.decide(bash(command), "claude-code", parsed(exceptions, ALLOW_LIST_RULES), today=TODAY)
+                self.assertEqual(effect(result), expected)
+                self.assertTrue(self.lines)
+                text = json.dumps(result) + json.dumps(self.lines)
+                for leaked in (HIDDEN, "730194628517", "730194628518"):
+                    self.assertNotIn(leaked, text)
+
+
+class AllowListKindHookProcessTests(unittest.TestCase):
+    """The shim with the real writer: an exception on the new kinds writes a content-free would_deny line with its id."""
+
+    def test_the_would_deny_line_carries_the_exception_id(self):
+        today = dt.date.today()
+        exceptions = [policy_exception(id="exception-mirror", rule="package-registries", allows=[HIDDEN + ".example.net"],
+                                       expires_on=(today + dt.timedelta(days=5)).isoformat()),
+                      policy_exception(id="exception-sandbox", rule="cloud-accounts", allows=["aws:730194628517"],
+                                       expires_on=(today + dt.timedelta(days=5)).isoformat())]
+        commands = {"pip install -i https://%s.example.net/simple x" % HIDDEN: ("package-registries", "exception-mirror"),
+                    "aws organizations describe-account --account-id 730194628517": ("cloud-accounts", "exception-sandbox")}
+        for command, (rule_id, exception_id) in commands.items():
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                policy_dir = Path(tmp) / "policy"
+                policy_dir.mkdir()
+                os.chmod(policy_dir, 0o755)
+                path = policy_dir / "company-policy.json"
+                path.write_text(json.dumps(policy_dict(ALLOW_LIST_RULES, exceptions, expires=(today + dt.timedelta(days=30)).isoformat())),
+                                encoding="utf-8")
+                os.chmod(path, 0o644)
+                log = Path(tmp) / "evidence.jsonl"
+                env = {k: v for k, v in os.environ.items() if not k.startswith("CATPILOT_EVIDENCE")}
+                env["CATPILOT_EVIDENCE_LOG"] = str(log)
+                proc = subprocess.run([sys.executable, str(HOOK), "--host", "codex", "--policy", str(path)], input=json.dumps(bash(command)),
+                                      capture_output=True, text=True, env=env, timeout=30)
+                self.assertEqual((proc.returncode, proc.stdout.strip()), (0, "{}"), proc.stderr)
+                (line,) = [json.loads(text) for text in log.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual({k: line[k] for k in ("event", "hook", "host", "rule_id", "mode", "exception_id", "policy_sha256")},
+                                 {"event": "would_deny", "hook": "pretooluse-company-rules", "host": "codex", "rule_id": rule_id,
+                                  "mode": "block", "exception_id": exception_id, "policy_sha256": SHA})
+                everything = log.read_text(encoding="utf-8") + proc.stdout + proc.stderr
+                for leaked in (HIDDEN, "730194628517"):
+                    self.assertNotIn(leaked, everything)
+                if jsonschema is not None:
+                    jsonschema.validate(line, json.loads((SPEC / "evidence-event.schema.json").read_text(encoding="utf-8")))
+
+
+class AllowListKindVerifyProbeTests(unittest.TestCase):
+    """verify.sh picks its install and cloud probes outside the active exceptions, and the hook decides as it expects."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.helper = load_helper()
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.path = Path(temp.name) / "company-policy.json"
+
+    write = VerifyProbeTests.write
+    assertHonest = VerifyProbeTests.assertHonest
+
+    def test_the_registry_probe_picks_an_install_no_exception_lets_through(self):
+        probes = self.helper.REGISTRY_PROBES
+        rules = [{"id": "package-registries", "kind": "package_registry", "mode": "block", "values": ["npm.example.org"]}]
+        cases = {
+            "no exceptions": (None, probes[0][0]),
+            "the first excepted": ([policy_exception(id="exception-npmjs", rule="package-registries", allows=["registry.npmjs.org"])],
+                                   probes[1][0]),
+            "a where exception": ([policy_exception(id="exception-npmjs", rule="package-registries", allows=["registry.npmjs.org"],
+                                                    where={"repositories": ["o/r"]})], probes[0][0]),
+            "an expired exception": ([policy_exception(id="exception-npmjs", rule="package-registries", allows=["registry.npmjs.org"],
+                                                       expires_on="2026-11-16")], probes[0][0]),
+        }
+        for label, (exceptions, expected_command) in cases.items():
+            with self.subTest(case=label):
+                policy = self.write(exceptions, rules)
+                rule_id, mode, command, expired, modes = self.helper.first_registry_probe(self.path, today=TODAY)
+                self.assertEqual((rule_id, command), ("package-registries", expected_command))
+                self.assertEqual(self.assertHonest(command, modes, policy), "deny")
+        every = [policy_exception(id="exception-all", rule="package-registries", allows=[target for _, target in probes])]
+        self.write(every, rules)
+        self.assertIsNone(self.helper.first_registry_probe(self.path, today=TODAY))
+
+    def test_the_cloud_probe_picks_a_command_no_exception_lets_through(self):
+        probes = self.helper.CLOUD_PROBES
+        rules = [{"id": "cloud-accounts", "kind": "cloud_account", "mode": "ask", "values": ["aws:111122223333"]}]
+        cases = {
+            "no exceptions": (None, probes[0][0]),
+            "the first excepted": ([policy_exception(id="exception-probe", rule="cloud-accounts", allows=[probes[0][1]])], probes[1][0]),
+            "a where exception": ([policy_exception(id="exception-probe", rule="cloud-accounts", allows=[probes[0][1]],
+                                                    where={"repositories": ["o/r"]})], probes[0][0]),
+        }
+        for label, (exceptions, expected_command) in cases.items():
+            with self.subTest(case=label):
+                policy = self.write(exceptions, rules)
+                rule_id, mode, command, expired, modes = self.helper.first_cloud_probe(self.path, today=TODAY)
+                self.assertEqual((rule_id, mode, command), ("cloud-accounts", "ask", expected_command))
+                self.assertEqual(self.assertHonest(command, modes, policy), "deny")  # ask without --ask acts as block
+        every = [policy_exception(id="exception-all", rule="cloud-accounts", allows=[target for _, target in probes])]
+        self.write(every, rules)
+        self.assertIsNone(self.helper.first_cloud_probe(self.path, today=TODAY))
+
+    def test_the_probe_s_line_is_the_proof_verify_reads(self):
+        # The hook's line for a picked probe is a rule line with no exception_id, which logged_rule takes as proof.
+        rules = [{"id": "package-registries", "kind": "package_registry", "mode": "block", "values": ["npm.example.org"]},
+                 {"id": "cloud-accounts", "kind": "cloud_account", "mode": "monitor", "values": ["aws:111122223333"]}]
+        # Each exception allows the first probe target of its kind, so verify picks the second.
+        exceptions = [policy_exception(id="exception-npmjs", rule="package-registries", allows=["registry.npmjs.org"]),
+                      policy_exception(id="exception-probe", rule="cloud-accounts", allows=["aws:000000000000"])]
+        policy = self.write(exceptions, rules)
+        found = (self.helper.first_registry_probe(self.path, today=TODAY), self.helper.first_cloud_probe(self.path, today=TODAY))
+        self.assertEqual([f[2] for f in found], [self.helper.REGISTRY_PROBES[1][0], self.helper.CLOUD_PROBES[1][0]])
+        for rule_id, mode, command, expired, modes in found:
+            lines = []
+            with mock.patch.object(cr, "record_evidence", lambda event, hook_event=None, host=None, **f: lines.append(
+                    dict(f, event=event, hook="pretooluse-company-rules", host=host))):
+                cr.decide(bash(command), "claude-code", policy, today=TODAY)
+            expected = self.helper.expected_effect("claude-code", modes, ask_enabled=False)
+            with self.subTest(command=command):
+                self.assertTrue(self.helper.logged_rule(lines, rule_id, False, expected, "claude-code", SHA))
+                self.assertFalse(self.helper.logged_rule(lines, rule_id, True, expected, "claude-code", SHA))
 
 
 if __name__ == "__main__":

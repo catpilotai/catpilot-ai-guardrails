@@ -299,9 +299,11 @@
         "kind": {
           "enum": [
             "protected_branch",
-            "deploy_host"
+            "deploy_host",
+            "package_registry",
+            "cloud_account"
           ],
-          "description": "Closed list (OVERLAY_V2.md §2.2). package_registry and cloud_account enter the schema with their first consumer."
+          "description": "Closed list (OVERLAY_V2.md §2.2). Each kind entered the schema with its first consumer, the company-rules hook."
         },
         "mode": {
           "$ref": "#/$defs/mode"
@@ -363,6 +365,48 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "package_registry"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "items": {
+                  "$ref": "#/$defs/registry"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "cloud_account"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "items": {
+                  "$ref": "#/$defs/cloud_account"
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -393,7 +437,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Values of the rule's kind, checked by the validator against that kind. protected_branch: branches the rule stops protecting until expires_on (a trailing /* covers the prefix). deploy_host: extra approved hosts (a leading *. covers subdomains)."
+          "description": "Values of the rule's kind, checked by the validator against that kind. protected_branch: branches the rule stops protecting until expires_on (a trailing /* covers the prefix). deploy_host: extra approved hosts (a leading *. covers subdomains). package_registry: extra approved registries (host[/path]). cloud_account: extra approved accounts."
         },
         "approver_role": {
           "type": "string",
@@ -448,6 +492,17 @@
       "type": "string",
       "pattern": "^(?:\\*\\.)?(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?![0-9]+$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
       "description": "A lowercase host name with at least one dot, optionally starting with *. to cover subdomains. No scheme, port, path, credentials or IP address."
+    },
+    "registry": {
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^(?=.{1,255}$)(?!.*/\\.\\.?(?:/|$))(?:\\*\\.)?(?=[^/]{1,253}(?:/|$))(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?![0-9]+(?:/|$))[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:/[A-Za-z0-9._\\-/]*)?$",
+      "description": "A host name as for deploy_host, optionally followed by a path of letters, digits, ., _, - and /, with no . or .. segment; at most 255 characters, the compiled policy's limit. No scheme, port, query or credentials."
+    },
+    "cloud_account": {
+      "type": "string",
+      "pattern": "^(?:aws:[0-9]{12}|azure:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|gcp:[a-z][a-z0-9-]{5,29})$",
+      "description": "aws:<12 digits>, azure:<lowercase subscription GUID> or gcp:<project id: 6 to 30 lowercase letters, digits and hyphens, starting with a letter>."
     },
     "repository": {
       "type": "string",

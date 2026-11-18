@@ -15,7 +15,8 @@ dependency), the expiry window, and a content scan for anything that looks
 like a secret, a URL outside the allowlist, an email address other than
 owner (and, in version 2, a contact's name), an IP address, or an incident
 narrative. In version 2 the secret scan also covers `enforcement`, no deploy
-host may appear in a model-facing value, and a file with `enforcement` carries
+host, registry or account an enforcement rule lists may appear in a model-facing
+value, and a file with `enforcement` carries
 a random `salt`, so the file's SHA-256, which a model sees, cannot confirm a
 guessed enforcement value. A key that
 appears twice in one mapping, and a YAML merge key (`<<`), are refused in
@@ -31,8 +32,9 @@ sets a new random `salt` in a version 2 file, changing no other line.
 `python tools/validate_overlay.py compile FILE --out POLICY` validates the file
 and writes `enforcement` as the JSON policy the company-rules hook reads
 (catpilot_guard/company_rules.py), with each rule's mode resolved and the
-exceptions copied. The hook acts on `protected_branch` and `deploy_host` rules,
-and applies the exceptions that have no `where`.
+exceptions copied. The hook acts on `protected_branch`, `deploy_host`,
+`package_registry` and `cloud_account` rules, and applies the exceptions that
+have no `where`.
 """
 
 from __future__ import annotations
@@ -125,15 +127,17 @@ DEFAULT_MODE = "monitor"
 RULES_MAX = 50
 VALUES_MAX = 100
 # The closed list of rule kinds (§2.2). A kind enters the schema in the same pull
-# request as its first consumer (§6.3 rule 4); the first build carries these two.
+# request as its first consumer (§6.3 rule 4): the first build carried protected_branch
+# and deploy_host; package_registry and cloud_account came with their hook consumer
+# (catpilot_guard/registry_targets.py, catpilot_guard/cloud_targets.py).
 RULE_KINDS = ("protected_branch", "deploy_host", "package_registry", "cloud_account")
-ACCEPTED_KINDS = ("protected_branch", "deploy_host")
+ACCEPTED_KINDS = ("protected_branch", "deploy_host", "package_registry", "cloud_account")
 # Allow-list kinds whose values must not appear in model-facing text (§6.3 rule 7).
 HOST_KINDS = ("deploy_host", "package_registry", "cloud_account")
 # Kinds a hook acts on in this release, through the compiled policy (`compile`) and the
 # company-rules hook (catpilot_guard/company_rules.py). A rule of another accepted kind is
 # validated and compiled, and nothing acts on it yet.
-ENFORCED_KINDS = ("protected_branch", "deploy_host")
+ENFORCED_KINDS = ("protected_branch", "deploy_host", "package_registry", "cloud_account")
 # Kinds with a host verification note for their consumer, so `block` on them draws no lint
 # warning (§6.3 rule 9): protected_branch, denied on Claude Code, Codex and Copilot CLI
 # (evals/reports/2026.11.17-host-check-company-rules.md).
@@ -588,8 +592,9 @@ def _enforcement(value: object, overlay: dict, ids: _Ids) -> dict:
 def _exception(value: object, label: str, ids: _Ids, rules_by_id: dict, file_expires: dt.date) -> dict:
     """One expiring exception (§3.1): it relaxes the enforcement rule `rule` names until `expires_on`, which is no later
     than the file's own. `allows` are values of that rule's kind: for protected_branch, branches the rule stops
-    protecting; for deploy_host, extra approved hosts. `where` limits it to repositories, and only the pull-request
-    check reads it. Messages name positions, never a value from enforcement."""
+    protecting; for deploy_host, package_registry and cloud_account, extra approved hosts, registries or accounts.
+    `where` limits it to repositories, and only the pull-request check reads it. Messages name positions, never a value
+    from enforcement."""
     if not isinstance(value, dict):
         raise OverlayError(f"{label}: expected an object with id, rule, allows, approver_role, expires_on and optional where")
     extra = set(value) - set(EXCEPTION_FIELDS)
@@ -725,6 +730,7 @@ def _host_problem(value: str) -> str | None:
 
 
 BRANCH_MAX = 255  # catpilot_guard/policy.py VALUE_MAX_CHARS: the hook refuses a longer value
+REGISTRY_MAX = 255  # the same limit
 
 
 def _branch_problem(value: str) -> str | None:
@@ -757,12 +763,16 @@ def value_problem(kind: str, value: str) -> str | None:
     if kind == "deploy_host":
         return _host_problem(value)
     if kind == "package_registry":
+        if len(value) > REGISTRY_MAX:
+            return f"expected a registry of at most {REGISTRY_MAX} characters"
         host, _, path = value.partition("/")
         problem = _host_problem(host)
         if problem:
             return problem
         if path and not _REGISTRY_PATH_RE.fullmatch(path):
             return "expected a registry host name and an optional path of letters, digits, ., _, - and /; no scheme, query or credentials"
+        if any(segment in (".", "..") for segment in path.split("/")):
+            return "expected a path without . or .. segments: a .. segment makes the value cover more than its path"
         return None
     if kind == "cloud_account":
         if not _CLOUD_ACCOUNT_RE.fullmatch(value):
@@ -1561,7 +1571,7 @@ def main(argv: list[str] | None = None) -> int:
         excepted = len((overlay.get("enforcement") or {}).get("exceptions", []))
         message += (
             f" Version 2, {rules} enforcement rule{'' if rules == 1 else 's'}: `compile` writes them as the policy the "
-            "company-rules hook reads, which acts on protected_branch and deploy_host rules."
+            "company-rules hook reads, which acts on protected_branch, deploy_host, package_registry and cloud_account rules."
         )
         if excepted:
             message += f" {excepted} expiring exception{'' if excepted == 1 else 's'}, which `compile` copies into the policy too."

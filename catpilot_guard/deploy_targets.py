@@ -33,8 +33,8 @@ What is recognized, exactly:
 Every scp or rsync upload to another machine counts, a backup to a dev box included, and a host without a dot cannot be
 listed in a rule, so a deploy_host rule fires on those too: start such rules in monitor. Not recognized: a deploy a
 script or CI job runs internally, a vendor this list does not name, a custom domain set in a project file (the service's
-own domain is the target then), `ssh` sessions, `curl` uploads, container pushes (a package_registry matter) and cloud
-object copies (a cloud_account matter).
+own domain is the target then), `ssh` sessions, `curl` uploads, container pushes (a package_registry matter, read by
+registry_targets.py) and cloud object copies (a cloud_account matter, read by cloud_targets.py when they name an account).
 
 Standard library only. Python 3.8+.
 """
@@ -291,11 +291,12 @@ def _git_push_heroku(args: list) -> Target | None:
     return None
 
 
-def deploy_targets(command: str, cwd: str | None = None, depth: int = 0) -> list:
+def deploy_targets(command: str, cwd: str | None = None, depth: int = 0, commands: list | None = None) -> list:
     """Every deploy or publish target the command names, in order. cwd, where the command runs, tells a directory
-    `vercel dist` deploys from a subcommand it does not know."""
+    `vercel dist` deploys from a subcommand it does not know. commands is the command's simple commands, when the caller
+    has split it already (company_rules splits once for every kind)."""
     targets = []
-    for argv in _simple_commands(command):
+    for argv in (commands if commands is not None else _simple_commands(command)):
         base = os.path.basename(argv[0]).lower()
         if depth < 3 and (base in RUNNERS or (base == "npm" and argv[1:2] in (["exec"], ["x"]))):
             call = _call_string(argv[2:] if base == "npm" else argv[1:])

@@ -20,6 +20,21 @@ Scope, stated exactly:
     deploys under vercel.app, so only a value `*.vercel.app` covers it), or a destination it cannot read (`rsync dist/
     $HOST:/srv`), which no value covers. A value `*.D` covers every name under D; any other value covers that host.
     Each deploy_host rule is its own allow-list, so list every approved host in one rule.
+  - Kind package_registry, an allow-list: fires on a command that names a registry no value of the rule covers.
+    catpilot_guard/registry_targets.py says which commands name one and how: `--registry` on npm, pnpm, yarn, bun and
+    their runners, npm/pnpm/yarn `config set` of a registry key, pip and uv index options and `pip config set`, `poetry
+    source add`, `uv publish --publish-url`, `twine --repository-url`, gem sources and hosts, `go env -w GOPROXY`,
+    docker and podman push, pull, run, create and login with an explicit registry, and assignments such as
+    NPM_CONFIG_REGISTRY, PIP_INDEX_URL and GOPROXY, also through `python -m`, `uv run`, `uvx` and the other runners it
+    names. A command that names none (`npm install`, `docker pull ubuntu`) is no target, and a registry it cannot read
+    (a variable, a URL that URL parsers read differently, a value xargs supplies) no value covers. A value `host`
+    covers that host, `host/path` that path and below, `*.D` every name under D.
+  - Kind cloud_account, an allow-list: fires on a command that names an account no value of the rule covers.
+    catpilot_guard/cloud_targets.py says which: an ARN's account in aws, sam and cdk arguments, aws account-id
+    options, gcloud --project and `config set project`, gsutil -u and `mb -p`, bq --project_id, az --subscription and
+    resource ids, and assignments such as CLOUDSDK_CORE_PROJECT and AZURE_SUBSCRIPTION_ID, through the same runners.
+    A profile names no account, so `aws --profile prod` is no target; a variable, a project number or a subscription
+    name is unknown, and no value covers it. Values match exactly.
   - Modes (§2.3): block denies. monitor decides nothing and writes a would_deny line. ask acts as block unless
     the hook's own command line has --ask (decision 2: ask means a person decides first). A Claude Code run with
     a program that approves (`claude -p` with a permission-prompt tool, an Agent SDK canUseTool callback) sends
@@ -36,16 +51,17 @@ Scope, stated exactly:
     and read no policy. The hook applies an exception until its expires_on (the day itself included) and only when it
     has no `where`: a repository name read from a working tree is something the agent can change, so only the
     pull-request check reads `where`. For protected_branch, an exception's allows are branches the rule stops
-    protecting (a value ending in `/*` covers the prefix, as for the rule's values); for deploy_host, extra approved
-    hosts, covered as the rule's values cover them. A rule fires when something it matches is covered by no active
-    exception; `git push --mirror` and the other pushes that can rewrite every branch are never excepted. When active
+    protecting (a value ending in `/*` covers the prefix, as for the rule's values); for deploy_host, package_registry
+    and cloud_account, extra approved hosts, registries or accounts, covered as the rule's values cover them, so an
+    unknown target, which no value covers, no exception covers either. A rule fires when something it matches is
+    covered by no rule value and no active exception; `git push --mirror` and the other pushes that can rewrite every branch are never excepted. When active
     exceptions cover everything a rule matched, the rule decides nothing and writes a would_deny line carrying the
     exception_id of each exception that covered a match, with the rule's own mode: the line records that exceptions
     covered all of the rule's matches, whether or not the rule would have decided anything (in monitor mode it would
     not) and whether or not another rule decides the command. An expired exception is ignored, and none outlives the
     policy.
   - A deny or ask reason names the rule ids and the approved alternative (use_instead_text), never a listed
-    value, and never repeats the command.
+    value, a host, a registry or an account, and never repeats the command.
   - A policy that is missing, unreadable, malformed, owned by the wrong user or writable by others, or
     arguments that cannot be read: no company rule applies, and the hook writes a policy_error line with a
     fixed label and returns no decision. The built-in checks run as their own hooks and are unaffected
@@ -53,8 +69,8 @@ Scope, stated exactly:
   - Fails closed on its input: a hook event it cannot read exits 2, which the host treats as a block.
 
 Evidence lines (CATPILOT_EVIDENCE_LOG): deny, ask, would_deny and policy_error with the rule id, the mode that
-applied, the policy's source SHA-256 and the session id, and on a would_deny line for a rule whose matches exceptions all covered, the exception id.
-Never a command, a branch, a value or a path.
+applied, the policy's source SHA-256 and the session id, and on a would_deny line for a rule whose matches exceptions
+all covered, the exception id. Never a command, a branch, a host, a registry, an account, a value or a path.
 
 Standard library only. Python 3.8+.
 """
@@ -67,8 +83,10 @@ import sys
 
 from . import COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, event_for_host, write_decision, write_reason
 from . import policy as policy_module
+from .cloud_targets import account_covered, cloud_targets
 from .deploy_targets import deploy_targets, host_covered
 from .destructive import _simple_commands, git_push_rewrites
+from .registry_targets import registry_covered, registry_targets, split_command
 
 MAX_INPUT_BYTES = 1_048_576
 HOOK_NAME = "pretooluse-company-rules"
@@ -81,6 +99,8 @@ ASK_FLAG = "--ask"  # a flag, not an option: it takes no value
 WHAT = {
     "protected_branch": "this push force-pushes to or deletes a branch the company protects",
     "deploy_host": "this command deploys or publishes to a host the company has not approved",
+    "package_registry": "this command names a package registry the company has not approved",
+    "cloud_account": "this command names a cloud account the company has not approved",
 }
 
 
@@ -141,7 +161,11 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy, today
                 push = git_push_rewrites(argv[1:], working_dir)
                 if push is not None:
                     pushes.append(push)
-    targets = deploy_targets(command, working_dir) if "deploy_host" in kinds else []
+    # One split of the command for the deploy, registry and account readers: a long command is split once, not per kind.
+    split = split_command(command) if kinds & {"deploy_host", "package_registry", "cloud_account"} else ([], [])
+    targets = deploy_targets(command, working_dir, commands=split[0]) if "deploy_host" in kinds else []
+    registries = registry_targets(command, working_dir, split=split) if "package_registry" in kinds else []
+    accounts = cloud_targets(command, working_dir, split=split) if "cloud_account" in kinds else []
     mirror = any(rewrites_every_branch for rewrites_every_branch, _ in pushes)
     branches = [branch for _, names in pushes for branch in names if branch]
     matched = []
@@ -156,6 +180,12 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy, today
         elif rule.kind == "deploy_host":
             covered = _target_covered
             hits = [target for target in targets if not covered(rule.values, target)]  # an allow-list: an unlisted host fires
+        elif rule.kind == "package_registry":
+            covered = _registry_covered
+            hits = [target for target in registries if not covered(rule.values, target)]  # allow-list, as deploy_host
+        elif rule.kind == "cloud_account":
+            covered = _account_covered
+            hits = [target for target in accounts if not covered(rule.values, target)]  # allow-list, as deploy_host
         else:
             continue
         if not hits:
@@ -178,6 +208,14 @@ def _branch_covered(values, branch: str) -> bool:
 
 def _target_covered(values, target) -> bool:
     return any(host_covered(value, target) for value in values)
+
+
+def _registry_covered(values, target) -> bool:
+    return any(registry_covered(value, target) for value in values)  # an unknown registry: nothing covers it
+
+
+def _account_covered(values, target) -> bool:
+    return any(account_covered(value, target) for value in values)  # an unknown account: nothing covers it
 
 
 def can_ask(host: str | None, event: dict, ask_enabled: bool = False) -> bool:

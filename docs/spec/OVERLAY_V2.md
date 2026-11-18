@@ -1,6 +1,6 @@
 # Overlay version 2: design note
 
-**Status:** Approved on 2026-11-17 in [issue #92](https://github.com/catpilotai/catpilot-ai-guardrails/issues/92), with the decisions in §7. The first build's file format is implemented: every reader accepts `schema_version: 1` and `2`, `tools/validate_overlay.py` checks every rule in §6.3 and has `migrate`, and no bundle, paste block, company-checklist block, benchmark prompt or server answer carries `enforcement`. `tools/validate_overlay.py compile` writes the `enforcement` section as the JSON policy the company-rules hook (`hooks/claude-code/pretooluse-company-rules.py`, `catpilot_guard/company_rules.py`) reads, and prints each rule's effect per tool (§2.3). The hook acts on `protected_branch` rules in `monitor`, `ask` and `block` on Claude Code and Codex (`ask` acts as `block` unless an administrator adds `--ask` to the hook's command line: the hook cannot tell a person from a program that approves, see decision 2), writes `deny`, `ask` and `would_deny` evidence with `rule_id` and `mode`, and `deploy/org/install.sh --overlay` places and registers it; not yet run on a host. Topic contacts (§3.1) are implemented: the validator checks `contacts`, `check_plan` takes `who_to_ask` and the escalation draft's recipient from the contact for the field that decided the outcome, `list_approved("contacts")` returns them, and the session-start rules block lists them. The hook also acts on `deploy_host` rules (`catpilot_guard/deploy_targets.py` reads what a command deploys to; not yet run on a host). Expiring exceptions to enforcement rules (§3.1) are implemented: the validator checks `enforcement.exceptions`, `compile` copies them into the policy, and the hook applies those without `where` until they expire, writing a `would_deny` line with `exception_id` when exceptions cover everything a rule matched; not yet run on a host. Not yet implemented: the pull-request check (and so `where`), `check_plan` deciding by id or alias with `rule_id` and `matched_by`, ids in `list_approved` (§2.1), exceptions to model-facing rules (the top-level `exceptions` list `check_plan` would name, §3.1) and everything in §3.2.
+**Status:** Approved on 2026-11-17 in [issue #92](https://github.com/catpilotai/catpilot-ai-guardrails/issues/92), with the decisions in §7. The first build's file format is implemented: every reader accepts `schema_version: 1` and `2`, `tools/validate_overlay.py` checks every rule in §6.3 and has `migrate`, and no bundle, paste block, company-checklist block, benchmark prompt or server answer carries `enforcement`. `tools/validate_overlay.py compile` writes the `enforcement` section as the JSON policy the company-rules hook (`hooks/claude-code/pretooluse-company-rules.py`, `catpilot_guard/company_rules.py`) reads, and prints each rule's effect per tool (§2.3). The hook acts on `protected_branch` rules in `monitor`, `ask` and `block` on Claude Code and Codex (`ask` acts as `block` unless an administrator adds `--ask` to the hook's command line: the hook cannot tell a person from a program that approves, see decision 2), writes `deny`, `ask` and `would_deny` evidence with `rule_id` and `mode`, and `deploy/org/install.sh --overlay` places and registers it; not yet run on a host. Topic contacts (§3.1) are implemented: the validator checks `contacts`, `check_plan` takes `who_to_ask` and the escalation draft's recipient from the contact for the field that decided the outcome, `list_approved("contacts")` returns them, and the session-start rules block lists them. The hook also acts on `deploy_host` rules (`catpilot_guard/deploy_targets.py` reads what a command deploys to), on `package_registry` rules (`catpilot_guard/registry_targets.py` reads the registry a command names) and on `cloud_account` rules (`catpilot_guard/cloud_targets.py` reads the account a command names); none of the three has been run on a host. Expiring exceptions to enforcement rules (§3.1) are implemented: the validator checks `enforcement.exceptions`, `compile` copies them into the policy, and the hook applies those without `where` until they expire, to every kind (for the three allow-list kinds, an exception's allows are extra approved values), writing a `would_deny` line with `exception_id` when exceptions cover everything a rule matched; not yet run on a host. Not yet implemented: the pull-request check (and so `where`), `check_plan` deciding by id or alias with `rule_id` and `matched_by`, ids in `list_approved` (§2.1), exceptions to model-facing rules (the top-level `exceptions` list `check_plan` would name, §3.1) and everything in §3.2.
 **Companion to:** [`OVERLAY.md`](./OVERLAY.md) (version 1), [`overlay.schema.json`](./overlay.schema.json), [`overlay.example.yaml`](./overlay.example.yaml). Version 2: [`overlay.v2.schema.json`](./overlay.v2.schema.json), [`overlay.v2.example.yaml`](./overlay.v2.example.yaml).
 
 The overlay is the company rules file. Version 1 is written to advise a model.
@@ -132,7 +132,9 @@ the values mean and when the rule fires; a file cannot change that.
   target as a host or an account, is that consumer's design, written up in an
   "Exact coverage" section like those in `hooks/README.md`.
 - A kind enters the schema in the same pull request as its first consumer.
-  The first build carries `protected_branch` and `deploy_host`.
+  The first build carried `protected_branch` and `deploy_host`;
+  `package_registry` and `cloud_account` entered with their first consumer,
+  the company-rules hook.
 
 **Never rendered, never returned.** `values` never leave the hooks and the
 pull-request check (§6.1). The server and every renderer get the file with
@@ -376,8 +378,11 @@ enforcement:
   protect-list, they are branches the rule stops protecting until the
   exception expires; a value ending in `/*` covers the prefix, as in a rule.
   For `deploy_host`, an allow-list, they are extra approved hosts, covered as
-  a rule's values cover them (`*.D` covers every name under `D`). A rule fires
-  when something it matches is covered by no active exception. A push that can
+  a rule's values cover them (`*.D` covers every name under `D`); for
+  `package_registry` and `cloud_account`, also allow-lists, extra approved
+  registries and accounts, covered the same way, so a target the hook cannot
+  read, which no value covers, no exception covers either. A rule fires when
+  something it matches is covered by no rule value and no active exception. A push that can
   rewrite every branch (`git push --mirror`, `--all` with a force, a forced
   pattern refspec) fires a `protected_branch` rule whatever its exceptions,
   since an exception names branches.
@@ -422,8 +427,8 @@ enforcement:
   warns, one past it warns that it is ignored, and one with `where` warns that
   no hook applies it.
 - `verify.sh` probes outside the active exceptions: a branch of the first
-  `protected_branch` rule that no exception allows, and a deploy no exception
-  lets through. When exceptions allow every listed branch of that rule, it
+  `protected_branch` rule that no exception allows, and a deploy, a package
+  install and a cloud command no exception lets through. When exceptions allow every listed branch of that rule, it
   expects the decision they leave.
 
 ### 3.2 Deferred until a pilot needs them
@@ -475,7 +480,7 @@ today's bundle slots and paste blocks. **Evidence** is the local evidence log.
 | Item `aliases` | Server (exact match), validator | Rules block and bundles: no consumer there | First build |
 | `enforcement.default_mode` | Hook, PR check | Server, Rules block | First build |
 | `enforcement.rules[].id`, `kind`, `mode` | Hook, PR check; deny reasons and Evidence carry `id` and `mode` | Server, Rules block | First build |
-| `enforcement.rules[].values` | Hook, PR check | Server, Rules block, Evidence, deny reasons, PR annotations | First build for `protected_branch` and `deploy_host`; other kinds with their first consumer |
+| `enforcement.rules[].values` | Hook, PR check | Server, Rules block, Evidence, deny reasons, PR annotations | First build for `protected_branch` and `deploy_host`; `package_registry` and `cloud_account` with their hook consumer |
 | `enforcement.rules[].use_instead` | Hook, PR check (resolved to the item's `text`) | Server, Rules block | First build |
 | `salt` | Validator only; it changes the file's SHA-256, which the Rules block, the Server and Evidence carry | Server, Rules block, Evidence, deny reasons | First build (§6.3 rule 10) |
 | `contacts.<topic>` | Server (`who_to_ask`, escalation draft, `list_approved`), Rules block (the session-start block; bundle slots and paste blocks keep `owner`) | Hook, PR check (not needed) | Next increment; implemented |
@@ -503,11 +508,12 @@ that the two match and that it validates once its published salt is replaced.
 
 *Corrected when the first build was implemented, to follow §6.3:* the
 approved version of this example also had a `package_registry` rule and a
-`cloud_account` rule, which rule 4 rejects until their consumers ship, and
+`cloud_account` rule, which rule 4 rejected until their consumers shipped, and
 review dates (2026-12-01 to 2027-06-01) that the expiry-window check rejects
-before 2026-12-01. They are shown after the example instead, and the dates are
-the approval date and six months later, the span the version 1 example uses.
-The example also gained a `salt` after approval (§6.3 rule 10). Its value is
+before 2026-12-01. The two rules were shown after the example until the
+company-rules hook gained those kinds; they are back in it, as approved. The
+dates are the approval date and six months later, the span the version 1
+example uses. The example also gained a `salt` after approval (§6.3 rule 10). Its value is
 published here, so the validator rejects it: replace it with `python tools/validate_overlay.py salt FILE`.
 It gained `contacts` when topic contacts were implemented. Its hosting contact
 has no `intake_url`, unlike the one in §3.1, so the example validates without
@@ -589,19 +595,7 @@ enforcement:
       kind: deploy_host
       use_instead: hosting-app-platform
       values: ["apps.example.org", "*.apps.example.org"]
-  exceptions:
-    - id: exception-analytics-preview
-      rule: deploy-hosts
-      allows: ["preview.analytics.example.org"]
-      approver_role: "Platform security lead"
-      expires_on: 2027-02-01
-```
-
-When the `package_registry` and `cloud_account` kinds ship with their first
-consumers, the same file could add these two rules:
-
-```yaml
-    - id: package-registries
+    - id: package-registries        # default_mode applies: monitor
       kind: package_registry
       use_instead: service-package-mirror
       values: ["npm.example.org", "pypi.example.org/simple"]
@@ -610,7 +604,18 @@ consumers, the same file could add these two rules:
       mode: ask
       use_instead: hosting-cloud-subscription
       values: ["aws:111122223333", "azure:00000000-0000-0000-0000-000000000000", "gcp:example-org-apps"]
+  exceptions:
+    - id: exception-analytics-preview
+      rule: deploy-hosts
+      allows: ["preview.analytics.example.org"]
+      approver_role: "Platform security lead"
+      expires_on: 2027-02-01
 ```
+
+The `cloud-accounts` rule is in `ask`, as approved, so lint warns that it acts
+as `block` wherever nobody can be asked, which is everywhere until an
+administrator adds `--ask` to the hook's command line (§2.3). A company rolling
+out a new kind should start it in `monitor`, as `package-registries` is.
 
 ### 5.2 The version 1 example, migrated
 
@@ -754,7 +759,9 @@ refusal of symlinks. Version 2 adds:
    - `deploy_host`: a lowercase host name with at least one dot, optionally
      starting with `*.`; no scheme, port, path, credentials or IP address.
    - `package_registry`: such a host name, optionally followed by a path of
-     letters, digits, `.`, `_`, `-` and `/`; no scheme, query or credentials.
+     letters, digits, `.`, `_`, `-` and `/` with no `.` or `..` segment; at
+     most 255 characters, the compiled policy's limit; no scheme, query or
+     credentials.
    - `cloud_account`: `aws:` and 12 digits; `azure:` and a lowercase GUID; or
      `gcp:` and a project id (6 to 30 lowercase letters, digits and hyphens,
      starting with a letter).
@@ -802,10 +809,11 @@ Rule 3 also counts template kinds, since templates keep `kind` as their id
 since YAML would otherwise keep only the last one, and so is a YAML merge key
 (`<<`), which would change values just as quietly.
 
-*How the first build reads two of these rules:* rule 4 accepts the first
+*How the first build reads two of these rules:* rule 4 accepted the first
 build's two kinds, `protected_branch` and `deploy_host` (§2.2), although their
-hook consumer lands in a later pull request; until then those rules are
-validated only. Rule 7 checks an id, alias or template kind for the value with
+hook consumer landed in a later pull request; until then those rules were
+validated only. It accepts `package_registry` and `cloud_account` since the
+pull request that taught the company-rules hook to read them. Rule 7 checks an id, alias or template kind for the value with
 each run of other characters as one hyphen (`apps.example.org` as
 `apps-example-org`), since an id cannot hold a dot. Rule 7 matches substrings,
 so a `deploy_host` value `*.example.org` also rejects an `owner` such as

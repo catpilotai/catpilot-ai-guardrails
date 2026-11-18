@@ -55,6 +55,13 @@ CANARIES = (
     "canary-host-7e8f",  # a deploy host, canary-host-7e8f.example.net
     "canary-wild-0a1b",  # a wildcard deploy host, *.canary-wild-0a1b.example.net
     "canary-alias-2f4e",  # use_instead, an alias only enforcement refers to
+    "canary-rule-registries-6a2c",  # a rule id
+    "canary-rule-accounts-1c9e",  # a rule id
+    "canary-registry-5b3d",  # a package registry host, canary-registry-5b3d.example.net/canary-path-8e4f
+    "canary-path-8e4f",  # that registry's path
+    "canary-project-4d7a",  # a GCP project, gcp:canary-project-4d7a
+    "730194628517",  # an AWS account, aws:730194628517
+    "c4a7e1d2-9b3f-4e8a-b6c5-2d1f0e9a8b7c",  # an Azure subscription
     "ca7a1b9e3d5f0c8264e1f7b2d9a0c3e5",  # the salt
     "canary-exception-6c2d",  # an exception id
     "canary-allow-4e5f",  # an exception's allowed host, canary-allow-4e5f.example.net
@@ -63,7 +70,8 @@ CANARIES = (
     "canary-org-3b4c",  # a repository owner in where
     "canary-repo-5d6e",  # a repository name in where
 )
-STRUCTURE = ("protected_branch", "deploy_host", "default_mode", "use_instead", "approver_role")
+STRUCTURE = ("protected_branch", "deploy_host", "package_registry", "cloud_account", "default_mode", "use_instead",
+             "approver_role")
 
 try:
     from starlette.testclient import TestClient
@@ -86,6 +94,10 @@ def canary_overlay() -> dict:
              "values": ["canary-branch-1a2b", "release-canary-3c4d/*"]},
             {"id": "canary-rule-hosts-9b7c", "kind": "deploy_host", "mode": "ask", "use_instead": "canary-alias-2f4e",
              "values": ["canary-host-7e8f.example.net", "*.canary-wild-0a1b.example.net"]},
+            {"id": "canary-rule-registries-6a2c", "kind": "package_registry", "mode": "block", "use_instead": "canary-alias-2f4e",
+             "values": ["canary-registry-5b3d.example.net/canary-path-8e4f"]},
+            {"id": "canary-rule-accounts-1c9e", "kind": "cloud_account", "mode": "monitor",
+             "values": ["gcp:canary-project-4d7a", "aws:730194628517", "azure:c4a7e1d2-9b3f-4e8a-b6c5-2d1f0e9a8b7c"]},
         ],
         "exceptions": [
             {"id": "canary-exception-6c2d", "rule": "canary-rule-hosts-9b7c", "allows": ["canary-allow-4e5f.example.net"],
@@ -347,6 +359,7 @@ class ProbeTests(CanaryCase):
         listed_values = (
             "canary-host-7e8f.example.net", "x.canary-wild-0a1b.example.net", "canary-branch-1a2b",
             "release-canary-3c4d/hotfix", "canary-rule-hosts-9b7c", "canary-alias-2f4e",
+            "canary-registry-5b3d.example.net", "canary-project-4d7a", "canary-rule-accounts-1c9e",
         )
         for listed in listed_values:
             token = re.search(r"[0-9a-f]{4}(?=[^0-9a-f]|$)", listed).group(0)

@@ -83,6 +83,7 @@ DENIED = {
     "rm inside bash -c": 'bash -c "rm -rf ~"',
     "rm behind sudo -u": "sudo -u root rm -rf /",
     "rm behind env assignment": "FOO=1 rm -rf /",
+    "rm behind env and a name the shell refuses": "env 'A-B=x/y' rm -rf /",
     "git force-with-lease to main": "git push --force-with-lease origin main",
     "git force to master via refs/heads": "git push --force origin HEAD:refs/heads/master",
     "git -fu combined to main": "git push -fu origin main",
