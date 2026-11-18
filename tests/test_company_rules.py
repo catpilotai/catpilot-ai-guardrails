@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -675,7 +676,7 @@ class DeployTests(unittest.TestCase):
         path = self.cc / "managed-settings.json"
         original = path.read_text(encoding="utf-8")
         for label, rewrite in {
-            "a no-op": lambda c: "echo '{}' # pretooluse-company-rules.py CATPILOT_EVIDENCE_LOG=",
+            "a no-op": lambda c: "echo '{}' # pretooluse-company-rules.py",
             "syntax glued to the evidence value": lambda c: c.replace(vo_prefix(), "CATPILOT_EVIDENCE_SYSLOG=1;exit;"),
             "a keyword after the assignment": lambda c: c.replace(vo_prefix(), vo_prefix() + " [[ -n x ]] &&"),
             "an expansion that aborts": lambda c: c.replace(vo_prefix(), 'CATPILOT_EVIDENCE_LOG="${CATPILOT_LOG_DIR:?}/e.jsonl"'),
@@ -709,6 +710,7 @@ class DeployTests(unittest.TestCase):
         # Verify never sends a probe line to a real sink (review of #134): a syslog or outside-$HOME command is not run.
         import socket
         listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(listener.close)
         listener.bind(("127.0.0.1", 0))
         listener.settimeout(0.5)
         port = listener.getsockname()[1]
@@ -728,13 +730,29 @@ class DeployTests(unittest.TestCase):
                 with self.assertRaises(socket.timeout):
                     listener.recvfrom(65536)
                 self.assertFalse(outside.exists())
-        listener.close()
-        # The standard prefix in another spelling still lands in verify's log.
+        # Only the command install.sh writes is run (review of #134): another spelling, a wrapper or an env file is not,
+        # and fails; the same command with --ask is run, and passes.
+        for label, rewrite in {
+            "another spelling of the prefix": lambda c: c.replace(vo_prefix(), 'CATPILOT_EVIDENCE_LOG="$HOME"/.catpilot-guardrails/evidence.jsonl'),
+            "a wrapper": lambda c: "bash -c " + shlex.quote(c),
+            "an env file": lambda c: "set -a; . /etc/catpilot.env; set +a; " + c,
+            "HOME moved": lambda c: "HOME=/tmp/elsewhere; " + c,
+        }.items():
+            with self.subTest(case=label):
+                settings = json.loads(original)
+                for group in settings["hooks"]["PreToolUse"]:
+                    for hook in group["hooks"]:
+                        if "pretooluse-company-rules.py" in hook["command"]:
+                            hook["command"] = rewrite(hook["command"])
+                path.write_text(json.dumps(settings), encoding="utf-8")
+                verify = self.run_script("verify.sh")
+                self.assertNotEqual(verify.returncode, 0)
+                self.assertIn("with a command other than the one install.sh writes", verify.stdout)
         settings = json.loads(original)
         for group in settings["hooks"]["PreToolUse"]:
             for hook in group["hooks"]:
                 if "pretooluse-company-rules.py" in hook["command"]:
-                    hook["command"] = hook["command"].replace(vo_prefix(), 'CATPILOT_EVIDENCE_LOG="$HOME"/.catpilot-guardrails/evidence.jsonl')
+                    hook["command"] += " --ask"
         path.write_text(json.dumps(settings), encoding="utf-8")
         verify = self.run_script("verify.sh")
         self.assertEqual(verify.returncode, 0, verify.stdout)
@@ -767,8 +785,7 @@ class DeployTests(unittest.TestCase):
         path.write_text(path.read_text(encoding="utf-8").replace("company-policy.json", "company-policy-stale.json"), encoding="utf-8")
         verify = self.run_script("verify.sh")
         self.assertNotEqual(verify.returncode, 0)
-        self.assertRegex(verify.stdout, r"which gave the expected decision on a force push[^\n]*no rule line for protected-branches"
-                                        r"[^\n]*a stale copy")
+        self.assertIn("with a command other than the one install.sh writes", verify.stdout)
 
     def test_verify_fails_a_registered_hook_without_a_policy(self):
         self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)

@@ -9,8 +9,10 @@
 # rules at session start: the block and its sidecar on each tool and that their SHA-256 hashes match, the
 # marked section of the managed CLAUDE.md, the expiry date, the session-start script run directly for each
 # tool, and the SessionStart hook that managed-settings.json and /etc/codex/requirements.toml register, run
-# the way the tool would. It writes only to a temporary directory it removes on exit, sends nothing anywhere,
-# and writes no evidence line.
+# the way the tool would. It works in a temporary directory it removes on exit, where the probes' evidence lines
+# go, and sends nothing anywhere, as long as the registered commands keep install.sh's evidence prefix: a built-in
+# hook's command whose prefix was changed to another path writes its probe lines there (a syslog one is skipped);
+# a company-rules command that is not exactly install.sh's is not run.
 #
 # It runs the hooks directly, not through Claude Code, so it proves nothing about what a session does:
 # Claude Code's own PATH can differ from this shell's, and only a session shows the host applying a deny.

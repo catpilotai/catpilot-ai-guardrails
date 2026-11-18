@@ -1048,19 +1048,15 @@ def logged_rule(entries: list, rule_id: str, excepted: bool, expected: str, host
                and bool(e.get("exception_id")) == excepted for e in entries)
 
 
-HOME_EVIDENCE_VALUE = re.compile(r"""CATPILOT_EVIDENCE_LOG=(?:"?\$\{?HOME\}?"?/|~/)""")
-
-
-def evidence_elsewhere(command: str) -> str | None:
-    """Where a registered command sends its evidence other than under $HOME, read from its text without changing it:
-    "syslog" when it names CATPILOT_EVIDENCE_SYSLOG, "a path outside $HOME" when a CATPILOT_EVIDENCE_LOG= value does
-    not start with $HOME (or ~); else None. verify does not run such a command, so it sends nothing anywhere."""
-    if "CATPILOT_EVIDENCE_SYSLOG" in command:
-        return "syslog"
-    for match in re.finditer(r"CATPILOT_EVIDENCE_LOG=", command):
-        if not HOME_EVIDENCE_VALUE.match(command, match.start()):
-            return "a path outside $HOME"
-    return None
+def standard_company_command(command: str, hook: Path, host: str, policy_file: Path) -> bool:
+    """Whether a registered company-rules command is exactly the one install.sh writes for this tool (the standard
+    evidence prefix, python3, this hook, --host, this policy), with --ask allowed after --host or at the end. verify
+    runs only such a command: any other (a wrapper, an env file, another evidence sink, another policy or host) could
+    send its probe lines somewhere real or behave differently than verify can see, so it is not run."""
+    ask = r"(?: --ask)?"
+    pattern = (re.escape(EVIDENCE_PREFIX) + r' python3 "' + re.escape(str(hook)) + r'" --host ' + re.escape(host) + ask
+               + r' --policy "' + re.escape(str(policy_file)) + r'"' + ask)
+    return re.fullmatch(pattern, command.strip()) is not None and command.count("--ask") <= 1
 
 
 def policy_hash(policy_file: Path) -> str | None:
@@ -1322,16 +1318,15 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
                 report.line("FAIL", "%s runs %s under a matcher that does not cover Bash" % (managed_file, COMPANY_HOOK))
             if host == COPILOT and "--host copilot-cli" not in command and "--host=copilot-cli" not in command:
                 report.line("FAIL", "%s runs %s without --host copilot-cli, so its decisions lack the fields Copilot CLI reads" % (managed_file, COMPANY_HOOK))
-            # Each probe runs the command exactly as registered, with HOME at verify's temporary home and no evidence
-            # setting of verify's own, so the standard prefix ("$HOME/.catpilot-guardrails/evidence.jsonl") writes the
-            # proof line where verify reads it. Rewriting the command could make it run differently than in a session.
-            # A command whose evidence would go anywhere else (syslog, a path outside $HOME) is not run, so verify
-            # sends nothing to a real sink, and fails: it cannot prove it read the rule.
-            elsewhere = evidence_elsewhere(command)
-            if elsewhere:
-                report.line("FAIL", "%s runs %s with its evidence sent to %s; verify does not run it, so nothing reaches a "
-                            "real sink, and cannot prove it reads the rule; verify reads the hook's evidence through the "
-                            "standard prefix %s" % (managed_file, COMPANY_HOOK, elsewhere, EVIDENCE_PREFIX))
+            # Only the command install.sh writes is run, exactly as registered, with HOME at verify's temporary home
+            # and no evidence setting of verify's own, so its standard prefix writes the proof line where verify reads
+            # it. Any other command (a wrapper, an env file, another evidence sink, policy or host) could send probe
+            # lines somewhere real or behave in ways verify cannot see: it is not run, and fails.
+            if not standard_company_command(command, hook, host, policy_file):
+                report.line("FAIL", "%s runs %s with a command other than the one install.sh writes (%s python3 \"%s\" "
+                            "--host %s --policy \"%s\", optionally with --ask); verify does not run it, so it cannot "
+                            "prove the hook reads the rules: reinstall, or confirm this setup in a session" % (
+                                managed_file, COMPANY_HOOK, EVIDENCE_PREFIX, hook, host, policy_file))
                 continue
             for probe_cmd, modes, what, probe_rule, excepted in runs:
                 expected = expected_effect(host, modes, has_ask_flag(command))
