@@ -610,6 +610,24 @@ def bash(command, permission_mode="default"):
     return {"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/tmp", "permission_mode": permission_mode}
 
 
+class FinalReviewRegistryTests(unittest.TestCase):
+    """The final review of #135: local file: URLs under $PWD or $HOME name nothing; a share does not."""
+
+    def test_file_urls(self):
+        for command in ("pip install --no-index --find-links=file://$PWD/wheels mypkg", 'pip install -f "file://${PWD}/wheels" x',
+                        "pip install -f file://$HOME/wheels x", "PIP_FIND_LINKS=file://$PWD/wheels pip install x",
+                        "uv pip install --find-links file://$PWD/dist x", "pip install -f file:///abs/wheels x",
+                        "pip install -f file://localhost/x y"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
+        for command in ("pip install -f 'file://\\host\\share' x", "pip install -f file://localhost//host/share x",
+                        "pip install -f file://evil.example.org/w x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(UNKNOWN, None)])
+        # A Latin-1 character in a decoded segment leaves only the host.
+        self.assertEqual(targets("pip install -i https://pypi.example.org/approved/%C2%A0/evil x"), [(REGISTRY, "pypi.example.org")])
+
+
 class HookDecisionTests(unittest.TestCase):
     def setUp(self):
         self.lines = []

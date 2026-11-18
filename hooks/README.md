@@ -389,8 +389,10 @@ blocked on stale values, and each match still writes `would_deny`.
   removes it (`.<TAB>.` is `..`) and pip's, twine's and poetry's (urllib3)
   encodes it (`.<TAB>.` is a name). A value without a scheme is read as
   `https://` where the option only takes a URL, and as a local path, which
-  names no registry, for find-links; `file://` URLs and paths starting with
-  `/`, `./`, `../` or `~` name none. These are unknown, and no value covers
+  names no registry, for find-links; local `file:` URLs (`file:///srv/w`,
+  `file://localhost/w`, `file://$PWD/w`) and paths starting with `/`, `./`,
+  `../` or `~` name none, but a `file:` URL that names a host or a share is
+  unknown. These are unknown, and no value covers
   them: a variable in the host; a host that is not a dotted name
   (`localhost:5000/app`, an IP address, including a last label such as
   `0x7f` that a URL parser reads as a number); a backslash or any character a
@@ -462,10 +464,13 @@ blocked on stale values, and each match still writes `would_deny`.
     `--aws-account-id` and `--source-account` (`-` names none) and
     `--account-ids` (each id), and their abbreviations, which the AWS CLI takes
     (down to `--acc`, `--aws` and `--source-ac`; down to `--a`, `--ac`, `--aw`
-    and `--sou`, but not codebuild's own `--source`, another option may share
-    them, so there every 12-digit run in the first value is an account, a
-    variable, a missing value, a `file://` or `fileb://` value and a JSON
-    document are unknown, and any other value names nothing);
+    and `--sou`, another option may share them, so there every standalone
+    12-digit run in the first value is an account, a variable, a missing
+    value, a `file://` or `fileb://` value and a JSON document are unknown,
+    any other value names nothing, and later values count only as 12 digits,
+    or as unknown when they hold a variable after a list of ids; the exact
+    `--source`, which is `--source-account` only in acm-pca, reads only a
+    12-digit value);
     `--role-arn` (down to
     `--role-a`) holding a variable; `aws configure set
     [profile.NAME.]sso_account_id ID`, and `role_arn` holding a variable; a

@@ -390,7 +390,8 @@ def url_target(value: str, path_without_scheme: bool = False) -> Target | None:
         if match.group(1).lower() == "file":
             # A local file, unless it names a host (`file://h/w`, a UNC share on Windows) or a share (`file:////h/w`).
             host = re.split(r"[/\\?#]", rest, maxsplit=1)[0]
-            local = host.lower() in ("", "localhost") and not _two_separators(rest[len(host):])
+            local = (host.lower() in ("", "localhost") or host in HOME_VARIABLES) and not _two_separators(rest[len(host):]) \
+                and not rest.startswith("\\")  # `file://\\host\\share` is a UNC share on Windows
             return None if local else Target(UNKNOWN)
     # The authority ends at /, ?, # or a backslash, which the WHATWG parser (npm, uv) and urllib3 (pip, twine, poetry)
     # take as the start of the path, though Python's urllib.parse does not: a backslash there is unknown.

@@ -349,6 +349,28 @@ def bash(command, permission_mode="default"):
     return {"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/tmp", "permission_mode": permission_mode}
 
 
+class FinalReviewCloudTests(unittest.TestCase):
+    """The final review of #135: abbreviated aws options."""
+
+    def test_short_options(self):
+        cases = {
+            # acm-pca's --source is --source-account: a 12-digit value is an account.
+            "aws acm-pca create-permission --certificate-authority-arn arn:aws:acm-pca:us-east-1:111122223333:certificate-authority/x "
+            "--principal acm.amazonaws.com --actions IssueCertificate --source 444455556666": ["aws:111122223333", "aws:444455556666"],
+            # A variable after an account list is unknown; a timestamp inside a word is no account.
+            "aws inspector2 enable --a 111122223333 $OTHER --resource-types EC2": ["aws:111122223333", None],
+            "aws sts assume-role --role-arn arn:aws:iam::111122223333:role/r --role-session-name s --sou deploy-202611181200": ["aws:111122223333"],
+            "aws kms create-alias --a alias/app-202611181200 --target-key-id k": [],
+            "aws s3 cp --ac private x s3://b/$KEY": [],
+            # JSON with leading space, as awscli strips it.
+            "aws inspector2 enable --a ' [\"222233334444\"]' --resource-types EC2": ["aws:222233334444", None],
+            "aws organizations describe-account --a 1234567890123": [],
+        }
+        for command, want in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(sorted(name or "" for _, name in targets(command)), sorted(w or "" for w in want))
+
+
 class HookDecisionTests(unittest.TestCase):
     def setUp(self):
         self.lines = []

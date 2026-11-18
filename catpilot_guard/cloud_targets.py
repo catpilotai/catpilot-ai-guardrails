@@ -31,7 +31,8 @@ What is recognized, exactly:
                   (down to `--acc`, `--aws`, `--source-ac`; `--account-i` is read as --account-ids); --role-arn (down
                   to `--role-a`) holding a variable is unknown; `aws configure set [profile.NAME.]sso_account_id ID`,
                   and `role_arn` holding a variable; shorter abbreviations the CLI also takes (`--a`, `--ac`, `--aw`,
-                  `--sou`, not codebuild's own `--source`): every 12-digit run in the first value is an account, and
+                  `--sou`; the exact `--source` reads only a 12-digit value, as acm-pca's --source-account, not
+                  codebuild's or ses's --source): every standalone 12-digit run in the first value is an account, and
                   a variable, a missing value, a file (`file://`, `fileb://`) or a JSON document (`[`, `{`) is
                   unknown; any other value names nothing, since another option may share them (`--ac private` is
                   --acl); later values (--a and --ac may be --account-ids) count only as 12 digits
@@ -102,7 +103,7 @@ AWS_ROLE_ARN = {"--role-arn": "--role-a"}
 # values: the later ones count only when they are 12 digits.
 AWS_SHORT_ACCOUNT_LIST_OPTIONS = {"--account-ids": "--a"}
 AWS_SHORT_ACCOUNT_OPTIONS = {"--aws-account-id": "--aw", "--source-account": "--sou"}
-AWS_ID_RUN = re.compile(r"(?<![0-9])[0-9]{12}(?![0-9])")
+AWS_ID_RUN = re.compile(r"(?<![\w-])[0-9]{12}(?![\w-])")
 AWS_CONFIG_KEYS = ("sso_account_id", "role_arn")
 GCLOUD_PROJECT_OPTIONS = {"--project": "--project", "--billing-project": "--billing-project"}
 BQ_PROJECT_OPTIONS = {"--project_id": "--project_id", "-project_id": "-project_id"}
@@ -244,9 +245,13 @@ def _short_account_values(values: list) -> list:
     if first is None or _has_variable(first):
         return [Target(UNKNOWN)]
     out = [Target(ACCOUNT, "aws:" + run) for run in AWS_ID_RUN.findall(first)]
-    if first.lower().startswith(("file://", "fileb://", "[", "{")):
+    if first.lower().startswith(("file://", "fileb://")) or first.lstrip()[:1] in ("[", "{"):
         out.append(Target(UNKNOWN))  # a file or a JSON document the hook does not read whole
+    strict_later = any(AWS_ID.fullmatch(one) for one in re.split(r"[,\s]+", first))
     for value in later:
+        if strict_later and _has_variable(value):
+            out.append(Target(UNKNOWN))
+            continue
         out.extend(Target(ACCOUNT, "aws:" + one) for one in re.split(r"[,\s]+", value) if AWS_ID.fullmatch(one))
     return out
 
@@ -291,6 +296,8 @@ def _aws(args: list) -> list:
     for options, many in ((AWS_SHORT_ACCOUNT_LIST_OPTIONS, True), (AWS_SHORT_ACCOUNT_OPTIONS, False)):
         for values in _option_value_lists(args, options, many, exclude=strict):
             out.extend(_short_account_values(values))
+    for value in _option_values(args, {"--source": "--source"}):
+        out.extend(Target(ACCOUNT, "aws:" + one) for one in re.split(r"[,\s]+", value or "") if AWS_ID.fullmatch(one))
     words = _positionals(args, AWS_VALUE_OPTIONS)
     if words[:2] == ["configure", "set"] and len(words) >= 3 and words[2].split(".")[-1] in AWS_CONFIG_KEYS:
         value = words[3] if len(words) >= 4 else None
