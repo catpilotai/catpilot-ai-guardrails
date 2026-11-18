@@ -618,7 +618,12 @@ class DestructiveHookTests(unittest.TestCase):
             ("git push origin %s; git push origin {main,feature}" % crafted, None),  # but a plain push stays allowed
             ("git {push,-f,origin,feature:main,HEAD:refs/tmp/{1..64}}", "deny"),
             ("git -c a.b=c {push,-f,origin,feature:main,HEAD:refs/tmp/{1..64}}", "deny"),
-            ("git {status,log,diff,show,HEAD:refs/tmp/{1..64}}", None),
+            ("git {status,log,diff,show,HEAD:refs/tmp/{1..64}}", "deny"),  # unknown: it could hold push
+            ("git {{p..p}ush,-f,origin,feature:main,HEAD:refs/tmp/{1..64}}", "deny"),
+            ("git push origin %s; git {p..p}ush -f origin main" % crafted, "deny"),
+            ("git push origin %s; git {-c,remote.origin.mirror=true} push" % crafted, "deny"),
+            ("git push origin %s; git push --repo {x,origin} +main" % crafted, "deny"),
+            ("git push --repo {x,origin,v{1..70}} +main", "deny"),
         ]
         for command, expected in cases:
             with self.subTest(command=command[:80]):

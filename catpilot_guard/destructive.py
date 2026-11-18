@@ -681,9 +681,9 @@ def _git_push_rewrites(args: list[str], cwd: str | None, expand: bool, budget: B
             word = args[position]
             position += 1
             words = [word] if "{" not in word else expand_braces(BRACED_EXPANSION.sub("$VAR", word), budget=budget)
-            if words is None and "push" in word:
-                # Past the limit, the word may hold the subcommand itself (`git {push,-f,origin,main,...}`): a push that
-                # rewrites a branch nobody can read.
+            if words is None:
+                # Past the limit (or the budget), the word may hold the subcommand itself (`git {push,-f,origin,main,...}`,
+                # `git {p..p}ush -f`) or a setting (`{-c,remote.origin.mirror=true}`): a push nobody can read.
                 return False, [None]
             head.extend(words if words is not None else ["$CATPILOT_BRACES"])
             look = 0
@@ -756,7 +756,10 @@ def _git_push_rewrites(args: list[str], cwd: str | None, expand: bool, budget: B
         elif arg in ("--delete", "-d"):
             delete = True
         elif arg in PUSH_VALUE_OPTIONS:
-            i += 1  # its value is the next argument
+            # Its value is the next argument. A placeholder there may hold more words (`--repo {x,origin} +main`), so
+            # what follows may be a refspec: unknown, and possibly a force.
+            unsure = unsure or (i < len(rest) and rest[i] == "$CATPILOT_BRACES")
+            i += 1
         elif arg.startswith("--"):
             continue
         elif arg.startswith("-") and len(arg) > 1:

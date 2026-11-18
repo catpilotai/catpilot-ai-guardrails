@@ -367,7 +367,7 @@ class BranchContextTests(unittest.TestCase):
             self.assertEqual([r.id for r, excepted_by in cr.matched_rules('git push -f origin "ma$X"', tmp, spelled) if not excepted_by], ["protected-branches"])
             # A word past the limit before git's subcommand may hold `push` itself (review of b2474bd).
             self.assertEqual(fired("git {push,-f,origin,feature:main,HEAD:refs/tmp/{1..64}}"), ["protected-branches"])
-            self.assertEqual(fired("git {status,log,HEAD:refs/tmp/{1..64}}"), [])
+            self.assertEqual(fired("git {status,log,HEAD:refs/tmp/{1..64}}"), ["protected-branches"])
             # No checkout's branch is the workflow's (the pull-request check): unknown, so it fires.
             self.assertEqual([r.id for r, excepted_by in cr.matched_rules("git push -f", tmp, policy, branch_known=False) if not excepted_by], ["protected-branches"])
 
