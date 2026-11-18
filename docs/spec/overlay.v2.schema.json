@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/catpilotai/catpilot-ai-guardrails/docs/spec/overlay.v2.schema.json",
   "title": "Catpilot organization overlay, version 2",
-  "description": "Version 2 of the company rules file (docs/spec/OVERLAY_V2.md). Every model-facing list item is an object with a stable id and its phrase as text; an optional machine-only enforcement section holds rules that are never rendered into a prompt or returned by the server. Version 1 files are checked against overlay.schema.json instead. A file with enforcement also carries a random salt, so the file's SHA-256, which a model sees, cannot confirm a guessed enforcement value. Cross-field rules are checked by tools/validate_overlay.py only, as in version 1: ids, aliases and template kinds unique across the file, use_instead resolving to an approved item, no enforcement host in a model-facing value, the secret and content scans, and IP addresses refused as hosts. Never commit an overlay to a public repository.",
+  "description": "Version 2 of the company rules file (docs/spec/OVERLAY_V2.md). Every model-facing list item is an object with a stable id and its phrase as text; an optional machine-only enforcement section holds rules that are never rendered into a prompt or returned by the server; optional topic contacts name who to ask about data, hosting, services or identity, with owner as the default. Version 1 files are checked against overlay.schema.json instead. A file with enforcement also carries a random salt, so the file's SHA-256, which a model sees, cannot confirm a guessed enforcement value. Cross-field rules are checked by tools/validate_overlay.py only, as in version 1: ids, aliases and template kinds unique across the file, use_instead resolving to an approved item, no enforcement host in a model-facing value, the secret and content scans (which allow an email address only in owner and a contact's name, and check a contact's intake_url as intake_url), and IP addresses refused as hosts. Never commit an overlay to a public repository.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -43,6 +43,26 @@
       "format": "uri",
       "maxLength": 500,
       "description": "Optional HTTPS intake form URL for security review requests. No credentials, no query string, host on the validator's allowlist."
+    },
+    "contacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "Optional topic contacts (OVERLAY_V2.md §3.1), one per check_plan field that has a topic: data (data_classes), hosting, services, identity (audience). check_plan names the contact for the field that decided its outcome; a tie between fields, write_access and any other case use owner, which stays the default. Model-facing: rendered into the rules block and returned by list_approved(\"contacts\").",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/contact"
+        },
+        "hosting": {
+          "$ref": "#/$defs/contact"
+        },
+        "services": {
+          "$ref": "#/$defs/contact"
+        },
+        "identity": {
+          "$ref": "#/$defs/contact"
+        }
+      }
     },
     "reviewed_on": {
       "type": "string",
@@ -182,6 +202,27 @@
     }
   },
   "$defs": {
+    "contact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160,
+          "description": "Follows the owner rules: a team mailbox, channel name, or role. An email address is allowed here, as in owner."
+        },
+        "intake_url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 500,
+          "description": "Optional HTTPS intake form URL for this topic, following the intake_url rules: no credentials, no query string, host on the validator's allowlist. The escalation draft uses it in place of the file's intake_url."
+        }
+      }
+    },
     "id": {
       "type": "string",
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",

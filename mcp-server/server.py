@@ -200,7 +200,8 @@ def create_server(
         check with first when a human has to look and nothing is prohibited), whether to ask a human, who to
         ask, `escalation_draft` (pre-filled subject, body, and optional mailto_url / intake_url when
         `ask_a_human` is true), and a checklist. When `ask_a_human` is true, name `who_to_ask` to the person as
-        given (the company's contact when it publishes one) and offer to draft the message. Advisory: a
+        given (the company's contact when it publishes one; with topic contacts, the contact for the one field
+        that decided the outcome, named in `contact_topic`, else the owner) and offer to draft the message. Advisory: a
         missing field returns `unknown`, not a pass, and no outcome here approves or blocks anything.
         """
         state = rules(ctx)
@@ -237,8 +238,9 @@ def create_server(
         """What the company has approved, or generic defaults labeled as such.
 
         category: hosting | services | data-classes | contacts. With a current approved overlay, unknown_policy is
-        false and the items are the company's. Otherwise unknown_policy is true and the items are generic defaults
-        that must not be presented as the company's policy.
+        false and the items are the company's; contacts gives the owner and, when the company names them, who to
+        ask about data, hosting, services and identity. Otherwise unknown_policy is true and the items are generic
+        defaults that must not be presented as the company's policy.
         """
         state = rules(ctx)
         result = tools.list_approved(category, GUIDANCE, state)

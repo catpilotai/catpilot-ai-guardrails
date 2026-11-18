@@ -1,6 +1,6 @@
 # Overlay version 2: design note
 
-**Status:** Approved on 2026-11-17 in [issue #92](https://github.com/catpilotai/catpilot-ai-guardrails/issues/92), with the decisions in §7. The first build's file format is implemented: every reader accepts `schema_version: 1` and `2`, `tools/validate_overlay.py` checks every rule in §6.3 and has `migrate`, and no bundle, paste block, company-checklist block, benchmark prompt or server answer carries `enforcement`. `tools/validate_overlay.py compile` writes the `enforcement` section as the JSON policy the company-rules hook (`hooks/claude-code/pretooluse-company-rules.py`, `catpilot_guard/company_rules.py`) reads, and prints each rule's effect per tool (§2.3). The hook acts on `protected_branch` rules in `monitor`, `ask` and `block` on Claude Code and Codex (`ask` acts as `block` unless an administrator adds `--ask` to the hook's command line: the hook cannot tell a person from a program that approves, see decision 2), writes `deny`, `ask` and `would_deny` evidence with `rule_id` and `mode`, and `deploy/org/install.sh --overlay` places and registers it; not yet run on a host. The hook also acts on `deploy_host` rules (`catpilot_guard/deploy_targets.py` reads what a command deploys to; not yet run on a host). The pull-request check is implemented: `tools/pr_check.py` applies the compiled `protected_branch` and `deploy_host` rules, with the hook's matching, to the workflows, composite actions, `package.json` scripts and deploy configuration files a pull request adds or changes (`monitor` annotates and passes; `ask` and `block` fail), and `deploy/ci/catpilot-pr-check.yml` is a workflow template for a company's repositories (`docs/DEPLOY_ORG.md`, Pull-request check); tested offline, not yet run in a real repository's CI. Not yet implemented: `check_plan` deciding by id or alias with `rule_id` and `matched_by`, ids in `list_approved` (§2.1), and everything in §3.
+**Status:** Approved on 2026-11-17 in [issue #92](https://github.com/catpilotai/catpilot-ai-guardrails/issues/92), with the decisions in §7. The first build's file format is implemented: every reader accepts `schema_version: 1` and `2`, `tools/validate_overlay.py` checks every rule in §6.3 and has `migrate`, and no bundle, paste block, company-checklist block, benchmark prompt or server answer carries `enforcement`. `tools/validate_overlay.py compile` writes the `enforcement` section as the JSON policy the company-rules hook (`hooks/claude-code/pretooluse-company-rules.py`, `catpilot_guard/company_rules.py`) reads, and prints each rule's effect per tool (§2.3). The hook acts on `protected_branch` rules in `monitor`, `ask` and `block` on Claude Code and Codex (`ask` acts as `block` unless an administrator adds `--ask` to the hook's command line: the hook cannot tell a person from a program that approves, see decision 2), writes `deny`, `ask` and `would_deny` evidence with `rule_id` and `mode`, and `deploy/org/install.sh --overlay` places and registers it; not yet run on a host. Topic contacts (§3.1) are implemented: the validator checks `contacts`, `check_plan` takes `who_to_ask` and the escalation draft's recipient from the contact for the field that decided the outcome, `list_approved("contacts")` returns them, and the session-start rules block lists them. The hook also acts on `deploy_host` rules (`catpilot_guard/deploy_targets.py` reads what a command deploys to; not yet run on a host). The pull-request check is implemented: `tools/pr_check.py` applies the compiled `protected_branch` and `deploy_host` rules, with the hook's matching, to the workflows, composite actions, `package.json` scripts and deploy configuration files a pull request adds or changes (`monitor` annotates and passes; `ask` and `block` fail), and `deploy/ci/catpilot-pr-check.yml` is a workflow template for a company's repositories (`docs/DEPLOY_ORG.md`, Pull-request check); tested offline, not yet run in a real repository's CI. Not yet implemented: `check_plan` deciding by id or alias with `rule_id` and `matched_by`, ids in `list_approved` (§2.1), expiring exceptions (§3.1) and everything in §3.2.
 **Companion to:** [`OVERLAY.md`](./OVERLAY.md) (version 1), [`overlay.schema.json`](./overlay.schema.json), [`overlay.example.yaml`](./overlay.example.yaml). Version 2: [`overlay.v2.schema.json`](./overlay.v2.schema.json), [`overlay.v2.example.yaml`](./overlay.v2.example.yaml).
 
 The overlay is the company rules file. Version 1 is written to advise a model.
@@ -256,9 +256,10 @@ asked, not what they chose: a `PreToolUse` hook does not see the answer.
 
 ### 3.1 Next increment: topic contacts and expiring exceptions
 
-Designed here, not in the first build.
+Designed here, not in the first build. Topic contacts are implemented; expiring
+exceptions are not.
 
-**Topic contacts.**
+**Topic contacts.** *Implemented.*
 
 ```yaml
 contacts:
@@ -278,6 +279,48 @@ contacts:
   rules block lists them.
 - `name` follows the `owner` rules, so an email address is allowed.
   `intake_url` follows the version 1 `intake_url` rules.
+
+*How it was built:*
+
+- `contacts` is optional and holds one or more of the four topics; any other
+  key is an error that names it. A contact is `{name, intake_url?}`: `name` is
+  3 to 160 characters, and the content scan accepts an email address in a
+  contact's `name` as it does in `owner`, and still nowhere else. `intake_url`
+  is https with its host on the `--allow-host` allowlist, no credentials,
+  query string or fragment. A contact's `name` counts as model-facing text for
+  §6.3 rule 7; its `intake_url` is exempt, as `intake_url` is, so a host on the
+  `--allow-host` allowlist that is also an enforcement value reaches a model
+  through it: keep enforcement hosts off the allowlist. `null` is
+  refused, as elsewhere in version 2. A version 1 file with `contacts` is
+  rejected as an unknown field, as before.
+- Contacts are model-facing: `model_facing()` keeps them, so the rules block
+  shows them, and its sentence on whom to ask names them. `v1_projection()`
+  drops them, so bundle slots and paste blocks, which render the projection,
+  keep naming `owner` and render as before.
+- **The field that decided.** `check_plan`'s `outcome` is the worst outcome
+  across its decisions. When that outcome is `prohibited` or
+  `requires_review`, the fields that decided it are the fields of the
+  decisions whose outcome equals it. If they are one field with a topic, and
+  the file has a contact for that topic, `who_to_ask`, the escalation draft's
+  `to` (and its `mailto_url`) and the person `next_step` names are that
+  contact's `name`, and the draft's `intake_url` is the contact's when it has
+  one, else the file's own. Several decisions from one field (two data
+  classes, say) are one field. Everything else uses `owner`: decisions at the
+  outcome from two or more fields, a deciding `write_access` or
+  `credential_references` decision (no topic), another field with a decision
+  that also needs a person (`prohibited` or `requires_review` below the
+  outcome), since the escalation draft lists every such item and one topic's
+  contact should not receive another topic's questions, a topic with no
+  contact, and
+  an outcome of `permitted` (every field decided it) or `unknown` (it waits on
+  the caller's answers, so a person is asked then only because of a hint,
+  which names no field). The decision is by field, not by component: a
+  credential named in `data_classes` goes to the `data` contact.
+- `check_plan` adds `contact_topic`, the topic whose contact `who_to_ask`
+  names, or `null` when it is `owner`, only when the file has contacts;
+  answers from a version 1 file, or a version 2 file without contacts, keep
+  their exact shape. `list_approved("contacts")` returns `owner` as before
+  and adds `contacts` when the file has them.
 
 **Expiring exceptions.**
 
@@ -362,7 +405,7 @@ today's bundle slots and paste blocks. **Evidence** is the local evidence log.
 | `enforcement.rules[].values` | Hook, PR check | Server, Rules block, Evidence, deny reasons, PR annotations | First build for `protected_branch` and `deploy_host`; other kinds with their first consumer |
 | `enforcement.rules[].use_instead` | Hook, PR check (resolved to the item's `text`) | Server, Rules block | First build |
 | `salt` | Validator only; it changes the file's SHA-256, which the Rules block, the Server and Evidence carry | Server, Rules block, Evidence, deny reasons | First build (§6.3 rule 10) |
-| `contacts.<topic>` | Server (`who_to_ask`, escalation draft, `list_approved`), Rules block | Hook, PR check (not needed) | Next increment |
+| `contacts.<topic>` | Server (`who_to_ask`, escalation draft, `list_approved`), Rules block (the session-start block; bundle slots and paste blocks keep `owner`) | Hook, PR check (not needed) | Next increment; implemented |
 | `exceptions[]` (model-facing rules) | Server (decision note) | Hook, PR check (not needed) | Next increment |
 | `enforcement.exceptions[]` | Hook (only without `where`), PR check; Evidence carries `exception_id` | Server, Rules block | Next increment |
 | `extends` | `compile` only | Every run-time consumer: it is resolved before them | Deferred |
@@ -378,12 +421,12 @@ a public repository.
 
 ### 5.1 A complete version 2 file
 
-First-build fields only. It is the file from §5.2 after a reviewer approved
-shorter ids (the generated ones kept as aliases where something already
-referred to them), one new service, and an `enforcement` section, with new
-review dates. It is [`overlay.v2.example.yaml`](./overlay.v2.example.yaml),
-and the tests check that the two match and that it validates once its
-published salt is replaced.
+First-build fields and topic contacts (§3.1). It is the file from §5.2 after
+a reviewer approved shorter ids (the generated ones kept as aliases where
+something already referred to them), one new service, topic contacts, and an
+`enforcement` section, with new review dates. It is
+[`overlay.v2.example.yaml`](./overlay.v2.example.yaml), and the tests check
+that the two match and that it validates once its published salt is replaced.
 
 *Corrected when the first build was implemented, to follow §6.3:* the
 approved version of this example also had a `package_registry` rule and a
@@ -393,6 +436,9 @@ before 2026-12-01. They are shown after the example instead, and the dates are
 the approval date and six months later, the span the version 1 example uses.
 The example also gained a `salt` after approval (§6.3 rule 10). Its value is
 published here, so the validator rejects it: replace it with `python tools/validate_overlay.py salt FILE`.
+It gained `contacts` when topic contacts were implemented. Its hosting contact
+has no `intake_url`, unlike the one in §3.1, so the example validates without
+`--allow-host`.
 
 ```yaml
 schema_version: 2
@@ -400,6 +446,12 @@ organization: "Example Org"
 owner: "security-review@example.org"
 reviewed_on: 2026-11-17
 expires_on: 2027-05-17
+
+contacts:
+  data: {name: "privacy-office@example.org"}
+  hosting: {name: "Platform team, #platform-help"}
+  services: {name: "vendor-review@example.org"}
+  identity: {name: "identity-team@example.org"}
 
 data_classes:
   never_in_prompts:
@@ -630,8 +682,9 @@ refusal of symlinks. Version 2 adds:
    or `services.approved`.
 7. No `deploy_host`, `package_registry` or `cloud_account` value appears,
    ignoring case and a leading `*.`, in any model-facing phrase, id or alias,
-   or in `organization` or `owner`. URLs in `templates` and `intake_url` are
-   exempt: their hosts are already on the operator's allowlist.
+   or in `organization`, `owner` or a contact's `name`. URLs in `templates`,
+   `intake_url` and a contact's `intake_url` are exempt: their hosts are
+   already on the operator's allowlist.
 8. The secret scan runs over the whole file, `enforcement` included.
 9. Lint warnings, which do not fail validation: a rule whose effective mode
    differs by host (`ask` where no prompt is possible); a rule in `block` for

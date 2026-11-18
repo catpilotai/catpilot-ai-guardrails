@@ -52,6 +52,19 @@ def load_helper():
 hostcheck = load_helper()
 
 
+def without_contacts(lines):
+    """The example's lines without its topic contacts section, the comments above it and the blank line after it."""
+    lines = list(lines)
+    start = lines.index("contacts:")
+    end = start + 1
+    while lines[end].startswith(" "):
+        end += 1
+    while lines[start - 1].startswith("#"):
+        start -= 1
+    assert lines[end] == "", lines[end]
+    return lines[:start] + lines[end + 1:]
+
+
 def can_build_overlay() -> bool:
     if not (3, 11) <= sys.version_info[:2] <= (3, 14):
         return False
@@ -461,8 +474,8 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertEqual([c["args"] for c in self.stub_calls()], [["--version"], ["--version"], ["--version"]])
         self.assertIn("no model session will start", proc.stdout)
         self.assertNotIn("Control", proc.stdout)
-        # The test rules: the version 2 example with the owner and the first approved host's text replaced, the
-        # enforcement section replaced by the kit's two rules, and a new salt.
+        # The test rules: the version 2 example with the owner and the first approved host's text replaced, its
+        # topic contacts removed, the enforcement section replaced by the kit's two rules, and a new salt.
         tokens = summary["tokens"]
         token = tokens["token"]
         rules = (results / "rules.yaml").read_text(encoding="utf-8")
@@ -477,8 +490,9 @@ class HostCheckKitTests(unittest.TestCase):
             return text.split("\nsalt:")[0].splitlines()
 
         example = EXAMPLE.read_text(encoding="utf-8")
-        self.assertEqual(len(above_salt(example)), len(above_salt(rules)))
-        changed = [(a, b) for a, b in zip(above_salt(example), above_salt(rules)) if a != b]
+        self.assertNotIn("contacts:", rules)
+        self.assertEqual(len(without_contacts(above_salt(example))), len(above_salt(rules)))
+        changed = [(a, b) for a, b in zip(without_contacts(above_salt(example)), above_salt(rules)) if a != b]
         if not tokens["dates_moved"]:
             self.assertEqual([a for a, _ in changed], [
                 'owner: "security-review@example.org"',
@@ -1064,11 +1078,15 @@ class HelperTests(unittest.TestCase):
             "  rules:\n"
             "    - id: kit-block-0a1b2c\n      kind: protected_branch\n      mode: block\n      values: [\"kestrel-0a1b2c/*\"]\n"
             "    - id: kit-monitor-0a1b2c\n      kind: protected_branch\n      mode: monitor\n      values: [\"wren-0a1b2c\"]\n"))
-        # Above the enforcement section, only the owner and the first approved host's text change; the example's
-        # comment on its own enforcement section goes with it. The salt is left for validate_overlay.py salt.
+        # Above the enforcement section, only the owner and the first approved host's text change and the topic
+        # contacts go, so the owner is the one person an answer can name; the example's comment on its own
+        # enforcement section goes with it. The salt is left for validate_overlay.py salt.
         original = example[: example.index("\nenforcement:\n")].splitlines()
         while original[-1].startswith("#"):
             original.pop()
+        self.assertIn("contacts:", original)
+        self.assertNotIn("contacts:", text)
+        original = without_contacts(original)
         self.assertEqual(len(head.splitlines()), len(original))
         diff = [(a, b) for a, b in zip(original, head.splitlines()) if a != b]
         self.assertEqual(diff, [
@@ -1081,7 +1099,12 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(values["dates_moved"])
         self.assertIn("reviewed_on: 2027-06-01\n", text)
         self.assertIn("expires_on: 2027-11-28\n", text)
-        for broken in (example.replace("security-review@", "someone@"),
+        # A file without contacts is left as it is; two contacts sections are refused.
+        no_contacts = "\n".join(without_contacts(example.splitlines())) + "\n"
+        self.assertEqual(hostcheck.drop_contacts(no_contacts), no_contacts)
+        self.assertEqual(hostcheck.drop_contacts(example), no_contacts)
+        for broken in (example + "contacts:\n  data: {name: \"x@example.org\"}\n",
+                       example.replace("security-review@", "someone@"),
                        example.replace("text: \"Internal App Platform", "text: \"Other Platform"),
                        example.replace("\nenforcement:\n", "\nrules_for_hooks:\n"),
                        example + "templates: []\n"):
