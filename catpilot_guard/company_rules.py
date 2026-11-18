@@ -125,7 +125,7 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy) -> li
                 push = git_push_rewrites(argv[1:], working_dir)
                 if push is not None:
                     pushes.append(push)
-    targets = deploy_targets(command) if "deploy_host" in kinds else []
+    targets = deploy_targets(command, working_dir) if "deploy_host" in kinds else []
     fired = []
     for rule in policy.rules:
         if rule.kind == "protected_branch":

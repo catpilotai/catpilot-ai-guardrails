@@ -56,6 +56,8 @@ VERCEL_OTHER = {
     "domain", "dns", "certs", "cert", "alias", "aliases", "secrets", "secret", "teams", "team", "switch", "projects",
     "project", "init", "remove", "rm", "bisect", "git", "integration", "integrations", "telemetry", "target", "targets",
     "blob", "install", "i", "open", "help", "version", "cache", "redirects", "mcp", "microfrontends", "guidance",
+    "curl", "httpstat", "rolling-release", "integration-resource", "webhooks", "webhook", "flags", "upgrade", "update",
+    "completion", "usage", "api", "contract", "edge-config",
 }
 SURGE_OTHER = {"login", "logout", "whoami", "list", "teardown", "token", "plan", "card", "invite", "revoke", "ssl",
                "encrypt", "files", "audit", "dns", "zone", "nuke", "help", "version"}
@@ -134,6 +136,16 @@ def _package_command(raw: str) -> str:
     return os.path.basename(name)
 
 
+def _call_string(args: list) -> str | None:
+    """The command string given with -c/--call to npx or npm exec, which runs it as a shell command."""
+    for i, arg in enumerate(args):
+        if arg in ("-c", "--call") and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith("--call="):
+            return arg[len("--call="):]
+    return None
+
+
 def _tool(argv: list) -> tuple:
     """(command name, its arguments), looking through package runners. The name is lowercase: macOS runs `VERCEL` too."""
     name, args = os.path.basename(argv[0]).lower(), list(argv[1:])
@@ -149,11 +161,14 @@ def _tool(argv: list) -> tuple:
         if rest:
             raw, args = rest[0], rest[1:]
     elif name in ("yarn", "pnpm"):
+        # yarn/pnpm [options] [workspace X] [run|dlx|exec] TOOL ...: a script name or a package's command.
         rest = _skip_options(args, {"--cwd", "-C", "--dir", "--filter", "-F"})
-        if rest[:1] in (["dlx"], ["exec"]):
+        if rest[:1] == ["workspace"] and len(rest) > 2:
+            rest = rest[2:]
+        if rest[:1] in (["dlx"], ["exec"], ["run"]):
             rest = _skip_options(rest[1:], {"-p", "--package"})
-            if rest:
-                raw, args = rest[0], rest[1:]
+        if rest:
+            raw, args = rest[0], rest[1:]
     if raw is not None:
         name = _package_command(raw)
         if args[:1] == ["--"]:
@@ -161,16 +176,23 @@ def _tool(argv: list) -> tuple:
     return ALIASES.get(name, name), args
 
 
-def _deployer(name: str, args: list) -> Target | None:
+def _deployer(name: str, args: list, cwd: str | None = None) -> Target | None:
     if any(arg in HELP_OR_VERSION for arg in args[:1]) or any(arg in ("-h", "--help", "--version") for arg in args):
         return None
     words = _positionals(args, VALUE_OPTIONS.get(name, set()))
     if name == "vercel":
         if not args:
             return Target(SUFFIX, "vercel.app")
-        if words and words[0].lower() in VERCEL_OTHER:
+        if not words or words[0].lower() in ("deploy", "redeploy", "promote", "rollback"):
+            return Target(SUFFIX, "vercel.app")  # `vercel --prod`, `vercel deploy`, ...
+        first = words[0]
+        if first.lower() in VERCEL_OTHER:
             return None
-        return Target(SUFFIX, "vercel.app")  # `vercel`, `vercel deploy`, `vercel dist`, `vercel --prod`, ...
+        # Any other first word is a directory to deploy (`vercel dist`) or a subcommand this list does not know
+        # (`vercel curl`): a path, or a directory that exists where the command runs, is a deploy.
+        if "/" in first or first.startswith(".") or (cwd and os.path.isdir(os.path.join(cwd, first))):
+            return Target(SUFFIX, "vercel.app")
+        return None
     if name == "wrangler":
         if words[:1] == ["pages"] and words[1:2] and words[1] in ("deploy", "publish"):
             return Target(SUFFIX, "pages.dev")
@@ -231,11 +253,20 @@ def _remote_host(spec: str) -> Target | None:
 
 
 def _copy_destination(name: str, args: list) -> Target | None:
-    """An upload's remote destination: the last remote-looking path after the first. A download, whose remote is the
-    first path and whose destination is local, is not a deploy."""
+    """An upload's remote destination: the last remote path after the first. A download, whose destination is local, is
+    not a deploy: the destination is the last path, unless an option value the list does not know trails it, so a
+    local last path counts as the destination only when no remote path comes after a local one."""
     words = _positionals(args, SCP_VALUE_OPTIONS if name == "scp" else RSYNC_VALUE_OPTIONS)
-    remotes = [target for target in (_remote_host(word) for word in words[1:]) if target is not None]
-    return remotes[-1] if remotes else None
+    if len(words) < 2:
+        return None
+    kinds = [_remote_host(word) for word in words]
+    last_remote = max((i for i, target in enumerate(kinds) if target is not None), default=-1)
+    if last_remote < 1:
+        return None
+    local_before = any(target is None for target in kinds[:last_remote])
+    if not local_before:
+        return None  # every path up to the last remote one is remote: a download or remote-to-local copy
+    return kinds[last_remote]
 
 
 def _git_push_heroku(args: list) -> Target | None:
@@ -249,22 +280,35 @@ def _git_push_heroku(args: list) -> Target | None:
     if not words:
         return None
     remote = words[0].lower()
-    if remote == "heroku" or "git.heroku.com" in remote.split("/")[2:3] or remote.startswith("git@heroku.com:"):
+    if remote == "heroku":
+        return Target(SUFFIX, "herokuapp.com")
+    if "://" in remote:
+        host = remote.split("://", 1)[1].split("/", 1)[0].rsplit("@", 1)[-1].split(":", 1)[0]
+    else:
+        host = remote.split(":", 1)[0].rsplit("@", 1)[-1] if ":" in remote else ""
+    if host in ("git.heroku.com", "heroku.com"):
         return Target(SUFFIX, "herokuapp.com")
     return None
 
 
-def deploy_targets(command: str) -> list:
-    """Every deploy or publish target the command names, in order."""
+def deploy_targets(command: str, cwd: str | None = None, depth: int = 0) -> list:
+    """Every deploy or publish target the command names, in order. cwd, where the command runs, tells a directory
+    `vercel dist` deploys from a subcommand it does not know."""
     targets = []
     for argv in _simple_commands(command):
+        base = os.path.basename(argv[0]).lower()
+        if depth < 3 and (base in RUNNERS or (base == "npm" and argv[1:2] in (["exec"], ["x"]))):
+            call = _call_string(argv[1:])
+            if call is not None:  # npx -c 'vercel --prod' runs the string as a shell command
+                targets.extend(deploy_targets(call, cwd, depth + 1))
+                continue
         name, args = _tool(argv)
         if name in ("scp", "rsync"):
             target = _copy_destination(name, args)
         elif name == "git":
             target = _git_push_heroku(args)
         else:
-            target = _deployer(name, args)
+            target = _deployer(name, args, cwd)
         if target is not None:
             targets.append(target)
     return targets

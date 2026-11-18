@@ -42,7 +42,10 @@ class DeployTargetTests(unittest.TestCase):
             "npx wrangler@latest deploy": "workers.dev", "npx netlify-cli deploy --prod": "netlify.app",
             "npx firebase-tools deploy": "web.app", "npx @railway/cli up": "up.railway.app", "VERCEL --prod": "vercel.app",
             "vercel --target production": "vercel.app", "vercel -e FOO=bar --prod": "vercel.app", "vercel --build-env A=b": "vercel.app",
-            "vercel dist --prod": "vercel.app", "vercel my-site": "vercel.app",
+            "yarn vercel --prod": "vercel.app", "pnpm vercel --prod": "vercel.app", "yarn run vercel --prod": "vercel.app",
+            "yarn workspace web vercel --prod": "vercel.app", "npx -c 'vercel --prod'": "vercel.app",
+            "npm exec -c 'netlify deploy'": "netlify.app", "git push https://u:p@git.heroku.com/app.git": "herokuapp.com",
+            "git push ssh://git@heroku.com/app.git": "herokuapp.com",
             "firebase hosting:channel:deploy preview": "web.app", "wrangler versions deploy": "workers.dev",
             "wrangler versions upload": "workers.dev", "railway redeploy": "up.railway.app", "fly machine run nginx": "fly.dev",
             "git push https://git.heroku.com/app.git main": "herokuapp.com",
@@ -78,9 +81,21 @@ class DeployTargetTests(unittest.TestCase):
                         "rsync -av rsync://mirror.example.net/x ./local", "ls", "echo vercel --prod", "npm run deploy",
                         "vercel --version", "vercel -v", "vercel --help", "fly deploy --help", "gh-pages --help",
                         "surge whoami", "surge list", "surge teardown x.surge.sh", "vercel env pull", "vercel link",
-                        "rsync -av host:/x ./local --max-delete 5"):
+                        "rsync -av host:/x ./local --max-delete 5", "vercel curl /api/hello", "vercel httpstat /",
+                        "vercel rolling-release start", "vercel webhooks ls", "vercel my-site",
+                        "scp web.example.org:/a web.example.org:/b .", "scp -r h1:/a h2:/b ./out"):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [])
+
+    def test_a_vercel_directory_counts_where_it_exists(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as cwd:
+            os.mkdir(os.path.join(cwd, "dist"))
+            self.assertEqual([(t.kind, t.name) for t in deploy_targets("vercel dist --prod", cwd)], [(SUFFIX, "vercel.app")])
+            self.assertEqual(deploy_targets("vercel my-site", cwd), [])  # no such directory: an unknown subcommand
+            self.assertEqual([(t.kind, t.name) for t in deploy_targets("vercel ./my-site", cwd)], [(SUFFIX, "vercel.app")])
 
     def test_coverage(self):
         cases = [
