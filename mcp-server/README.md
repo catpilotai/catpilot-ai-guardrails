@@ -19,7 +19,7 @@ default.
 | `get_guidance(topic)` | `data-in-prompts`, `access`, `hosting`, `sharing`, `credentials`, `third-party`, `untrusted-input`, `review` | what to ask, how to name the risk, the safe alternative, when to stop and ask a human, and the relevant company values with their source |
 | `check_plan(description, data_classes?, data_provenance?, audience?, hosting?, services?, write_access?)` | a plain-language plan, plus the fields that decide it | `outcome`, one `decision` per field with the rule that decided it, `hints` from the description, risks ranked by severity with a safer alternative each, one next step, `ask_a_human`, `who_to_ask`, a checklist, and the labels that fired |
 | `get_template(kind)` | `internal-lookup-tool`, `form-to-spreadsheet`, `dashboard`, `document-summarizer`, `chatbot-over-docs` | a generic starting point with constraints, and the company's approved starting point as a reference when its overlay names one |
-| `list_approved(category)` | `hosting`, `services`, `data-classes`, `contacts` | the company's items when an approved overlay exists, otherwise generic defaults labeled as such |
+| `list_approved(category)` | `hosting`, `services`, `data-classes`, `contacts` | the company's items when an approved overlay exists, otherwise generic defaults labeled as such; `contacts` gives the `owner`, and the topic `contacts` when a version 2 overlay names them |
 
 Every answer carries `unknown_policy`, `policy_status`, `policy_source`
 (organization, owner, review and expiry dates, overlay hash), the release the
@@ -98,6 +98,20 @@ name or address it gives, and offer to draft the message; `next_step` then
 starts with that contact, except for a prohibited plan, where it leads with the
 fix. Call `check_plan` before asking the person about a plan: a field left out
 comes back as an open question, not a reason to wait.
+
+`who_to_ask` is the overlay's `owner` unless the overlay is version 2 and
+names topic contacts ([`OVERLAY_V2.md`](../docs/spec/OVERLAY_V2.md) §3.1):
+`data` for `data_classes`, `hosting`, `services`, and `identity` for
+`audience`. Then, when the `outcome` is `prohibited` or `requires_review` and
+every decision with that outcome comes from one of those fields, `who_to_ask`,
+the escalation draft's `to` and `mailto_url`, and the contact `next_step`
+names are that topic's contact, and the draft's `intake_url` is the contact's
+when it has one, else the overlay's. Decisions with the outcome from two or
+more fields, from `write_access` or `credential_references` (no topic), a
+topic with no contact, and a `permitted` or `unknown` outcome all use `owner`.
+Such an overlay's answers add `contact_topic`, the topic `who_to_ask` came
+from, or `null` for the owner; answers from a version 1 overlay, or one with
+no contacts, are unchanged.
 
 A mention of customers, vendors, partners, or an agency is not always an
 audience hint: once the `audience` field says internal or names only the
@@ -180,7 +194,7 @@ choose the policy file.
 | Variable | Meaning |
 | --- | --- |
 | `CATPILOT_OVERLAY_FILE` | Absolute path to a company overlay (`docs/spec/OVERLAY.md`). Optional. Re-read and re-validated on every call, so expiry and revocation take effect immediately. |
-| `CATPILOT_TEMPLATE_HOSTS` | Comma-separated hosts allowed in the overlay's template locations. Required if the overlay names templates. |
+| `CATPILOT_TEMPLATE_HOSTS` | Comma-separated hosts allowed in the overlay's template locations and intake URLs, a topic contact's included. Required if the overlay names any. |
 | `CATPILOT_EVIDENCE_LOG` | Path of a local JSON-lines file. When set, every tool call appends one `lookup` line: the schema version, a random event id, time, release, tool, `policy_status`, `unknown_policy`, the SHA-256 of the overlay file whenever one was read (`policy_sha256`), the enumerated argument, and for `check_plan` the outcome, `ask_a_human`, and the names of the fields supplied. Never the description, an overlay value, or any other free text. The line format is [`docs/spec/EVIDENCE.md`](../docs/spec/EVIDENCE.md); the writer is `catpilot_guard/evidence.py`, imported from the repository root. Optional; the public endpoint does not set it. A logging failure never changes an answer. |
 
 Host configuration snippets are in `host-configs/`: a `.mcp.json` for Claude

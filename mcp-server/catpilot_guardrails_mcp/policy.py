@@ -8,7 +8,9 @@ A version 2 file is validated whole, `enforcement` included, and the tools
 then see only its version 1 projection: each item's text, with no ids,
 aliases or `enforcement` (docs/spec/OVERLAY_V2.md §2.2). No answer can
 depend on an enforcement value, so a caller cannot learn one by guessing.
-`source.sha256` stays the SHA-256 of the whole file.
+`source.sha256` stays the SHA-256 of the whole file. The file's topic
+contacts (§3.1), which the projection has no field for, are kept beside it
+in `contacts`; a version 1 file has none.
 """
 
 from __future__ import annotations
@@ -30,11 +32,15 @@ class PolicyState:
     reason: str
     overlay: dict | None = None
     source: dict = field(default_factory=dict)
+    # Topic contacts from a version 2 overlay, {topic: {name, intake_url?}}; taken from `overlay`, never passed in.
+    contacts: dict = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         # Every PolicyState, including one a host's policy_provider builds, holds
-        # the version 1 projection: the tools never see `enforcement`.
+        # the version 1 projection: the tools never see `enforcement`. Its contacts
+        # are read first, since the projection drops them.
         if isinstance(self.overlay, dict):
+            self.contacts = validate_overlay.topic_contacts(self.overlay)
             self.overlay = validate_overlay.v1_projection(self.overlay)
 
     @property
