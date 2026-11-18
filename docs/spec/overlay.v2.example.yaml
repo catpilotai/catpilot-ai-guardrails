@@ -1,8 +1,8 @@
 # overlay.v2.example.yaml: a synthetic version 2 company rules file (docs/spec/OVERLAY_V2.md §5.1).
 # It is overlay.example.yaml after `migrate` (§5.2), then shorter ids (the generated ones kept as
-# aliases where something already referred to them), one new service, an enforcement section and
-# new review dates. Every value below is fictional. Never commit a real rules file to a
-# public repository.
+# aliases where something already referred to them), one new service, topic contacts, an
+# enforcement section and new review dates. Every value below is fictional. Never commit a real
+# rules file to a public repository.
 #
 # As shipped it does not validate: its salt is the published example value, which the
 # validator rejects. Copy it outside any public repository, set your own salt, validate:
@@ -13,6 +13,16 @@ organization: "Example Org"
 owner: "security-review@example.org"
 reviewed_on: 2026-11-17
 expires_on: 2027-05-17
+
+# Optional: who to ask about each topic (OVERLAY_V2.md §3.1). check_plan names the contact for the
+# field that decided its outcome; owner stays the default. A name follows the owner rules, so an
+# email address is allowed. A contact may also have an intake_url, whose host must be on the
+# validator's allowlist (--allow-host), which is why this example has none.
+contacts:
+  data: {name: "privacy-office@example.org"}
+  hosting: {name: "Platform team, #platform-help"}
+  services: {name: "vendor-review@example.org"}
+  identity: {name: "identity-team@example.org"}
 
 data_classes:
   never_in_prompts:

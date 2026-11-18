@@ -6,15 +6,18 @@ against its own version's rules:
 - version 1, docs/spec/overlay.schema.json and docs/spec/OVERLAY.md;
 - version 2, docs/spec/overlay.v2.schema.json and docs/spec/OVERLAY_V2.md:
   every list item is an object with a stable `id` and its phrase as `text`,
-  and an optional machine-only `enforcement` section holds rules with a mode.
+  an optional machine-only `enforcement` section holds rules with a mode, and
+  optional topic `contacts` name who to ask about data, hosting, services or
+  identity, with `owner` as the default (§3.1).
 
 Checks, in order: the schema (implemented here without a jsonschema
 dependency), the expiry window, and a content scan for anything that looks
 like a secret, a URL outside the allowlist, an email address other than
-owner, an IP address, or an incident narrative. In version 2 the secret scan
-also covers `enforcement`, no deploy host may appear in a model-facing value,
-and a file with `enforcement` carries a random `salt`, so the file's SHA-256,
-which a model sees, cannot confirm a guessed enforcement value. A key that
+owner (and, in version 2, a contact's name), an IP address, or an incident
+narrative. In version 2 the secret scan also covers `enforcement`, no deploy
+host may appear in a model-facing value, and a file with `enforcement` carries
+a random `salt`, so the file's SHA-256, which a model sees, cannot confirm a
+guessed enforcement value. A key that
 appears twice in one mapping, and a YAML merge key (`<<`), are refused in
 both versions.
 
@@ -93,7 +96,11 @@ TOP_ALLOWED = TOP_REQUIRED + ("templates", "intake_url")
 # ----------------------------------------------------------------- version 2 (OVERLAY_V2.md)
 
 SCHEMA_VERSIONS = (1, 2)
-TOP_ALLOWED_V2 = TOP_ALLOWED + ("salt", "enforcement")
+TOP_ALLOWED_V2 = TOP_ALLOWED + ("salt", "enforcement", "contacts")
+# Topic contacts (§3.1): a closed list of topics, one per check_plan field that has one
+# (data: data_classes, hosting, services, identity: audience). Model-facing, like owner.
+CONTACT_TOPICS = ("data", "hosting", "services", "identity")
+CONTACT_FIELDS = ("name", "intake_url")
 # Ids and aliases share the grammar templates[].kind already uses (§2.1, §6.3 rule 3).
 ID_RE = KIND_RE
 ID_MAX = 64
@@ -183,6 +190,8 @@ FIELD_NAMES = frozenset(
     TOP_ALLOWED_V2
     + ("never_in_prompts", "ok_with_approval", "ok", "approved", "not_approved", "needs_review", "default", "never")
     + ("id", "text", "aliases", "kind", "location", "default_mode", "rules", "mode", "values", "use_instead")
+    + CONTACT_TOPICS
+    + CONTACT_FIELDS
 )
 
 
@@ -208,9 +217,14 @@ def _item(value: object, label: str, max_len: int = ITEM_MAX) -> str:
         raise OverlayError(f"{label}: expected a nonempty phrase")
     if len(value) > max_len:
         raise OverlayError(f"{label}: longer than {max_len} characters; overlay values are short phrases")
-    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+    if any(ord(c) < 32 or ord(c) == 127 or c in INVISIBLE_LAYOUT for c in value):
         raise OverlayError(f"{label}: control characters are not allowed")
     return value
+
+
+# Characters that break or reorder a line where a model or a person reads the phrase: next line, the line and
+# paragraph separators, and the bidirectional embedding, override and isolate controls.
+INVISIBLE_LAYOUT = frozenset("\u0085\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
 
 def _items(value: object, label: str) -> list[str]:
@@ -249,6 +263,14 @@ def _top_fields(data: dict, allowed: tuple[str, ...]) -> None:
         raise OverlayError(f"overlay: missing fields {sorted(missing)}")
 
 
+def _owner(value: object, label: str) -> str:
+    """owner, and a contact's name, which follows the owner rules (§3.1)."""
+    owner = _item(value, label)
+    if len(owner) < 3 or len(owner) > 160:
+        raise OverlayError(f"{label}: expected 3 to 160 characters")
+    return owner
+
+
 def _header(data: dict, out: dict, allow_null: bool = True) -> None:
     """organization, owner, intake_url and the dates: plain values in both versions.
 
@@ -257,10 +279,7 @@ def _header(data: dict, out: dict, allow_null: bool = True) -> None:
     if len(org) > 80:
         raise OverlayError("organization: longer than 80 characters; display name only")
     out["organization"] = org
-    owner = _item(data["owner"], "owner")
-    if len(owner) < 3 or len(owner) > 160:
-        raise OverlayError("owner: expected 3 to 160 characters")
-    out["owner"] = owner
+    out["owner"] = _owner(data["owner"], "owner")
     if "intake_url" in data and (data["intake_url"] is not None or not allow_null):
         out["intake_url"] = _item(data["intake_url"], "intake_url", max_len=500)
     out["reviewed_on"] = _date(data["reviewed_on"], "reviewed_on")
@@ -391,6 +410,8 @@ def _validate_structure_v2(data: dict) -> dict:
     _top_fields(data, TOP_ALLOWED_V2)
     out: dict = {"schema_version": 2}
     _header(data, out, allow_null=False)
+    if "contacts" in data:
+        out["contacts"] = _contacts(data["contacts"])
     ids = _Ids()
     dc = _object(data["data_classes"], "data_classes", ("never_in_prompts", "ok_with_approval", "ok"))
     out["data_classes"] = {k: _items_v2(dc[k], f"data_classes.{k}", ids) for k in ("never_in_prompts", "ok_with_approval", "ok")}
@@ -417,6 +438,37 @@ def _validate_structure_v2(data: dict) -> dict:
                 f"guessed enforcement value; {SALT_HOW}"
             )
         out["enforcement"] = _enforcement(data["enforcement"], out, ids)
+    return out
+
+
+def _contacts(value: object) -> dict:
+    """Topic contacts (§3.1): one or more of the closed topics, each {name, optional intake_url}.
+
+    `name` follows the owner rules and `intake_url` the intake_url rules; the content scan
+    checks both (validate_content). Returned in the order of CONTACT_TOPICS."""
+    topics = ", ".join(CONTACT_TOPICS)
+    if not isinstance(value, dict) or not value:
+        raise OverlayError(f"contacts: expected an object with one or more of {topics}")
+    extra = set(value) - set(CONTACT_TOPICS)
+    if extra:
+        raise OverlayError(f"contacts: unknown topics {sorted(str(k) for k in extra)}; the topics are {topics}")
+    out = {}
+    for topic in CONTACT_TOPICS:
+        if topic not in value:
+            continue
+        label = f"contacts.{topic}"
+        contact = value[topic]
+        if not isinstance(contact, dict):
+            raise OverlayError(f"{label}: expected an object with name and optional intake_url")
+        unknown = set(contact) - set(CONTACT_FIELDS)
+        if unknown:
+            raise OverlayError(f"{label}: unknown fields {sorted(str(k) for k in unknown)}; a contact has name and optional intake_url")
+        if "name" not in contact:
+            raise OverlayError(f"{label}: missing fields ['name']")
+        normalized = {"name": _owner(contact["name"], f"{label}.name")}
+        if "intake_url" in contact:
+            normalized["intake_url"] = _item(contact["intake_url"], f"{label}.intake_url", max_len=500)
+        out[topic] = normalized
     return out
 
 
@@ -642,8 +694,8 @@ def model_facing(overlay: dict) -> dict:
 
     Version 1 is returned as it is. Version 2 loses `enforcement` and `salt`
     (never rendered, never returned: OVERLAY_V2.md §2.2, §6.3 rule 10) and
-    every item's `aliases` (no rules-block or bundle consumer: §4). Ids and
-    text stay.
+    every item's `aliases` (no rules-block or bundle consumer: §4). Ids, text
+    and `contacts` (§3.1) stay.
     """
     if not _is_version(overlay.get("schema_version"), 2):
         return overlay
@@ -663,7 +715,9 @@ def v1_projection(overlay: dict) -> dict:
     corresponds to: each item's `text` in place of the item, ids and aliases
     dropped, no `enforcement`. It is what `validate_structure` returns for the
     version 1 file `migrate` started from, so bundles, paste blocks and the
-    server answer the same for a file and its migration. No `salt` either.
+    server answer the same for a file and its migration. No `salt` either, and
+    no `contacts`, which version 1 has no field for: the server reads them
+    with `topic_contacts`, and the rules block through `model_facing`.
     """
     if not _is_version(overlay.get("schema_version"), 2):
         return overlay
@@ -683,6 +737,14 @@ def v1_projection(overlay: dict) -> dict:
     out["review_triggers"] = texts(overlay["review_triggers"])
     out["templates"] = [dict(t) for t in overlay.get("templates", [])]
     return out
+
+
+def topic_contacts(overlay: dict) -> dict:
+    """A validated overlay's topic contacts (§3.1), {topic: {name, optional intake_url}}; empty
+    for version 1 and for a version 2 file without them. A copy: model-facing, like owner."""
+    if not _is_version(overlay.get("schema_version"), 2):
+        return {}
+    return copy.deepcopy(overlay.get("contacts") or {})
 
 
 def _iter_items(overlay: dict):
@@ -739,10 +801,12 @@ def validate_content(overlay: dict, allowed_hosts: set[str]) -> list[str]:
     first finding something URL-shaped with URL_RE), because a value that is not
     URL-shaped at all is still not an https URL and must be rejected.
 
-    In version 2 the scan covers every model-facing value (texts, ids and
-    aliases); `enforcement` gets the secret scan only, since its values are
-    host and branch names checked by their kind (§6.3 rule 8), and none of its
-    host values may appear in a model-facing value (rule 7).
+    In version 2 the scan covers every model-facing value (texts, ids,
+    aliases and contacts); `enforcement` gets the secret scan only, since its
+    values are host and branch names checked by their kind (§6.3 rule 8), and
+    none of its host values may appear in a model-facing value (rule 7). A
+    contact's `name` may be an email address, as owner may, and nowhere else
+    may (§3.1); a contact's `intake_url` is checked as intake_url is.
     """
     errors: list[str] = []
     model = {key: value for key, value in overlay.items() if key not in MACHINE_ONLY}
@@ -759,6 +823,17 @@ def validate_content(overlay: dict, allowed_hosts: set[str]) -> list[str]:
         label = "overlay.intake_url"
         allowed_url_paths.add(label)
         _validate_https_url(model["intake_url"], label, allowed_hosts, errors)
+    allowed_email_paths = {"overlay.owner"}
+    email_where = "owner"
+    contacts = model.get("contacts") if _is_version(overlay.get("schema_version"), 2) else None
+    if contacts:
+        email_where = "owner and contacts.<topic>.name"
+        for topic, contact in contacts.items():
+            allowed_email_paths.add(f"overlay.contacts.{topic}.name")
+            if "intake_url" in contact:
+                label = f"overlay.contacts.{topic}.intake_url"
+                allowed_url_paths.add(label)
+                _validate_https_url(contact["intake_url"], label, allowed_hosts, errors)
     for path, text in _walk_strings(model):
         if _looks_like_secret(text):
             errors.append(f"{path}: looks like a secret; overlays never contain credentials")
@@ -766,8 +841,8 @@ def validate_content(overlay: dict, allowed_hosts: set[str]) -> list[str]:
             for _ in URL_RE.findall(text):
                 errors.append(f"{path}: URLs are only allowed in templates[].location and intake_url")
                 break
-        if path != "overlay.owner" and EMAIL_RE.search(text):
-            errors.append(f"{path}: email addresses are only allowed in owner")
+        if path not in allowed_email_paths and EMAIL_RE.search(text):
+            errors.append(f"{path}: email addresses are only allowed in {email_where}")
         for candidate in IP_RE.findall(text):
             try:
                 ipaddress.ip_address(candidate)
@@ -806,12 +881,14 @@ def _slug(text: str) -> str:
 
 def _enforcement_values_in_model_text(model: dict, enforcement: dict) -> list[str]:
     """§6.3 rule 7, an error (decision 5): no deploy_host, package_registry or
-    cloud_account value in a model-facing phrase, id or alias, or in organization
-    or owner, ignoring case and a leading `*.`. An id cannot hold a dot, so an id,
-    alias or template kind is checked for the value with each run of other
-    characters as one hyphen, the form `migrate` would give it. templates[].location
-    and intake_url are exempt. The error names the rule, never the value."""
+    cloud_account value in a model-facing phrase, id or alias, or in organization,
+    owner or a contact's name, ignoring case and a leading `*.`. An id cannot hold a
+    dot, so an id, alias or template kind is checked for the value with each run of
+    other characters as one hyphen, the form `migrate` would give it.
+    templates[].location, intake_url and a contact's intake_url are exempt. The error
+    names the rule, never the value."""
     texts: list[tuple[str, str]] = [("overlay.organization", model["organization"]), ("overlay.owner", model["owner"])]
+    texts.extend((f"overlay.contacts.{topic}.name", contact["name"]) for topic, contact in (model.get("contacts") or {}).items())
     identifiers: list[tuple[str, str]] = []
     for label, item in _iter_items(model):
         texts.append((f"overlay.{label}.text", item["text"]))
@@ -1191,7 +1268,7 @@ def compile_main(argv: list[str]) -> int:
     )
     parser.add_argument("overlay", type=Path)
     parser.add_argument("--out", type=Path, required=True, help="where to write the policy (replaced if present)")
-    parser.add_argument("--allow-host", action="append", default=[], help="hostname allowed in templates[].location and intake_url (repeatable)")
+    parser.add_argument("--allow-host", action="append", default=[], help="hostname allowed in templates[].location and intake_url, top-level or a contact's (repeatable)")
     args = parser.parse_args(argv)
     try:
         data, raw = load_overlay_file(args.overlay)
@@ -1295,7 +1372,7 @@ def main(argv: list[str] | None = None) -> int:
         return compile_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("overlay", type=Path, help="the file to validate; `migrate FILE` converts a version 1 file, `salt FILE` sets a new salt, and `compile FILE --out POLICY` writes the hook's policy instead")
-    parser.add_argument("--allow-host", action="append", default=[], help="hostname allowed in templates[].location and intake_url (repeatable)")
+    parser.add_argument("--allow-host", action="append", default=[], help="hostname allowed in templates[].location and intake_url, top-level or a contact's (repeatable)")
     args = parser.parse_args(argv)
     try:
         data, _ = load_overlay_file(args.overlay)

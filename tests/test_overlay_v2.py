@@ -126,9 +126,10 @@ class Rule1VersionDispatchTests(V2Case):
             "string 1": (dict(v1, schema_version="1"), "schema_version: expected 1 or 2"),
             "list": (dict(v1, schema_version=[2]), "schema_version: expected 1 or 2"),
             "missing": ({k: v for k, v in v1.items() if k != "schema_version"}, "missing fields ['schema_version']"),
-            "v2 content marked 1": (dict(self.data, schema_version=1), "unknown fields ['enforcement', 'salt']"),
-            "v2 items marked 1": (dict(self.mutated(lambda d: (d.pop("enforcement"), d.pop("salt"))), schema_version=1), "expected a nonempty phrase"),
+            "v2 content marked 1": (dict(self.data, schema_version=1), "unknown fields ['contacts', 'enforcement', 'salt']"),
+            "v2 items marked 1": (dict(self.mutated(lambda d: (d.pop("enforcement"), d.pop("salt"), d.pop("contacts"))), schema_version=1), "expected a nonempty phrase"),
             "v1 enforcement section": (dict(v1, enforcement=self.data["enforcement"]), "unknown fields ['enforcement']"),
+            "v1 contacts": (dict(v1, contacts=self.data["contacts"]), "unknown fields ['contacts']"),
             "v1 content marked 2": (dict(v1, schema_version=2), "plain string is a version 1 item"),
         }
         for label, (data, fragment) in cases.items():
@@ -557,6 +558,10 @@ class NullTests(V2Case):
         "use_instead": lambda d: d["enforcement"]["rules"][1].update(use_instead=None),
         "values": lambda d: d["enforcement"]["rules"][1].update(values=None),
         "salt": lambda d: d.update(salt=None),
+        "contacts": lambda d: d.update(contacts=None),
+        "a contact": lambda d: d["contacts"].update(data=None),
+        "a contact's name": lambda d: d["contacts"]["data"].update(name=None),
+        "a contact's intake_url": lambda d: d["contacts"]["hosting"].update(intake_url=None),
     }
 
     def test_version_2_refuses_null(self):
