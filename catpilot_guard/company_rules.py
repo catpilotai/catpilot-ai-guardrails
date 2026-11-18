@@ -56,7 +56,7 @@ import sys
 from . import COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, event_for_host, write_decision, write_reason
 from . import policy as policy_module
 from .deploy_targets import deploy_targets, host_covered
-from .destructive import commands_with_branch_context, git_push_rewrites
+from .destructive import BranchPattern, commands_with_branch_context, git_push_rewrites, pattern_may_match
 
 MAX_INPUT_BYTES = 1_048_576
 HOOK_NAME = "pretooluse-company-rules"
@@ -116,6 +116,17 @@ def record_evidence(event: str, hook_event: object = None, host: str | None = No
         pass
 
 
+def _branch_hits(rule, branch) -> bool:
+    """Whether a protected_branch rule covers a pushed branch: an unknown one (None, "") always; a BranchPattern when it
+    could name a branch the rule covers; a name as policy.branch_matches reads it."""
+    if not branch:
+        return True
+    if isinstance(branch, BranchPattern):
+        values = [v[len("refs/heads/"):] if v.startswith("refs/heads/") else v for v in rule.values]
+        return pattern_may_match(branch, [v for v in values if not v.endswith("/*")], [v[:-1] for v in values if v.endswith("/*")])
+    return any(policy_module.branch_matches(v, branch) for v in rule.values)
+
+
 def matched_rules(command: str, cwd: object, policy: policy_module.Policy, branch_known: bool = True) -> list:
     """The policy's rules this command fires, in policy order. branch_known False: no checkout's branch is the one the
     command runs on (the pull-request check), so HEAD, a bare push and a current-branch substitution are unknown."""
@@ -134,10 +145,7 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy, branc
         if rule.kind == "protected_branch":
             # An unknown branch (None: a variable, a substitution, or a bare force push with no branch checked out;
             # "": HEAD with no branch checked out) could be any branch, so it fires every protected_branch rule.
-            hit = any(
-                mirror or any(not branch or any(policy_module.branch_matches(v, branch) for v in rule.values) for branch in branches)
-                for mirror, branches in pushes
-            )
+            hit = any(mirror or any(_branch_hits(rule, branch) for branch in branches) for mirror, branches in pushes)
         elif rule.kind == "deploy_host":
             hit = any(not any(host_covered(value, target) for value in rule.values) for target in targets)
         else:

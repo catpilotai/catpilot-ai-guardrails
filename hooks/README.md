@@ -182,30 +182,36 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   `.git/HEAD`, and blocked when the branch cannot be read), a deletion of one
   of those branches, and `git push --mirror`, `--all` or `--branches` with a
   force or `--prune`, and a forced or pruned refspec pattern
-  (`refs/heads/*:refs/heads/*`). A force push or deletion whose destination is
-  a shell variable or a substitution (`git push --force origin $BRANCH`,
-  `"${TARGET}"`, `${B:-main}`, a backtick) names a branch the hook cannot
-  read, so it is blocked like an unreadable checked-out branch; an ordinary
-  push to a variable is not. Three exceptions:
+  (`refs/heads/*:refs/heads/*`). A force push or deletion whose destination
+  holds a shell variable or a substitution is read as a pattern in which each
+  one could be anything, and blocked when that pattern could name a protected
+  branch: `git push --force origin $BRANCH`, `"${TARGET}"`, `${B:-main}`,
+  `release/$V` and `"$P/main"` are blocked, while `feature/$TICKET`,
+  `"v$VERSION"` and a tag (`:refs/tags/$TAG`) are not. An ordinary push to a
+  variable is not read at all. Three exceptions:
   - A substitution that asks git for the checked-out branch, as one quoted
     word (`"$(git branch --show-current)"`, `"$(git rev-parse --abbrev-ref
     HEAD)"`, `"$(git symbolic-ref --short HEAD)"`, or the same in backticks),
     is read as that branch. Unquoted, the shell-word reader splits it, so it
     is unknown and blocked.
   - So are `HEAD` and `@`, and `heads/main` as `main`.
-  - After a command earlier in the same line that checks out a branch by
-    name (`git switch X`, `git switch -c X`, `git checkout -b X`, or `git
-    checkout X` for an existing local branch), the branch is X. After one that
-    may change it otherwise or the directory, it is unknown, and so blocked:
-    `cd`, `chdir`, `pushd`, `git checkout` of anything else, `git init`, `git
-    rebase <upstream> <branch>`, `git stash branch`, `git branch -m`, `gh pr
-    checkout`, `gh co`, `source` or `eval`. It is also unknown anywhere in a
-    line that defines a function (`name()`, `function name`), assigns
-    `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` or a `GIT_CONFIG_*` variable,
-    gives env a directory (`env -C`, `--chdir`), or puts a variable before
-    git's subcommand. These are read as shell words, so a mention inside a
-    quoted message does not count. A script run earlier in the line that
-    switches branches is not seen.
+  - After a command earlier in the same line that may change the branch or
+    the directory, the branch is unknown, and so blocked: `cd`, `chdir`,
+    `pushd`, `popd`, `git checkout`, `git switch`, `git init`, `git rebase
+    <upstream> <branch>` or `--root <branch>`, `git stash branch`, `git
+    symbolic-ref`, `git branch -m`, `gh pr checkout`, `gh co`, `source`,
+    `eval`, `exec` or `alias`. A switch never names the branch, since it may
+    fail, run in another repository, or take its name from a variable, so
+    `git switch feature-y && git push --force-with-lease` is blocked too.
+  - It is unknown for the whole line when the line, or a `bash -c` body in
+    it, defines a function (`name()`, `function name`), assigns `GIT_DIR`,
+    `GIT_WORK_TREE` or `GIT_COMMON_DIR`, or gives env a directory (`env -C`,
+    `--chdir`); and for one git command when a variable comes before its
+    subcommand. A line that assigns a `GIT_CONFIG_*` variable, which can set
+    `remote.<name>.mirror`, makes any push in it count as a mirror. These are
+    read as shell words, with assignments only where they are assignments, so
+    a mention inside a quoted message does not count. A script run earlier in
+    the line that switches branches is not seen, nor a git alias (`git co`).
 
   A word that starts with a variable may hold an option. When it is followed
   by a literal word, with two literal words besides (`git push $F origin

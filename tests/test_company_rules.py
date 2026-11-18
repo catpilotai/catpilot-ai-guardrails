@@ -335,13 +335,21 @@ class BranchContextTests(unittest.TestCase):
             policy = parsed([branch_rule(values=("main",))])
             fired = lambda command: [r.id for r in cr.matched_rules(command, tmp, policy)]
             for command in ("cd ../m && git push -f", "git checkout main && git push -f origin HEAD", "git switch main && git push -f",
+                            "git switch other && git push -f", "bash -lc 'export GIT_DIR=../x/.git; git push -f'",
                             'git() { :; }; git push -f origin "$(git branch --show-current)"', "env -C ../m git push -f"):
                 with self.subTest(command=command):
                     self.assertEqual(fired(command), ["protected-branches"])
-            for command in ("git push -f", 'git push -f origin "$(git branch --show-current)"', "git switch other && git push -f",
+            for command in ("git push -f", 'git push -f origin "$(git branch --show-current)"',
                             'git commit -m "fix parse() bug" && git push --force-with-lease'):
                 with self.subTest(command=command):
                     self.assertEqual(fired(command), [])
+            # A destination with an expansion fires only the rules it could match (review of #137).
+            hotfix = parsed([branch_rule(values=("hotfix/*",))])
+            self.assertEqual([r.id for r in cr.matched_rules("git push -f origin hotfix/$V", tmp, hotfix)], ["protected-branches"])
+            self.assertEqual([r.id for r in cr.matched_rules("git push -f origin feature/$V", tmp, hotfix)], [])
+            self.assertEqual([r.id for r in cr.matched_rules('git push -f origin "$B"', tmp, hotfix)], ["protected-branches"])
+            self.assertEqual([r.id for r in cr.matched_rules("git push origin :refs/tags/$T", tmp, policy)], [])
+            self.assertEqual([r.id for r in cr.matched_rules('git push -f origin "$P/main"', tmp, policy)], ["protected-branches"])
             # No checkout's branch is the workflow's (the pull-request check): unknown, so it fires.
             self.assertEqual([r.id for r in cr.matched_rules("git push -f", tmp, policy, branch_known=False)], ["protected-branches"])
 

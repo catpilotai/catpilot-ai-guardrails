@@ -390,7 +390,7 @@ What it does not protect against:
 - Reusable workflows and actions from other repositories, deploy and push actions not in the tables, and a Docker image's own entrypoint when the step or action does not name one.
 - A variable that holds an option where no literal word follows it: `git push origin main $F` or `git push $F origin` with `F=--force` reads as an ordinary push (`git push $F origin main` and `git push origin $F main` count as a force).
 - A run step's shell with options beyond the plain ones (`bash -c '...' _ {0}`, which hands the script to another program), and any PowerShell step, is reported as unreadable, not read.
-- An action's `pre:` runs before the first step and can set variables, so a job using an action from another repository (other than `actions/checkout`) has no `env:` value substituted; nor does a composite action, whose caller may have set any variable.
+- An action's `pre:` runs before the first step and can set variables, so a job using an action from another repository (other than GitHub's own actions whose `action.yml` has no `pre:`, such as `actions/checkout` and `actions/setup-node`) has no `env:` value substituted; nor does a composite action, whose caller may have set any variable.
 - The built-in protected branches, which are the hooks' own list: the check applies company rules only.
 - Merge queues: a required check must also report on `merge_group`, which the template does not handle.
 - Everything the hook does not cover ([exact coverage](../hooks/README.md#exact-coverage-3)).

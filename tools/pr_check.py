@@ -20,15 +20,16 @@ What it scans, exactly (by file name; every other file is ignored):
                                  `$X`, `${X}` and `${{ env.X }}`, but only until a step that can run code (any `run:`
                                  step, or any `uses:` but actions/checkout), which may set any variable for the steps
                                  after it through GITHUB_ENV, and not at all in a job with an action from another
-                                 repository (its `pre:` runs before the first step); any other variable or `${{ ... }}` stays unknown, so a
+                                 repository (its `pre:` runs before the first step) other than GitHub's own actions with
+                                 no `pre:` (NO_PRE_ACTIONS); any other variable or `${{ ... }}` stays unknown, so a
                                  destination or a branch taken from one is one the check cannot read, which fires (as
                                  in the hook). A run step whose shell (its own, or `defaults.run.shell` of its job or
                                  workflow, or pwsh on a Windows runner named literally, also in a runs-on mapping's
                                  labels) is not bash or sh, with only the plain options `_readable_shell` allows,
                                  cannot be read; PowerShell is not read. On a runner the check cannot read (a matrix
                                  expression, a group with no labels) a step with no shell is read as bash, unless it
-                                 holds what only PowerShell reads (`<#`, `Invoke-Expression`, `iex`, the `&` call
-                                 operator), and then it cannot be read. Each step's `uses:`
+                                 holds what only PowerShell reads (`<#`, `Invoke-Expression`, `iex (`, the `&` call
+                                 operator, a backtick ending a line), and then it cannot be read. Each step's `uses:`
                                  naming a deploy action (DEPLOY_ACTIONS) or a force-pushing action (PUSH_ACTIONS), and
                                  a `docker://` step's `entrypoint` and `args`, as a command
   action.yml|yaml (anywhere)     the same, for the steps of a composite action (`runs.steps`), with no env: value
@@ -648,7 +649,11 @@ def _windows_runner(job) -> bool:
 
 # What only PowerShell reads as a command or a comment, in a step that may run in pwsh (a runner the check cannot
 # read): such a step is unreadable rather than read with shell rules.
-POWERSHELL_ONLY = re.compile(r"<#|#>|\binvoke-expression\b|\biex\b|\bstart-process\b|^\s*&\s|[;|]\s*&\s", re.IGNORECASE | re.MULTILINE)
+POWERSHELL_ONLY = re.compile(
+    r"<#|#>|\binvoke-expression\b|\biex\s+[($\"']|\bstart-process\b"
+    r"|^\s*&\s+[\"'$\w]|[;|]\s+&\s+[\"'$\w]"  # the call operator; not bash's `|&` or a case's `;&`
+    r"|`\r?$",  # PowerShell's line continuation
+    re.IGNORECASE | re.MULTILINE)
 
 
 def _default_shell(node, inherited: str | None) -> str | None:

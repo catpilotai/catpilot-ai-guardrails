@@ -169,6 +169,12 @@ DENIED = {
     "forced matching push by config": "git -c push.default=matching push -f origin",
     "push refspecs by config": "git -c remote.origin.push=+refs/heads/*:refs/heads/* push origin",
     "heads/ prefix": "git push --force origin heads/main",
+    # A destination with an expansion is a glob: it blocks when it could name a protected branch (review of #137).
+    "force push to release/ and a variable": "git push -f origin release/$V",
+    "force push to a prefix of main and a variable": 'git push -f origin "ma$X"',
+    "force push to a variable namespace": "git push -f origin refs/$X/main",
+    "force push to a variable and /main": 'git push -f origin "$P/main"',
+    "delete a variable branch, quoted": 'git push origin --delete "$b"',
     "nice then timeout then bash -lc": "nice -n 10 timeout 60 bash -lc 'rm -rf ~'",
     "timeout around dropdb": "timeout 30 dropdb production_db",
     # The home directory by absolute path, and its credential directories.
@@ -248,6 +254,10 @@ ALLOWED = {
     "timeout force-with-lease feature": "timeout 60 git push --force-with-lease origin feature/x",
     "ordinary push to a variable": "git push origin $BRANCH",
     "push with a trailing tag variable": 'git push origin main "$TAG"',
+    "delete a tag held in a variable": "git push origin :refs/tags/$TAG",
+    "delete a tag by --delete": "git push --delete origin refs/tags/$T",
+    "delete a version branch": 'git push origin --delete "v$VERSION"',
+    "force push a ticket branch": "git push -f origin feature/$TICKET",
     "push of two variables": 'git push origin "$BRANCH" "$TAG"',
     "push to a variable remote": "git push $REMOTE main",
     "ordinary matching push": "git push origin :",
@@ -404,6 +414,19 @@ class DestructiveHookTests(unittest.TestCase):
             "cd ../main && git push -f", "pushd ../main && git push --force-with-lease", "chdir ../main; git push -f",
             "git checkout main && git push --force-with-lease origin HEAD", "git switch main; git push -f",
             "git switch -c main && git push -f origin HEAD", "git checkout -b main && git push -f origin @",
+            # A switch never names the branch: it may fail, run elsewhere, or take its name from a variable (review of #133).
+            "git switch feature-y && git push --force-with-lease", "git checkout -b feat-2 && git push -fu origin HEAD",
+            "git checkout feature-y && git rebase main && git push --force-with-lease",
+            'B=main; git switch "$B" && git push -f', "git switch @{-1} && git push -f", "git switch -c feature; git push -f origin HEAD",
+            "git switch -t origin/develop && git push -f", "git switch origin/develop -C main && git push -f",
+            "git checkout -p feature && git push -f", "git switch feature && GIT_DIR=../other/.git git push -f",
+            "(cd ../other && git switch -c topic); git push -f", "f() { git switch main; }; git switch feature; f; git push -f origin HEAD",
+            "{ function git { :; }; }; git push -f", "git rebase --root main && git push -f",
+            "bash -lc 'export GIT_DIR=../other/.git; git push -f'",
+            """bash -lc 'git() { echo main; }; git push -f origin "$(git branch --show-current)"'""",
+            "bash -lc 'env -C ../other git push -f'",
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true git push origin",
+            "GIT_CONFIG_PARAMETERS=\"'remote.origin.mirror=true'\" git push origin",
             'git() { echo main; }; git push -f origin "$(git branch --show-current)"', "function git { :; }; git push -f",
             "git \\\n() { :; }; git push -f",
             "export GIT_DIR=../b/.git; git push -f", "GIT_DIR=../b/.git git push -f origin HEAD", "env GIT_WORK_TREE=x git push -f",
@@ -420,9 +443,10 @@ class DestructiveHookTests(unittest.TestCase):
         ]
         allowed = [
             'git push --force-with-lease origin "$(git branch --show-current)"', "git push --force-with-lease", "git push -f origin HEAD",
-            "cd sub && git push -u origin feature-x", "git switch feature-y && git push --force-with-lease",
-            "git checkout feature-y && git rebase main && git push --force-with-lease", "git checkout -b feat-2 && git push -fu origin HEAD",
-            "git rebase main && git push --force-with-lease", 'git commit --amend -m "fix parse() edge case" && git push --force-with-lease',
+            "cd sub && git push -u origin feature-x", "git rebase main && git push --force-with-lease",
+            "files=(); git push --force-with-lease", "x=( ) && git push --force-with-lease",
+            'git commit -m "GIT_DIR=x is documented now" && git push --force-with-lease',
+            "git status && git push --force-with-lease", 'git commit --amend -m "fix parse() edge case" && git push --force-with-lease',
             'python -c "import app; app.main()" && git push --force-with-lease', 'echo "fn()" && git push --force-with-lease',
             'git commit -m "explain GIT_DIR=x" && git push -f origin HEAD'.replace("=x", ""),
             "git commit -m \"$(cat <<'EOF'\nfix parse() bug\nEOF\n)\" && git push --force-with-lease",
@@ -433,7 +457,10 @@ class DestructiveHookTests(unittest.TestCase):
             (repo / ".git" / "refs" / "heads").mkdir(parents=True)
             (repo / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
             (repo / ".git" / "refs" / "heads" / "feature-y").write_text("0" * 40 + "\n")
-            for command, expected in [(c, "deny") for c in blocked] + [(c, None) for c in allowed]:
+            cases = [(c, "deny") for c in blocked] + [(c, None) for c in allowed]
+            # The same inside a shell body and behind a wrapper, as the hosts and the host check send them.
+            cases += [(form, expected) for c, expected in cases for form in ("bash -lc " + shlex.quote(c), "timeout 60 bash -c " + shlex.quote(c))]
+            for command, expected in cases:
                 with self.subTest(command=command):
                     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(repo)})
                     out = json.loads(run_hook(payload).stdout)

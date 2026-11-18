@@ -512,6 +512,11 @@ class ShellTests(unittest.TestCase):
                 self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "git push --force origin main")),
                                  [(7, "protected-branches", "error")])
                 self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "echo ok")), [])
+                # Bash that only looks like PowerShell to a careless match stays readable (review of #133).
+                for bash in ("make test |& tee log", "iex -S mix", "case $x in a) echo;& b) echo;; esac"):
+                    self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "\"%s\"" % bash)), [], bash)
+                continued = "|\n          git push origin main `\n            --force\n"
+                self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, continued)), [(7, None, "error")])
 
     def test_a_windows_runner_s_default_shell_is_not_read(self):
         text = "name: ci\non: push\njobs:\n  w:\n    runs-on: windows-latest\n    steps:\n      - run: git push --force origin main\n" \
