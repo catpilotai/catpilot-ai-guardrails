@@ -664,7 +664,7 @@ class DeployTests(unittest.TestCase):
         path.write_text(json.dumps(settings), encoding="utf-8")
         verify = self.run_script("verify.sh")
         self.assertNotEqual(verify.returncode, 0)
-        self.assertRegex(verify.stdout, r"evidence has no would_deny line for|with a command verify cannot check")
+        self.assertRegex(verify.stdout, r"evidence has no would_deny line for|expected it to")
 
     def test_verify_fails_registered_commands_that_cannot_prove_they_read_the_rule(self):
         # Review of #134: a no-op that mentions the hook, the wrong --host, and a command writing evidence where verify
@@ -677,6 +677,8 @@ class DeployTests(unittest.TestCase):
         for label, rewrite in {
             "a no-op": lambda c: "echo '{}' # pretooluse-company-rules.py CATPILOT_EVIDENCE_LOG=",
             "syntax glued to the evidence value": lambda c: c.replace(vo_prefix(), "CATPILOT_EVIDENCE_SYSLOG=1;exit;"),
+            "a keyword after the assignment": lambda c: c.replace(vo_prefix(), vo_prefix() + " [[ -n x ]] &&"),
+            "an expansion that aborts": lambda c: c.replace(vo_prefix(), 'CATPILOT_EVIDENCE_LOG="${CATPILOT_LOG_DIR:?}/e.jsonl"'),
             "the wrong host": lambda c: c.replace("--host claude-code", "--host codex") if "--host claude-code" in c else c + " --host codex",
         }.items():
             with self.subTest(case=label):
@@ -688,23 +690,31 @@ class DeployTests(unittest.TestCase):
                 path.write_text(json.dumps(settings), encoding="utf-8")
                 verify = self.run_script("verify.sh")
                 self.assertNotEqual(verify.returncode, 0, verify.stdout)
-                self.assertRegex(verify.stdout, r"evidence has no would_deny line for|with a command verify cannot check")
-        # Evidence sent elsewhere in a session is pointed at verify's log for the probes, so a working company hook is
-        # wired, not skipped (review of #134). Only the company hook's command changes.
-        for prefix in ('CATPILOT_EVIDENCE_LOG="$HOME/Library/Logs/catpilot/evidence.jsonl"', "CATPILOT_EVIDENCE_SYSLOG=1",
-                       'CATPILOT_EVIDENCE_LOG="$HOME"/.catpilot-guardrails/evidence.jsonl'):
+                self.assertRegex(verify.stdout, r"evidence has no would_deny line for|expected it to")
+        # Verify runs each command exactly as registered (review of #134): evidence sent anywhere but the standard
+        # prefix's path cannot prove the rule was read, and fails with that reason; nothing is skipped.
+        for prefix in ('CATPILOT_EVIDENCE_LOG="$HOME/Library/Logs/catpilot/evidence.jsonl"', "CATPILOT_EVIDENCE_SYSLOG=1", ""):
             with self.subTest(prefix=prefix):
                 settings = json.loads(original)
                 for group in settings["hooks"]["PreToolUse"]:
                     for hook in group["hooks"]:
                         if "pretooluse-company-rules.py" in hook["command"]:
-                            hook["command"] = hook["command"].replace(vo_prefix(), prefix)
+                            hook["command"] = hook["command"].replace(vo_prefix(), prefix).strip()
                 path.write_text(json.dumps(settings), encoding="utf-8")
                 verify = self.run_script("verify.sh")
-                self.assertEqual(verify.returncode, 0, verify.stdout)
+                self.assertNotEqual(verify.returncode, 0, verify.stdout)
+                self.assertIn("or send its evidence somewhere verify cannot read", verify.stdout)
                 lines = [l for l in verify.stdout.splitlines() if "managed-settings.json" in l and "pretooluse-company-rules.py" in l]
-                self.assertEqual(sum(l.startswith("wired") for l in lines), 3, lines)
                 self.assertFalse(any(l.startswith("skipped") for l in lines), lines)
+        # The standard prefix in another spelling still lands in verify's log.
+        settings = json.loads(original)
+        for group in settings["hooks"]["PreToolUse"]:
+            for hook in group["hooks"]:
+                if "pretooluse-company-rules.py" in hook["command"]:
+                    hook["command"] = hook["command"].replace(vo_prefix(), 'CATPILOT_EVIDENCE_LOG="$HOME"/.catpilot-guardrails/evidence.jsonl')
+        path.write_text(json.dumps(settings), encoding="utf-8")
+        verify = self.run_script("verify.sh")
+        self.assertEqual(verify.returncode, 0, verify.stdout)
         path.write_text(original, encoding="utf-8")
         self.assertEqual(self.run_script("verify.sh").returncode, 0)
 

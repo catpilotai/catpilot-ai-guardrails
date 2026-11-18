@@ -832,33 +832,6 @@ class VerifyProbeTests(unittest.TestCase):
         self.assertTrue(self.helper.logged_a_rule([dict(line, event="deny")]))
         self.assertFalse(self.helper.logged_a_rule([{"event": "policy_error", "hook": "pretooluse-company-rules"}]))
 
-    def test_probe_command_points_the_evidence_at_verify_s_log(self):
-        log = Path("/tmp/verify log.jsonl")
-        hook = 'python3 "/x/pretooluse-company-rules.py" --host codex --policy "/x/p.json"'
-        cases = {
-            'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" ' + hook: hook,
-            'CATPILOT_EVIDENCE_LOG="$HOME"/.catpilot-guardrails/evidence.jsonl ' + hook: hook,  # split quoting
-            "CATPILOT_EVIDENCE_LOG=/tmp/a\\ b/e.jsonl " + hook: hook,  # an escaped space
-            "CATPILOT_EVIDENCE_LOG=/var/log/x.jsonl " + hook: hook,
-            "CATPILOT_EVIDENCE_SYSLOG=1 " + hook: hook,
-            "LANG=C CATPILOT_EVIDENCE_SYSLOG=1 " + hook: "LANG=C " + hook,
-            'PATH="/usr/bin":$PATH CATPILOT_EVIDENCE_LOG=/x ' + hook: 'PATH="/usr/bin":$PATH ' + hook,
-            hook: hook,  # no evidence setting: unchanged, and verify's environment carries the log
-            "(" + hook + ")": "(" + hook + ")",
-        }
-        for command, want in cases.items():
-            with self.subTest(command=command):
-                self.assertEqual(self.helper.probe_command(command, log), (want, None))
-        # Shell syntax glued to a value is never removed with it (review of #134): these cannot be checked.
-        for command in ("echo '{}' # pretooluse-company-rules.py CATPILOT_EVIDENCE_SYSLOG=1",
-                        hook + " CATPILOT_EVIDENCE_LOG=/dev/null", "env CATPILOT_EVIDENCE_LOG=/x " + hook,
-                        "CATPILOT_EVIDENCE_LOG=/tmp/e.jsonl>/dev/null " + hook, "CATPILOT_EVIDENCE_SYSLOG=1;exit; " + hook,
-                        "CATPILOT_EVIDENCE_LOG=/tmp/e.jsonl&&exit; " + hook, "CATPILOT_EVIDENCE_LOG=$(exit) " + hook):
-            with self.subTest(command=command):
-                runnable, problem = self.helper.probe_command(command, log)
-                self.assertIsNone(runnable)
-                self.assertIn("other than as a leading assignment", problem)
-
     def test_the_branch_probe_picks_a_branch_no_exception_allows(self):
         cases = {
             "no exceptions": (None, "main", False, "deny"),

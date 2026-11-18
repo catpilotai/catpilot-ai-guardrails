@@ -983,7 +983,7 @@ def expected_effect(host: str, modes: list, ask_enabled: bool) -> str:
 def has_ask_flag(command: str) -> bool:
     return "--ask" in _split(command)
 EFFECT_WORDS = {"deny": "denies", "ask": "asks the person about", "none": "logs, without blocking,"}
-COMPANY_LOG = ".catpilot-guardrails/evidence.jsonl"  # verify's log for the registered commands' probes (probe_command)
+COMPANY_LOG = ".catpilot-guardrails/evidence.jsonl"  # where the standard prefix sends evidence under verify's temporary home
 
 
 def company_event(host: str, command: str, cwd: Path) -> str:
@@ -1044,34 +1044,6 @@ def logged_rule(entries: list, rule_id: str, excepted: bool, expected: str, host
     return any(e.get("hook") == "pretooluse-company-rules" and e.get("event") in events and e.get("rule_id") == rule_id
                and e.get("host") == host and (policy_sha256 is None or e.get("policy_sha256") == policy_sha256)
                and bool(e.get("exception_id")) == excepted for e in entries)
-
-
-# A leading NAME=value word: quoted, escaped and plain parts, but no shell operator (`;`, `&`, `|`, `<`, `>`, `(`, `)`,
-# a backtick), so syntax glued to a value (`X=v;exit;`) is never removed with it.
-LEADING_ASSIGNMENT = re.compile(r"""\s*([A-Za-z_][A-Za-z0-9_]*)=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s'"\\;&|<>()`])*(?=\s)""")
-
-
-def probe_command(command: str, log: Path) -> tuple:
-    """(command to run, problem): the registered command without its leading CATPILOT_EVIDENCE_LOG and
-    CATPILOT_EVIDENCE_SYSLOG assignments, run with CATPILOT_EVIDENCE_LOG=<log> in its environment, so verify reads
-    what it wrote wherever it would send its evidence in a session; a command with neither runs unchanged. A command
-    that names either variable anywhere else cannot be checked: (None, the reason)."""
-    position, kept, removed = 0, [], False
-    while True:
-        match = LEADING_ASSIGNMENT.match(command, position)
-        if not match:
-            break
-        if match.group(1) not in ("CATPILOT_EVIDENCE_LOG", "CATPILOT_EVIDENCE_SYSLOG"):
-            kept.append(match.group(0).strip())
-        else:
-            removed = True
-        position = match.end()
-    rest = command[position:]
-    if "CATPILOT_EVIDENCE_LOG" in rest or "CATPILOT_EVIDENCE_SYSLOG" in rest:
-        return None, "names CATPILOT_EVIDENCE_LOG or CATPILOT_EVIDENCE_SYSLOG other than as a leading assignment"
-    if not removed:
-        return command, None  # verify's environment already points the evidence at log
-    return " ".join(kept + [rest.strip()]), None
 
 
 def policy_hash(policy_file: Path) -> str | None:
@@ -1333,19 +1305,14 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
                 report.line("FAIL", "%s runs %s under a matcher that does not cover Bash" % (managed_file, COMPANY_HOOK))
             if host == COPILOT and "--host copilot-cli" not in command and "--host=copilot-cli" not in command:
                 report.line("FAIL", "%s runs %s without --host copilot-cli, so its decisions lack the fields Copilot CLI reads" % (managed_file, COMPANY_HOOK))
-            # Each probe runs the command with its evidence pointed at verify's log (probe_command), whatever path or
-            # syslog it names in a session, so the proof line can be read back.
-            runnable, problem = probe_command(command, registered_log)
-            if runnable is None:
-                report.line("FAIL", "%s runs %s with a command verify cannot check: it %s; put the evidence settings "
-                            "first, as NAME=value" % (managed_file, COMPANY_HOOK, problem))
-                continue
+            # Each probe runs the command exactly as registered, with HOME at verify's temporary home and no evidence
+            # setting of verify's own, so the standard prefix ("$HOME/.catpilot-guardrails/evidence.jsonl") writes the
+            # proof line where verify reads it. Rewriting the command could make it run differently than in a session.
             for probe_cmd, modes, what, probe_rule, excepted in runs:
                 expected = expected_effect(host, modes, has_ask_flag(command))
                 verb = "lets through" if probe_cmd == "ls" else EFFECT_WORDS[expected]
                 before = len(_log_entries(registered_log))
-                got = company_decision(run_hook(["bash", "-c", runnable], company_event(host, probe_cmd, home), home, timeout,
-                                                {"CATPILOT_EVIDENCE_LOG": str(registered_log)}),
+                got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_cmd, home), home, timeout),
                                        copilot=(host == COPILOT))
                 added = _log_entries(registered_log)[before:]
                 proven = logged_rule(added, probe_rule, excepted, expected, host, sha) if probe_rule is not None \
@@ -1357,9 +1324,10 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
                 elif got == expected:
                     report.line("FAIL", "%s runs %s, which gave the expected decision on %s, but its evidence has no %s line "
                                 "for %s%s from this policy and host: it may read no rule (a --policy it cannot load or a stale "
-                                "copy, the wrong --host, another hook)" % (
-                                    managed_file, COMPANY_HOOK, what, "would_deny" if expected == "none" else "rule", probe_rule,
-                                    " with the exception's id" if excepted else ""))
+                                "copy, the wrong --host, another hook), or send its evidence somewhere verify cannot read (a "
+                                "path of its own, syslog, or nowhere); verify reads it through the standard prefix "
+                                "%s" % (managed_file, COMPANY_HOOK, what, "would_deny" if expected == "none" else "rule",
+                                        probe_rule, " with the exception's id" if excepted else "", EVIDENCE_PREFIX))
                 else:
                     report.line("FAIL", "%s command for %s: expected it to %s %s, got %s" % (managed_file, COMPANY_HOOK, EXPECTED_WORDS[expected], what, got))
             for label in sorted(set(policy_errors(registered_log))):
