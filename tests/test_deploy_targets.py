@@ -116,6 +116,8 @@ class DeployTargetTests(unittest.TestCase):
         self.assertEqual(targets("scp dist/a web1.example.org:/srv > log 2>&1"), [(HOST, "web1.example.org")])
         self.assertEqual(targets('URL="$(vercel --prod)" && echo "$URL"'), [(SUFFIX, "vercel.app")])
         self.assertEqual(targets("echo `netlify deploy --prod`"), [(SUFFIX, "netlify.app")])
+        # Review of 0d2a0ed: a case inside $( ) does not leave a later comment's apostrophe to hide the deploy.
+        self.assertEqual(targets("x=$(case a in a) echo;; esac)\n# don't\nvercel --prod\n# it's"), [(SUFFIX, "vercel.app")])
 
     def test_a_vercel_directory_counts_whether_or_not_it_exists_yet(self):
         # The build before it may create it (review of #130); VERCEL_OTHER lists the words that are not deploys.

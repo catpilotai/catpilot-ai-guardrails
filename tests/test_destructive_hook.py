@@ -302,6 +302,22 @@ DENIED = {
     "rm after a backquoted command as the command name": "x=1 | `echo` rm -rf < x ~",
     "rm after a command substitution at the start of the command name": "1>&- $(echo)rm -rf ~",
     "force push in a quoted command substitution": 'x="$(git push --force origin main)"',
+    # Review of 0d2a0ed: a case inside $( ) does not leave later comments as text, whose quotes hid what followed.
+    "force push after a case in a substitution and comments with apostrophes": (
+        "x=$(case \"$1\" in\n  a) echo a;;\n  *) echo b;;\nesac)\n# don't touch\ngit push --force origin main\n# it's done"),
+    "rm after a case in a substitution and comments with apostrophes": (
+        "x=$(case a in (a) echo;; esac)\n# don't\nrm -rf ~\n# it's"),
+    "rm after a substitution that mentions case": "echo $(echo case x in y)#; rm -rf ~",
+    "force push after a comment with an apostrophe in backquotes": "x=`echo hi # don't`; git push --force origin main",
+    "force push in an arithmetic-looking substitution": "x=$((echo a); git push --force origin main)",
+    "recursive aws s3 rm after one with --dryrun": "aws s3 rm a --recursive --dryrun; aws s3 rm b --recursive",
+    "force push in backquotes in double quotes": 'x="`git push -f origin main`"',
+    "rm in a here-string to bash -s with an argument": "bash -s x <<< 'rm -rf ~'",
+    "delete of main after a {fd} word, as dash reads it": "git push {fd}>xorigin --delete main",
+    "rm of home after an arithmetic expansion": "rm -rf $((0)) ~",
+    "rm with its options after a backquoted command": "rm `echo`-rf ~",
+    "rm after a nested parameter expansion as the command name": "${X:-${Y}} rm -rf ~",
+    "rm after a special parameter as the command name": "true; $! rm -rf ~",
 }
 
 ALLOWED = {
@@ -417,6 +433,10 @@ ALLOWED = {
     # Review of 4944546: a Markdown bullet in a heredoc body is not a wrapped command.
     "a Markdown list written by a heredoc": "cat > NOTES.md <<'EOF'\n- dropdb is no longer called\nEOF",
     "a feature force push with output redirected after a blank": "git push --force origin feature-x > /dev/null 2>&1",
+    # Review of 0d2a0ed: comments with apostrophes after a case are still comments.
+    "a case with a comment": "case \"$1\" in start) npm start;; esac # don't",
+    "a case in a substitution, then a comment": "x=$(case a in a) echo;; esac) # it's fine\nls",
+    "the word case as an argument": "echo case in; ls # don't",
 }
 
 
@@ -551,13 +571,17 @@ class DestructiveHookTests(unittest.TestCase):
             # A substitution's command goes on a line of its own, and its placeholder stays in the word.
             "echo $(date) #x": "echo \\$\\(\\) \ndate",
             "echo $(date)#x": "echo \\$\\(\\)#x\ndate",
-            "echo $((1+1))#x": "echo $((1+1))#x",
+            "echo $((1+1))#x": "echo \\$\\(\\(\\)\\)#x",  # an arithmetic expansion is a placeholder
             "cat <(ls)#x": "cat \\<\\(\\)#x\nls",
-            "echo `a #b`": "echo \\$\\(\\)\na #b",  # read like $( ), with no comment inside backquotes
+            "echo `a #b`": "echo \\$\\(\\)\na ",  # read like $( ); its comment ends at the closing backquote
+            "x=`a # it's`; b": "x=\\$\\(\\); b\na ",
+            # Review of 0d2a0ed: a case statement is read with its patterns, so comments after it are dropped.
+            "x=$(case a in a) b;; esac)\n# don't\nc": "x=\\$\\(\\)\n\nc\ncase a in a) b;; esac",
             "echo ${x:-a #b}": "echo ${x:-a #b}",
             "echo ${x} #y": "echo ${x} ",  # the comment after ${ } closes is dropped
             'echo "$(a "b #c")"': 'echo "$()"\na "b #c"',
             "(( 1 #x ))": "(( 1 #x ))",
+            "(( (1 #x) ))": "(( (1 #x) ))",  # nor in parentheses inside arithmetic
             "echo $(a #b\n)": "echo \\$\\(\\)\na \n",
             "( ls ) #x": "( ls ) ",
             "echo a\\ #b": "echo a\\ #b",
@@ -664,11 +688,38 @@ class DestructiveHookTests(unittest.TestCase):
                 self.assertEqual(destructive.main(), 2)
             self.assertIn("could not finish reading this command in time", stderr.getvalue())
             self.assertNotIn("retry", stderr.getvalue())
-        # Without the timer, a command too long to bound is refused; with it, it is read.
+        # Without the timer, a command too long to bound is refused; with it, it is read (short words: no timing).
+        long_command = "ls " + "x " * (destructive.MAX_COMMAND_CHARS_WITHOUT_TIMER // 2)
         with self.assertRaises(destructive.ReadTimeout):
-            destructive.find_destructive_op("ls " + "x" * destructive.MAX_COMMAND_CHARS_WITHOUT_TIMER, "/nonexistent")
-        self.assertIsNone(destructive.within_time_limit(
-            destructive.find_destructive_op, "ls " + "x" * destructive.MAX_COMMAND_CHARS_WITHOUT_TIMER, "/nonexistent"))
+            destructive.find_destructive_op(long_command, "/nonexistent")
+        self.assertIsNone(destructive.within_time_limit(destructive.find_destructive_op, long_command, "/nonexistent"))
+        # Review of 0d2a0ed: the timer's ReadTimeout is a ValueError, and must not be read as an unbalanced quote.
+        with mock.patch.object(destructive.shlex, "shlex", side_effect=destructive.ReadTimeout("alarm")):
+            with self.assertRaises(destructive.ReadTimeout):
+                destructive._lex("ls")
+        with mock.patch.object(destructive.shlex, "split", side_effect=destructive.ReadTimeout("alarm")):
+            with self.assertRaises(destructive.ReadTimeout):
+                destructive._split_string("ls")
+        # The wrapper reader checks the deadline too.
+        with self.assertRaises(destructive.ReadTimeout):
+            destructive._wrapper_commands("env", ["ls", "-i"], None, time.monotonic() - 1)
+
+    def test_a_command_with_a_nul_is_refused(self):
+        # Review of 0d2a0ed: bash drops a NUL and zsh keeps it in its word, which changes where a comment starts.
+        proc = run_hook(event("echo a \u0000# ; rm -rf ~"))
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("not allowed", proc.stderr)
+
+    def test_a_long_run_of_env_split_strings_is_read_in_linear_time(self):
+        # Review of 0d2a0ed: each -S string was spliced into a new copy of the word list (10.9 s for this one).
+        import time
+
+        from catpilot_guard.destructive import find_destructive_op
+
+        command = "env -S '" + "-S " * 66600 + "' git push --force origin main"
+        started = time.monotonic()
+        self.assertIsNotNone(find_destructive_op(command, "/nonexistent"))
+        self.assertLess(time.monotonic() - started, 4.0)
 
     def test_redirections_are_not_refspecs(self):
         # Review of 4944546: a redirection target after a blank was read as an argument, so a bare force push of the

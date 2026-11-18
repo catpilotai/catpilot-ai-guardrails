@@ -232,6 +232,28 @@ class DecisionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.decide("git push --force origin main")
 
+    def test_the_hook_stops_at_the_time_limit_and_refuses_a_command_too_long_to_bound(self):
+        # Review of 0d2a0ed: the company-rules hook's timer wiring and its size check.
+        import io
+        import time
+
+        from catpilot_guard import destructive
+
+        def slow_decide(*args, **kwargs):
+            time.sleep(2)
+
+        stdin = io.TextIOWrapper(io.BytesIO(json.dumps(bash("ls")).encode()))
+        stderr = io.StringIO()
+        with mock.patch.object(destructive, "HOOK_TIME_LIMIT_SECONDS", 0.2), mock.patch.object(cr, "decide", slow_decide), \
+                mock.patch("sys.stdin", stdin), mock.patch("sys.stderr", stderr), \
+                mock.patch.object(sys, "argv", ["hook", "--policy", "/nonexistent/policy.json"]):
+            self.assertEqual(cr.main(), 2)
+        self.assertIn("could not finish reading this command in time", stderr.getvalue())
+        long_command = "ls " + "x " * (destructive.MAX_COMMAND_CHARS_WITHOUT_TIMER // 2)
+        with self.assertRaises(destructive.ReadTimeout):
+            cr.matched_rules(long_command, "/tmp", parsed())
+        self.assertEqual(destructive.within_time_limit(cr.matched_rules, long_command, "/tmp", parsed()), [])
+
     def test_what_the_rule_does_not_cover_passes(self):
         for command in ("git push origin main", "git push --force origin feature/x", "git push -f origin releases/x",
                         "ls", "", "echo git push --force origin main", "echo then git push --force origin main",

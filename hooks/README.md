@@ -163,10 +163,14 @@ with their targets, wherever they are (`>/dev/null CMD`, `2>&1 CMD`,
 `git push -f > log`, a bare push), ends a word at an unquoted `<` or `>`
 (`rm -rf ~>/dev/null` removes `~`), and drops a comment only where bash does:
 a `#` after an escaped character (`a\ #`), a carriage return, or the `)` that
-ends `$( )`, `<( )`, `>( )` or `$(( ))` is part of the word, a `#` inside
-quotes, `${ }`, backquotes, arithmetic or a heredoc body never starts a
-comment, none starts after a `case` inside `$( )`, and a backslash at the end
-of a comment does not continue it onto the next line. A heredoc body is
+ends `$( )`, `<( )`, `>( )` or `$(( ))` is part of the word, a comment in
+backquotes ends at the closing backquote, a `#` inside quotes, `${ }`,
+arithmetic or a heredoc body never starts one, a `#` inside `"$( )"` is read
+both as bash 3.2 reads it (text) and as bash 4 and later, dash and zsh do (a
+comment), and a backslash at the end of a comment does not continue it onto
+the next line. A `case` statement is read with its patterns, so the `)` that
+ends a pattern does not end a subshell or substitution. A command with a NUL
+character is refused, since shells read it differently. A heredoc body is
 literal text up to its delimiter (with its substitutions read when the
 delimiter is unquoted), so a quote character in it cannot hide the commands
 after the heredoc; its lines are still read as commands, so a heredoc that
