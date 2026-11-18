@@ -229,6 +229,13 @@ class ValidationTests(ExceptionCase):
                       "enforcement values never appear in model-facing text", self.errors(data))
         for error in self.errors(data):
             self.assertNotIn("example-org", error)  # the id is the offending text: never repeated
+        # Nor in an error elsewhere in the file about the same exception's value.
+        both = self.mutated(lambda d: (d["enforcement"]["exceptions"][0].update(id="exception-preview-analytics-example-org"),
+                                       d.update(owner="ops@preview.analytics.example.org")))
+        errors = self.errors(both)
+        self.assertIn("overlay.owner: names a value of enforcement.exceptions[0]; enforcement values never appear in model-facing text", errors)
+        for error in errors:
+            self.assertNotIn("example-org", error)
         rules = self.data["enforcement"]["rules"]
         index = next(i for i, r in enumerate(rules) if r["kind"] == "deploy_host")
         value = next(v for v in rules[index]["values"] if not v.startswith("*."))

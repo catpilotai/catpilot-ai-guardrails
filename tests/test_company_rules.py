@@ -608,7 +608,7 @@ class DeployTests(unittest.TestCase):
             (managed / "catpilot-guardrails" / "hooks" / "pretooluse-company-rules.py").write_text("print('{}')\n")
         verify = self.run_script("verify.sh")
         self.assertNotEqual(verify.returncode, 0)
-        self.assertIn("but wrote no would_deny line for trial-branches", verify.stdout)
+        self.assertIn("its evidence has no would_deny line for trial-branches from this policy", verify.stdout)
 
     def test_verify_needs_the_exception_id_on_an_excepted_probe(self):
         until = (dt.date.today() + dt.timedelta(days=30)).isoformat()
@@ -626,7 +626,26 @@ class DeployTests(unittest.TestCase):
             (managed / "catpilot-guardrails" / "hooks" / "pretooluse-company-rules.py").write_text("print('{}')\n")
         verify = self.run_script("verify.sh")
         self.assertNotEqual(verify.returncode, 0)
-        self.assertIn("but wrote no would_deny line for protected-branches with the exception's id", verify.stdout)
+        self.assertIn("its evidence has no would_deny line for protected-branches from this policy, with the exception's id", verify.stdout)
+        # A hook that logs the rule but ignores the exception (no exception_id) fails too (review of #134).
+        stub = (
+            "import json, os, sys\n"
+            "args = sys.argv[1:]\n"
+            "host = args[args.index('--host') + 1]\n"
+            "sha = json.load(open(args[args.index('--policy') + 1]))['source_sha256']\n"
+            "line = {'event': 'would_deny', 'hook': 'pretooluse-company-rules', 'rule_id': 'protected-branches', 'host': host,\n"
+            "        'mode': 'block', 'policy_sha256': sha}\n"
+            "log = os.environ.get('CATPILOT_EVIDENCE_LOG')\n"
+            "if log:\n"
+            "    os.makedirs(os.path.dirname(log), exist_ok=True)\n"
+            "    open(log, 'a').write(json.dumps(line) + '\\n')\n"
+            "sys.stdin.read()\n"
+            "print('{}')\n")
+        for managed in (self.cc, self.codex):
+            (managed / "catpilot-guardrails" / "hooks" / "pretooluse-company-rules.py").write_text(stub)
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("with the exception's id", verify.stdout)
 
     def test_verify_fails_a_registered_command_that_reads_no_rule(self):
         # Review of #134: the registered command, not only the hook run directly, must show it read the rule. Here it
@@ -645,7 +664,33 @@ class DeployTests(unittest.TestCase):
         path.write_text(json.dumps(settings), encoding="utf-8")
         verify = self.run_script("verify.sh")
         self.assertNotEqual(verify.returncode, 0)
-        self.assertIn("so it may not read the rule", verify.stdout)
+        self.assertIn("verify found no would_deny line for", verify.stdout)
+
+    def test_verify_fails_registered_commands_that_cannot_prove_they_read_the_rule(self):
+        # Review of #134: a no-op that mentions the hook, the wrong --host, and a command writing evidence where verify
+        # cannot read it all decide nothing on an all-monitor policy; none may pass.
+        text = self.rules.read_text(encoding="utf-8").replace("      mode: block\n", "      mode: monitor\n", 1)
+        self.rules.write_text(text, encoding="utf-8")
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        path = self.cc / "managed-settings.json"
+        original = path.read_text(encoding="utf-8")
+        for label, rewrite in {
+            "a no-op": lambda c: "echo '{}' # pretooluse-company-rules.py CATPILOT_EVIDENCE_LOG=",
+            "the wrong host": lambda c: c.replace("--host claude-code", "--host codex") if "--host claude-code" in c else c + " --host codex",
+            "evidence elsewhere": lambda c: c.replace(vo_prefix(), 'CATPILOT_EVIDENCE_LOG=/dev/null'),
+        }.items():
+            with self.subTest(case=label):
+                settings = json.loads(original)
+                for group in settings["hooks"]["PreToolUse"]:
+                    for hook in group["hooks"]:
+                        if "pretooluse-company-rules.py" in hook["command"]:
+                            hook["command"] = rewrite(hook["command"])
+                path.write_text(json.dumps(settings), encoding="utf-8")
+                verify = self.run_script("verify.sh")
+                self.assertNotEqual(verify.returncode, 0, verify.stdout)
+                self.assertIn("verify found no would_deny line for", verify.stdout)
+        path.write_text(original, encoding="utf-8")
+        self.assertEqual(self.run_script("verify.sh").returncode, 0)
 
     def test_verify_fails_a_registered_hook_without_a_policy(self):
         self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)

@@ -1000,11 +1000,16 @@ def _enforcement_values_in_model_text(model: dict, enforcement: dict) -> list[st
     sources += [(f"enforcement exception {exc['id']!r}", f"enforcement.exceptions[{i}]", kinds[exc["rule"]], exc["allows"])
                 for i, exc in enumerate(enforcement.get("exceptions", []))]
     errors = []
+    own_ids = {f"enforcement rule {rule['id']!r}": rule["id"] for rule in enforcement["rules"]}
+    own_ids.update({f"enforcement exception {exc['id']!r}": exc["id"] for exc in enforcement.get("exceptions", [])})
     for name, position, kind, values in sources:
         if kind not in HOST_KINDS:
             continue
         needles = [n for value in values for n in _needles(kind, value)]
         slugs = [s for s in (_slug(n) for n in needles) if s]
+        # A source whose own id holds one of its values is named by position everywhere, never by that id.
+        if any(f"-{s}-" in f"-{own_ids[name]}-" for s in slugs):
+            name = position
         message = f"names a value of {name}; enforcement values never appear in model-facing text"
         for path, text in texts:
             if any(n in text.lower() for n in needles):
