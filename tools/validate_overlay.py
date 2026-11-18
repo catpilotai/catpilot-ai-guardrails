@@ -218,9 +218,14 @@ def _item(value: object, label: str, max_len: int = ITEM_MAX) -> str:
         raise OverlayError(f"{label}: expected a nonempty phrase")
     if len(value) > max_len:
         raise OverlayError(f"{label}: longer than {max_len} characters; overlay values are short phrases")
-    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+    if any(ord(c) < 32 or ord(c) == 127 or c in INVISIBLE_LAYOUT for c in value):
         raise OverlayError(f"{label}: control characters are not allowed")
     return value
+
+
+# Characters that break or reorder a line where a model or a person reads the phrase: next line, the line and
+# paragraph separators, and the bidirectional embedding, override and isolate controls.
+INVISIBLE_LAYOUT = frozenset("\u0085\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
 
 def _items(value: object, label: str) -> list[str]:

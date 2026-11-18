@@ -288,7 +288,9 @@ contacts:
   contact's `name` as it does in `owner`, and still nowhere else. `intake_url`
   is https with its host on the `--allow-host` allowlist, no credentials,
   query string or fragment. A contact's `name` counts as model-facing text for
-  §6.3 rule 7; its `intake_url` is exempt, as `intake_url` is. `null` is
+  §6.3 rule 7; its `intake_url` is exempt, as `intake_url` is, so a host on the
+  `--allow-host` allowlist that is also an enforcement value reaches a model
+  through it: keep enforcement hosts off the allowlist. `null` is
   refused, as elsewhere in version 2. A version 1 file with `contacts` is
   rejected as an unknown field, as before.
 - Contacts are model-facing: `model_facing()` keeps them, so the rules block
@@ -305,7 +307,11 @@ contacts:
   one, else the file's own. Several decisions from one field (two data
   classes, say) are one field. Everything else uses `owner`: decisions at the
   outcome from two or more fields, a deciding `write_access` or
-  `credential_references` decision (no topic), a topic with no contact, and
+  `credential_references` decision (no topic), another field with a decision
+  that also needs a person (`prohibited` or `requires_review` below the
+  outcome), since the escalation draft lists every such item and one topic's
+  contact should not receive another topic's questions, a topic with no
+  contact, and
   an outcome of `permitted` (every field decided it) or `unknown` (it waits on
   the caller's answers, so a person is asked then only because of a hint,
   which names no field). The decision is by field, not by component: a

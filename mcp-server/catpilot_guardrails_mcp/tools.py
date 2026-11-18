@@ -589,14 +589,20 @@ def _deciding_topic(outcome: str, decisions: list[dict]) -> str | None:
     decision comes from one field with a topic (data_classes: data, hosting, services,
     audience: identity), that topic; several items of one field are still one field. Decisions
     at the outcome from two or more fields (a tie), or from write_access or
-    credential_references, which have no topic, give None.
+    credential_references, which have no topic, give None. So does any other field with a
+    decision that also needs a person (prohibited or requires_review below the outcome): the
+    escalation draft lists every such item, and one topic's contact should not receive another
+    topic's questions.
     """
     if outcome not in ("prohibited", "requires_review"):
         return None
     fields = {d["field"] for d in decisions if d["outcome"] == outcome}
     if len(fields) != 1:
         return None
-    return FIELD_TOPIC.get(fields.pop())
+    field = next(iter(fields))
+    if any(d["field"] != field and d["outcome"] in ("prohibited", "requires_review") for d in decisions):
+        return None
+    return FIELD_TOPIC.get(field)
 
 
 def _build_escalation_draft(
