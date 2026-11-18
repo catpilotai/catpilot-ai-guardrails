@@ -703,8 +703,9 @@ class HostCheckKitTests(unittest.TestCase):
         sandboxes = sorted(value(a, "-s") for a in codex)
         self.assertEqual(sandboxes, ["read-only", "read-only", "workspace-write", "workspace-write"])
         self.assertIn("apply_patch", next(a for a in codex if value(a, "-s") == "workspace-write")[-1])
-        # Copilot CLI: headless, a new session id each, only bash and create, each probe command and the key.pem
-        # write allowed and nothing else, no instructions, no ask_user, no auto-update, no built-in MCP servers, JSON.
+        # Copilot CLI: headless, a new session id each, only bash and the file tools, the probe items' command stems and
+        # the key.pem write allowed, the stems of commands that reach outside the folder denied, no instructions, no
+        # ask_user, no auto-update, no built-in MCP servers, JSON.
         ids = set()
         for call in copilot:
             args = call["args"]
@@ -714,16 +715,24 @@ class HostCheckKitTests(unittest.TestCase):
             ids.add(str(uuid.UUID(value(args, "--session-id"))))
             prompt = value(args, "-p")
             self.assertIn("9. bash: git push --force origin wren-%s" % token, prompt)
-            self.assertIn("(create)", prompt)
+            self.assertIn("(create, edit or apply_patch, whichever you use)", prompt)
+            deny = next(a for a in args if a.startswith("--deny-tool="))
             flags = [a for i, a in enumerate(args) if a.startswith("-") and args[i - 1] not in ("-p", "--session-id")]
             self.assertEqual(sorted(flags), sorted([
-                "-p", "--session-id", "--available-tools=bash,create", "--allow-tool=" + value_of_allow(args),
-                "--no-custom-instructions", "--no-ask-user", "--no-auto-update", "--disable-builtin-mcps",
+                "-p", "--session-id", "--available-tools=bash,create,edit,apply_patch", "--allow-tool=" + value_of_allow(args),
+                deny, "--no-custom-instructions", "--no-ask-user", "--no-auto-update", "--disable-builtin-mcps",
                 "--output-format=json"]))
             self.assertEqual(len(args), len(flags) + 2, "the prompt and the session id are the only values")
+            # Copilot's shell(...) rules match a command's name or stem, not its whole line (the 2026-11-17 run).
             rules = value_of_allow(args).split(", ")
-            self.assertEqual(rules[-1], "write(key.pem)")
-            self.assertEqual(["Bash(%s)" % r[len("shell("):-1] for r in rules[:-1]], allowed)
+            self.assertEqual(rules, ["shell(git:*)", "shell(bash:*)", "shell(timeout:*)", "shell(terraform:*)",
+                                     "shell(export:*)", "shell(echo:*)", "write(key.pem)"])
+            for item in allowed:  # every probe item starts with an allowed stem
+                stem = item[len("Bash("):-1].split()[0]
+                self.assertIn("shell(%s:*)" % stem, rules, item)
+            denied = deny[len("--deny-tool="):].split(", ")
+            for stem in ("sudo", "rm", "curl", "wget", "ssh", "scp"):
+                self.assertIn("shell(%s:*)" % stem, denied)
         self.assertEqual(len(ids), 2)
         self.assertEqual(copilot[0]["args"][:copilot[0]["args"].index("--session-id")],
                          copilot[1]["args"][:copilot[1]["args"].index("--session-id")])
@@ -890,6 +899,22 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertEqual(steps["uninstall"], "ok")
 
     @FULL_RUN
+    def test_only_one_tool_starts_only_its_sessions(self):
+        # Moving Claude Code and Codex off PATH shows --only copilot-cli does not need them.
+        proc = self.run_kit("--only", "copilot-cli", CLAUDE_BIN=str(self.tmp / "no-claude"), CODEX_BIN=str(self.tmp / "no-codex"))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("--only copilot-cli: this run starts 2 model session(s)", proc.stdout)
+        summary = self.summary()
+        self.assertEqual(summary["options"]["only"], "copilot-cli")
+        self.assertEqual(sorted(s["name"] for s in summary["sessions"]), ["copilot-control", "copilot-probe"])
+        self.assertTrue(self.sessions(summary)["copilot-probe"]["expected_company_rules_met"])
+        self.assertTrue(self.sessions(summary)["copilot-control"]["control_clean"])
+        self.assertEqual(self.steps(summary)["uninstall"], "ok")
+        self.assertFalse(self.copilot.exists())
+        bad = self.run_kit("--only", "cursor")
+        self.assertEqual(bad.returncode, 2)
+        self.assertIn("--only takes claude-code, codex or copilot-cli", bad.stderr)
+
     def test_no_control_skips_the_control_sessions(self):
         # Also: the person's own Copilot configuration, accepted with --allow-copilot-config, and a Copilot stub that
         # runs item 8 although the hook denied it, so the deny line alone must not count as enforcement.
