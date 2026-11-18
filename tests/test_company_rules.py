@@ -668,10 +668,10 @@ class DeployTests(unittest.TestCase):
             self.assertEqual(pol.load(path, os.getuid()).rules[0].id, "protected-branches")
             self.assertTrue((managed / "catpilot-guardrails" / "hooks" / "pretooluse-company-rules.py").exists())
         settings = json.loads((self.cc / "managed-settings.json").read_text(encoding="utf-8"))
-        commands = [h["command"] for g in settings["hooks"]["PreToolUse"] if g["matcher"] == "Bash" for h in g["hooks"]]
+        commands = [h["command"] for g in settings["hooks"]["PreToolUse"] if g["matcher"] == "Bash|PowerShell" for h in g["hooks"]]
         self.assertTrue(any("pretooluse-company-rules.py" in c and "--policy" in c for c in commands))
         requirements = (self.codex / "requirements.toml").read_text(encoding="utf-8")
-        self.assertIn("pretooluse-company-rules.py\" --host codex --policy \"%s" % self.codex, requirements)
+        self.assertIn("pretooluse-company-rules.py\" --evidence-default --host codex --policy \"%s" % self.codex, requirements)
         verify = self.run_script("verify.sh")
         self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
         self.assertRegex(verify.stdout, r"denies\s+pretooluse-company-rules.py --host claude-code denies a force push")

@@ -4,7 +4,8 @@ hooks/claude-code/pretooluse-secrets.py runs this module's main(); hooks/harness
 calls decide(), and write_secrets.py uses find_credential().
 
 Scope, stated exactly:
-  - Runs only for the Bash tool (the matcher in settings selects it).
+  - Runs for the Bash and PowerShell tools (the matcher in settings selects them). It matches text, not shell
+    syntax, so it reads a PowerShell command as it reads a bash one.
   - Scans the proposed command text for the credential patterns documented in
     the secret-blocking component of catpilot-security-core.
   - On a match, returns a PreToolUse "deny" decision with a plain-language
@@ -33,7 +34,7 @@ import json
 import re
 import sys
 
-from . import decision_for_host, event_for_host, hook_host, write_decision, write_reason
+from . import decision_for_host, event_for_host, hook_host, take_evidence_default, write_decision, write_reason
 
 MAX_INPUT_BYTES = 1_048_576
 
@@ -170,7 +171,8 @@ def find_credential(command: str):
 def decide(event: dict, host: str | None = None) -> dict:
     if not isinstance(event, dict):
         raise ValueError("hook event must be an object")
-    if event.get("tool_name") != "Bash":
+    tool = event.get("tool_name")
+    if tool not in ("Bash", "PowerShell"):  # the same text check on either shell's command
         return {}
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -181,7 +183,7 @@ def decide(event: dict, host: str | None = None) -> dict:
     label = find_credential(command)
     if label is None:
         return {}
-    record_evidence("deny", event, host, tool="Bash", label=label)
+    record_evidence("deny", event, host, tool=tool, label=label)
     reason = (
         f"Catpilot secret check: this command appears to contain a literal credential ({label}). "
         "Keep the value out of the command: reference it from an environment variable or a secret "
@@ -198,7 +200,7 @@ def decide(event: dict, host: str | None = None) -> dict:
 
 
 def main() -> int:
-    host = hook_host()  # from --host: the evidence label, and Copilot CLI's event shape; never the decision
+    host = hook_host(take_evidence_default())  # from --host: the evidence label, and Copilot CLI's event shape; never the decision
     try:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:

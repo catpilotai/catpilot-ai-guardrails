@@ -4,7 +4,7 @@ hooks/claude-code/pretooluse-destructive-ops.py runs this module's main(); hooks
 calls decide(). It needs no other check module; it imports catpilot_guard/evidence.py only to write evidence.
 
 Scope, stated exactly:
-  - Runs only for the Bash tool (the matcher in settings selects it).
+  - Runs for the Bash and PowerShell tools (the matcher in settings selects them); both are read as bash.
   - Splits the proposed command into simple commands the way a shell would
     (pipes, ;, &&, ||, subshells, and each line of a multi-line command), looks through sudo/env/time-style wrappers
     (also timeout, gtimeout, stdbuf, ionice, setsid, unbuffer) and a shell's
@@ -75,7 +75,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from . import decision_for_host, event_for_host, hook_host, write_decision, write_reason
+from . import decision_for_host, event_for_host, hook_host, take_evidence_default, write_decision, write_reason
 
 MAX_INPUT_BYTES = 1_048_576
 
@@ -1321,6 +1321,9 @@ def _db_finding(name: str, args: list[str], command: str, depth: int = 0) -> tup
     return None
 
 
+SHELL_TOOLS = ("Bash", "PowerShell")  # the tools whose tool_input.command the checks read
+
+
 def find_destructive_op(command: str, cwd: str | None = None) -> tuple[str, str] | None:
     """Return (label, remediation) for the first destructive command found, or None."""
     if not command:
@@ -1365,7 +1368,8 @@ def record_evidence(event: str, hook_event: object = None, host: str | None = No
 def decide(event: dict, host: str | None = None) -> dict:
     if not isinstance(event, dict):
         raise ValueError("hook event must be an object")
-    if event.get("tool_name") != "Bash":
+    tool = event.get("tool_name")
+    if tool not in SHELL_TOOLS:
         return {}
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -1377,7 +1381,7 @@ def decide(event: dict, host: str | None = None) -> dict:
     if found is None:
         return {}
     label, remediation = found
-    record_evidence("deny", event, host, tool="Bash", label=label)
+    record_evidence("deny", event, host, tool=tool, label=label)
     reason = (
         f"Catpilot destructive-operation check: this command matches a high-blast-radius pattern ({label}). "
         f"{remediation} If this exact command is intentional, run it yourself in your own terminal."
@@ -1392,7 +1396,7 @@ def decide(event: dict, host: str | None = None) -> dict:
 
 
 def main() -> int:
-    host = hook_host()  # from --host: the evidence label, and Copilot CLI's event shape; never the decision
+    host = hook_host(take_evidence_default())  # from --host: the evidence label, and Copilot CLI's event shape; never the decision
     try:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:

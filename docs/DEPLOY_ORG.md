@@ -109,7 +109,7 @@ sudo deploy/org/install.sh --server-url https://mcp.example.com/mcp --overlay /p
   "hooks": [
     {
       "type": "command",
-      "command": "CATPILOT_EVIDENCE_LOG=\"$HOME/.catpilot-guardrails/evidence.jsonl\" python3 \"/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/catpilot-company-rules.py\" --host claude-code",
+      "command": "CATPILOT_EVIDENCE_LOG=\"$HOME/.catpilot-guardrails/evidence.jsonl\" python3 \"/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/catpilot-company-rules.py\" --evidence-default --host claude-code",
       "timeout": 10
     }
   ]
@@ -186,12 +186,12 @@ matcher = "^Bash$"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-secrets.py" --host codex'
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-secrets.py" --evidence-default --host codex'
 timeout = 10
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-destructive-ops.py" --host codex'
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-destructive-ops.py" --evidence-default --host codex'
 timeout = 10
 
 [[hooks.PreToolUse]]
@@ -199,7 +199,7 @@ matcher = "^apply_patch$"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-write-secrets.py" --host codex'
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-write-secrets.py" --evidence-default --host codex'
 timeout = 10
 ```
 
@@ -229,7 +229,7 @@ matcher = "startup|resume|clear|compact|fork"
 
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/catpilot-company-rules.py" --host codex'
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/catpilot-company-rules.py" --evidence-default --host codex'
 timeout = 10
 ```
 
@@ -280,10 +280,10 @@ For the example rules file, the commands added are:
 
 ```text
 Claude Code (a PreToolUse group, matcher "Bash"):
-CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/pretooluse-company-rules.py" --host claude-code --policy "/Library/Application Support/ClaudeCode/catpilot-guardrails/policy/company-policy.json"
+CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/pretooluse-company-rules.py" --evidence-default --host claude-code --policy "/Library/Application Support/ClaudeCode/catpilot-guardrails/policy/company-policy.json"
 
 Codex (a [[hooks.PreToolUse]] table, matcher "^Bash$"):
-CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-company-rules.py" --host codex --policy "/etc/codex/catpilot-guardrails/policy/company-policy.json"
+CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-company-rules.py" --evidence-default --host codex --policy "/etc/codex/catpilot-guardrails/policy/company-policy.json"
 ```
 
 **Rolling out a rule.** Start a new rule in `monitor`: it blocks nothing and writes a `would_deny` line each time it would have. `python3 tools/evidence_summary.py` counts them per rule id. Move it to `ask` or `block` once the count shows it fires where you expect, then reinstall. `ask` acts as `block` unless you add `--ask` to the company-rules hook command in `managed-settings.json`. The hook cannot tell a person from a program that approves, such as `claude -p` with a permission-prompt tool or an Agent SDK callback, and `ask` means a person decides first (decision 2 in the spec). Add it once a session check shows a person answering on your machines. With it, the person confirms on Claude Code in the `default`, `acceptEdits` and `plan` permission modes. In other modes, and on Codex, which does not support `ask`, it still denies. On Copilot CLI, with `--ask` in the policy file's command, the hook returns `ask` and Copilot settles it: Copilot denies an ask in autopilot and the cloud agent, and how it treats one under `copilot -p` or an allow-all mode is not verified. After the file's `expires_on`, every company rule acts in `monitor` until you renew the file and reinstall; the built-in checks are unaffected.

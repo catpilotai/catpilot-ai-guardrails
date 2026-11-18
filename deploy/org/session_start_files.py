@@ -70,6 +70,10 @@ START_SOURCES = ("startup", "resume", "clear", "compact", "fork")
 MATCHER = "|".join(START_SOURCES)
 # The prefix the managed PreToolUse hook commands carry, so each person's evidence lands in their own home.
 EVIDENCE_PREFIX = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl"'
+# The hook option that names the same file without a shell (docs/spec/WINDOWS.md §3.1). Every command install.sh writes
+# carries it after the hook's path; the prefix stays on macOS and Linux for this release, and a command without the
+# option (an earlier install) is still accepted (§5, decision 3).
+EVIDENCE_DEFAULT = "--evidence-default"
 TIMEOUT_SECONDS = 10  # the timeout the managed PreToolUse hooks have
 # The blocking hooks install.sh registers for Codex in requirements.toml: (matcher, tool the matcher must cover,
 # hook files). Codex reports every file edit as apply_patch, whichever of apply_patch, Edit or Write the matcher
@@ -137,7 +141,7 @@ def tree(managed_dir: str) -> str:
 
 def hook_command(managed_dir: str, host: str) -> str:
     script = "%s/hooks/%s" % (tree(checked_dir(managed_dir)), SCRIPT)
-    return '%s python3 "%s" --host %s' % (EVIDENCE_PREFIX, script, host)
+    return '%s python3 "%s" --evidence-default --host %s' % (EVIDENCE_PREFIX, script, host)
 
 
 def policy_path(managed_dir: str) -> str:
@@ -146,12 +150,12 @@ def policy_path(managed_dir: str) -> str:
 
 def company_hook_command(managed_dir: str, host: str) -> str:
     script = "%s/hooks/%s" % (tree(checked_dir(managed_dir)), COMPANY_HOOK)
-    return '%s python3 "%s" --host %s --policy "%s"' % (EVIDENCE_PREFIX, script, host, policy_path(managed_dir))
+    return '%s python3 "%s" --evidence-default --host %s --policy "%s"' % (EVIDENCE_PREFIX, script, host, policy_path(managed_dir))
 
 
 def copilot_command(copilot_dir: str, filename: str, enforce_policy: bool = False) -> str:
     script = "%s/hooks/%s" % (tree(checked_dir(copilot_dir)), filename)
-    command = '%s python3 "%s" --host %s' % (EVIDENCE_PREFIX, script, COPILOT)
+    command = '%s python3 "%s" --evidence-default --host %s' % (EVIDENCE_PREFIX, script, COPILOT)
     if enforce_policy:
         command += ' --policy "%s"' % policy_path(copilot_dir)
     return command
@@ -190,7 +194,7 @@ def settings_with_session_start(base: str, cc_dir: str, enforce: bool = False) -
         if not isinstance(pretooluse, list):
             raise UsageError("hooks.PreToolUse in managed-settings.json must be a list")
         pretooluse.append({
-            "matcher": "Bash",
+            "matcher": "Bash|PowerShell",
             # A hook that cannot start or times out blocks the call instead of letting it run (Claude Code 2.1.295+).
             "hooks": [{"type": "command", "command": company_hook_command(cc_dir, CLAUDE_CODE), "timeout": TIMEOUT_SECONDS,
                        "onFailure": "block"}],
@@ -204,7 +208,7 @@ def settings_with_session_start(base: str, cc_dir: str, enforce: bool = False) -
 
 def codex_pretooluse_command(codex_dir: str, filename: str) -> str:
     script = "%s/hooks/%s" % (tree(checked_dir(codex_dir)), filename)
-    return '%s python3 "%s" --host %s' % (EVIDENCE_PREFIX, script, CODEX)
+    return '%s python3 "%s" --evidence-default --host %s' % (EVIDENCE_PREFIX, script, CODEX)
 
 
 def requirements_toml(codex_dir: str, rules: bool = True, enforce: bool = False) -> str:
@@ -1051,12 +1055,13 @@ def logged_rule(entries: list, rule_id: str, excepted: bool, expected: str, host
 
 def standard_company_command(command: str, hook: Path, host: str, policy_file: Path) -> bool:
     """Whether a registered company-rules command is exactly the one install.sh writes for this tool (the standard
-    evidence prefix, python3, this hook, --host, this policy), with one --ask allowed after the hook, after --host or at
-    the end. verify
+    evidence prefix, python3, this hook, --host, this policy), with --evidence-default allowed right after the hook (an
+    install before it wrote none), and one --ask allowed after the hook, after --host or at the end. verify
     runs only such a command: any other (a wrapper, an env file, another evidence sink, another policy or host) could
     send its probe lines somewhere real or behave differently than verify can see, so it is not run."""
     ask = r"(?: --ask)?"
-    pattern = (re.escape(EVIDENCE_PREFIX) + r' python3 "' + re.escape(str(hook)) + r'"' + ask + r' --host ' + re.escape(host)
+    pattern = (re.escape(EVIDENCE_PREFIX) + r' python3 "' + re.escape(str(hook)) + r'"(?: ' + re.escape(EVIDENCE_DEFAULT) + r')?'
+               + ask + r' --host ' + re.escape(host)
                + ask + r' --policy "' + re.escape(str(policy_file)) + r'"' + ask)
     return re.fullmatch(pattern, command.strip(" \t\n")) is not None and _split(command).count("--ask") <= 1
 

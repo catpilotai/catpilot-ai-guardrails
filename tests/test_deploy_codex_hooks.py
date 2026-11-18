@@ -86,7 +86,7 @@ class CodexManagedHookTests(unittest.TestCase):
         return self.codex / "requirements.toml"
 
     def command(self, name: str) -> str:
-        return f'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "{self.hooks / name}" --host codex'
+        return f'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "{self.hooks / name}" --evidence-default --host codex'
 
     def snapshot(self) -> dict:
         files = {}
@@ -262,7 +262,7 @@ class CodexManagedHookTests(unittest.TestCase):
     def test_a_command_without_the_host_argument_is_noted(self):
         self.install()
         text = self.requirements.read_text(encoding="utf-8")
-        self.requirements.write_text(text.replace('pretooluse-secrets.py" --host codex', 'pretooluse-secrets.py"'), encoding="utf-8")
+        self.requirements.write_text(text.replace('pretooluse-secrets.py" --evidence-default --host codex', 'pretooluse-secrets.py" --evidence-default'), encoding="utf-8")
         verify = self.run_script("verify.sh")
         self.assertEqual(verify.returncode, 0, verify.stdout)
         self.assertIn("note     requirements.toml runs pretooluse-secrets.py without --host codex, so its evidence lines say claude-code", verify.stdout)

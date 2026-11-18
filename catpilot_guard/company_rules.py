@@ -81,11 +81,12 @@ import json
 import os
 import sys
 
-from . import COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, event_for_host, write_decision, write_reason
+from . import (COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, event_for_host, take_evidence_default,
+               write_decision, write_reason)
 from . import policy as policy_module
 from .cloud_targets import account_covered, cloud_targets
 from .deploy_targets import deploy_targets, host_covered
-from .destructive import BraceBudget, BranchPattern, commands_with_branch_context, git_push_rewrites, pattern_may_match
+from .destructive import SHELL_TOOLS, BraceBudget, BranchPattern, commands_with_branch_context, git_push_rewrites, pattern_may_match
 from .registry_targets import registry_covered, registry_targets, split_command
 
 MAX_INPUT_BYTES = 1_048_576
@@ -262,7 +263,8 @@ def reason_for(effect: str, deciding: list) -> str:
 def decide(event: dict, host: str | None, policy: policy_module.Policy | None, today=None, ask_enabled: bool = False) -> dict:
     if not isinstance(event, dict):
         raise ValueError("hook event must be an object")
-    if event.get("tool_name") != "Bash":
+    tool = event.get("tool_name")
+    if tool not in SHELL_TOOLS:
         return {}
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -290,11 +292,11 @@ def decide(event: dict, host: str | None, policy: policy_module.Policy | None, t
             # Exceptions covered all of the rule's matches: one would_deny line per exception that covered a match,
             # with the rule's own mode (OVERLAY_V2.md §3.1).
             for exception_id in excepted_by:
-                record_evidence("would_deny", event, host, tool="Bash", rule_id=rule.id, mode=mode, exception_id=exception_id,
+                record_evidence("would_deny", event, host, tool=tool, rule_id=rule.id, mode=mode, exception_id=exception_id,
                                 policy_sha256=policy.source_sha256)
             continue
         line = "would_deny" if effect is None else final
-        record_evidence(line, event, host, tool="Bash", rule_id=rule.id, mode=mode, policy_sha256=policy.source_sha256)
+        record_evidence(line, event, host, tool=tool, rule_id=rule.id, mode=mode, policy_sha256=policy.source_sha256)
     if final is None:
         return {}
     deciding = [rule for rule, _, effect, _ in effects if effect == final]
@@ -322,7 +324,7 @@ def load_policy(event: dict, host: str | None, path: str | None, ok: bool):
 
 
 def main() -> int:
-    host, path, ok, ask_enabled = parse_args(sys.argv[1:])
+    host, path, ok, ask_enabled = parse_args(take_evidence_default(sys.argv[1:]))
     try:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:
@@ -330,7 +332,7 @@ def main() -> int:
         event = event_for_host(json.loads(payload), host)
         if not isinstance(event, dict):
             raise ValueError("hook event must be an object")
-        policy = load_policy(event, host, path, ok) if event.get("tool_name") == "Bash" else None
+        policy = load_policy(event, host, path, ok) if event.get("tool_name") in SHELL_TOOLS else None
         result = decide(event, host, policy, ask_enabled=ask_enabled)
     except Exception:
         # Any failure to read the event blocks: an ordinary non-zero exit would let the host run the command.
