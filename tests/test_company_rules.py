@@ -235,8 +235,22 @@ class DecisionTests(unittest.TestCase):
             self.assertEqual(effect(self.decide("git push -f", cwd=repo)), "deny")
             head.write_text("ref: refs/heads/feature/x\n")
             self.assertEqual(self.decide("git push -f", cwd=repo), {})
-            head.write_text("0123456789abcdef0123456789abcdef01234567\n")  # detached: the built-in check covers it
-            self.assertEqual(self.decide("git push -f", cwd=repo), {})
+            # Detached: the branch is unknown. The built-in check denies it, and every company rule now fires too.
+            head.write_text("0123456789abcdef0123456789abcdef01234567\n")
+            self.assertEqual(effect(self.decide("git push -f", cwd=repo)), "deny")
+            self.assertEqual(effect(self.decide("git push --force origin HEAD", cwd=repo)), "deny")
+
+    def test_a_branch_the_hook_cannot_read_fires_every_rule(self):
+        # A rule that lists none of these branches still fires: the variable could name any branch.
+        rules = [branch_rule(values=["zq-only-this-branch"])]
+        for command in ("git push --force origin $BRANCH", 'git push -f origin "${TARGET}"', "git push -f origin ${B:-main}",
+                        "git push origin --delete $OLD", "git push origin :$OLD", "git push origin +HEAD:$DEST",
+                        "git push --force origin `git branch --show-current`", 'bash -lc "git push -f origin \\$B"'):
+            with self.subTest(command=command):
+                self.assertEqual(effect(self.decide(command, rules)), "deny")
+        for command in ("git push origin $BRANCH", "git push --force $REMOTE feature/x", "git push -f origin ${SRC}:feature/x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.decide(command, rules), {})
 
     def test_monitor_decides_nothing_and_logs_would_deny(self):
         result = self.decide("git push --force origin main", [branch_rule(mode="monitor")])
@@ -320,6 +334,42 @@ class DecisionTests(unittest.TestCase):
         for event in ([], {"tool_name": "Bash"}, {"tool_name": "Bash", "tool_input": {"command": 3}}):
             with self.subTest(event=event), self.assertRaises(ValueError):
                 cr.decide(event, "claude-code", parsed())
+
+
+class BranchContextTests(unittest.TestCase):
+    """The company rules read the checked-out branch as the built-in check does: unknown after a command that may
+    change it, known after `git switch X` (review of #133). Run on a feature branch, so only that rule decides."""
+
+    def test_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").mkdir()
+            (Path(tmp) / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
+            policy = parsed([branch_rule(values=("main",))])
+            fired = lambda command: [r.id for r, excepted_by in cr.matched_rules(command, tmp, policy) if not excepted_by]
+            for command in ("cd ../m && git push -f", "git checkout main && git push -f origin HEAD", "git switch main && git push -f",
+                            "git switch other && git push -f", "bash -lc 'export GIT_DIR=../x/.git; git push -f'",
+                            'git() { :; }; git push -f origin "$(git branch --show-current)"', "env -C ../m git push -f"):
+                with self.subTest(command=command):
+                    self.assertEqual(fired(command), ["protected-branches"])
+            for command in ("git push -f", 'git push -f origin "$(git branch --show-current)"',
+                            'git commit -m "fix parse() bug" && git push --force-with-lease'):
+                with self.subTest(command=command):
+                    self.assertEqual(fired(command), [])
+            # A destination with an expansion fires only the rules it could match (review of #137).
+            hotfix = parsed([branch_rule(values=("hotfix/*",))])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules("git push -f origin hotfix/$V", tmp, hotfix) if not excepted_by], ["protected-branches"])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules("git push -f origin feature/$V", tmp, hotfix) if not excepted_by], [])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules('git push -f origin "$B"', tmp, hotfix) if not excepted_by], ["protected-branches"])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules("git push origin :refs/tags/$T", tmp, policy) if not excepted_by], [])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules('git push -f origin "$P/main"', tmp, policy) if not excepted_by], ["protected-branches"])
+            # A company value spelled refs/heads/ reads as the branch (review of 0b0f13f).
+            spelled = parsed([branch_rule(values=("refs/heads/main",))])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules('git push -f origin "ma$X"', tmp, spelled) if not excepted_by], ["protected-branches"])
+            # A word past the limit before git's subcommand may hold `push` itself (review of b2474bd).
+            self.assertEqual(fired("git {push,-f,origin,feature:main,HEAD:refs/tmp/{1..64}}"), ["protected-branches"])
+            self.assertEqual(fired("git {status,log,HEAD:refs/tmp/{1..64}}"), ["protected-branches"])
+            # No checkout's branch is the workflow's (the pull-request check): unknown, so it fires.
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules("git push -f", tmp, policy, branch_known=False) if not excepted_by], ["protected-branches"])
 
 
 class StandardCommandTests(unittest.TestCase):

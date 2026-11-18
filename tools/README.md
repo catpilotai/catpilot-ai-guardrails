@@ -93,6 +93,24 @@ python tools/validate_overlay.py salt /private/path/rules.yaml
 python tools/validate_overlay.py migrate docs/spec/overlay.example.yaml
 ```
 
+## pr_check.py
+
+The pull-request check: the compiled company policy (`validate_overlay.py
+compile`) applied to the files a pull request adds or changes that can deploy
+or push (workflows, composite actions, `package.json` scripts, `vercel.json`,
+`netlify.toml`, `fly.toml`, `wrangler.*`, `firebase.json`), with the
+company-rules hook's matching. `monitor` rules annotate and pass; `ask` and
+`block` fail (exit 1). Annotations name the rule, the file and the line, never
+a listed value, a command or a host. Run it in CI from a pinned checkout of
+this repository, never from the pull request's tree:
+`deploy/ci/catpilot-pr-check.yml` is the template, and `docs/DEPLOY_ORG.md`
+(Pull-request check) has the exact coverage and the threat model.
+
+```bash
+python tools/pr_check.py --policy /tmp/company-policy.json --repo checkout --base origin/main --format github
+python tools/pr_check.py --policy /tmp/company-policy.json --files package.json .github/workflows/deploy.yml
+```
+
 ## validate_evals.py
 
 Standard-library-only validation of `evals/cases.json` (the core/companion

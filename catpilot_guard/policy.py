@@ -95,8 +95,8 @@ class RuleException:
 
         An exception with `where` applies only to a repository it lists, ignoring case. The hooks pass no repository,
         so it never applies in a hook: a repository name read from a working tree is something the agent can change.
-        This is the seam for the pull-request check, not built yet, which will pass the repository its CI platform
-        names."""
+        This is the seam for the pull-request check, which passes none yet either; it will pass the repository its CI
+        platform names."""
         if self.expires_on < today:
             return False
         if self.repositories is None:

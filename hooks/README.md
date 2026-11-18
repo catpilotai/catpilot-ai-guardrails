@@ -184,8 +184,91 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   `.git/HEAD`, and blocked when the branch cannot be read), a deletion of one
   of those branches, and `git push --mirror`, `--all` or `--branches` with a
   force or `--prune`, and a forced or pruned refspec pattern
-  (`refs/heads/*:refs/heads/*`). An option's value (`-o ci.skip`,
-  `--push-option`, `--repo`) is not read as the remote.
+  (`refs/heads/*:refs/heads/*`). A force push or deletion whose destination
+  holds a shell variable or a substitution is read as its literal text up to
+  the first expansion followed by anything, and blocked when that could name a
+  protected branch (also spelled `heads/X` or `refs/heads/X`, or as `@` or
+  `HEAD`): `git push --force origin $BRANCH`, `"${TARGET}"`, `${B:-main}`,
+  `release/$V`, `"ma$X"` and `"$P/main"` are blocked, while `feature/$TICKET`,
+  `"v$VERSION"` and a tag (`:refs/tags/$TAG`) are not. Braces are expanded as
+  bash 5.2 expands them (a port of its brace_expand), in git's own words too
+  and before options are read (`:{feature,develop}` deletes both; `{-f,}` is
+  a force; `{x},main}` is `x}` and `main`). Since the shell's quotes are gone
+  by then, each push is also read with its words as written, and the stricter
+  reading counts. A word that would make more than 64, or one over 4,096
+  characters, is unknown where it stands, and unless it is plain text and
+  braces (a `-` inside a name such as `release-{1..100}` is plain) it may be
+  `--force`, a `+` or `:` refspec or an option; before git's subcommand, one
+  holding `push` is a push to an unknown branch. The expansion has one budget
+  per command (400,000 characters scanned and made, far past any real
+  command), so crafted braces cannot keep the hook past its timeout: once it
+  is spent, every later word with braces is unknown in the same way. A
+  braced command name (`{git,push,...}`) is not expanded. A variable whose value
+  holds a space or a colon, which splits the word or the refspec, is not seen;
+  in the pull-request check a `${{ ... }}` that names a context a pull
+  request's author sets (`github.event.*` other than a number, `github.head_ref`)
+  is unknown, since GitHub puts its text in before the shell runs, and any other
+  expression reads like a shell variable. A refspec splits at its last colon, as
+  git splits it. An ordinary push to a variable is not read at all. Three
+  exceptions:
+  - A substitution that asks git for the checked-out branch, as one quoted
+    word (`"$(git branch --show-current)"`, `"$(git rev-parse --abbrev-ref
+    HEAD)"`, `"$(git symbolic-ref --short HEAD)"`, or the same in backticks),
+    is read as that branch. Unquoted, the shell-word reader splits it, so it
+    is unknown and blocked.
+  - So are `HEAD` and `@`, and `heads/main` as `main`.
+  - After a command earlier in the same line that may change the branch or
+    the directory, the branch is unknown, and so blocked: `cd`, `chdir`,
+    `pushd`, `popd`, `git checkout` (but not `git checkout [x] -- <paths>`,
+    which restores files), `git switch`, `git init`, `git rebase
+    <upstream> <branch>` or `--root <branch>`, `git stash branch`, `git
+    symbolic-ref`, `git branch -m`, `gh pr checkout`, `gh co`, `source`,
+    `eval`, `exec` or `alias`. A switch never names the branch, since it may
+    fail, run in another repository, or take its name from a variable, so
+    `git switch feature-y && git push --force-with-lease` is blocked too.
+  - It is unknown for the whole line when the line, or a `bash -c` body in
+    it, defines a function (`name()`, `function name`), assigns `GIT_DIR`,
+    `GIT_WORK_TREE` or `GIT_COMMON_DIR` (also `export GIT_DIR` and `read
+    GIT_DIR`), or gives env or sudo a directory (`env -C`, `--chdir`), at a
+    command's start, among a declaration's names (`export FOO GIT_DIR=...`),
+    or behind a wrapper and its option values (`sudo -u bob`, `nice -n 5`,
+    `timeout 60`); and when a variable comes before a git command's
+    subcommand, other than as the value of `-C`, `-c` or `--git-dir`. A line
+    that assigns a `GIT_CONFIG_*` variable that can set `remote.<name>.mirror`
+    (not `GIT_CONFIG_COUNT` or `VALUE_n` alone, a key such as `safe.directory`
+    or `url.*.insteadOf`, or `GIT_CONFIG_GLOBAL=/dev/null`) makes a bare push
+    in it count as a mirror. These are
+    read as shell words, with assignments only where they are assignments, so
+    a mention inside a quoted message does not count. A script run earlier in
+    the line that switches branches is not seen, nor a git alias (`git co`).
+
+  A word that starts with a variable may hold an option. When it is followed
+  by a literal word, with two literal words besides (`git push $F origin
+  main`, `git push origin $F main`), the push counts as a force push. A
+  trailing one (`git push origin main "$TAG"`) does not, so `git push $F
+  origin` with `F=--force` is not caught.
+
+  Also blocked:
+  - the matching refspec (`:`) with a force or a `+`;
+  - a push given `-c remote.<name>.mirror` (it acts as `--mirror`);
+  - a bare push given `-c remote.<name>.push=...` or `--config-env` for it;
+  - a bare push given `-c push.default=matching` with a force;
+  - a bare force push given `-c push.default=upstream` or a `branch.*`
+    setting, whose destination is then unknown;
+  - a bare push after a command earlier in the line sets a true
+    `remote.<name>.mirror`, `remote.<name>.push` or an include (`git config
+    KEY VALUE`, `git config set`, `git remote add --mirror` or
+    `--mirror=push`); `push.default` set to `matching`, `upstream` or
+    `tracking` makes a bare force push's branch unknown. A read (`git config
+    --get`) and `remote.<name>.mirror false` do not count, and a push that
+    names a refspec is never a mirror (git refuses a refspec with
+    `remote.<name>.mirror`, and a refspec overrides `remote.<name>.push`); a
+    refspec that expands to nothing (an unquoted empty variable, `"$@"`),
+    which makes it a bare push, is not seen. The same holds for a `GIT_CONFIG_*` assignment.
+
+  These settings in git's config files are not read. An
+  option's value (`-o ci.skip`, `--push-option`, `--repo`) is not read as the
+  remote.
 - Database and cache resets: `prisma db push --accept-data-loss`, `prisma
   migrate reset --force`, `rails`/`rake` `db:drop`, `db:reset`,
   `db:schema:load`, and `db:structure:load`, Django `flush --noinput`,
@@ -263,6 +346,18 @@ writes its own evidence line. After the file's `expires_on`, every company
 rule acts in `monitor` until the file is renewed and recompiled: nothing is
 blocked on stale values, and each match still writes `would_deny`.
 
+The same compiled policy drives the pull-request check, `tools/pr_check.py`,
+which a company runs in its own CI
+([`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md#pull-request-check)). It applies
+these rules, with this hook's matching, to the workflows, composite actions,
+`package.json` scripts and deploy configuration files a pull request adds or
+changes, so a deploy a CI job would run, which this hook never sees, is
+checked before merge. It applies the `protected_branch` and `deploy_host`
+rules, and their active exceptions without `where`; `package_registry` and
+`cloud_account` rules are not applied there yet. There `monitor` annotates and
+passes, and `ask` fails the check as `block` does. Not yet run in a real
+repository's CI.
+
 **Expiring exceptions** ([`OVERLAY_V2.md`](../docs/spec/OVERLAY_V2.md) §3.1)
 relax one company rule until a date, never a built-in check:
 
@@ -272,14 +367,14 @@ relax one company rule until a date, never a built-in check:
   approved hosts, registries or accounts, covered as the rule's values cover
   them, so a target the hook cannot read (unknown), which no value covers, no
   exception covers either. A rule fires when something it matches is covered
-  by no rule value and no active exception. A push that can rewrite every branch (`git push --mirror`,
-  `--all` or `--branches` with a force or `--prune`, a forced pattern refspec)
+  by no rule value and no active exception. A push that can rewrite every
+  branch (`git push --mirror`, `--all` or `--branches` with a force or `--prune`, a forced pattern refspec)
   fires a `protected_branch` rule whatever its exceptions.
 - The hook applies an exception through its `expires_on`, the day itself
   included; after that it is ignored and the rule applies as written. No
   exception outlives the file. An exception with `where` is never applied by
   a hook: a repository name read from a working tree is something the agent
-  can change, so only the pull-request check, not built yet, reads it.
+  can change, and the pull-request check does not read it yet, so no check applies it.
 - The built-in checks are separate hooks and read no policy. An exception
   allowing `main` on a company `protected_branch` rule stops that rule firing
   on `git push --force origin main`; the destructive-operation check still
@@ -298,10 +393,16 @@ relax one company rule until a date, never a built-in check:
   Pushes are read exactly as the destructive-operation check reads them,
   through the same wrappers and `bash -c` bodies, so `--all` or `--branches`
   with a force or `--prune`, and a forced refspec pattern
-  (`refs/heads/*:refs/heads/*`), match every rule. A value ending in `/*`
-  covers every branch under the prefix; case is ignored. A value is a branch
-  name: the validator refuses a `refs/` prefix and names longer than 255
-  characters. An ordinary push is not a match.
+  (`refs/heads/*:refs/heads/*`), match every rule. A force push or deletion
+  whose branch the hook cannot read also matches every rule: a destination in
+  a variable or a substitution (`git push --force origin $BRANCH`), a bare
+  force push or a push to `HEAD` with no branch checked out (a detached
+  `HEAD`, or no repository; the built-in check blocks the bare force push
+  there, not the push to `HEAD`), and the checked-out branch after a command
+  that may change it, as the destructive-operation check reads it (above). A value
+  ending in `/*` covers every branch under the prefix; case is ignored. A
+  value is a branch name: the validator refuses a `refs/` prefix and names
+  longer than 255 characters. An ordinary push is not a match.
 - Kind `deploy_host`, an allow-list: a deploy or publish whose target no value
   of the rule covers fires the rule. `catpilot_guard/deploy_targets.py` reads
   the target, through the same splitting and wrappers, and through package
@@ -337,10 +438,11 @@ relax one company rule until a date, never a built-in check:
 
   A value `*.D` covers every name under `D`; any other value covers that host
   only. Each `deploy_host` rule is its own allow-list, so list every approved
-  host in one rule. Not covered: a deploy a script or CI job runs, a vendor not
-  listed here, a custom domain set in a project file (the service's own domain
-  is the target then), `ssh` sessions, `curl` uploads, container pushes and
-  cloud object copies.
+  host in one rule. Not covered: a deploy a script or CI job runs (the
+  pull-request check reads the workflows and scripts a pull request changes), a
+  vendor not listed here, a custom domain set in a project file (the service's
+  own domain is the target then), `ssh` sessions, `curl` uploads, container
+  pushes and cloud object copies.
 - Kind `package_registry`, an allow-list: a command that names a registry no
   value of the rule covers fires the rule. `catpilot_guard/registry_targets.py`
   reads it, through the same splitting and wrappers, the variable assignments

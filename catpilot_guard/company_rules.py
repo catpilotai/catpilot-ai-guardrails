@@ -85,7 +85,7 @@ from . import COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, eve
 from . import policy as policy_module
 from .cloud_targets import account_covered, cloud_targets
 from .deploy_targets import deploy_targets, host_covered
-from .destructive import _simple_commands, git_push_rewrites
+from .destructive import BraceBudget, BranchPattern, commands_with_branch_context, git_push_rewrites, pattern_may_match
 from .registry_targets import registry_covered, registry_targets, split_command
 
 MAX_INPUT_BYTES = 1_048_576
@@ -148,17 +148,26 @@ def record_evidence(event: str, hook_event: object = None, host: str | None = No
         pass
 
 
-def matched_rules(command: str, cwd: object, policy: policy_module.Policy, today=None) -> list:
+def _pattern_hits(rule, pattern) -> bool:
+    """Whether a BranchPattern (a destination with an expansion) could name a branch a protected_branch rule covers."""
+    values = [v[len("refs/heads/"):] if v.startswith("refs/heads/") else v for v in rule.values]
+    return pattern_may_match(pattern, [v for v in values if not v.endswith("/*")], [v[:-1] for v in values if v.endswith("/*")])
+
+
+def matched_rules(command: str, cwd: object, policy: policy_module.Policy, today=None, branch_known: bool = True) -> list:
     """(rule, exception ids) for each of the policy's rules this command matches, in policy order. The ids are empty
     when the rule fires. Otherwise active exceptions covered everything the rule matched, so it does not fire, and the
-    ids name them, in policy order: for each match, the first exception that covers it."""
+    ids name them, in policy order: for each match, the first exception that covers it. branch_known False: no
+    checkout's branch is the one the command runs on (the pull-request check), so HEAD, a bare push and a
+    current-branch substitution are unknown."""
     working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
     kinds = {rule.kind for rule in policy.rules}
     pushes = []
     if "protected_branch" in kinds:
-        for argv in _simple_commands(command):
+        budget = BraceBudget()  # one for the whole command (destructive.BRACE_SCAN_LIMIT)
+        for argv, branch_cwd in commands_with_branch_context(command, working_dir if branch_known else None):
             if argv[0] == "git":
-                push = git_push_rewrites(argv[1:], working_dir)
+                push = git_push_rewrites(argv[1:], branch_cwd, budget)
                 if push is not None:
                     pushes.append(push)
     # One split of the command for the deploy, registry and account readers: a long command is split once, not per kind.
@@ -167,12 +176,18 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy, today
     registries = registry_targets(command, working_dir, split=split) if "package_registry" in kinds else []
     accounts = cloud_targets(command, working_dir, split=split) if "cloud_account" in kinds else []
     mirror = any(rewrites_every_branch for rewrites_every_branch, _ in pushes)
-    branches = [branch for _, names in pushes for branch in names if branch]
+    names = [branch for _, pushed in pushes for branch in pushed]
+    # An unknown branch (None: a variable with nothing literal before it, a bare force push with no branch checked out;
+    # "": HEAD with no branch checked out) could be any branch; a BranchPattern could be any branch it may match.
+    unknown = any(not branch for branch in names)
+    patterns = [branch for branch in names if isinstance(branch, BranchPattern)]
+    branches = [branch for branch in names if branch and not isinstance(branch, BranchPattern)]
     matched = []
     for rule in policy.rules:
         if rule.kind == "protected_branch":
-            # A push that can rewrite every branch fires the rule as a whole: an exception names branches, not that.
-            if mirror:
+            # A push that can rewrite every branch, an unknown branch, or a pattern that could be one the rule covers
+            # fires the rule as a whole: an exception names branches, and covers none of these.
+            if mirror or unknown or any(_pattern_hits(rule, pattern) for pattern in patterns):
                 matched.append((rule, ()))
                 continue
             covered = _branch_covered
