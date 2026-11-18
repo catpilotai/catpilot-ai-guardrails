@@ -216,7 +216,11 @@ class DecisionTests(unittest.TestCase):
                         "bash <<< 'git push --force origin main'",
                         # Review of #133: wrapper options that take a value.
                         "env --chdir ../other git push -f origin main", "sudo -D /tmp git push --force origin main",
-                        "xargs -I {} git push --force origin main"):
+                        "xargs -I {} git push --force origin main",
+                        # Review of 4944546: env -u's value, a heredoc body, and backquotes.
+                        "env -uSECRET git push --force origin main",
+                        "cat <<'EOF' > n.md\nDon't\nEOF\ngit commit -m 'fix #1' && git push --force origin main",
+                        "echo `git push --force origin main`", 'x="$(git push --force origin main)"'):
             with self.subTest(command=command):
                 self.assertEqual(effect(self.decide(command)), "deny")
 

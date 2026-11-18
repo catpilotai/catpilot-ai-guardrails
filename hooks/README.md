@@ -153,36 +153,50 @@ joining it to the next), reads the commands inside compound commands
 (`if ...; then CMD; fi`, `for ...; do CMD; done`, `while`/`until` loops,
 `{ CMD; }`, `! CMD`, `coproc`, and function bodies, `f() { CMD; }` and
 `function f { CMD; }`; a reserved word is read as one only as the first word
-of a command, so `echo then` is an ordinary `echo`), drops redirections before
-a command (`>/dev/null CMD`, `2>&1 CMD`) and redirections with their target
-attached, ends a word at an unquoted `<` or `>` (`rm -rf ~>/dev/null` removes
-`~`), and drops a comment only where bash does: a `#` after an escaped
-character (`a\ #`), a carriage return, or the `)` that ends `$( )`, `<( )`,
-`>( )` or `$(( ))` is part of the word, a `#` inside quotes, `${ }`,
-backquotes or arithmetic never starts a comment, and a backslash at the end of
-a comment does not continue it onto the next line. It reads a `$'...'` string
-as bash does (`\'` inside it does not end it) and, when one holds `\'`, also
-as dash does; reads a command that contains a carriage return each way a shell
-may (bash keeps it in the word, bash on Windows may drop it before a line
-feed, PowerShell ends the line there, and a shell may ignore it) and checks
-every reading; looks through `sudo`, `doas`, `env` (and the string of
-`env -S`), `xargs`, `nice`, `time`, `timeout`, `stdbuf`, `ionice`, `setsid`,
-`unbuffer`, zsh's `-`, `noglob`, `nocorrect` and `repeat N`, and similar
-wrappers, with their options as each tool reads them (a value given separately,
-attached or after a cluster, as in `sudo -iu root`, `env -C dir` and
-`nice --adjustment 5`; an option the hook does not know is read both as taking
-a value and as taking none) and the assignments `sudo` and `env` take
-(`sudo 'A-B=x' CMD`, `env =x CMD`), and treats what `xargs` reads from its input as
-unknown, so `git branch --merged | xargs -I {} git push origin --delete {}` is
-refused; and reads a shell's
-here-string (`bash <<< 'CMD'`) and command string, however its options are
-written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
-`bash --login -c`). Reading stops once six seconds have passed, checked
-between readings and between simple commands, and the command is then refused
-with exit code 2, so a command that is slow to read (about a megabyte of
-carriage returns and `$'...'` strings, or one very long word) is blocked rather
-than left to the hook's timeout, which Codex and Copilot CLI let a call run
-past. It then checks:
+of a command, so `echo then` is an ordinary `echo`), and reads each command
+substitution's command where it stands (`$( )`, backquotes, `<( )`, `>( )`,
+also inside double quotes, as in `URL="$(vercel --prod)"`), keeping the rest of
+its word and command (`rm -rf $(echo) ~` removes `~`; a first word that only
+expands, as in `$(echo) rm -rf ~` or `$EMPTY rm -rf ~`, may expand to nothing,
+so the word after it is read as the command). It drops redirections,
+with their targets, wherever they are (`>/dev/null CMD`, `2>&1 CMD`,
+`git push -f > log`, a bare push), ends a word at an unquoted `<` or `>`
+(`rm -rf ~>/dev/null` removes `~`), and drops a comment only where bash does:
+a `#` after an escaped character (`a\ #`), a carriage return, or the `)` that
+ends `$( )`, `<( )`, `>( )` or `$(( ))` is part of the word, a `#` inside
+quotes, `${ }`, backquotes, arithmetic or a heredoc body never starts a
+comment, none starts after a `case` inside `$( )`, and a backslash at the end
+of a comment does not continue it onto the next line. A heredoc body is
+literal text up to its delimiter (with its substitutions read when the
+delimiter is unquoted), so a quote character in it cannot hide the commands
+after the heredoc; its lines are still read as commands, so a heredoc that
+writes `rm -rf /` into a file is refused and a person runs it. It reads a
+`$'...'` string as bash does (`\'` inside it does not end it), and also as
+dash does when that differs (a `$'...'` string holding `\'`, or `&>`, which
+dash reads as `&` and then `>`); reads a command that contains a carriage
+return each way a shell may (bash keeps it in the word, bash on Windows may
+drop it before a line feed, PowerShell ends the line there, and a shell may
+ignore it) and checks every reading; looks through `sudo`, `doas`, `env` (and
+the string of `env -S`), `xargs`, `nice`, `time`, `timeout`, `stdbuf`,
+`ionice`, `setsid`, `unbuffer`, zsh's `noglob`, `nocorrect`, `repeat N` and
+`=cmd`, and similar wrappers, with their options as each tool reads them (a
+value given separately, attached or after a cluster, as in `sudo -iu root`,
+`env -C dir`, `env -uSSH_AUTH_SOCK` and `nice --adjustment 5`; an option the
+hook does not know is read both as taking a value and as taking none) and the
+assignments `sudo` and `env` take (`sudo 'A-B=x' CMD`, `env =x CMD`), and
+treats what `xargs` reads from its input as unknown, so
+`git branch --merged | xargs -I {} git push origin --delete {}` is refused;
+and reads a shell's here-string (`bash <<< 'CMD'`) and command string, however
+its options and redirections are written (`bash -c "..."`, `bash -lc`,
+`sh -ec`, `bash -o pipefail -c`, `bash --login -c`, `bash 2>&1 -c ...`).
+
+The whole check stops after seven seconds: a timer (SIGALRM) interrupts it
+wherever it is, regular expressions included, and the hook exits 2, so a
+command that is slow to read is refused rather than left to the hook's
+timeout, which Codex and Copilot CLI let a call run past. Where there is no
+such timer (Windows, or a harness calling `decide()` itself), a command longer
+than 200,000 characters is refused instead. Reading a typical command takes
+about a millisecond. It then checks:
 
 - Cloud and infrastructure CLIs: partial-resource updates that reset
   unspecified fields (`az containerapp update --yaml` / `--replace-env-vars`,
@@ -405,7 +419,9 @@ the hook, the event (`deny`), the host (`claude-code`, or `codex` with
 id when it is an opaque id. Set `CATPILOT_EVIDENCE_SYSLOG=1` (or a `host:port`
 / socket path) to emit the same content-free JSON line to syslog. Never the
 command, the file path, or the content. Malformed input is recorded as
-`input_error` beside the fail-closed exit. Off unless set.
+`input_error` beside the fail-closed exit, and so is a command the
+destructive-operation or company-rules check could not finish reading in time.
+Off unless set.
 
 All three hooks write through one writer, `catpilot_guard/evidence.py`, which
 the reference server uses too. The line format is versioned:

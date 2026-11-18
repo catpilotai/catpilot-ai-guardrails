@@ -111,6 +111,11 @@ class DeployTargetTests(unittest.TestCase):
         self.assertEqual(targets("scp dist/a sftp://apps.example.org\r\n"), [(HOST, "apps.example.org")])
         self.assertEqual(targets("2>&1 vercel --prod"), [(SUFFIX, "vercel.app")])
         self.assertEqual(targets("env -S 'netlify deploy --prod'"), [(SUFFIX, "netlify.app")])
+        # Review of 4944546: a heredoc body's apostrophe does not hide the deploy after it; redirections are not hosts.
+        self.assertEqual(targets("cat <<'EOF' > n.md\nDon't\nEOF\nvercel --prod # done"), [(SUFFIX, "vercel.app")])
+        self.assertEqual(targets("scp dist/a web1.example.org:/srv > log 2>&1"), [(HOST, "web1.example.org")])
+        self.assertEqual(targets('URL="$(vercel --prod)" && echo "$URL"'), [(SUFFIX, "vercel.app")])
+        self.assertEqual(targets("echo `netlify deploy --prod`"), [(SUFFIX, "netlify.app")])
 
     def test_a_vercel_directory_counts_whether_or_not_it_exists_yet(self):
         # The build before it may create it (review of #130); VERCEL_OTHER lists the words that are not deploys.

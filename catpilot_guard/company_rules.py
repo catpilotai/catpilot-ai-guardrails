@@ -55,7 +55,8 @@ import sys
 from . import COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, event_for_host, write_decision, write_reason
 from . import policy as policy_module
 from .deploy_targets import deploy_targets, host_covered
-from .destructive import _deadline, _simple_commands, git_push_rewrites
+from .destructive import (ReadTimeout, _deadline, _simple_commands, check_command_size, git_push_rewrites,
+                          within_time_limit)
 
 MAX_INPUT_BYTES = 1_048_576
 HOOK_NAME = "pretooluse-company-rules"
@@ -119,6 +120,7 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy) -> li
     """The policy's rules this command fires, in policy order."""
     working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
     kinds = {rule.kind for rule in policy.rules}
+    check_command_size(command)
     deadline = _deadline()  # one reading budget for both kinds; past it, ReadTimeout and the hook blocks
     pushes = []
     if "protected_branch" in kinds:
@@ -233,7 +235,13 @@ def main() -> int:
         if not isinstance(event, dict):
             raise ValueError("hook event must be an object")
         policy = load_policy(event, host, path, ok) if event.get("tool_name") == "Bash" else None
-        result = decide(event, host, policy, ask_enabled=ask_enabled)
+        result = within_time_limit(decide, event, host, policy, ask_enabled=ask_enabled)
+    except ReadTimeout:
+        record_evidence("input_error", host=host)  # the closest event in docs/spec/EVIDENCE.md: it was not read
+        write_reason(
+            "Catpilot company-rules check could not finish reading this command in time (it is very long, or nested "
+            "deeply), so it was not allowed. Split it into shorter commands, or run it yourself in your own terminal.")
+        return 2
     except Exception:
         # Any failure to read the event blocks: an ordinary non-zero exit would let the host run the command.
         record_evidence("input_error", host=host)

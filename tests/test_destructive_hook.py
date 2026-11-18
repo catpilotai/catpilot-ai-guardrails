@@ -256,6 +256,10 @@ DENIED = {
     "rm behind doas -u": "doas -u root rm -rf ~",
     "rm behind time -o": "time -o out.txt rm -rf ~",
     "rm behind caffeinate -t": "caffeinate -t 60 rm -rf ~",
+    # Review of #133: each wrapper's own flags, not one list for all (sudo -n and caffeinate -u take no value).
+    "force push behind sudo -n": "sudo -n git push --force origin main",
+    "rm behind caffeinate -u": "caffeinate -u rm -rf ~",
+    "force push behind a cluster of sudo flags": "sudo -nEHPSb git push -f origin main",
     # An option a wrapper's table does not know is read both as taking the next word and as taking none.
     "force push behind an unknown sudo option with a value": "sudo --frobnicate x git push -f origin main",
     "force push behind an unknown sudo option without one": "sudo --frobnicate git push -f origin main",
@@ -269,6 +273,35 @@ DENIED = {
     "rm behind BSD env -P": "env -P /bin rm -rf ~",
     "rm behind env -- and an assignment": "env -- A-B=1 rm -rf ~",
     "rm in an env -S string": "env -S 'rm -rf ~'",
+    # Review of 4944546: env's -u, -C and -P take the rest of their cluster, which may hold an S.
+    "rm behind env -u with an S in the name": "env -uSSH_AUTH_SOCK rm -rf ~",
+    "force push behind env -u with an S in the name": "env -uSECRET git push --force origin main",
+    "rm behind sudo env -u": "sudo env -uSUDO_USER rm -rf ~",
+    "rm behind env -C with an S in the path": "env -C/Users/me/Src rm -rf ~",
+    "rm behind env -iP with an S in the path": "env -iP/usr/Sbin rm -rf ~",
+    # Review of 4944546: a heredoc body is literal; its apostrophe cannot hide the commands after it.
+    "force push after a heredoc body with an apostrophe": (
+        "cat <<'EOF' > notes.md\nDon't do this\nEOF\ngit commit -m 'fix #123' && git push --force origin main"),
+    "force push after a heredoc body with an apostrophe, and a quote in a comment": (
+        "cat <<EOF\nit's\nEOF\ngit push --force origin main\n# '"),
+    "rm after a case inside a command substitution and hash": "echo $(case x in x) echo y;; esac)#; rm -rf ~",
+    "rm after a redirection inside a command substitution": "echo $(2>/dev/null rm -rf ~)",
+    "rm in a here-string after a clustered -o value": "bash -euo pipefail <<< 'rm -rf ~'",
+    "rm in bash -c after a redirection": "bash 2>&1 -c 'rm -rf ~'",
+    "rm in bash -c after an attached redirection": "bash >/dev/null -c 'rm -rf ~'",
+    "rm in sh -c after a here-string": "sh <<< 'x' -c 'rm -rf ~'",
+    "rm after &> as dash reads it": 'sh -c "echo A &>/dev/null rm -rf ~"',
+    "rm after a hash inside a quoted command substitution": '"$(echo #x)"; rm -rf ~',
+    "rm in backquotes": "echo `rm -rf ~`",
+    "rm by zsh's =rm": "=rm -rf ~",
+    "rm of home after an empty command substitution": "rm -rf $(echo) ~",
+    "rm of home after a backquoted command": "rm -rf `echo` ~",
+    "rm of home after a process substitution": "rm -rf >(cat) ~",
+    "rm after a command substitution as the command name": "$(echo) rm -rf ~",
+    "rm after a variable as the command name": "$EMPTY rm -rf ~",
+    "rm after a backquoted command as the command name": "x=1 | `echo` rm -rf < x ~",
+    "rm after a command substitution at the start of the command name": "1>&- $(echo)rm -rf ~",
+    "force push in a quoted command substitution": 'x="$(git push --force origin main)"',
 }
 
 ALLOWED = {
@@ -381,6 +414,9 @@ ALLOWED = {
     "local branch deletions through xargs": "git branch --merged | grep -v main | xargs git branch -d",
     "env -i with an assignment": "env -i PATH=/bin ls",
     "sudo -E npm": "sudo -E npm install -g pnpm",
+    # Review of 4944546: a Markdown bullet in a heredoc body is not a wrapped command.
+    "a Markdown list written by a heredoc": "cat > NOTES.md <<'EOF'\n- dropdb is no longer called\nEOF",
+    "a feature force push with output redirected after a blank": "git push --force origin feature-x > /dev/null 2>&1",
 }
 
 
@@ -466,11 +502,11 @@ class DestructiveHookTests(unittest.TestCase):
             # line break, and a CR read as a blank; a simple command a later reading repeats comes once.
             # An empty word is an argument; redirections are not part of the command.
             "rm -rf $'' ~": [["rm", "-rf", "", "~"]],
-            ">/dev/null 2>&1 ls -l >out 2> err": [["ls", "-l", "2>", "err"]],
+            ">/dev/null 2>&1 ls -l >out 2> err": [["ls", "-l"]],  # a target after a blank joins its operator
             "ls -l>out": [["ls", "-l"]],
             "env -i -S 'git push -f' origin main": [["git", "push", "-f", "origin", "main"]],
             "noglob repeat 2 ls": [["ls"]],
-            "- rm -rf ~": [["rm", "-rf", "~"]],  # zsh's - precommand (a shell's -c string cannot start with -)
+            "- rm -rf ~": [["-", "rm", "-rf", "~"]],  # zsh's - is no wrapper: Markdown bullets in heredoc bodies
             # Wrapper options with values, xargs's input, and an unknown option read both ways.
             "sudo -iu root -D /tmp ls": [["ls"]],
             "env -iC dir -uX --chdir=d ls": [["ls"]],
@@ -482,7 +518,23 @@ class DestructiveHookTests(unittest.TestCase):
             "env =x -=y ls": [["ls"]],  # GNU env: any word with `=`
             "xargs sudo -u root rm -rf": [["rm", "-rf", "`xargs input`"]],
             "bash <<< 'ls -l'": [["ls", "-l"]],
-            "bash run.sh <<< 'ls'": [["bash", "run.sh", "<<<", "ls"]],
+            "bash run.sh <<< 'ls'": [["bash", "run.sh"]],
+            # Review of 4944546: the `&>` that bash joins and dash splits, heredoc bodies, and redirections before a
+            # shell's options.
+            "ls &> out rm": [["ls", "rm"], ["ls"], ["rm"]],
+            "cat <<'EOF' > n.md\nDon't\nEOF\nls 'a #b'": [["cat"], ["Don't"], ["ls", "a #b"]],
+            "cat <<EOF\nit's $(id)\nEOF\nls": [["cat"], ["it's", "$()"], ["ls"], ["id"]],
+            "cat <<-EOF\n\tbody\n\tEOF\nls": [["cat"], ["body"], ["ls"]],
+            "bash 2>&1 -c 'ls -l'": [["ls", "-l"]],
+            "echo $(2>/dev/null ls)": [["echo", "$()"], ["ls"]],
+            # Review of 4944546: a substitution keeps its word in place (rm -rf $(echo) ~ removes ~), and its command
+            # is read, also in double quotes.
+            "rm -rf $(echo) ~": [["rm", "-rf", "$()", "~"], ["echo"]],
+            "rm -rf `echo` >(cat) ~": [["rm", "-rf", "$()", ">()", "~"], ["echo"], ["cat"]],
+            'URL="$(vercel --prod)"': [["vercel", "--prod"]],
+            "git push -f origin<(echo)": [["git", "push", "-f", "origin<()"], ["echo"]],
+            "$(echo) ${X} rm -rf ~": [["rm", "-rf", "~"], ["echo"]],  # may expand to nothing
+            "=ls -l": [["ls", "-l"]],
             "ls -l\r\n": [["ls", "-l\r"], ["ls", "-l"]],
             "echo hi\r#": [["echo", "hi\r#"], ["echo", "hi"]],
             "echo ok\rls": [["echo", "ok\rls"], ["echo", "ok"], ["ls"], ["echo", "ok", "ls"]],
@@ -496,15 +548,17 @@ class DestructiveHookTests(unittest.TestCase):
 
         cases = {
             "ls # x": "ls ",
-            "echo $(date) #x": "echo $(date) ",
-            "echo $(date)#x": "echo $(date)#x",
+            # A substitution's command goes on a line of its own, and its placeholder stays in the word.
+            "echo $(date) #x": "echo \\$\\(\\) \ndate",
+            "echo $(date)#x": "echo \\$\\(\\)#x\ndate",
             "echo $((1+1))#x": "echo $((1+1))#x",
-            "cat <(ls)#x": "cat <(ls)#x",
-            "echo `a #b`": "echo `a #b`",
+            "cat <(ls)#x": "cat \\<\\(\\)#x\nls",
+            "echo `a #b`": "echo \\$\\(\\)\na #b",  # read like $( ), with no comment inside backquotes
             "echo ${x:-a #b}": "echo ${x:-a #b}",
-            'echo "$(a "b #c")"': 'echo "$(a "b #c")"',
+            "echo ${x} #y": "echo ${x} ",  # the comment after ${ } closes is dropped
+            'echo "$(a "b #c")"': 'echo "$()"\na "b #c"',
             "(( 1 #x ))": "(( 1 #x ))",
-            "echo $(a #b\n)": "echo $(a \n)",
+            "echo $(a #b\n)": "echo \\$\\(\\)\na \n",
             "( ls ) #x": "( ls ) ",
             "echo a\\ #b": "echo a\\ #b",
             "echo hi\r#x": "echo hi\r#x",
@@ -520,12 +574,19 @@ class DestructiveHookTests(unittest.TestCase):
 
         from catpilot_guard.destructive import find_destructive_op
 
+        from catpilot_guard.destructive import within_time_limit
+
         for command in ("env " + "a=c " * 50000 + "rm -rf ~", "sudo " * 40000 + "rm -rf ~", "a=c " * 50000 + "rm -rf ~",
-                        "xargs " * 33000 + "git push origin --delete"):
+                        "xargs " * 33000 + "git push origin --delete", ">x " * 40000 + "rm -rf ~",
+                        "! " * 60000 + "rm -rf ~"):
             with self.subTest(command=command[:20]):
                 started = time.monotonic()
-                self.assertIsNotNone(find_destructive_op(command, "/nonexistent"))
+                self.assertIsNotNone(within_time_limit(find_destructive_op, command, "/nonexistent"))
                 self.assertLess(time.monotonic() - started, 4.0)
+        # The exfiltration signature reads one pipeline segment at a time (the regex it replaced was cubic here).
+        started = time.monotonic()
+        self.assertIsNone(within_time_limit(find_destructive_op, "cat .ssh/x " * 6000, "/nonexistent"))
+        self.assertLess(time.monotonic() - started, 4.0)
 
     def test_reading_stops_at_the_deadline_and_fails_closed(self):
         import time
@@ -544,10 +605,88 @@ class DestructiveHookTests(unittest.TestCase):
             time.sleep(0.2)
             return real_lex(text)
 
-        with mock.patch.object(destructive, "READ_BUDGET_SECONDS", 0.3), mock.patch.object(destructive, "_lex", slow_lex):
+        calls = []
+
+        def counted_slow_lex(text):
+            calls.append(text)
+            return slow_lex(text)
+
+        with mock.patch.object(destructive, "READ_BUDGET_SECONDS", 0.3), \
+                mock.patch.object(destructive, "_lex", counted_slow_lex):
             self.assertIsNone(destructive.find_destructive_op("ls", "/nonexistent"))
+            calls.clear()
             with self.assertRaises(destructive.ReadTimeout):
                 destructive.find_destructive_op("ls\r\n", "/nonexistent")
+            self.assertEqual(len(calls), 1)  # the second reading was not started
+        # A deadline already past stops before any reading; one that passes while the commands are read stops at the
+        # next word.
+        calls.clear()
+        with mock.patch.object(destructive, "_lex", counted_slow_lex):
+            with self.assertRaises(destructive.ReadTimeout):
+                list(destructive._simple_commands("ls", 0, time.monotonic() - 1))
+            self.assertEqual(calls, [])
+        commands = destructive._simple_commands("ls; pwd", 0, time.monotonic() + 0.2)
+        self.assertEqual(next(commands), ["ls"])
+        time.sleep(0.3)
+        with self.assertRaises(destructive.ReadTimeout):
+            next(commands)
+        # A `bash -c` string that two readings leave the same is read once: two outer readings, one inner.
+        calls.clear()
+
+        def counted_lex(text):
+            calls.append(text)
+            return real_lex(text)
+
+        with mock.patch.object(destructive, "_lex", counted_lex):
+            list(destructive._simple_commands("bash -c 'ls'; echo $'\\''"))
+        self.assertEqual(len(calls), 3)
+
+    def test_the_hooks_stop_at_a_hard_time_limit(self):
+        import io
+        import time
+        from unittest import mock
+
+        from catpilot_guard import destructive
+
+        # SIGALRM stops any code, a regex included, and the hook exits 2 with a message that does not say retry.
+        with mock.patch.object(destructive, "HOOK_TIME_LIMIT_SECONDS", 0.2):
+            with self.assertRaises(destructive.ReadTimeout):
+                destructive.within_time_limit(time.sleep, 2)
+
+            def slow_decide(event, host=None):
+                time.sleep(2)
+
+            stdin = io.TextIOWrapper(io.BytesIO(event("ls").encode()))
+            stderr = io.StringIO()
+            with mock.patch.object(destructive, "decide", slow_decide), mock.patch("sys.stdin", stdin), \
+                    mock.patch("sys.stderr", stderr), mock.patch.object(sys, "argv", ["hook"]), \
+                    mock.patch.object(destructive, "record_evidence", lambda *a, **k: None):
+                self.assertEqual(destructive.main(), 2)
+            self.assertIn("could not finish reading this command in time", stderr.getvalue())
+            self.assertNotIn("retry", stderr.getvalue())
+        # Without the timer, a command too long to bound is refused; with it, it is read.
+        with self.assertRaises(destructive.ReadTimeout):
+            destructive.find_destructive_op("ls " + "x" * destructive.MAX_COMMAND_CHARS_WITHOUT_TIMER, "/nonexistent")
+        self.assertIsNone(destructive.within_time_limit(
+            destructive.find_destructive_op, "ls " + "x" * destructive.MAX_COMMAND_CHARS_WITHOUT_TIMER, "/nonexistent"))
+
+    def test_redirections_are_not_refspecs(self):
+        # Review of 4944546: a redirection target after a blank was read as an argument, so a bare force push of the
+        # checked-out branch read as a push of a refspec named after the file.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").mkdir()
+            head = Path(tmp) / ".git" / "HEAD"
+            commands = ("git push -f &> /dev/null", "git push --force-with-lease origin &> /dev/null", "git push -f >& log",
+                        "git push -f >| log", "git push -f 2>&1 > /dev/null", "x=1 git push -f <&0 > x 2>&1",
+                        "git push --force > /dev/null 2>&1", "git push --force origin > out.txt",
+                        "git push --force origin 2> 'error log'")
+            for branch, denied in (("main", True), ("feature/x", False)):
+                head.write_text("ref: refs/heads/%s\n" % branch)
+                for command in commands:
+                    with self.subTest(branch=branch, command=command):
+                        from catpilot_guard.destructive import find_destructive_op
+
+                        self.assertEqual(find_destructive_op(command, tmp) is not None, denied)
 
     def test_running_users_home_by_absolute_path(self):
         for home in ("/srv/agent-home", "/var/lib/jenkins/"):
