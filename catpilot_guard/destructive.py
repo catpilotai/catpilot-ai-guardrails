@@ -20,8 +20,12 @@ Scope, stated exactly:
     carriage return each way a shell may (bash keeps it in the word, bash on
     Windows may drop it before a line feed, PowerShell ends the line there, a
     shell may ignore it), looks through sudo/env/time-style wrappers
-    (also timeout, gtimeout, stdbuf, ionice, setsid, unbuffer, zsh's -, noglob,
-    nocorrect and repeat N, and the string of `env -S`), a shell's here-string
+    (also timeout, gtimeout, stdbuf, ionice, setsid, unbuffer, xargs, zsh's -,
+    noglob, nocorrect and repeat N, and the string of `env -S`) with their
+    options, short or long, separate, attached or at the end of a cluster
+    (WRAPPER_OPTIONS; an option not listed is read both as taking a value and
+    as taking none; what xargs reads from its input is unknown, so a force push
+    or deletion of it blocks), a shell's here-string
     (`bash <<< 'CMD'`) and a shell's
     command string (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
     `bash --login -c`), and checks each one against deterministic signatures
@@ -195,22 +199,68 @@ RM_DANGEROUS_TARGET = re.compile(
     r"|\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/*\*?"  # a bare variable: unset expands to / or ""
     r")$"
 )
-WRAPPERS = {"sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time", "nice", "xargs", "caffeinate",
-            "noglob", "nocorrect", "-"}  # the last three are zsh precommand modifiers
-# env options that take a separate value (GNU -u/--unset, -C/--chdir; BSD -P altpath).
-ENV_VALUE_OPTIONS = {"-u", "--unset", "-C", "--chdir", "-P"}
-# Wrappers that run another command, each with the options that take a separate value and the number of
-# positional arguments that come before the command (timeout's DURATION).
-TIMEOUT_VALUE_OPTIONS = {"-s", "--signal", "-k", "--kill-after"}
-WRAPPER_SPECS = {
-    "timeout": (TIMEOUT_VALUE_OPTIONS, 1),
-    "gtimeout": (TIMEOUT_VALUE_OPTIONS, 1),
-    "stdbuf": ({"-i", "-o", "-e"}, 0),
-    "ionice": ({"-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "--pgid", "-u", "--uid"}, 0),
-    "setsid": (set(), 0),
-    "unbuffer": (set(), 0),
-    "repeat": (set(), 1),  # zsh: repeat N COMMAND
+def _options(value: str = "", flags: str = "", long_value: tuple = (), long_flags: tuple = (), optional: str = "",
+             split: str = "", long_split: tuple = (), replace: str = "", optional_replace: str = "",
+             long_replace: tuple = (), positionals: int = 0) -> dict:
+    """One wrapper's options. value: short options that take a value, attached (-uroot) or as the next word (-u
+    root), also at the end of a cluster (-iC DIR); flags: short options that take none; optional: short options whose
+    value is optional and only attached (xargs -e, -l); long_value and long_flags likewise (--user root, --user=root,
+    an unambiguous prefix as getopt_long accepts; a long option whose value is optional takes it only after `=`, so
+    it is listed as a flag). split: env -S STRING, whose words env runs. replace: xargs -I R, whose R in the command is
+    replaced by input; optional_replace (-i[R]) and long_replace (--replace[=R]) default R to {}. positionals: words
+    after the options and before the command (timeout's DURATION)."""
+    return {"value": value, "flags": flags, "optional": optional, "long_value": set(long_value),
+            "long_flags": set(long_flags), "split": split, "long_split": set(long_split), "replace": replace,
+            "optional_replace": optional_replace, "long_replace": set(long_replace), "positionals": positionals}
+
+
+TIMEOUT_OPTIONS = _options("ks", "v", ("--kill-after", "--signal"),
+                           ("--foreground", "--preserve-status", "--verbose", "--help", "--version"), positionals=1)
+# Commands that run the command after their options, each with its options (sudo(8), doas(1), env(1) GNU and BSD,
+# xargs(1) GNU and BSD, nice(1), time(1), timeout(1), ...). An option not listed is read both ways, as taking the
+# next word and as taking none, so an option this table does not know cannot hide the command.
+WRAPPER_OPTIONS = {
+    "sudo": _options("aCcDghpRrTtUu", "AbBEeHiKklNnPSsVv",
+                     ("--chdir", "--chroot", "--close-from", "--command-timeout", "--group", "--host", "--other-user",
+                      "--prompt", "--role", "--type", "--user"),
+                     ("--askpass", "--background", "--bell", "--edit", "--help", "--list", "--login", "--no-update",
+                      "--non-interactive", "--preserve-env", "--preserve-groups", "--remove-timestamp",
+                      "--reset-timestamp", "--set-home", "--shell", "--stdin", "--validate", "--version")),
+    "doas": _options("aCu", "Lns"),
+    "env": _options("aCLPuU", "0iv", ("--argv0", "--chdir", "--unset"),
+                    ("--block-signal", "--debug", "--default-signal", "--help", "--ignore-environment",
+                     "--ignore-signal", "--list-signal-handling", "--null", "--version"),
+                    split="S", long_split=("--split-string",)),
+    "command": _options("", "pVv"),
+    "builtin": _options(),
+    "exec": _options("a", "cl"),
+    "nohup": _options(long_flags=("--help", "--version")),
+    "time": _options("fo", "ahlpqv", ("--format", "--output"),
+                     ("--append", "--help", "--portability", "--quiet", "--verbose", "--version")),
+    "nice": _options("n", "0123456789", ("--adjustment",), ("--help", "--version")),  # nice -5: an old-style value
+    "xargs": _options("adELnPRSs", "0oprtx",
+                      ("--arg-file", "--delimiter", "--max-args", "--max-chars", "--max-procs", "--process-slot-var"),
+                      ("--eof", "--exit", "--help", "--interactive", "--max-lines", "--no-run-if-empty", "--null",
+                       "--open-tty", "--show-limits", "--verbose", "--version"),
+                      optional="el", replace="IJ", optional_replace="i", long_replace=("--replace",)),
+    "caffeinate": _options("tw", "dimsu"),
+    "noglob": _options(),  # zsh precommand modifiers: noglob, nocorrect, -
+    "nocorrect": _options(),
+    "-": _options(),
+    "timeout": TIMEOUT_OPTIONS,
+    "gtimeout": TIMEOUT_OPTIONS,
+    "stdbuf": _options("eio", "", ("--error", "--input", "--output"), ("--help", "--version")),
+    "ionice": _options("cnPpu", "t", ("--class", "--classdata", "--pgid", "--pid", "--uid"),
+                       ("--help", "--ignore", "--version")),
+    "setsid": _options("", "cfw", (), ("--ctty", "--fork", "--wait", "--help", "--version")),
+    "unbuffer": _options("", "p"),
+    "repeat": _options(positionals=1),  # zsh: repeat N COMMAND
 }
+# What xargs puts in its command from its input: unknown here, so it is written as a substitution would be, which a
+# force push or deletion cannot be read past (`... | xargs -I {} git push origin --delete {}`).
+XARGS_INPUT = "`xargs input`"
+# The most readings of one simple command's wrappers; past it the command cannot be read and the hook blocks.
+MAX_WRAPPER_READINGS = 64
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 # Shell options that take a separate value (`bash -o pipefail -c ...`, `bash --rcfile FILE -c ...`).
 SHELL_VALUE_OPTIONS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
@@ -228,7 +278,7 @@ SEPARATOR_CHARS = set(";&|()\n")
 # Reserved words that can come first in a simple command as _simple_commands splits it. After each of them but the
 # closing words comes a command that runs (`then git push ...`, `while git push ...`, `do rm ...`, `! git push ...`,
 # `{ git push ...; }`); the closing words end a compound command, and only redirections can follow them (`} > out`).
-# `time` (and `time -p`) is in WRAPPERS.
+# `time` (and `time -p`) is in WRAPPER_OPTIONS.
 RESERVED_PREFIXES = {"if", "then", "elif", "else", "do", "while", "until", "!", "{", "}", "fi", "done", "esac"}
 # Reserved words that begin a compound command: `coproc NAME` is followed by one (`coproc NAME { cmd; }`); before a
 # simple command there is no NAME (`coproc cmd args`).
@@ -543,70 +593,160 @@ def _split_string(text: str) -> list[str]:
         return text.split()
 
 
-def _env_command(args: list[str]) -> list[str]:
-    """What `env [OPTIONS] [NAME=VALUE]... COMMAND...` runs: options and assignments dropped, and the string of
-    `-S STRING`, `-SSTRING` or `--split-string=STRING` split into words in its place, which env runs."""
-    while args:
-        arg = args[0]
-        if arg == "--":
-            return args[1:]
-        if arg == "--split-string" or arg.startswith("--split-string="):
-            if "=" in arg:
-                text, rest = arg.split("=", 1)[1], args[1:]
-            else:
-                text, rest = (args[1] if len(args) > 1 else ""), args[2:]
-            args = _split_string(text) + rest
-        elif arg.startswith("-") and not arg.startswith("--") and "S" in arg[1:]:
-            attached = arg[arg.index("S") + 1:]
-            text, rest = (attached, args[1:]) if attached else (args[1] if len(args) > 1 else "", args[2:])
-            args = _split_string(text) + rest
-        elif arg in ENV_VALUE_OPTIONS:
-            args = args[2:]
-        elif arg.startswith("-") or ASSIGNMENT.match(arg):
-            args = args[1:]
-        else:
-            return args
-    return args
+def _long_option(option: str, known: set) -> str | None:
+    """The known long option `option` names, itself or as an unambiguous prefix (getopt_long), or None."""
+    if option in known:
+        return option
+    matches = [name for name in known if name.startswith(option)]
+    return matches[0] if len(matches) == 1 else None
 
 
-def _strip_wrappers(argv: list[str]) -> list[str]:
-    """Drop leading assignments, redirections (`>/dev/null`, `2>&1`, `> log`), reserved words (`then`, `do`, `!`,
-    `{`, ...; `coproc` and a NAME before a compound command; `function NAME`) and wrapper commands (sudo, env,
-    timeout 60, noglob, ...) with their options; `env -S STRING` runs STRING's words. Only the first word of a simple
-    command can be a reserved word, so `echo then` keeps its argument."""
-    while True:
-        # An empty command name ('' or "") runs nothing; what follows it is read, which is the stricter reading.
-        while argv and (ASSIGNMENT.match(argv[0]) or not argv[0]):
-            argv = argv[1:]
-        if not argv:
-            return argv
-        word = argv[0].lstrip("`")
-        redirection = REDIRECTION.match(word)
-        if redirection:
-            argv = argv[1:] if redirection.end() < len(word) else argv[2:]  # `> log`: the target is the next word
-            continue
-        if word in RESERVED_PREFIXES:
-            argv = argv[1:]
-            continue
-        if word == "coproc":
-            argv = argv[2:] if len(argv) > 2 and argv[2] in COMPOUND_STARTS else argv[1:]
-            continue
-        if word == "function":
-            argv = argv[2:]  # function NAME { ...; }: the body follows the name
-            continue
-        name = os.path.basename(word)
+def _wrapper_commands(name: str, words: list, start: int, xargs: tuple | None = None) -> list:
+    """Each way `name` (a WRAPPER_OPTIONS wrapper) reads words[start:]: (words, index, xargs), the command it runs
+    beginning at words[index]. Its options and positionals are passed over; env -S's string is split in place (a new
+    word list); env passes over every word with `=` in it before the command (GNU env takes `=x` too), and sudo every
+    one that does not start with `/`, unless its options ended at `--` (sudo's is_envar); xargs adds a link to the
+    xargs chain (its -I replacement string, or None when its input follows the command), applied by _xargs_command.
+    An option the table does not know is read both ways, so there may be several readings. Word lists are shared,
+    never changed. Raises ValueError past MAX_WRAPPER_READINGS, so the hook blocks."""
+    spec = WRAPPER_OPTIONS[name]
+    known_long = spec["long_value"] | spec["long_flags"] | spec["long_split"] | spec["long_replace"]
+    readings: list = []
+    todo = [(words, start, None)]  # (the word list, the next word, xargs's replacement string)
+    while todo:
+        if len(readings) + len(todo) > MAX_WRAPPER_READINGS:
+            raise ValueError("too many ways to read the command's wrappers")
+        words, i, replace = todo.pop(0)
+        ended = False  # the options ended at `--`
+        while i < len(words):
+            arg = words[i]
+            if arg == "--":
+                i += 1
+                ended = True
+                break
+            if arg == "-" and name == "env":  # env - is env -i
+                i += 1
+                continue
+            if arg.startswith("--"):
+                option, equals, value = arg.partition("=")
+                known = _long_option(option, known_long)
+                if known in spec["long_split"]:
+                    text = value if equals else (words[i + 1] if i + 1 < len(words) else "")
+                    words, i = _split_string(text) + words[i + (1 if equals else 2):], 0
+                    continue
+                if known in spec["long_replace"]:
+                    replace = value if equals else "{}"
+                    i += 1
+                    continue
+                if equals or known in spec["long_flags"]:
+                    i += 1
+                elif known in spec["long_value"]:
+                    i += 2
+                else:  # unknown: it may take the next word, or none
+                    todo.append((words, i + 2, replace))
+                    i += 1
+                continue
+            if not arg.startswith("-") or len(arg) == 1:
+                break
+            # A cluster of short options: each letter is a flag, until one that takes a value, which is the rest of
+            # the cluster or else the next word.
+            letters, k, step, split = arg[1:], 0, 1, None
+            while k < len(letters):
+                letter, attached = letters[k], letters[k + 1:]
+                if letter in spec["split"]:
+                    split = attached if attached else (words[i + 1] if i + 1 < len(words) else "")
+                    step = 1 if attached else 2
+                    break
+                if letter in spec["replace"]:
+                    replace = attached if attached else (words[i + 1] if i + 1 < len(words) else "")
+                    step = 1 if attached else 2
+                    break
+                if letter in spec["optional_replace"]:
+                    replace = attached or "{}"
+                    break
+                if letter in spec["value"]:
+                    step = 1 if attached else 2
+                    break
+                if letter in spec["optional"]:
+                    break
+                if letter not in spec["flags"]:  # unknown: it may take a value, or be a flag
+                    todo.append((words, i + (1 if attached else 2), replace))
+                k += 1
+            if split is not None:
+                words, i = _split_string(split) + words[i + step:], 0
+                continue
+            i += step
+        i = min(i + spec["positionals"], len(words))
         if name == "env":
-            argv = _env_command(argv[1:])
-        elif name in WRAPPERS:
-            argv = argv[1:]
-            while argv and (argv[0].startswith("-") or ASSIGNMENT.match(argv[0])):
-                takes_value = argv[0] in ("-u", "-g", "-n", "-C")
-                argv = argv[2:] if takes_value else argv[1:]
-        elif name in WRAPPER_SPECS:
-            value_options, positionals = WRAPPER_SPECS[name]
-            argv = _skip_options(argv[1:], value_options)[positionals:]
+            while i < len(words) and "=" in words[i]:
+                i += 1
+        elif name == "sudo" and not ended:
+            while i < len(words) and "=" in words[i] and not words[i].startswith("/"):
+                i += 1
+        readings.append((words, i, (replace, xargs) if name == "xargs" and i < len(words) else xargs))
+    return readings
+
+
+def _xargs_command(command: list, xargs: tuple | None) -> list:
+    """The command with what xargs reads from its input written as XARGS_INPUT: in place of each -I replacement
+    string in its arguments, or after them, once for each xargs whose input follows the command."""
+    replaces, appended = [], 0
+    while xargs is not None:
+        replace, xargs = xargs
+        if replace:
+            replaces.append(replace)
         else:
-            return argv
+            appended += 1
+    args = command[1:]
+    for replace in dict.fromkeys(replaces):
+        args = [arg.replace(replace, XARGS_INPUT) for arg in args]
+    return command[:1] + args + [XARGS_INPUT] * appended
+
+
+def _strip_wrappers(argv: list[str], deadline: float | None = None) -> list:
+    """Each command a simple command may run: leading assignments, redirections (`>/dev/null`, `2>&1`, `> log`),
+    reserved words (`then`, `do`, `!`, `{`, ...; `coproc` and a NAME before a compound command; `function NAME`) and
+    wrapper commands (sudo, env, timeout 60, xargs, noglob, ...) with their options passed over (_wrapper_commands);
+    an option a wrapper's table does not know gives two readings. Only the first word of a simple command can be a
+    reserved word, so `echo then` keeps its argument. The words are walked by index, so a long run of assignments or
+    wrappers costs time in proportion to its length. Raises ValueError past MAX_WRAPPER_READINGS, and ReadTimeout
+    past the deadline."""
+    commands: list = []
+    todo = [(argv, 0, None)]  # (the word list, the next word, the xargs chain)
+    while todo:
+        if len(commands) + len(todo) > MAX_WRAPPER_READINGS:
+            raise ValueError("too many ways to read the command's wrappers")
+        words, i, xargs = todo.pop(0)
+        while i < len(words):
+            if deadline is not None and time.monotonic() > deadline:
+                raise ReadTimeout("the command took too long to read")
+            # An empty command name ('' or "") runs nothing; what follows it is read, which is the stricter reading.
+            if not words[i] or ASSIGNMENT.match(words[i]):
+                i += 1
+                continue
+            word = words[i].lstrip("`")
+            redirection = REDIRECTION.match(word)
+            if redirection:
+                i += 1 if redirection.end() < len(word) else 2  # `> log`: the target is the next word
+                continue
+            if word in RESERVED_PREFIXES:
+                i += 1
+                continue
+            if word == "coproc":
+                i += 2 if i + 2 < len(words) and words[i + 2] in COMPOUND_STARTS else 1
+                continue
+            if word == "function":
+                i += 2  # function NAME { ...; }: the body follows the name
+                continue
+            name = os.path.basename(word)
+            if name not in WRAPPER_OPTIONS:
+                break
+            readings = _wrapper_commands(name, words, i + 1, xargs)
+            todo.extend(readings[1:])
+            words, i, xargs = readings[0]
+        if i < len(words):
+            commands.append(_xargs_command(words[i:], xargs))
+    return commands
 
 
 def _shell_command_string(args: list[str]) -> str | None:
@@ -668,24 +808,22 @@ def _attached_redirection(word: str) -> bool:
 
 
 def _unwrap(argv: list[str], depth: int, deadline: float | None = None, memo: dict | None = None):
-    argv = _strip_wrappers(argv)
-    if not argv:
-        return
-    name = os.path.basename(argv[0].lstrip("`"))
-    if name in SHELLS and depth < 3:
-        script = _shell_command_string(argv[1:])
-        if script is None:
-            script = _here_string_script(argv[1:])
-        if script is not None:
-            if memo is None:
-                yield from _simple_commands(script, depth + 1, deadline)
-            else:
-                key = (script, depth + 1)
-                if key not in memo:
-                    memo[key] = list(_simple_commands(script, depth + 1, deadline, memo))
-                yield from memo[key]
-            return
-    yield [name] + [arg for arg in argv[1:] if not _attached_redirection(arg)]
+    for command in _strip_wrappers(argv, deadline):
+        name = os.path.basename(command[0].lstrip("`"))
+        if name in SHELLS and depth < 3:
+            script = _shell_command_string(command[1:])
+            if script is None:
+                script = _here_string_script(command[1:])
+            if script is not None:
+                if memo is None:
+                    yield from _simple_commands(script, depth + 1, deadline)
+                else:
+                    key = (script, depth + 1)
+                    if key not in memo:
+                        memo[key] = list(_simple_commands(script, depth + 1, deadline, memo))
+                    yield from memo[key]
+                continue
+        yield [name] + [arg for arg in command[1:] if not _attached_redirection(arg)]
 
 
 def _running_users_home_target(target: str) -> bool:

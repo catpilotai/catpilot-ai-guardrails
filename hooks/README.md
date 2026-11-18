@@ -165,9 +165,16 @@ as bash does (`\'` inside it does not end it) and, when one holds `\'`, also
 as dash does; reads a command that contains a carriage return each way a shell
 may (bash keeps it in the word, bash on Windows may drop it before a line
 feed, PowerShell ends the line there, and a shell may ignore it) and checks
-every reading; looks through `sudo`, `env` (and the string of `env -S`),
-`time`, `timeout`, `stdbuf`, `ionice`, `setsid`, `unbuffer`, zsh's `-`,
-`noglob`, `nocorrect` and `repeat N`, and similar wrappers; and reads a shell's
+every reading; looks through `sudo`, `doas`, `env` (and the string of
+`env -S`), `xargs`, `nice`, `time`, `timeout`, `stdbuf`, `ionice`, `setsid`,
+`unbuffer`, zsh's `-`, `noglob`, `nocorrect` and `repeat N`, and similar
+wrappers, with their options as each tool reads them (a value given separately,
+attached or after a cluster, as in `sudo -iu root`, `env -C dir` and
+`nice --adjustment 5`; an option the hook does not know is read both as taking
+a value and as taking none) and the assignments `sudo` and `env` take
+(`sudo 'A-B=x' CMD`, `env =x CMD`), and treats what `xargs` reads from its input as
+unknown, so `git branch --merged | xargs -I {} git push origin --delete {}` is
+refused; and reads a shell's
 here-string (`bash <<< 'CMD'`) and command string, however its options are
 written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
 `bash --login -c`). Reading stops once six seconds have passed, checked

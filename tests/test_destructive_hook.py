@@ -230,6 +230,45 @@ DENIED = {
     "rm in an attached env -S string": "env -S'rm -rf ~'",
     "rm in a here-string to bash": "bash <<< 'rm -rf ~'",
     "force push in a here-string to sh -s": "sh -s <<<'git push --force origin main'",
+    # Review of #133: a wrapper option that takes a value is not the command (real git pushed main for these).
+    "force push behind env --chdir": "env --chdir ../other git push -f origin main",
+    "force push behind an env cluster ending in C": "env -iC ../other git push -f origin main",
+    "force push behind an attached env -C": "env -CDIR git push -f origin main",
+    "force push behind an attached env -u": "env -uFOO git push -f origin main",
+    "force push in an env -iS string": "env -iS 'git push -f origin main'",
+    "rm in an env -vS string": "env -vS 'rm -rf ~'",
+    "force push behind sudo -D": "sudo -D /tmp git push --force origin main",
+    "force push behind sudo -h host": "sudo -h host git push --force origin main",
+    "force push behind sudo -p": "sudo -p prompt git push --force origin main",
+    "rm behind sudo -g": "sudo -g wheel rm -rf ~",
+    "rm behind sudo -U and -u": "sudo -U bob -u root rm -rf ~",
+    "rm behind sudo -C, -T, -r and -t": "sudo -C 3 -T 10 -r role -t type rm -rf ~",
+    "force push behind sudo --chdir": "sudo --chdir /tmp git push -f origin main",
+    "rm behind a sudo cluster ending in u": "sudo -iu root rm -rf ~",
+    "force push behind xargs -I": "xargs -I {} git push --force origin main",
+    "force push behind xargs -L": "xargs -L 1 git push --force origin main",
+    "rm behind xargs -n, -P, -s, -d, -E and -a": "xargs -n 1 -P 4 -s 100 -d , -E END -a list.txt rm -rf ~",
+    "branch deletions xargs reads from its input": "git branch --merged | xargs -I {} git push origin --delete {}",
+    "branch deletions xargs appends": "git branch --merged | xargs git push origin --delete",
+    "force push behind nice --adjustment": "nice --adjustment 5 git push -f origin main",
+    "rm behind nice --adjustment=": "nice --adjustment=5 rm -rf ~",
+    "rm behind old-style nice": "nice -5 rm -rf ~",
+    "rm behind doas -u": "doas -u root rm -rf ~",
+    "rm behind time -o": "time -o out.txt rm -rf ~",
+    "rm behind caffeinate -t": "caffeinate -t 60 rm -rf ~",
+    # An option a wrapper's table does not know is read both as taking the next word and as taking none.
+    "force push behind an unknown sudo option with a value": "sudo --frobnicate x git push -f origin main",
+    "force push behind an unknown sudo option without one": "sudo --frobnicate git push -f origin main",
+    "rm behind an unknown short sudo option": "sudo -Z x rm -rf ~",
+    # Review of #135: the assignments sudo and env take, and env's options with values.
+    "rm behind a sudo assignment with a dash in its name": "sudo 'A-B=x/y' rm -rf /",
+    "rm behind sudo assignments after its options": "sudo -u root A=1 B=2 rm -rf ~",
+    "rm behind an env assignment with an empty name": "env =x rm -rf /",
+    "rm behind env --chdir /": "env --chdir / rm -rf ~",
+    "rm behind env --unset": "env --unset X rm -rf ~",
+    "rm behind BSD env -P": "env -P /bin rm -rf ~",
+    "rm behind env -- and an assignment": "env -- A-B=1 rm -rf ~",
+    "rm in an env -S string": "env -S 'rm -rf ~'",
 }
 
 ALLOWED = {
@@ -331,6 +370,17 @@ ALLOWED = {
     "env with an assignment": "env FOO=1 npm test",
     "noglob ls": "noglob ls *.txt",
     "a heredoc into a file": "cat <<EOF > notes.txt\nhello\nEOF",
+    # Review of #133: wrappers with options around routine work.
+    "xargs -I echo": "xargs -I {} echo {}",
+    "sudo -u ls": "sudo -u bob ls",
+    "nice -n make": "nice -n 5 make",
+    "old-style nice make": "nice -10 make -j4",
+    "xargs rm -rf of found directories": "find . -name node_modules -prune | xargs rm -rf",
+    "xargs -I rm -f of found files": "find . -name '*.tmp' | xargs -I {} rm -f {}",
+    "xargs pushes without force": "git branch | xargs -I {} git push origin {}",
+    "local branch deletions through xargs": "git branch --merged | grep -v main | xargs git branch -d",
+    "env -i with an assignment": "env -i PATH=/bin ls",
+    "sudo -E npm": "sudo -E npm install -g pnpm",
 }
 
 
@@ -421,6 +471,16 @@ class DestructiveHookTests(unittest.TestCase):
             "env -i -S 'git push -f' origin main": [["git", "push", "-f", "origin", "main"]],
             "noglob repeat 2 ls": [["ls"]],
             "- rm -rf ~": [["rm", "-rf", "~"]],  # zsh's - precommand (a shell's -c string cannot start with -)
+            # Wrapper options with values, xargs's input, and an unknown option read both ways.
+            "sudo -iu root -D /tmp ls": [["ls"]],
+            "env -iC dir -uX --chdir=d ls": [["ls"]],
+            "xargs -I {} cp {} out/": [["cp", "`xargs input`", "out/"]],
+            "xargs -0 ls": [["ls", "`xargs input`"]],
+            "sudo --frob x ls": [["x", "ls"], ["ls"]],  # as a flag, then as taking x
+            "sudo 'A-B=x/y' ls": [["ls"]],  # sudo's is_envar: `=`, and no leading /
+            "sudo -- A-B=x ls": [["A-B=x", "ls"]],  # ...but not after --
+            "env =x -=y ls": [["ls"]],  # GNU env: any word with `=`
+            "xargs sudo -u root rm -rf": [["rm", "-rf", "`xargs input`"]],
             "bash <<< 'ls -l'": [["ls", "-l"]],
             "bash run.sh <<< 'ls'": [["bash", "run.sh", "<<<", "ls"]],
             "ls -l\r\n": [["ls", "-l\r"], ["ls", "-l"]],
@@ -453,6 +513,19 @@ class DestructiveHookTests(unittest.TestCase):
         for command, want in cases.items():
             with self.subTest(command=command):
                 self.assertEqual(_strip_comments(command), want)
+
+    def test_long_runs_of_assignments_and_wrappers_are_read_in_linear_time(self):
+        # Review of #135: each dropped word copied the rest of the list, so 200 KB of `env a=c ...` took about 8 s.
+        import time
+
+        from catpilot_guard.destructive import find_destructive_op
+
+        for command in ("env " + "a=c " * 50000 + "rm -rf ~", "sudo " * 40000 + "rm -rf ~", "a=c " * 50000 + "rm -rf ~",
+                        "xargs " * 33000 + "git push origin --delete"):
+            with self.subTest(command=command[:20]):
+                started = time.monotonic()
+                self.assertIsNotNone(find_destructive_op(command, "/nonexistent"))
+                self.assertLess(time.monotonic() - started, 4.0)
 
     def test_reading_stops_at_the_deadline_and_fails_closed(self):
         import time

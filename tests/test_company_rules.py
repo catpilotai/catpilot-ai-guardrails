@@ -213,7 +213,10 @@ class DecisionTests(unittest.TestCase):
                         # Review of #137: empty words, redirections, env -S and here-strings.
                         "git push $'' --force origin main", "2>&1 git push --force origin main",
                         "echo $(date)#; git push --force origin main", "env -S 'git push -f origin main'",
-                        "bash <<< 'git push --force origin main'"):
+                        "bash <<< 'git push --force origin main'",
+                        # Review of #133: wrapper options that take a value.
+                        "env --chdir ../other git push -f origin main", "sudo -D /tmp git push --force origin main",
+                        "xargs -I {} git push --force origin main"):
             with self.subTest(command=command):
                 self.assertEqual(effect(self.decide(command)), "deny")
 
