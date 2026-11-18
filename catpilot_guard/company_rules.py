@@ -13,7 +13,9 @@ Scope, stated exactly:
     covers, including a bare force push while such a branch is checked out, and on `git push --mirror`, which
     rewrites every branch. Pushes are read the way the built-in destructive-operation check reads them
     (destructive.git_push_rewrites), through the same wrappers and `bash -c` bodies. A value ending in `/*`
-    covers every branch under that prefix; case is ignored, as in the built-in check.
+    covers every branch under that prefix; case is ignored, as in the built-in check. A force push or deletion whose
+    branch the hook cannot read (`git push --force origin $BRANCH`, a backtick, or a bare force push or a push to
+    HEAD with no branch checked out) fires every protected_branch rule.
   - Kind deploy_host, an allow-list: fires on a deploy or publish whose target no value of the rule covers.
     catpilot_guard/deploy_targets.py says which commands deploy and to what: a named host (`scp dist/
     deploy@web1.example.org:/srv`), a hosting service's own domain when the command shows no name (`vercel --prod`
@@ -129,8 +131,10 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy) -> li
     fired = []
     for rule in policy.rules:
         if rule.kind == "protected_branch":
+            # An unknown branch (None: a variable, a substitution, or a bare force push with no branch checked out;
+            # "": HEAD with no branch checked out) could be any branch, so it fires every protected_branch rule.
             hit = any(
-                mirror or any(branch and any(policy_module.branch_matches(v, branch) for v in rule.values) for branch in branches)
+                mirror or any(not branch or any(policy_module.branch_matches(v, branch) for v in rule.values) for branch in branches)
                 for mirror, branches in pushes
             )
         elif rule.kind == "deploy_host":

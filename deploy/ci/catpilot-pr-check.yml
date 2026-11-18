@@ -47,8 +47,12 @@
 
 name: catpilot-pr-check
 
+# `edited` as well as the default three: changing a pull request's base branch is an `edited` event
+# and changes which files `base...head` covers, so the check must run again. (Editing the title or
+# description also reruns it, which costs a minute and changes nothing.)
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read

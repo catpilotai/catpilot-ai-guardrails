@@ -150,6 +150,13 @@ DENIED = {
     "ionice rm": "ionice -c 3 rm -rf /",
     "setsid rm": "setsid rm -rf ~",
     "unbuffer force push": "unbuffer git push -f origin main",
+    # A destination held in a variable or a substitution is unknown, which the check treats as protected.
+    "force push to a variable": "git push --force origin $BRANCH",
+    "force push to a quoted braced variable": 'git push -f origin "${TARGET}"',
+    "force push to a defaulted variable": "git push -f origin ${B:-main}",
+    "force push HEAD to a variable": "git push origin +HEAD:$DEST",
+    "delete a variable branch": "git push origin --delete $OLD",
+    "force push to a command substitution": "git push --force origin `git branch --show-current`",
     "nice then timeout then bash -lc": "nice -n 10 timeout 60 bash -lc 'rm -rf ~'",
     "timeout around dropdb": "timeout 30 dropdb production_db",
     # The home directory by absolute path, and its credential directories.
@@ -227,6 +234,9 @@ ALLOWED = {
     "bash -c with no command string": "bash -c",
     "timeout tests": "timeout 60 pytest -q",
     "timeout force-with-lease feature": "timeout 60 git push --force-with-lease origin feature/x",
+    "ordinary push to a variable": "git push origin $BRANCH",
+    "force push a variable source to a feature branch": "git push -f origin ${SRC}:feature/x",
+    "force push to a variable remote and a feature branch": "git push --force $REMOTE feature/x",
     "stdbuf tail": "stdbuf -oL tail -f app.log",
     "ionice backup copy": "ionice -c 3 rsync -a ./data/ /backup/data/",
     "rm under macOS home by absolute path": "rm -rf /Users/alice/project/build",

@@ -182,7 +182,11 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   `.git/HEAD`, and blocked when the branch cannot be read), a deletion of one
   of those branches, and `git push --mirror`, `--all` or `--branches` with a
   force or `--prune`, and a forced or pruned refspec pattern
-  (`refs/heads/*:refs/heads/*`). An option's value (`-o ci.skip`,
+  (`refs/heads/*:refs/heads/*`). A force push or deletion whose destination is
+  a shell variable or a substitution (`git push --force origin $BRANCH`,
+  `"${TARGET}"`, `${B:-main}`, a backtick) names a branch the hook cannot
+  read, so it is blocked like an unreadable checked-out branch; an ordinary
+  push to a variable is not. An option's value (`-o ci.skip`,
   `--push-option`, `--repo`) is not read as the remote.
 - Database and cache resets: `prisma db push --accept-data-loss`, `prisma
   migrate reset --force`, `rails`/`rake` `db:drop`, `db:reset`,
@@ -277,10 +281,15 @@ check as `block` does. Not yet run in a real repository's CI.
   Pushes are read exactly as the destructive-operation check reads them,
   through the same wrappers and `bash -c` bodies, so `--all` or `--branches`
   with a force or `--prune`, and a forced refspec pattern
-  (`refs/heads/*:refs/heads/*`), match every rule. A value ending in `/*`
-  covers every branch under the prefix; case is ignored. A value is a branch
-  name: the validator refuses a `refs/` prefix and names longer than 255
-  characters. An ordinary push is not a match.
+  (`refs/heads/*:refs/heads/*`), match every rule. A force push or deletion
+  whose branch the hook cannot read also matches every rule: a destination in
+  a variable or a substitution (`git push --force origin $BRANCH`), and a bare
+  force push or a push to `HEAD` with no branch checked out (a detached
+  `HEAD`, or no repository; the built-in check blocks the bare force push
+  there, not the push to `HEAD`). A value
+  ending in `/*` covers every branch under the prefix; case is ignored. A
+  value is a branch name: the validator refuses a `refs/` prefix and names
+  longer than 255 characters. An ordinary push is not a match.
 - Kind `deploy_host`, an allow-list: a deploy or publish whose target no value
   of the rule covers fires the rule. `catpilot_guard/deploy_targets.py` reads
   the target, through the same splitting and wrappers, and through package

@@ -223,8 +223,22 @@ class DecisionTests(unittest.TestCase):
             self.assertEqual(effect(self.decide("git push -f", cwd=repo)), "deny")
             head.write_text("ref: refs/heads/feature/x\n")
             self.assertEqual(self.decide("git push -f", cwd=repo), {})
-            head.write_text("0123456789abcdef0123456789abcdef01234567\n")  # detached: the built-in check covers it
-            self.assertEqual(self.decide("git push -f", cwd=repo), {})
+            # Detached: the branch is unknown. The built-in check denies it, and every company rule now fires too.
+            head.write_text("0123456789abcdef0123456789abcdef01234567\n")
+            self.assertEqual(effect(self.decide("git push -f", cwd=repo)), "deny")
+            self.assertEqual(effect(self.decide("git push --force origin HEAD", cwd=repo)), "deny")
+
+    def test_a_branch_the_hook_cannot_read_fires_every_rule(self):
+        # A rule that lists none of these branches still fires: the variable could name any branch.
+        rules = [branch_rule(values=["zq-only-this-branch"])]
+        for command in ("git push --force origin $BRANCH", 'git push -f origin "${TARGET}"', "git push -f origin ${B:-main}",
+                        "git push origin --delete $OLD", "git push origin :$OLD", "git push origin +HEAD:$DEST",
+                        "git push --force origin `git branch --show-current`", 'bash -lc "git push -f origin \\$B"'):
+            with self.subTest(command=command):
+                self.assertEqual(effect(self.decide(command, rules)), "deny")
+        for command in ("git push origin $BRANCH", "git push --force $REMOTE feature/x", "git push -f origin ${SRC}:feature/x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.decide(command, rules), {})
 
     def test_monitor_decides_nothing_and_logs_would_deny(self):
         result = self.decide("git push --force origin main", [branch_rule(mode="monitor")])

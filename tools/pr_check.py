@@ -15,28 +15,41 @@ not scanned). --files scans the named files, given relative to --repo or as abso
 What it scans, exactly (by file name; every other file is ignored):
 
   .github/workflows/*.yml|yaml   each step's `run:` script, through the hook's matching for protected_branch and
-                                 deploy_host rules (the hook's command splitting reads every line), with each
-                                 `${{ ... }}` expression read as a shell variable, so a destination taken from one is
-                                 a destination the check cannot read; and each step's `uses:` naming a deploy action
-                                 in DEPLOY_ACTIONS below
-  action.yml|yaml (anywhere)     the same, for the steps of a composite action (`runs.steps`)
+  (any letter case)              deploy_host rules (the hook's command splitting reads every line). Literal `env:`
+                                 values (workflow, then job, then step, the more specific winning) are read into
+                                 `$X`, `${X}` and `${{ env.X }}`; any other variable or `${{ ... }}` stays unknown, so
+                                 a destination or a branch taken from one is one the check cannot read, which fires
+                                 (as in the hook). A run step whose shell (its own, or `defaults.run.shell` of its job
+                                 or workflow) is not bash, sh, pwsh or powershell cannot be read. Each step's `uses:`
+                                 naming a deploy action (DEPLOY_ACTIONS) or a force-pushing action (PUSH_ACTIONS), and
+                                 a `docker://` step's `entrypoint` and `args`, as a command
+  action.yml|yaml (anywhere)     the same, for the steps of a composite action (`runs.steps`, with step `env:` only);
+                                 for a Docker action, `runs.entrypoint` with `runs.args`, and `runs.pre-entrypoint`
+                                 and `runs.post-entrypoint`, as commands
   package.json (anywhere)        each value under `scripts`, as a command
-  vercel.json                    literal host names in `alias` and `domains`, and `buildCommand` and `installCommand`
-                                 as commands; the file alone implies no vercel.app deploy
-  netlify.toml                   `build.command` and each `context.<name>.command`, as commands; no implied deploy
+  vercel.json                    literal host names in `alias` and `domains`, and `buildCommand`, `installCommand`,
+                                 `ignoreCommand` and `devCommand` as commands; the file alone implies no deploy
+  netlify.toml                   `build.command`, `build.ignore`, `dev.command`, and each `context.<name>.command` and
+                                 `.ignore`, as commands; the file alone implies no deploy
   fly.toml, fly.<name>.toml      `app = "x"`: the host x.fly.dev
   wrangler.toml|json|jsonc       at the top level and under each `env.<name>`: each `route`/`routes` pattern's literal
                                  host (`*.example.org/*` as the wildcard *.example.org), else its `zone_name`, else a
-                                 host the check cannot read; `workers_dev = true`: the suffix workers.dev
-  firebase.json                  `hosting.site` (or each site in a `hosting` list): the host <site>.web.app; and every
-                                 `predeploy` and `postdeploy` command
+                                 host the check cannot read; the suffix workers.dev where `workers_dev = true`, or
+                                 where there is no route and `workers_dev` is not false (wrangler's default; an
+                                 environment inherits `workers_dev`, not routes); a Pages project
+                                 (`pages_build_output_dir`): the suffix pages.dev
+  firebase.json                  each `hosting` entry: its literal `site` as the host <site>.web.app, else the suffix
+                                 web.app; and every `predeploy` and `postdeploy` command
 
 A deploy action's `with:` inputs are read conservatively: a domain input counts only when it is a literal host name.
+A push action's branch input that is not a literal name is unknown, and a force input that is not a literal false
+counts as a force.
 
 Each finding is decided by its rule's mode (§2.3; after the policy's expires_on every rule acts in monitor, as in the
 hook): monitor is a warning and the check passes; ask and block are errors and the check fails, since nobody can be
 asked in a pull-request check (decision 2). A file this check cannot read (unparseable, a symbolic link, larger than
-1 MiB) is reported with a fixed text, and fails the check when a rule that file could reveal is in ask or block.
+1 MiB), or a run step in a shell it does not read, is reported with a fixed text, and fails the check when a rule
+that file could reveal is in ask or block.
 
 An annotation names the rule id, a fixed explanation for its kind and the approved alternative (use_instead), never a
 listed value, the matched command or the host (§4: "A PR annotation points at the line in the diff. It never prints
@@ -48,11 +61,14 @@ come from the repository under review.
 
 Exit codes: 0 the check passes, 1 a rule fails it, 2 a usage or policy error (the reason is printed, without values).
 
+A bare force push or a push to HEAD in a workflow names no branch the check can read (the branch a workflow runs on
+is not the checkout's), so, like a variable, it fires every protected_branch rule.
+
 Not covered: files the pull request does not add or change (an unchanged reusable workflow or script that a changed
 file calls), scripts a command runs (`npm run deploy` is not followed into package.json), reusable workflows and
-actions from other repositories, a bare force push or a push to HEAD in a workflow (the branch it runs on is not
-something the check can read; the hook reads the checked-out branch), deploy actions not listed below, and everything
-the hook does not cover (hooks/README.md, exact coverage).
+actions from other repositories, a variable an action exports for later steps (only a step writing GITHUB_ENV is
+seen, and then the workflow's and job's env: values are not used), a Docker image's own entrypoint, deploy and push
+actions not listed below, and everything the hook does not cover (hooks/README.md, exact coverage).
 
 Standard library plus PyYAML. Python 3.11+ (tomllib).
 """
@@ -63,6 +79,7 @@ import errno
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -99,6 +116,8 @@ WHAT = {
     "deploy_host": "this file deploys or publishes to a host the company has not approved",
 }
 UNREADABLE = "Catpilot pull-request check: could not read this file, so it was not checked against the company rules."
+UNREADABLE_STEP = ("Catpilot pull-request check: could not read this run step, whose shell is not bash, sh or PowerShell, "
+                   "so it was not checked against the company rules.")
 
 # Deploy actions a workflow step may name in `uses:`, by owner/repository, lowercase.
 #   suffix           the hosting service's own domain the action deploys under
@@ -157,6 +176,19 @@ class Targets:
 
 
 @dataclass(frozen=True)
+class Pushes:
+    """Branches a push action force-pushes to (None: unknown), at a line."""
+    line: int
+    branches: tuple
+
+
+@dataclass(frozen=True)
+class UnreadableStep:
+    """A run step whose shell this check does not read, at the line of its `run:`."""
+    line: int
+
+
+@dataclass(frozen=True)
 class Finding:
     path: str
     line: int
@@ -183,7 +215,7 @@ def file_type(path: str) -> str | None:
     """The scanner for a repository-relative POSIX path, or None for a file this check ignores."""
     pure = PurePosixPath(path)
     name = pure.name
-    if str(pure.parent) == ".github/workflows" and pure.suffix in (".yml", ".yaml"):
+    if str(pure.parent).lower() == ".github/workflows" and pure.suffix.lower() in (".yml", ".yaml"):
         return "workflow"
     if name in ("action.yml", "action.yaml"):
         return "action"
@@ -360,6 +392,26 @@ def _toml(raw: str) -> dict:
 # ----------------------------------------------------------------- YAML (workflows, composite actions)
 
 
+# Push actions a workflow step may name in `uses:`, read for protected_branch rules. The input names and defaults are
+# from memory of each action's documentation, not checked against its current release.
+#   branch_input, default_branch  the branch it pushes to (None: the branch the workflow runs on, which is unknown)
+#   force_inputs                  inputs that make the push a force push, with the first one's default
+PUSH_ACTIONS = {
+    "jamesives/github-pages-deploy-action": {"branch_input": "branch", "default_branch": "gh-pages",
+                                             "force_inputs": ("force",), "force_default": True},
+    "peaceiris/actions-gh-pages": {"branch_input": "publish_branch", "default_branch": "gh-pages",
+                                   "force_inputs": ("force_orphan",), "force_default": False},
+    "ad-m/github-push-action": {"branch_input": "branch", "default_branch": None,
+                                "force_inputs": ("force", "force_with_lease"), "force_default": False},
+}
+READABLE_SHELLS = ("bash", "sh", "pwsh", "powershell")
+# An env: value substituted into a script only when it is this plain: anything else could change how the script
+# reads (a quote, a space, a `;`), so its variable stays unresolved, and unknown.
+SAFE_LITERAL = re.compile(r"[A-Za-z0-9._/@:+=,-]*")
+ENV_EXPRESSION = re.compile(r"\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+SHELL_VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
 def _pairs(node, depth: int = 0) -> list:
     """A YAML mapping node's (key, value) pairs, with `<<` merges expanded; nothing for any other node."""
     if not isinstance(node, yaml.MappingNode) or depth > 10:
@@ -380,28 +432,89 @@ def _values(node, name: str) -> list:
     return [value for key, value in _pairs(node) if isinstance(key, yaml.ScalarNode) and key.value == name]
 
 
-def _scalar_inputs(step) -> dict:
+def _scalar(node, name: str) -> str | None:
+    """The last scalar value under `name`, "" when the value is not a scalar, None when absent."""
+    found = None
+    for value in _values(node, name):
+        found = value.value if isinstance(value, yaml.ScalarNode) else ""
+    return found
+
+
+def _env_level(node) -> tuple:
+    """The `env:` of a workflow, job or step: (literal values by name, opaque). A value that is not a SAFE_LITERAL is
+    None (unknown); opaque is True when an `env:` is not a mapping (an expression), which may set any name."""
+    values, opaque = {}, False
+    for env in _values(node, "env"):
+        if not isinstance(env, yaml.MappingNode):
+            opaque, values = True, {}
+            continue
+        for key, value in _pairs(env):
+            if isinstance(key, yaml.ScalarNode):
+                literal = isinstance(value, yaml.ScalarNode) and SAFE_LITERAL.fullmatch(value.value)
+                values[key.value] = value.value if literal else None
+    return values, opaque
+
+
+def _merge_env(levels: list) -> dict:
+    """The env a step sees, from the least specific level to the most (workflow, job, step): a later level overrides
+    an earlier one, and an opaque level hides everything before it."""
+    env: dict = {}
+    for values, opaque in levels:
+        if opaque:
+            env = {}
+        env.update(values)
+    return env
+
+
+def resolve_script(text: str, env: dict) -> str:
+    """A run script with each `${{ env.X }}`, `$X` and `${X}` whose value is a literal in env replaced by it, and every
+    other `${{ ... }}` read as a shell variable. A variable the script itself names (assigns, reads, exports, or
+    mentions without `$`) is not replaced, since the script may change it; nor is any other variable, which stays
+    unknown."""
+    def literal(name: str) -> str | None:
+        if env.get(name) is None:
+            return None
+        if re.search(r"(?<![\w$])(?<!\$\{)%s(?!\w)" % re.escape(name), EXPRESSION.sub("", text)):
+            return None
+        return env[name]
+
+    text = ENV_EXPRESSION.sub(lambda m: literal(m.group(1)) if literal(m.group(1)) is not None else m.group(0), text)
+    text = SHELL_VARIABLE.sub(lambda m: literal(m.group(1) or m.group(2)) if literal(m.group(1) or m.group(2)) is not None
+                              else m.group(0), text)
+    return _expressions_as_variables(text)
+
+
+def resolve_input(value: str, env: dict) -> str:
+    """An action input with each `${{ env.X }}` whose value is a literal replaced by it."""
+    return ENV_EXPRESSION.sub(lambda m: env[m.group(1)] if env.get(m.group(1)) is not None else m.group(0), value)
+
+
+def _scalar_inputs(step, env: dict) -> dict:
     """A step's `with:` inputs that are plain strings, by lowercase name (action inputs ignore case)."""
     inputs = {}
     for with_node in _values(step, "with"):
         for key, value in _pairs(with_node):
             if isinstance(key, yaml.ScalarNode) and isinstance(value, yaml.ScalarNode):
-                inputs[key.value.lower()] = value.value
+                inputs[key.value.lower()] = resolve_input(value.value, env)
     return inputs
+
+
+def _action_name(uses: str) -> tuple:
+    """(owner/repository, path inside it or None) for a `uses:` reference, lowercase; (None, None) for a local or
+    Docker action."""
+    reference = uses.strip().split("@", 1)[0].lower()
+    parts = reference.split("/")
+    if reference.startswith(("./", "docker://")) or len(parts) < 2:
+        return None, None
+    return "/".join(parts[:2]), "/".join(parts[2:]) or None
 
 
 def action_targets(uses: str, inputs: dict) -> list:
     """What a `uses:` deploy action deploys to, from DEPLOY_ACTIONS and its `with:` inputs; [] when not a deploy."""
-    reference = uses.strip().split("@", 1)[0].lower()
-    if reference.startswith(("./", "docker://")):
-        return []
-    parts = reference.split("/")
-    if len(parts) < 2:
-        return []
-    spec = DEPLOY_ACTIONS.get("/".join(parts[:2]))
+    name, subpath = _action_name(uses)
+    spec = DEPLOY_ACTIONS.get(name)
     if spec is None:
         return []
-    subpath = "/".join(parts[2:]) or None
     if "subpaths" in spec and subpath not in spec["subpaths"]:
         return []
     if "host_inputs" in spec:
@@ -432,26 +545,98 @@ def action_targets(uses: str, inputs: dict) -> list:
     return [suffix] + hosts
 
 
-def _step_items(step) -> list:
-    items = []
+def _flag(value: str | None, default: bool) -> bool:
+    """A boolean input: true or false as written, its default when absent, and true when it cannot be read."""
+    if value is None or not value.strip():
+        return default
+    word = value.strip().lower()
+    if word in ("false", "no", "0", "off"):
+        return False
+    return True
+
+
+def literal_branch(value: str) -> str | None:
+    """A branch name an input spells out, without refs/heads/; None when it is an expression or a variable."""
+    branch = value.strip()
+    branch = branch[len("refs/heads/"):] if branch.startswith("refs/heads/") else branch
+    return branch if branch and SAFE_LITERAL.fullmatch(branch) else None
+
+
+def action_pushes(uses: str, inputs: dict) -> list:
+    """The branches a `uses:` push action force-pushes to (None: unknown), from PUSH_ACTIONS; [] for any other action
+    or a push that is not forced."""
+    name, _ = _action_name(uses)
+    spec = PUSH_ACTIONS.get(name)
+    if spec is None:
+        return []
+    first, *others = spec["force_inputs"]
+    forced = _flag(inputs.get(first), spec["force_default"]) or any(_flag(inputs.get(i), False) for i in others)
+    if not forced:
+        return []
+    value = inputs.get(spec["branch_input"])
+    return [spec["default_branch"] if value is None or not value.strip() else literal_branch(value)]
+
+
+def _readable_shell(shell: str | None) -> bool:
+    """Whether a run step's shell is one this check reads: the default (None), bash, sh, pwsh or powershell."""
+    if shell is None:
+        return True
+    words = shell.split()
+    return bool(words) and "${{" not in shell and os.path.basename(words[0]).lower() in READABLE_SHELLS
+
+
+def _default_shell(node, inherited: str | None) -> str | None:
+    """`defaults.run.shell` of a workflow or job, else the inherited one."""
+    for defaults in _values(node, "defaults"):
+        for run in _values(defaults, "run"):
+            shell = _scalar(run, "shell")
+            if shell is not None:
+                inherited = shell
+    return inherited
+
+
+def _run_item(key, value, env: dict) -> Commands:
+    key_line = key.start_mark.line + 1
+    text = resolve_script(value.value, env)
+    if value.style == "|":
+        return Commands(value.start_mark.line + 2, text, key_line, exact=True)
+    if value.style == ">":
+        return Commands(value.start_mark.line + 2, text, key_line)
+    return Commands(value.start_mark.line + 1, text, key_line)
+
+
+def _docker_command(*parts) -> str:
+    return " ".join(part for part in parts if part and part.strip())
+
+
+def _step_items(step, levels: list, default_shell: str | None) -> list:
+    env = _merge_env(levels + [_env_level(step)])
+    shell = _scalar(step, "shell")
+    shell = default_shell if shell is None else shell
     inputs = None
+    items = []
     for key, value in _pairs(step):
         if not (isinstance(key, yaml.ScalarNode) and isinstance(value, yaml.ScalarNode)):
             continue
-        key_line = key.start_mark.line + 1
         if key.value == "run":
-            if value.style == "|":
-                items.append(Commands(value.start_mark.line + 2, value.value, key_line, exact=True))
-            elif value.style == ">":
-                items.append(Commands(value.start_mark.line + 2, value.value, key_line))
+            if _readable_shell(shell):
+                items.append(_run_item(key, value, env))
             else:
-                items.append(Commands(value.start_mark.line + 1, value.value, key_line))
+                items.append(UnreadableStep(key.start_mark.line + 1))
         elif key.value == "uses":
             if inputs is None:
-                inputs = _scalar_inputs(step)
+                inputs = _scalar_inputs(step, env)
+            line = value.start_mark.line + 1
             targets = action_targets(value.value, inputs)
             if targets:
-                items.append(Targets(value.start_mark.line + 1, tuple(targets)))
+                items.append(Targets(line, tuple(targets)))
+            pushes = action_pushes(value.value, inputs)
+            if pushes:
+                items.append(Pushes(line, tuple(pushes)))
+            if value.value.strip().lower().startswith("docker://"):
+                command = _docker_command(inputs.get("entrypoint"), inputs.get("args"))
+                if command:
+                    items.append(Commands(line, _expressions_as_variables(command), line))
     return items
 
 
@@ -464,13 +649,41 @@ def _compose(raw: str):
 
 def scan_workflow(raw: str) -> list:
     root = _compose(raw)
+    # A step that writes GITHUB_ENV can change any variable for the steps after it, over the workflow's and the job's
+    # env:, so only a step's own env: is then read as written.
+    writes_env = "GITHUB_ENV" in raw
+    workflow_env = _env_level(root)
+    workflow_shell = _default_shell(root, None)
     items = []
     for jobs in _values(root, "jobs"):
         for _, job in _pairs(jobs):
+            levels = [] if writes_env else [workflow_env, _env_level(job)]
+            shell = _default_shell(job, workflow_shell)
             for steps in _values(job, "steps"):
                 if isinstance(steps, yaml.SequenceNode):
                     for step in steps.value:
-                        items.extend(_step_items(step))
+                        items.extend(_step_items(step, levels, shell))
+    return items
+
+
+def _docker_action_items(runs) -> list:
+    """A Docker action's entrypoint with its args, and its pre- and post-entrypoints, as commands."""
+    items = []
+    entrypoint = _scalar(runs, "entrypoint")
+    words = []
+    for args in _values(runs, "args"):
+        if isinstance(args, yaml.SequenceNode):
+            words.extend(shlex.quote(_expressions_as_variables(a.value)) for a in args.value if isinstance(a, yaml.ScalarNode))
+    command = _docker_command(entrypoint, " ".join(words))
+    if command:
+        anchor = (_values(runs, "entrypoint") or _values(runs, "args"))[0]
+        line = anchor.start_mark.line + 1
+        items.append(Commands(line, _expressions_as_variables(command), line))
+    for name in ("pre-entrypoint", "post-entrypoint"):
+        for value in _values(runs, name):
+            if isinstance(value, yaml.ScalarNode) and value.value.strip():
+                line = value.start_mark.line + 1
+                items.append(Commands(line, _expressions_as_variables(value.value), line))
     return items
 
 
@@ -478,10 +691,12 @@ def scan_action(raw: str) -> list:
     root = _compose(raw)
     items = []
     for runs in _values(root, "runs"):
+        if (_scalar(runs, "using") or "").strip().lower() == "docker":
+            items.extend(_docker_action_items(runs))
         for steps in _values(runs, "steps"):
             if isinstance(steps, yaml.SequenceNode):
                 for step in steps.value:
-                    items.extend(_step_items(step))
+                    items.extend(_step_items(step, [], None))
     return items
 
 
@@ -510,21 +725,19 @@ def scan_vercel_json(raw: str) -> list:
             host = literal_host(value)
             if host:
                 items.append(Targets(_value_line(raw, value, _key_line(raw, key)), (Target(HOST, host),)))
-    commands = [data[key] for key in ("buildCommand", "installCommand") if isinstance(data.get(key), str)]
+    keys = ("buildCommand", "installCommand", "ignoreCommand", "devCommand")
+    commands = [data[key] for key in keys if isinstance(data.get(key), str)]
     return items + _command_items(raw, commands)
 
 
 def scan_netlify_toml(raw: str) -> list:
     data = _toml(raw)
-    commands = []
-    build = data.get("build")
-    if isinstance(build, dict) and isinstance(build.get("command"), str):
-        commands.append(build["command"])
+    tables = [(data.get("build"), ("command", "ignore")), (data.get("dev"), ("command",))]
     contexts = data.get("context")
     if isinstance(contexts, dict):
-        for context in contexts.values():
-            if isinstance(context, dict) and isinstance(context.get("command"), str):
-                commands.append(context["command"])
+        tables.extend((context, ("command", "ignore")) for context in contexts.values())
+    commands = [table[key] for table, keys in tables if isinstance(table, dict) for key in keys
+                if isinstance(table.get(key), str)]
     return _command_items(raw, commands)
 
 
@@ -554,14 +767,21 @@ def route_targets(pattern: object, zone_name: object) -> list:
 
 
 def _wrangler_items(raw: str, data: object) -> list:
+    """Routes by host, and workers.dev where the Worker is served there: `workers_dev = true`, or no route and
+    `workers_dev` not false (wrangler's default). Environments inherit `workers_dev`, not routes. A Pages project
+    (`pages_build_output_dir`) deploys under pages.dev instead."""
     if not isinstance(data, dict):
         return []
-    tables = [data]
+    if "pages_build_output_dir" in data:
+        return [Targets(_key_line(raw, "pages_build_output_dir"), (Target(SUFFIX, "pages.dev"),))]
+    tables = [(data, None)]
     if isinstance(data.get("env"), dict):
-        tables.extend(env for env in data["env"].values() if isinstance(env, dict))
+        tables.extend((env, data.get("workers_dev")) for env in data["env"].values() if isinstance(env, dict))
     routes_line = _key_line(raw, "routes", _key_line(raw, "route"))
+    found = re.search(r"[\"']?workers_dev[\"']?[ \t]*[:=][ \t]*true", raw)
+    workers_dev_line = raw.count("\n", 0, found.start()) + 1 if found else 1
     items = []
-    for table in tables:
+    for table, inherited in tables:
         routes = []
         if "route" in table:
             routes.append(table["route"])
@@ -571,10 +791,9 @@ def _wrangler_items(raw: str, data: object) -> list:
             pattern, zone = (route.get("pattern"), route.get("zone_name")) if isinstance(route, dict) else (route, None)
             line = _value_line(raw, pattern, routes_line) if isinstance(pattern, str) else routes_line
             items.append(Targets(line, tuple(route_targets(pattern, zone))))
-        if table.get("workers_dev") is True:
-            found = re.search(r"[\"']?workers_dev[\"']?[ \t]*[:=][ \t]*true", raw)
-            line = raw.count("\n", 0, found.start()) + 1 if found else _key_line(raw, "workers_dev")
-            items.append(Targets(line, (Target(SUFFIX, "workers.dev"),)))
+        workers_dev = table.get("workers_dev", inherited)
+        if workers_dev is True or (workers_dev is not False and not routes):
+            items.append(Targets(workers_dev_line if workers_dev is True else 1, (Target(SUFFIX, "workers.dev"),)))
     return items
 
 
@@ -603,13 +822,18 @@ def scan_firebase_json(raw: str) -> list:
     data = _json(raw)
     if not isinstance(data, dict):
         return []
-    hosting = data.get("hosting")
-    sites = hosting if isinstance(hosting, list) else [hosting]
     items = []
-    for site in sites:
-        name = site.get("site") if isinstance(site, dict) else None
-        if isinstance(name, str) and DNS_LABEL.fullmatch(name.strip().lower()):
-            items.append(Targets(_value_line(raw, name, _key_line(raw, "site")), (Target(HOST, name.strip().lower() + ".web.app"),)))
+    if "hosting" in data:
+        hosting = data["hosting"]
+        # Each hosting entry deploys to its site's name under web.app; one with no literal site, to the project's
+        # default site there.
+        for site in hosting if isinstance(hosting, list) else [hosting]:
+            name = site.get("site") if isinstance(site, dict) else None
+            if isinstance(name, str) and DNS_LABEL.fullmatch(name.strip().lower()):
+                target, line = Target(HOST, name.strip().lower() + ".web.app"), _value_line(raw, name, _key_line(raw, "site"))
+            else:
+                target, line = Target(SUFFIX, "web.app"), _key_line(raw, "hosting")
+            items.append(Targets(line, (target,)))
     hooks: list = []
     _deploy_hooks(data, hooks)
     return items + _command_items(raw, hooks)
@@ -645,6 +869,13 @@ def hits_for(item, policy: policy_module.Policy, cwd: str) -> list:
     each rule is pointed at the lines that fire it on their own, or at the script's key when none does."""
     if isinstance(item, Targets):
         return [(item.line, rule) for rule in rules_for_targets(item.targets, policy)]
+    if isinstance(item, Pushes):
+        # As the hook reads a push: an unknown branch could be any branch, so it fires every protected_branch rule.
+        return [
+            (item.line, rule) for rule in policy.rules
+            if rule.kind == "protected_branch"
+            and any(not b or any(policy_module.branch_matches(v, b) for v in rule.values) for b in item.branches)
+        ]
     text = _expressions_as_variables(item.text)
     fired = matched_rules(text, cwd, policy)
     if not fired:
@@ -680,12 +911,15 @@ def rule_message(rule, mode: str, policy: policy_module.Policy, expired: bool = 
     return "Catpilot company rule `%s`: %s.%s%s" % (rule.id, WHAT.get(rule.kind, "this file matches a company rule"), use, tail)
 
 
-def unreadable_finding(path: str, kind_of_file: str, policy: policy_module.Policy, today=None) -> Finding:
+def unreadable_finding(path: str, kind_of_file: str, policy: policy_module.Policy, today=None, line: int = 1,
+                       text: str = UNREADABLE) -> Finding:
+    """A fixed-text finding for a file, or a run step, the check cannot read: an error when a rule that it could
+    reveal is in ask or block, else a warning."""
     relevant = RELEVANT_KINDS.get(kind_of_file, BOTH_KINDS)
     strict = [r for r in policy.rules if r.kind in relevant and effective_mode(r, policy, today) in ("ask", "block")]
     if strict:
-        return Finding(path, 1, "error", UNREADABLE + " A company rule in ask or block mode applies to it, so the check fails.")
-    return Finding(path, 1, "warning", UNREADABLE + " Every company rule that applies to it is in monitor mode, so the check passes.")
+        return Finding(path, line, "error", text + " A company rule in ask or block mode applies to it, so the check fails.")
+    return Finding(path, line, "warning", text + " Every company rule that applies to it is in monitor mode, so the check passes.")
 
 
 def check_file(path: str, raw: bytes | None, policy: policy_module.Policy, cwd: str, today=None) -> list:
@@ -704,6 +938,11 @@ def check_file(path: str, raw: bytes | None, policy: policy_module.Policy, cwd: 
     expired = policy.expired(today)
     findings, seen = [], set()
     for item in items:
+        if isinstance(item, UnreadableStep):
+            if (item.line, None) not in seen:
+                seen.add((item.line, None))
+                findings.append(unreadable_finding(path, kind_of_file, policy, today, item.line, UNREADABLE_STEP))
+            continue
         for line, rule in hits_for(item, policy, cwd):
             if (line, rule.id) in seen:
                 continue

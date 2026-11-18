@@ -268,7 +268,7 @@ If your `requirements.toml` already has a `[hooks]` table with its own `managed_
 
 ## Company enforcement rules
 
-A version 2 rules file can carry an `enforcement` section: rules a hook applies exactly, each in `monitor`, `ask` or `block` ([`spec/OVERLAY_V2.md`](spec/OVERLAY_V2.md) §2.2 and §2.3). The hook acts on `protected_branch` rules, a force push or deletion aimed at a branch the company protects, on top of the built-in list, and on `deploy_host` rules, a deploy or publish to a host the company has not listed: `vercel`, `netlify deploy`, `fly deploy`, `firebase deploy`, `wrangler deploy`, `surge`, `gh-pages`, `railway up`, `amplify publish` and `git push heroku` deploy under the service's own domain, which only a value such as `*.vercel.app` covers, and `scp` and `rsync` uploads name their host; every upload to another machine counts, and an SSH alias without a dot cannot be listed ([exact coverage](../hooks/README.md#exact-coverage-3)). `deploy_host` is not verified on a host yet, so start its rules in `monitor`.
+A version 2 rules file can carry an `enforcement` section: rules a hook applies exactly, each in `monitor`, `ask` or `block` ([`spec/OVERLAY_V2.md`](spec/OVERLAY_V2.md) §2.2 and §2.3). The hook acts on `protected_branch` rules, a force push or deletion aimed at a branch the company protects, on top of the built-in list, and on `deploy_host` rules, a deploy or publish to a host the company has not listed: `vercel`, `netlify deploy`, `fly deploy`, `firebase deploy`, `wrangler deploy`, `surge`, `gh-pages`, `railway up`, `amplify publish` and `git push heroku` deploy under the service's own domain, which only a value such as `*.vercel.app` covers, and `scp` and `rsync` uploads name their host; every upload to another machine counts, and an SSH alias without a dot cannot be listed ([exact coverage](../hooks/README.md#exact-coverage-3)). A force push or deletion whose branch the hook cannot read fires every `protected_branch` rule: a destination in a shell variable or a substitution (`git push --force origin $BRANCH`), or a bare force push or a push to `HEAD` with no branch checked out. The built-in check blocks all of these but the push to `HEAD`. `deploy_host` is not verified on a host yet, so start its rules in `monitor`.
 
 When the file given to `install.sh --overlay` has an `enforcement` section, `install.sh` also:
 
@@ -313,14 +313,14 @@ python tools/pr_check.py --policy company-policy.json --repo . --files package.j
 
 | File | What is read |
 | --- | --- |
-| `.github/workflows/*.yml`, `*.yaml` | Each step's `run:` script, every line, through the hook's matching for `protected_branch` and `deploy_host` rules. Each `${{ … }}` expression is read as a shell variable, so a destination taken from one (`scp dist deploy@${{ secrets.HOST }}:/srv`) is a destination the check cannot read, which no value covers, as in the hook. Each step's `uses:` naming a deploy action in the table below |
-| `action.yml`, `action.yaml`, anywhere | The same, for a composite action's `runs.steps` |
+| `.github/workflows/*.yml`, `*.yaml`, in any letter case | Each step's `run:` script, every line, through the hook's matching for `protected_branch` and `deploy_host` rules. Literal `env:` values are read into the script (`$X`, `${X}`, `${{ env.X }}`), the step's over the job's over the workflow's. Any other variable or `${{ … }}` stays unknown, so a destination or a branch taken from one (`scp dist deploy@${{ secrets.HOST }}:/srv`, `git push --force origin ${{ matrix.branch }}`) is one the check cannot read, which fires every rule of its kind, as in the hook. A run step whose shell is not `bash`, `sh`, `pwsh` or `powershell` (its own `shell:`, or `defaults.run.shell` of its job or workflow) cannot be read. Each step's `uses:` naming a deploy or push action in the tables below, and a `docker://` step's `entrypoint` and `args`, as a command |
+| `action.yml`, `action.yaml`, anywhere | The same, for a composite action's `runs.steps` (with each step's own `env:`). For a Docker action, `runs.entrypoint` with `runs.args`, and `runs.pre-entrypoint` and `runs.post-entrypoint`, as commands |
 | `package.json`, anywhere | Each value under `scripts`, as a command |
-| `vercel.json` | Literal host names in `alias` and `domains`; `buildCommand` and `installCommand` as commands. The file alone implies no `vercel.app` deploy |
-| `netlify.toml` | `build.command` and each `context.<name>.command`, as commands. The file alone implies no deploy |
+| `vercel.json` | Literal host names in `alias` and `domains`; `buildCommand`, `installCommand`, `ignoreCommand` and `devCommand` as commands. The file alone implies no `vercel.app` deploy |
+| `netlify.toml` | `build.command`, `build.ignore`, `dev.command`, and each `context.<name>.command` and `context.<name>.ignore`, as commands. The file alone implies no deploy |
 | `fly.toml`, `fly.<name>.toml` | `app = "x"`: the host `x.fly.dev` |
-| `wrangler.toml`, `wrangler.json`, `wrangler.jsonc` | At the top level and under each `env.<name>`: each `route` or `routes` pattern's literal host (`*.example.org/*` as the wildcard `*.example.org`; `*example.org/*` as `example.org` and `*.example.org`), else its `zone_name`, else a host the check cannot read; `workers_dev = true`: the suffix `workers.dev`. Wrangler's default of `workers_dev` when no route is set is not inferred |
-| `firebase.json` | `hosting.site`, or each `site` in a `hosting` list: the host `<site>.web.app`; every `predeploy` and `postdeploy` command |
+| `wrangler.toml`, `wrangler.json`, `wrangler.jsonc` | At the top level and under each `env.<name>`: each `route` or `routes` pattern's literal host (`*.example.org/*` as the wildcard `*.example.org`; `*example.org/*` as `example.org` and `*.example.org`), else its `zone_name`, else a host the check cannot read. The suffix `workers.dev` where `workers_dev = true`, and where there is no route and `workers_dev` is not `false`, wrangler's default; an environment inherits `workers_dev` but not routes. A Pages project (`pages_build_output_dir`): the suffix `pages.dev` |
+| `firebase.json` | Each `hosting` entry: its literal `site` as the host `<site>.web.app`, else the suffix `web.app` (the project's default site); every `predeploy` and `postdeploy` command |
 
 Deploy actions a step can name in `uses:`, at any version:
 
@@ -339,6 +339,18 @@ Deploy actions a step can name in `uses:`, at any version:
 
 A `with:` input counts only when it is a literal host name. An expression or a secret gives nothing for a domain input, and a destination the check cannot read for a copy action. When a CLI action's arguments hold an expression and read as no deploy, the service's own domain is assumed.
 
+Push actions, read for `protected_branch` rules (the input names and defaults are from the actions' documentation as remembered, not checked against their current releases):
+
+| Action | Force-pushes to |
+| --- | --- |
+| `JamesIves/github-pages-deploy-action` | `branch` (default `gh-pages`), unless `force: false` |
+| `peaceiris/actions-gh-pages` | `publish_branch` (default `gh-pages`), when `force_orphan: true`; otherwise an ordinary push |
+| `ad-m/github-push-action` | `branch` (default: the branch the workflow runs on, unknown), when `force` or `force_with_lease` is true |
+
+A branch input that is not a literal name is unknown and fires every `protected_branch` rule; a force input that is not a literal `false` counts as a force.
+
+**Unknown is not clean.** A force push or deletion whose branch the check cannot read fires every `protected_branch` rule, as it does in the hook: a variable with no literal `env:` value, a `${{ … }}` (`${{ github.event.repository.default_branch }}`), a variable the script sets itself, and a bare force push or a push to `HEAD`, since the branch a workflow runs on is not the checkout's. An `env:` value is read only when it is plain (letters, digits and `. _ / @ : + = , -`), and when a step writes `GITHUB_ENV`, which can change any variable for later steps, only each step's own `env:` is read.
+
 **Modes.**
 
 | Mode | Annotation | Check |
@@ -347,7 +359,7 @@ A `with:` input counts only when it is a literal host name. An expression or a s
 | `ask` | error | fails: nobody can be asked in a pull-request check (decision 2) |
 | `block` | error | fails |
 
-After the policy's `expires_on`, every rule acts in `monitor` until the rules are renewed and recompiled, as in the hook. A scanned file the check cannot read (it does not parse, it is a symbolic link or sits under one, it is not UTF-8, or it is larger than 1 MiB) gets an annotation with a fixed text, "could not read this file", and fails the check when a rule that file could reveal is in `ask` or `block`; otherwise it is a warning. A deploy configuration (`fly.toml`, `wrangler.*`) can reveal only `deploy_host` rules; the other scanned files, both kinds.
+After the policy's `expires_on`, every rule acts in `monitor` until the rules are renewed and recompiled, as in the hook. A scanned file the check cannot read (it does not parse, it is a symbolic link or sits under one, it is not UTF-8, or it is larger than 1 MiB) gets an annotation with a fixed text, "could not read this file", and fails the check when a rule that file could reveal is in `ask` or `block`; otherwise it is a warning. A run step in a shell the check does not read gets the same treatment at its `run:` line. A deploy configuration (`fly.toml`, `wrangler.*`) can reveal only `deploy_host` rules; the other scanned files, both kinds.
 
 **What an annotation says.** The rule id, a fixed explanation for its kind, and the approved alternative (`use_instead`), at the file and the line that fired it: the script line, the `uses:` line or the key, or line 1. Never a listed value, the matched command or the host ([spec](spec/OVERLAY_V2.md) §4). GitHub shows a limited number of annotations per step; the job log lists every one.
 
@@ -355,7 +367,7 @@ After the policy's `expires_on`, every rule acts in `monitor` until the rules ar
 
 1. Compile the rules: `python tools/validate_overlay.py compile rules.yaml --out company-policy.json`.
 2. Store the file's content as an organization secret named `CATPILOT_POLICY_JSON`, shared with the repositories to check, and as a Dependabot secret if Dependabot opens pull requests there. GitHub limits a secret to 48 KB, less than the 256 KiB a policy may have; a policy that does not fit needs a route this package does not provide.
-3. Copy `deploy/ci/catpilot-pr-check.yml`. Replace the all-zero `ref` of the `catpilot-ai-guardrails` checkout with the full commit SHA of the release you reviewed; until you do, the checkout and so the check fail.
+3. Copy `deploy/ci/catpilot-pr-check.yml`. It runs on `opened`, `synchronize`, `reopened` and `edited` pull-request events: changing a pull request's base branch is an `edited` event and changes which files are compared, so the check runs again. Replace the all-zero `ref` of the `catpilot-ai-guardrails` checkout with the full commit SHA of the release you reviewed; until you do, the checkout and so the check fail.
 4. Require it before merging. Preferably, as a required workflow: an organization ruleset with "Require workflows to pass before merging", naming the file in a central repository at a pinned ref. By GitHub's documentation that runs the workflow from the central repository, so a pull request cannot change it; not verified by Catpilot. Otherwise commit it to each repository's `.github/workflows/`, require the `catpilot-pr-check` job ("Require status checks to pass" in branch protection or a ruleset), and require code-owner review for `.github/workflows/`.
 
 **Threat model.** The check is for a pull request that adds or changes a deploy or a force push the company's rules do not allow. The template keeps the pull request away from what checks it:
@@ -375,8 +387,8 @@ What it does not protect against:
 
 - Files the pull request does not add or change: an unchanged reusable workflow, composite action or script that a changed file calls.
 - What a command calls: `npm run deploy` is not followed into `package.json`, nor `./deploy.sh` into the script.
-- Reusable workflows and actions from other repositories, deploy actions not in the table, and Docker actions.
-- A bare force push, or a push to `HEAD`, in a workflow: the branch it runs on is not something the check can read, and the hook reads the checked-out branch instead.
+- Reusable workflows and actions from other repositories, deploy and push actions not in the tables, and a Docker image's own entrypoint when the step or action does not name one.
+- A variable an action exports for the steps after it (`core.exportVariable`): the check reads `env:` values as written, and sees only a step's own write to `GITHUB_ENV`.
 - The built-in protected branches, which are the hooks' own list: the check applies company rules only.
 - Merge queues: a required check must also report on `merge_group`, which the template does not handle.
 - Everything the hook does not cover ([exact coverage](../hooks/README.md#exact-coverage-3)).

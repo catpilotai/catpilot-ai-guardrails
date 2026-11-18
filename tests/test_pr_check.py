@@ -130,6 +130,7 @@ class FileTypeTests(unittest.TestCase):
             "action.yml": "action", ".github/actions/deploy/action.yaml": "action",
             "package.json": "package.json", "apps/web/package.json": "package.json", "package-lock.json": None,
             "vercel.json": "vercel.json", "site/netlify.toml": "netlify.toml", "fly.toml": "fly.toml",
+            ".GitHub/Workflows/Deploy.YML": "workflow", ".github/workflows/x.Yaml": "workflow",
             "fly.staging.toml": "fly.toml", "flyer.toml": None, "wrangler.toml": "wrangler.toml",
             "worker/wrangler.jsonc": "wrangler.jsonc", "wrangler.json": "wrangler.json", "firebase.json": "firebase.json",
             "README.md": None, "src/deploy.sh": None,
@@ -207,8 +208,13 @@ class WorkflowScanTests(unittest.TestCase):
             "git push --force origin main": True, "git push origin :release/2026.11": True,
             "git push --mirror origin": True, "git push -f origin " + BRANCH_MARKER: True,
             "git push origin main": False, "git push --force origin feature/x": False,
-            # The branch a workflow runs on is not something the check can read; the hook reads the checkout's.
-            "git push --force": False, "git push --force origin HEAD": False,
+            # The branch a workflow runs on is not something the check can read, so it is unknown, which fires.
+            "git push --force": True, "git push --force origin HEAD": True,
+            "git push --force origin $BRANCH": True, 'git push -f origin "${TARGET}"': True,
+            "git push --force origin ${{ matrix.branch }}": True,
+            "git push --force origin ${{ github.event.repository.default_branch }}": True,
+            "git push --force origin HEAD:$(git rev-parse --abbrev-ref HEAD)": True,
+            "git push origin $BRANCH": False,
         }
         for command, fires in cases.items():
             with self.subTest(command=command):
@@ -324,6 +330,171 @@ class DeployActionTests(unittest.TestCase):
                 self.assertEqual(targets(uses), [])
 
 
+class EnvTests(unittest.TestCase):
+    """Literal env: values are read into run scripts; anything unresolved is unknown, and fires."""
+
+    def doc(self, workflow_env="", job_env="", step_env="", run="git push --force origin $B", extra_steps=""):
+        def block(env, indent):
+            return ("\n" + " " * indent + "env:\n" + textwrap.indent(textwrap.dedent(env), " " * (indent + 2))) if env else ""
+        return ("name: ci\non: push%s\njobs:\n  build:\n    runs-on: ubuntu-latest%s\n    steps:\n%s      - run: %s%s\n"
+                % (block(workflow_env, 0), block(job_env, 4), extra_steps, run, block(step_env, 8)))
+
+    def fired(self, text):
+        return [rule for _, rule, _ in findings(".github/workflows/d.yml", text, rules=[branch_rule(), host_rule()])]
+
+    def test_literal_values_resolve_with_step_over_job_over_workflow(self):
+        self.assertEqual(self.fired(self.doc(workflow_env="B: main\n")), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(workflow_env="B: feature\n")), [])
+        self.assertEqual(self.fired(self.doc(workflow_env="B: main\n", job_env="B: feature\n")), [])
+        self.assertEqual(self.fired(self.doc(workflow_env="B: feature\n", job_env="B: main\n")), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(job_env="B: main\n", step_env="B: feature\n")), [])
+        self.assertEqual(self.fired(self.doc(job_env="B: feature\n", step_env="B: main\n")), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(step_env="B: feature\n", run='git push -f origin "${B}"')), [])
+        self.assertEqual(self.fired(self.doc(step_env="B: feature\n", run="git push -f origin ${{ env.B }}")), [])
+        self.assertEqual(self.fired(self.doc(step_env="B: main\n", run="git push -f origin ${{ env.B }}")), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(step_env="H: web1.apps.example.org\n", run="rsync -a dist/ app@$H:/srv")), [])
+        self.assertEqual(self.fired(self.doc(step_env="H: web1.example.org\n", run="rsync -a dist/ app@$H:/srv")), ["deploy-hosts"])
+
+    def test_anything_unresolved_is_unknown_and_fires(self):
+        cases = [
+            self.doc(),  # no env at all
+            self.doc(step_env="B: ${{ secrets.BRANCH }}\n"),  # not a literal
+            self.doc(workflow_env="B: feature\n", step_env="B: ${{ inputs.b }}\n"),  # a later level hides the literal
+            self.doc(step_env="B: \"a b\"\n"),  # not plain enough to substitute safely
+            self.doc(step_env="B: \"x'\"\n"),
+            self.doc(step_env="B: feature\n", run="B=main; git push --force origin $B"),  # the script sets it
+            self.doc(step_env="B: feature\n", run="read B; git push --force origin $B"),
+            self.doc(step_env="B: feature\n", run="git push --force origin ${B:-main}"),
+            self.doc(workflow_env="B: feature\n", job_env="${{ fromJSON(vars.ENV) }}\n"),
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.fired(text), ["protected-branches"])
+
+    def test_a_step_that_writes_github_env_leaves_only_step_values(self):
+        writer = '      - run: echo "B=main" >> "$GITHUB_ENV"\n'
+        self.assertEqual(self.fired(self.doc(job_env="B: feature\n", extra_steps=writer)), ["protected-branches"])
+        self.assertEqual(self.fired(self.doc(job_env="B: main\n", step_env="B: feature\n", extra_steps=writer)), [])
+
+    def test_resolve_script_never_resolves_the_expression_placeholder(self):
+        env = {"CATPILOT_EXPRESSION": "feature", "B": "feature"}
+        self.assertIn("$CATPILOT_EXPRESSION", pr_check.resolve_script("git push -f origin ${{ github.ref_name }}", env))
+        self.assertEqual(pr_check.resolve_script("git push -f origin $B", env), "git push -f origin feature")
+
+
+class PushActionTests(unittest.TestCase):
+    def pushes(self, uses, inputs=None):
+        return pr_check.action_pushes(uses, {k.lower(): v for k, v in (inputs or {}).items()})
+
+    def test_force_pushing_actions_name_their_branch(self):
+        cases = [
+            ("JamesIves/github-pages-deploy-action@v4", {}, ["gh-pages"]),
+            ("JamesIves/github-pages-deploy-action@v4", {"branch": "main"}, ["main"]),
+            ("JamesIves/github-pages-deploy-action@v4", {"branch": "refs/heads/main", "force": "true"}, ["main"]),
+            ("JamesIves/github-pages-deploy-action@v4", {"branch": "main", "force": "false"}, []),
+            ("JamesIves/github-pages-deploy-action@v4", {"branch": "${{ inputs.branch }}"}, [None]),
+            ("peaceiris/actions-gh-pages@v4", {"publish_branch": "main"}, []),
+            ("peaceiris/actions-gh-pages@v4", {"publish_branch": "main", "force_orphan": "true"}, ["main"]),
+            ("peaceiris/actions-gh-pages@v4", {"force_orphan": "true"}, ["gh-pages"]),
+            ("peaceiris/actions-gh-pages@v4", {"force_orphan": "${{ inputs.orphan }}"}, ["gh-pages"]),
+            ("ad-m/github-push-action@v0.8.0", {"branch": "main"}, []),
+            ("ad-m/github-push-action@v0.8.0", {"branch": "main", "force": "true"}, ["main"]),
+            ("ad-m/github-push-action@v0.8.0", {"force_with_lease": "true"}, [None]),
+            ("ad-m/github-push-action@v0.8.0", {"branch": "$B", "force": "true"}, [None]),
+            ("actions/checkout@v4", {"ref": "main"}, []),
+        ]
+        for uses, inputs, want in cases:
+            with self.subTest(uses=uses, inputs=inputs):
+                self.assertEqual(self.pushes(uses, inputs), want)
+
+    def test_push_action_findings(self):
+        text = workflow("""\
+            - uses: JamesIves/github-pages-deploy-action@v4
+              with:
+                folder: dist
+            - uses: ad-m/github-push-action@v0.8.0
+              with:
+                force: true
+            - uses: ad-m/github-push-action@v0.8.0
+              with:
+                branch: ${{ env.TARGET }}
+                force: true
+              env:
+                TARGET: feature
+            """)
+        # JamesIves: gh-pages (not protected) and github.io (not approved); ad-m with no branch: unknown.
+        self.assertEqual(findings(".github/workflows/d.yml", text),
+                         [(7, "deploy-hosts", "error"), (10, "protected-branches", "error")])
+        self.assertEqual(findings(".github/workflows/d.yml", text, rules=[branch_rule(values=["gh-pages"])]),
+                         [(7, "protected-branches", "error"), (10, "protected-branches", "error")])
+
+
+class ShellTests(unittest.TestCase):
+    def test_a_run_step_in_another_shell_cannot_be_read(self):
+        text = workflow("""\
+            - shell: python
+              run: print("hello")
+            - shell: bash -e {0}
+              run: echo ok
+            - shell: pwsh
+              run: Write-Output ok
+            - shell: ${{ matrix.shell }}
+              run: echo ok
+            """)
+        self.assertEqual(findings(".github/workflows/d.yml", text), [(8, None, "error"), (14, None, "error")])
+        self.assertEqual(findings(".github/workflows/d.yml", text, rules=[host_rule("monitor")]),
+                         [(8, None, "warning"), (14, None, "warning")])
+
+    def test_defaults_run_shell_at_job_and_workflow_level(self):
+        workflow_default = "name: ci\non: push\ndefaults:\n  run:\n    shell: cmd\njobs:\n  a:\n    runs-on: windows-latest\n" \
+                           "    steps:\n      - run: dir\n      - shell: bash\n        run: echo ok\n"
+        self.assertEqual(findings(".github/workflows/d.yml", workflow_default), [(10, None, "error")])
+        job_default = "name: ci\non: push\njobs:\n  a:\n    runs-on: x\n    defaults:\n      run:\n        shell: perl {0}\n" \
+                      "    steps:\n      - run: print 1\n  b:\n    runs-on: x\n    steps:\n      - run: echo ok\n"
+        self.assertEqual(findings(".github/workflows/d.yml", job_default), [(10, None, "error")])
+
+    def test_composite_action_step_shells(self):
+        text = "runs:\n  using: composite\n  steps:\n    - shell: python\n      run: print(1)\n    - shell: sh\n      run: echo\n"
+        self.assertEqual(findings("action.yml", text), [(5, None, "error")])
+
+    def test_the_annotation_has_fixed_text(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            (finding,) = pr_check.check_file(".github/workflows/d.yml", workflow(
+                "- shell: python\n  run: print('%s')\n" % CMD_HOST_MARKER).encode(), parsed(), cwd)
+        self.assertIn("could not read this run step", finding.message)
+        self.assertNotIn(CMD_HOST_MARKER, finding.message)
+
+
+class DockerActionTests(unittest.TestCase):
+    def test_a_docker_step_reads_its_entrypoint_and_args(self):
+        text = workflow("""\
+            - uses: docker://alpine:3.20
+              with:
+                entrypoint: sh
+                args: -c "git push --force origin main"
+            - uses: docker://node:22
+              with:
+                args: npx vercel --prod
+            - uses: docker://alpine:3.20
+            """)
+        self.assertEqual(findings(".github/workflows/d.yml", text), [(7, "protected-branches", "error"), (11, "deploy-hosts", "error")])
+
+    def test_a_docker_action_reads_its_entrypoints_and_args(self):
+        text = textwrap.dedent("""\
+            name: deploy
+            runs:
+              using: docker
+              image: Dockerfile
+              pre-entrypoint: git push --force origin main
+              entrypoint: vercel
+              args:
+                - --prod
+                - ${{ inputs.token }}
+            """)
+        self.assertEqual(findings("action.yml", text), [(6, "deploy-hosts", "error"), (5, "protected-branches", "error")])
+        self.assertEqual(findings("action.yml", "runs:\n  using: docker\n  image: Dockerfile\n"), [])
+
+
 class ConfigFileScanTests(unittest.TestCase):
     def test_package_json_scripts(self):
         text = textwrap.dedent("""\
@@ -353,6 +524,8 @@ class ConfigFileScanTests(unittest.TestCase):
         self.assertEqual(findings("vercel.json", text), [(2, "deploy-hosts", "error"), (3, "deploy-hosts", "error")])
         # The file alone implies no vercel.app deploy.
         self.assertEqual(findings("vercel.json", '{"cleanUrls": true, "alias": "preview"}'), [])
+        text = '{\n  "ignoreCommand": "git push --force origin main",\n  "devCommand": "vercel --prod"\n}'
+        self.assertEqual(findings("vercel.json", text), [(2, "protected-branches", "error"), (3, "deploy-hosts", "error")])
 
     def test_netlify_toml_commands_and_no_implied_deploy(self):
         self.assertEqual(findings("netlify.toml", '[build]\n  publish = "dist"\n  command = "npm run build"\n'), [])
@@ -364,6 +537,18 @@ class ConfigFileScanTests(unittest.TestCase):
               command = "npm run build && scp -r dist deploy@web1.example.org:/srv"
             """)
         self.assertEqual(findings("netlify.toml", text), [(5, "deploy-hosts", "error")])
+        text = textwrap.dedent("""\
+            [build]
+              ignore = "git push --force origin main"
+
+            [dev]
+              command = "netlify deploy --prod"
+
+            [context.preview]
+              ignore = "scp -r dist deploy@web1.example.org:/srv"
+            """)
+        self.assertEqual(findings("netlify.toml", text),
+                         [(2, "protected-branches", "error"), (5, "deploy-hosts", "error"), (8, "deploy-hosts", "error")])
 
     def test_fly_toml_app(self):
         text = '# app config\napp = "zq-app"\nprimary_region = "ams"\n'
@@ -399,7 +584,16 @@ class ConfigFileScanTests(unittest.TestCase):
         self.assertEqual(findings("wrangler.toml", text, rules=rules),
                          [(5, "deploy-hosts", "error"), (7, "deploy-hosts", "error"), (12, "deploy-hosts", "error"),
                           (16, "deploy-hosts", "error")])
-        self.assertEqual(findings("wrangler.toml", 'name = "w"\nmain = "src/index.ts"\n', rules=rules), [])
+        # No route: wrangler serves the Worker on workers.dev unless workers_dev is false. Environments inherit it.
+        self.assertEqual(findings("wrangler.toml", 'name = "w"\nmain = "src/index.ts"\n', rules=rules), [(1, "deploy-hosts", "error")])
+        self.assertEqual(findings("wrangler.toml", 'name = "w"\nworkers_dev = false\n[env.x]\nname = "x"\n', rules=rules), [])
+        self.assertEqual(findings("wrangler.toml", 'name = "w"\nroutes = ["a.apps.example.org/*"]\n[env.x]\nname = "x"\n',
+                                  rules=rules), [(1, "deploy-hosts", "error")])
+        self.assertEqual(findings("wrangler.toml", 'name = "w"\n', rules=[host_rule(values=["*.workers.dev"])]), [])
+        # A Pages project deploys under pages.dev.
+        self.assertEqual(findings("wrangler.toml", 'name = "site"\npages_build_output_dir = "dist"\n', rules=rules),
+                         [(2, "deploy-hosts", "error")])
+        self.assertEqual(findings("wrangler.toml", 'pages_build_output_dir = "dist"\n', rules=[host_rule(values=["*.pages.dev"])]), [])
 
     def test_wrangler_jsonc_with_comments_and_trailing_commas(self):
         text = textwrap.dedent("""\
@@ -426,9 +620,12 @@ class ConfigFileScanTests(unittest.TestCase):
               "functions": { "predeploy": ["npm run build", "git push --force origin main"] }
             }
             """)
-        self.assertEqual(findings("firebase.json", text), [(3, "deploy-hosts", "error"), (6, "protected-branches", "error")])
+        # The second site names no site: it deploys to the project's default site under web.app.
+        self.assertEqual(findings("firebase.json", text),
+                         [(3, "deploy-hosts", "error"), (2, "deploy-hosts", "error"), (6, "protected-branches", "error")])
         self.assertEqual(findings("firebase.json", text, rules=[host_rule(values=["*.web.app"])]), [])
-        self.assertEqual(findings("firebase.json", '{"hosting": {"public": "dist"}}'), [])
+        self.assertEqual(findings("firebase.json", '{\n  "hosting": {"public": "dist"}\n}'), [(2, "deploy-hosts", "error")])
+        self.assertEqual(findings("firebase.json", '{"firestore": {"rules": "firestore.rules"}}'), [])
 
 
 # ----------------------------------------------------------------- modes, expiry, output
@@ -528,7 +725,15 @@ class PrivacyTests(RepoCase):
                 - uses: appleboy/scp-action@v0.1.7
                   with:
                     host: %s
-                """ % (scp, push, CMD_HOST_MARKER, CMD_HOST_MARKER)),
+                - uses: JamesIves/github-pages-deploy-action@v4
+                  with:
+                    branch: %s
+                - run: git push --force origin $B
+                  env:
+                    B: %s
+                - shell: python
+                  run: print("%s")
+                """ % (scp, push, CMD_HOST_MARKER, CMD_HOST_MARKER, CMD_BRANCH_MARKER, CMD_BRANCH_MARKER, CMD_HOST_MARKER)),
             "package.json": json.dumps({"scripts": {"a": scp, "b": push}}, indent=2),
             "vercel.json": json.dumps({"alias": [CMD_HOST_MARKER], "buildCommand": scp}),
             "netlify.toml": '[build]\ncommand = "%s"\n' % scp,
@@ -731,7 +936,8 @@ class WorkflowTemplateTests(unittest.TestCase):
         return step["with"]
 
     def test_runs_on_pull_requests_read_only(self):
-        self.assertEqual(self.workflow["on"], {"pull_request": ""})
+        # edited: retargeting a pull request's base changes what is diffed, so it must run the check again.
+        self.assertEqual(self.workflow["on"], {"pull_request": {"types": ["opened", "synchronize", "reopened", "edited"]}})
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
         self.assertNotIn("permissions", self.job)
 

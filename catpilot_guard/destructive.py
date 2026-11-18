@@ -374,6 +374,7 @@ def current_branch(cwd: str, git_dir_path: str | None = None) -> str | None:
         return None
 
 
+BRACED_EXPANSION = re.compile(r"\$\{[^}]*\}")
 # git push options that take their value as the next argument.
 PUSH_VALUE_OPTIONS = {"--push-option", "--repo", "--receive-pack", "--exec", "--recurse-submodules"}
 # git's own options, before the subcommand, that take their value as the next argument. -C and --git-dir also say
@@ -392,9 +393,11 @@ def git_push_rewrites(args: list[str], cwd: str) -> tuple[bool, list[str | None]
     `-C` and `--git-dir` also say whose HEAD a bare push uses.
     branches are the destination branches a force push (--force, -f, --force-with-lease, --force-if-includes or a
     +refspec), a deletion (--delete, -d, or an empty source `:branch`) aims at, with refs/heads/ stripped and HEAD
-    read as the checked-out branch ("" when that is unknown). A bare force push, with no refspec, adds the
-    checked-out branch, or None when it is detached or there is no repository. The built-in check
-    (_git_finding) and the company-rules hook (catpilot_guard/company_rules.py) both read pushes this way.
+    read as the checked-out branch ("" when that is unknown). A destination the command does not spell out, one
+    holding a shell variable or a command substitution (`$BRANCH`, `"${TARGET}"`, a backtick), is None: unknown. A
+    bare force push, with no refspec, adds the checked-out branch, or None when it is detached or there is no
+    repository. The built-in check (_git_finding) treats None as protected, and the company-rules hook
+    (catpilot_guard/company_rules.py) fires every protected_branch rule on it; both read pushes this way.
     """
     index, repo, git_dir_path = 0, cwd, None
     while index < len(args) and args[index].startswith("-"):
@@ -450,13 +453,17 @@ def git_push_rewrites(args: list[str], cwd: str) -> tuple[bool, list[str | None]
     if not mirror:
         for spec in positional[1:]:
             plus = spec.startswith("+")
-            spec = spec.lstrip("+")
+            # A ${...} expansion may hold a colon (`${B:-main}`) that is not the refspec's: read it as one variable.
+            spec = BRACED_EXPANSION.sub("$VAR", spec.lstrip("+"))
             source, _, destination = spec.partition(":") if ":" in spec else (spec, "", spec)
             if "*" in destination and (delete or plus or force or prune):
                 mirror = True  # a pattern can rewrite or delete every branch it covers
                 branches = []
                 break
             if not (delete or plus or force or (":" in spec and source == "")):
+                continue
+            if "$" in destination or "`" in destination:
+                branches.append(None)  # a variable or a substitution: the branch is unknown
                 continue
             destination = destination[len("refs/heads/"):] if destination.startswith("refs/heads/") else destination
             if destination == "HEAD":
