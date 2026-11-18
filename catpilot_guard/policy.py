@@ -9,6 +9,13 @@ parse YAML, so they read this instead. The file holds, and only holds:
   expires_on               the rules file's expiry date; after it the rules act in monitor (decision 3)
   rules                    each with id, kind, mode (resolved: the rule's own or default_mode), values, and
                            use_instead_text when the rule names an approved alternative
+  exceptions               only when the rules file has expiring exceptions (OVERLAY_V2.md §3.1): each with id, rule
+                           (the id of the rule it relaxes), allows (values of that rule's kind), expires_on (no later
+                           than the policy's), and where ({repositories: [...]}) when it is limited to repositories
+
+The format version stays 1 with exceptions: `exceptions` is an optional key, written only when the file has exceptions,
+so a policy without them is unchanged. A hook from before exceptions refuses a policy that has the key, as it refuses any
+unknown key, and applies no company rule (policy_error, malformed): install.sh installs the hook and the policy together.
 
 Where it may come from (§2.2, §6.1 invariant 6): only an absolute path on the hook's own command line, never
 the project, the home directory or an environment variable. The file must be a regular file, not a symlink, with
@@ -35,8 +42,8 @@ FORMAT_VERSION = 1
 MODES = ("monitor", "ask", "block")
 # The kinds a compiled policy may carry: those the validator accepts (tools/validate_overlay.py ACCEPTED_KINDS).
 # ENFORCED_KINDS are the ones the company-rules hook acts on; a rule of another known kind is carried and skipped.
-KINDS = ("protected_branch", "deploy_host")
-ENFORCED_KINDS = ("protected_branch", "deploy_host")
+KINDS = ("protected_branch", "deploy_host", "package_registry", "cloud_account")
+ENFORCED_KINDS = ("protected_branch", "deploy_host", "package_registry", "cloud_account")
 RULES_MAX = 50
 VALUES_MAX = 100
 VALUE_MAX_CHARS = 255
@@ -51,8 +58,13 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 CONTROL = re.compile("[\x00-\x1f\x7f]")
 TOP_KEYS = {"format", "format_version", "source_sha256", "expires_on", "rules"}
+TOP_OPTIONAL = {"exceptions"}
 RULE_KEYS = {"id", "kind", "mode", "values"}
 RULE_OPTIONAL = {"use_instead_text"}
+EXCEPTION_KEYS = {"id", "rule", "allows", "expires_on"}
+EXCEPTION_OPTIONAL = {"where"}
+EXCEPTIONS_MAX = 50
+REPOSITORY_MAX_CHARS = 201  # owner/name, as tools/validate_overlay.py REPOSITORY_RE allows
 
 
 class PolicyError(Exception):
@@ -69,14 +81,47 @@ class Rule:
 
 
 @dataclass(frozen=True)
+class RuleException:
+    """An expiring exception to one company rule (OVERLAY_V2.md §3.1). It never touches a built-in check."""
+
+    id: str
+    rule: str
+    allows: tuple
+    expires_on: dt.date
+    repositories: tuple | None  # where.repositories; None when the exception is not limited to repositories
+
+    def applies(self, today: dt.date, repository: str | None = None) -> bool:
+        """Whether this exception relaxes its rule on `today`; the expiry day itself is current.
+
+        An exception with `where` applies only to a repository it lists, ignoring case. The hooks pass no repository,
+        so it never applies in a hook: a repository name read from a working tree is something the agent can change.
+        This is the seam for the pull-request check, which passes none yet either; it will pass the repository its CI
+        platform names."""
+        if self.expires_on < today:
+            return False
+        if self.repositories is None:
+            return True
+        return repository is not None and repository.casefold() in {name.casefold() for name in self.repositories}
+
+
+@dataclass(frozen=True)
 class Policy:
     source_sha256: str
     expires_on: dt.date
     rules: tuple
+    exceptions: tuple = ()
 
     def expired(self, today: dt.date | None = None) -> bool:
         """True after expires_on, by the machine's local date; the expiry day itself is current."""
         return self.expires_on < (today or dt.date.today())
+
+    def active_exceptions(self, rule_id: str, today: dt.date | None = None) -> tuple:
+        """The exceptions a hook applies to this rule today, in policy order: not expired, not limited by `where`. Empty
+        once the policy itself has expired, though compile never writes an exception that outlives it."""
+        today = today or dt.date.today()
+        if self.expired(today):
+            return ()
+        return tuple(exception for exception in self.exceptions if exception.rule == rule_id and exception.applies(today))
 
 
 def package_owner() -> int:
@@ -165,6 +210,47 @@ def _rule(value: object, seen: set) -> Rule:
     )
 
 
+def _date(value: object) -> dt.date:
+    if not isinstance(value, str) or not ISO_DATE.fullmatch(value):
+        raise PolicyError("malformed")
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError:
+        raise PolicyError("malformed") from None
+
+
+def _list(value: object, longest_item: int, most: int) -> tuple:
+    if not isinstance(value, list) or not 1 <= len(value) <= most:
+        raise PolicyError("malformed")
+    return tuple(_string(item, longest_item) for item in value)
+
+
+def _exception(value: object, rule_ids: set, seen: set, policy_expires: dt.date) -> RuleException:
+    if not isinstance(value, dict):
+        raise PolicyError("malformed")
+    keys = set(value)
+    if not EXCEPTION_KEYS <= keys or keys - EXCEPTION_KEYS - EXCEPTION_OPTIONAL:
+        raise PolicyError("malformed")
+    exception_id = value["id"]
+    if not isinstance(exception_id, str) or len(exception_id) > 64 or not RULE_ID.fullmatch(exception_id) or exception_id in seen:
+        raise PolicyError("malformed")
+    seen.add(exception_id)
+    rule = value["rule"]
+    if not isinstance(rule, str) or rule not in rule_ids:
+        raise PolicyError("malformed")
+    expires_on = _date(value["expires_on"])
+    if expires_on > policy_expires:  # an exception never outlives the file
+        raise PolicyError("malformed")
+    repositories = None
+    if "where" in value:
+        where = value["where"]
+        if not isinstance(where, dict) or set(where) != {"repositories"}:
+            raise PolicyError("malformed")
+        repositories = _list(where["repositories"], REPOSITORY_MAX_CHARS, VALUES_MAX)
+    return RuleException(id=exception_id, rule=rule, allows=_list(value["allows"], VALUE_MAX_CHARS, VALUES_MAX),
+                         expires_on=expires_on, repositories=repositories)
+
+
 def parse(raw: bytes) -> Policy:
     """A policy from its bytes. Raises PolicyError("malformed") for anything but the format compile writes."""
     if len(raw) > MAX_POLICY_BYTES:
@@ -173,25 +259,28 @@ def parse(raw: bytes) -> Policy:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise PolicyError("malformed") from None
-    if not isinstance(data, dict) or set(data) != TOP_KEYS:
+    if not isinstance(data, dict) or not TOP_KEYS <= set(data) or set(data) - TOP_KEYS - TOP_OPTIONAL:
         raise PolicyError("malformed")
     if data["format"] != FORMAT or data["format_version"] != FORMAT_VERSION or isinstance(data["format_version"], bool):
         raise PolicyError("malformed")
     sha = data["source_sha256"]
     if not isinstance(sha, str) or not SHA256.fullmatch(sha):
         raise PolicyError("malformed")
-    expires = data["expires_on"]
-    if not isinstance(expires, str) or not ISO_DATE.fullmatch(expires):
-        raise PolicyError("malformed")
-    try:
-        expires_on = dt.date.fromisoformat(expires)
-    except ValueError:
-        raise PolicyError("malformed") from None
+    expires_on = _date(data["expires_on"])
     rules = data["rules"]
     if not isinstance(rules, list) or not 1 <= len(rules) <= RULES_MAX:
         raise PolicyError("malformed")
     seen: set = set()
-    return Policy(source_sha256=sha, expires_on=expires_on, rules=tuple(_rule(rule, seen) for rule in rules))
+    parsed = tuple(_rule(rule, seen) for rule in rules)
+    exceptions = ()
+    if "exceptions" in data:
+        listed = data["exceptions"]
+        if not isinstance(listed, list) or not 1 <= len(listed) <= EXCEPTIONS_MAX:
+            raise PolicyError("malformed")
+        rule_ids = {rule.id for rule in parsed}
+        # Exception ids share one namespace with rule ids (OVERLAY_V2.md §6.3 rule 3).
+        exceptions = tuple(_exception(entry, rule_ids, seen, expires_on) for entry in listed)
+    return Policy(source_sha256=sha, expires_on=expires_on, rules=parsed, exceptions=exceptions)
 
 
 def load(path: str | Path, owner: int | None = None) -> Policy:

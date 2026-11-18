@@ -1023,35 +1023,49 @@ SCANNERS = {
 # ----------------------------------------------------------------- deciding
 
 
-def rules_for_targets(targets, policy: policy_module.Policy) -> list:
-    """The deploy_host rules some target fires: an allow-list, so a target no value of the rule covers."""
-    return [
-        rule for rule in policy.rules
-        if rule.kind == "deploy_host" and any(not any(host_covered(v, t) for v in rule.values) for t in targets)
-    ]
+def rules_for_targets(targets, policy: policy_module.Policy, today=None) -> list:
+    """The deploy_host rules some target fires: an allow-list, so a target no value of the rule, and no active exception
+    to it (as the hook applies them), covers."""
+    fired = []
+    for rule in policy.rules:
+        if rule.kind != "deploy_host":
+            continue
+        allows = list(rule.values) + [a for e in policy.active_exceptions(rule.id, today) for a in e.allows]
+        if any(not any(host_covered(v, t) for v in allows) for t in targets):
+            fired.append(rule)
+    return fired
 
 
-def hits_for(item, policy: policy_module.Policy, cwd: str) -> list:
+def hits_for(item, policy: policy_module.Policy, cwd: str, today=None) -> list:
     """(line, rule) for each rule an item fires. A script is decided as a whole, as the hook decides a command, and
-    each rule is pointed at the lines that fire it on their own, or at the script's key when none does."""
+    each rule is pointed at the lines that fire it on their own, or at the script's key when none does. Active
+    exceptions without `where` apply as in the hook."""
     if isinstance(item, Targets):
-        return [(item.line, rule) for rule in rules_for_targets(item.targets, policy)]
+        return [(item.line, rule) for rule in rules_for_targets(item.targets, policy, today)]
     if isinstance(item, Pushes):
-        # As the hook reads a push: an unknown branch could be any branch, so it fires every protected_branch rule.
-        return [
-            (item.line, rule) for rule in policy.rules
-            if rule.kind == "protected_branch"
-            and any(not b or any(policy_module.branch_matches(v, b) for v in rule.values) for b in item.branches)
-        ]
+        # As the hook reads a push: an unknown branch could be any branch, so it fires every protected_branch rule (no
+        # exception covers it); a named branch the rule covers fires unless an active exception allows it.
+        def fires(rule, branch) -> bool:
+            if not branch:
+                return True
+            if not any(policy_module.branch_matches(v, branch) for v in rule.values):
+                return False
+            return not any(policy_module.branch_matches(a, branch)
+                           for e in policy.active_exceptions(rule.id, today) for a in e.allows)
+        return [(item.line, rule) for rule in policy.rules
+                if rule.kind == "protected_branch" and any(fires(rule, b) for b in item.branches)]
     text = _expressions_as_variables(item.text)
-    fired = matched_rules(text, cwd, policy, branch_known=False)
+    # matched_rules gives (rule, exception ids); a rule fires when no active exception covered all it matched.
+    # Only the kinds this check documents: package_registry and cloud_account rules are not applied here yet.
+    fired = [rule for rule, excepted_by in matched_rules(text, cwd, policy, today=today, branch_known=False)
+             if not excepted_by and rule.kind in BOTH_KINDS]
     if not fired:
         return []
     ids = {rule.id for rule in fired}
     hits, placed = [], set()
     if item.exact:
         for line, logical in logical_lines(text, item.start_line):
-            for rule in matched_rules(logical, cwd, policy, branch_known=False):
+            for rule in [r for r, excepted_by in matched_rules(logical, cwd, policy, today=today, branch_known=False) if not excepted_by]:
                 if rule.id in ids:
                     hits.append((line, rule))
                     placed.add(rule.id)
@@ -1110,7 +1124,7 @@ def check_file(path: str, raw: bytes | None, policy: policy_module.Policy, cwd: 
                 seen.add((item.line, None))
                 findings.append(unreadable_finding(path, kind_of_file, policy, today, item.line, UNREADABLE_STEP))
             continue
-        for line, rule in hits_for(item, policy, cwd):
+        for line, rule in hits_for(item, policy, cwd, today):
             if (line, rule.id) in seen:
                 continue
             seen.add((line, rule.id))

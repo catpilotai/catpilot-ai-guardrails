@@ -4,6 +4,7 @@ block fail), §4 (an annotation never prints a listed value) and §6.1. Offline,
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
@@ -783,6 +784,63 @@ class ConfigFileScanTests(unittest.TestCase):
 
 
 # ----------------------------------------------------------------- modes, expiry, output
+
+
+class MergedKindsAndExceptionsTests(unittest.TestCase):
+    """The kinds and exceptions main gained while this check was built: exceptions without `where` apply as in the hook,
+    and package_registry and cloud_account rules are not applied here yet."""
+
+    def check(self, path, text, rules, exceptions=(), today=dt.date(2026, 11, 18)):
+        data = policy_dict(rules)
+        if exceptions:
+            data["exceptions"] = list(exceptions)
+        with tempfile.TemporaryDirectory() as cwd:
+            out = pr_check.check_file(path, text.encode("utf-8"), pol.parse(json.dumps(data).encode()), cwd, today)
+        return [(f.line, f.rule_id, f.level) for f in out]
+
+    def exception(self, rule, allows, expires_on="2026-12-31", **extra):
+        return dict({"id": "temp-" + rule, "rule": rule, "allows": list(allows), "expires_on": expires_on}, **extra)
+
+    def test_registry_and_account_rules_do_not_fire_here_yet(self):
+        rules = [{"id": "registries", "kind": "package_registry", "mode": "block", "values": ["https://registry.npmjs.org"]},
+                 {"id": "accounts", "kind": "cloud_account", "mode": "block", "values": ["111111111111"]}]
+        text = workflow("""\
+            - run: |
+                npm publish --registry https://npm.example.net
+                aws sts assume-role --role-arn arn:aws:iam::222222222222:role/x --role-session-name s
+            """)
+        self.assertEqual(self.check(".github/workflows/x.yml", text, rules), [])
+        self.assertEqual(self.check(".github/workflows/x.yml", text, rules + [host_rule()]), [])
+
+    def test_an_active_exception_allows_a_deploy_host_and_an_expired_one_does_not(self):
+        text = workflow("- run: vercel --prod\n")
+        self.assertEqual(self.check(".github/workflows/x.yml", text, [host_rule()]), [(7, "deploy-hosts", "error")])
+        allow = self.exception("deploy-hosts", ["*.vercel.app"])
+        self.assertEqual(self.check(".github/workflows/x.yml", text, [host_rule()], [allow]), [])
+        self.assertEqual(self.check("fly.toml", 'app = "web"\n', [host_rule()]), [(1, "deploy-hosts", "error")])
+        self.assertEqual(self.check("fly.toml", 'app = "web"\n', [host_rule()], [self.exception("deploy-hosts", ["*.fly.dev"])]), [])
+        self.assertEqual(self.check(".github/workflows/x.yml", text, [host_rule()], [allow], today=dt.date(2027, 1, 1)),
+                         [(7, "deploy-hosts", "error")])
+        limited = self.exception("deploy-hosts", ["*.vercel.app"], where={"repositories": ["acme/web"]})
+        self.assertEqual(self.check(".github/workflows/x.yml", text, [host_rule()], [limited]), [(7, "deploy-hosts", "error")])
+
+    def test_an_active_exception_allows_a_named_branch_never_an_unknown_one(self):
+        allow = self.exception("protected-branches", ["main"])
+        self.assertEqual(self.check(".github/workflows/x.yml", workflow("- run: git push --force origin main\n"), [branch_rule()],
+                                    [allow]), [])
+        for run in ("git push --force origin $BRANCH", "git push --mirror origin"):
+            with self.subTest(run=run):
+                self.assertEqual(self.check(".github/workflows/x.yml", workflow("- run: %s\n" % run), [branch_rule()], [allow]),
+                                 [(7, "protected-branches", "error")])
+        action = workflow("""\
+            - uses: JamesIves/github-pages-deploy-action@v4
+              with:
+                branch: main
+            """)
+        self.assertEqual(self.check(".github/workflows/x.yml", action, [branch_rule()]), [(7, "protected-branches", "error")])
+        self.assertEqual(self.check(".github/workflows/x.yml", action, [branch_rule()], [allow]), [])
+        unknown = action.replace("branch: main", "branch: ${{ inputs.branch }}")
+        self.assertEqual(self.check(".github/workflows/x.yml", unknown, [branch_rule()], [allow]), [(7, "protected-branches", "error")])
 
 
 class ModeTests(RepoCase):

@@ -201,6 +201,7 @@ SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 # Shell options that take a separate value (`bash -o pipefail -c ...`, `bash --rcfile FILE -c ...`).
 SHELL_VALUE_OPTIONS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")
+ENV_PAIR = re.compile(r"^[^=]+=")
 KUBECTL_VALUE_FLAGS = {"-n", "--namespace", "-l", "--selector", "-f", "--filename", "-o", "--output", "--context",
                        "--cluster", "--kubeconfig", "--field-selector", "--grace-period", "--timeout", "-k", "--kustomize",
                        "-s", "--server", "--user", "--token", "--as"}
@@ -259,29 +260,40 @@ def _tokens(command: str) -> list[str]:
         return [t.strip("\"'") for t in command.replace("\n", " ; ").replace(";", " ; ").replace("&&", " && ").replace("|", " | ").split()]
 
 
-def _simple_commands(command: str, depth: int = 0):
-    """Yield argv lists for each simple command, with wrappers removed and `sh -c` bodies expanded."""
+def _simple_commands(command: str, depth: int = 0, assignments: list[str] | None = None):
+    """Yield argv lists for each simple command, with wrappers removed and `sh -c` bodies expanded.
+
+    When `assignments` is a list, every variable assignment dropped on the way (`NAME=value` before a command, on
+    its own, or after `env`), in `bash -c` bodies too, is appended to it as written, as the commands are yielded."""
     current: list[str] = []
     for token in _tokens(command) + [";"]:
         if token in SEPARATORS or set(token) <= set(";&|()\n"):
             if current:
-                yield from _unwrap(current, depth)
+                yield from _unwrap(current, depth, assignments)
             current = []
         else:
             current.append(token)
 
 
-def _strip_wrappers(argv: list[str]) -> list[str]:
-    """Drop leading assignments and wrapper commands (sudo, env, timeout 60, ...) with their options."""
+def _strip_wrappers(argv: list[str], assignments: list[str] | None = None) -> list[str]:
+    """Drop leading assignments and wrapper commands (sudo, env, timeout 60, ...) with their options. The assignments
+    dropped are appended to `assignments` when it is a list."""
     while True:
         while argv and ASSIGNMENT.match(argv[0]):
+            if assignments is not None:
+                assignments.append(argv[0])
             argv = argv[1:]
         if not argv:
             return argv
         name = os.path.basename(argv[0].lstrip("`"))
         if name in WRAPPERS:
             argv = argv[1:]
-            while argv and (argv[0].startswith("-") or ASSIGNMENT.match(argv[0])):
+            # env takes every word with `=` before the command as NAME=VALUE, a name the shell would refuse included
+            # (`env 'A-B=x/y' rm -rf /` runs rm).
+            pair = ENV_PAIR if name == "env" else ASSIGNMENT
+            while argv and (argv[0].startswith("-") or pair.match(argv[0])):
+                if assignments is not None and pair.match(argv[0]):
+                    assignments.append(argv[0])
                 takes_value = argv[0] in ("-u", "-g", "-n", "-C")
                 argv = argv[2:] if takes_value else argv[1:]
         elif name in WRAPPER_SPECS:
@@ -316,15 +328,15 @@ def _shell_command_string(args: list[str]) -> str | None:
     return args[index] if has_c and index < len(args) else None
 
 
-def _unwrap(argv: list[str], depth: int):
-    argv = _strip_wrappers(argv)
+def _unwrap(argv: list[str], depth: int, assignments: list[str] | None = None):
+    argv = _strip_wrappers(argv, assignments)
     if not argv:
         return
     name = os.path.basename(argv[0].lstrip("`"))
     if name in SHELLS and depth < 3:
         script = _shell_command_string(argv[1:])
         if script is not None:
-            yield from _simple_commands(script, depth + 1)
+            yield from _simple_commands(script, depth + 1, assignments)
             return
     yield [name] + argv[1:]
 
