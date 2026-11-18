@@ -189,7 +189,8 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   `HEAD`): `git push --force origin $BRANCH`, `"${TARGET}"`, `${B:-main}`,
   `release/$V`, `"ma$X"` and `"$P/main"` are blocked, while `feature/$TICKET`,
   `"v$VERSION"` and a tag (`:refs/tags/$TAG`) are not. Braces are expanded as
-  bash expands them (`:{feature,develop}` deletes both), up to 64 words. A variable whose value
+  bash expands them (`:{feature,develop}` deletes both); more than 64 words
+  is unknown when the push forces or deletes. A variable whose value
   holds a space or a colon, which splits the word or the refspec, is not seen;
   in the pull-request check a `${{ ... }}` that names a context a pull
   request's author sets (`github.event.*` other than a number, `github.head_ref`)
@@ -241,13 +242,16 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   - a bare push given `-c push.default=matching` with a force;
   - a bare force push given `-c push.default=upstream` or a `branch.*`
     setting, whose destination is then unknown;
-  - a bare push after a command earlier in the line sets
-    `remote.<name>.mirror`, `remote.<name>.push`, an include, or
-    `push.default` to `matching`, `upstream` or `tracking` (`git config KEY
-    VALUE`, `git config set`, `git remote add --mirror`); a read (`git config
-    --get`) does not, and a push that names a refspec is never a mirror (git
-    refuses a refspec with `remote.<name>.mirror`, and a refspec overrides
-    `remote.<name>.push`). The same holds for a `GIT_CONFIG_*` assignment.
+  - a bare push after a command earlier in the line sets a true
+    `remote.<name>.mirror`, `remote.<name>.push` or an include (`git config
+    KEY VALUE`, `git config set`, `git remote add --mirror` or
+    `--mirror=push`); `push.default` set to `matching`, `upstream` or
+    `tracking` makes a bare force push's branch unknown. A read (`git config
+    --get`) and `remote.<name>.mirror false` do not count, and a push that
+    names a refspec is never a mirror (git refuses a refspec with
+    `remote.<name>.mirror`, and a refspec overrides `remote.<name>.push`); an
+    unquoted variable refspec that is empty, which makes it a bare push, is
+    not seen. The same holds for a `GIT_CONFIG_*` assignment.
 
   These settings in git's config files are not read. An
   option's value (`-o ci.skip`, `--push-option`, `--repo`) is not read as the

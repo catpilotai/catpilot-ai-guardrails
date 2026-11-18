@@ -446,6 +446,12 @@ class EnvTests(unittest.TestCase):
         # head_ref as untrusted): a major-version tag move is not a protected branch (review of fe2f878).
         self.assertEqual(self.fired(self.doc(run='git push -f origin "v${{ steps.semver.outputs.major }}"')), [])
         self.assertEqual(self.fired(self.doc(run='git push -f origin "${{ inputs.branch }}"')), ["protected-branches"])
+        for opaque in ("github.HEAD_REF", "GitHub.Event.pull_request.title", "github['head_ref']", "toJSON(github)"):
+            self.assertEqual(self.fired(self.doc(run='git push -f origin "bot/${{ %s }}"' % opaque)), ["protected-branches"], opaque)
+        self.assertEqual(self.fired(self.doc(run='git push -f origin "bot/${{ github.event.inputs.branch }}"')), [])
+        # A multi-line expression keeps the line numbers.
+        multi = "name: ci\non: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          echo ${{\n            github.sha\n          }}\n          git push --force origin main\n"
+        self.assertEqual(findings(".github/workflows/d.yml", multi, rules=[branch_rule()]), [(11, "protected-branches", "error")])
         # A tag is no branch, whatever the expression; a number or a hash cannot end the word (review of 816c933).
         self.assertEqual(self.fired(self.doc(run="git push --force origin refs/tags/${{ inputs.t }}")), [])
         self.assertEqual(self.fired(self.doc(run="git push --force origin bot/update-${{ github.run_id }}")), [])
@@ -553,6 +559,8 @@ class ShellTests(unittest.TestCase):
                 tight = "|\n          git push origin`\n            --force main\n"
                 self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, tight)), [(7, None, "error")])
                 self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "\"cp .iex.exs out\"")), [])
+                escaped = "|\n          Write-Host \"Pushing`n\" ; git push origin `\n            --force main\n"
+                self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, escaped)), [(7, None, "error")])
                 # A closing backtick of a pair is bash's command substitution, not a continuation (review of fe2f878).
                 self.assertEqual(findings(".github/workflows/d.yml", job(runs_on, "|\n          SHA=`git rev-parse --short HEAD`\n")), [])
                 fence = "|\n          cat > notes.md <<'EOF'\n          ```\n          ok\n          ```\n          EOF\n"

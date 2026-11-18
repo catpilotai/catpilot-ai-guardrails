@@ -427,11 +427,16 @@ def expand_braces(word: str, limit: int = BRACE_LIMIT):
             a, b = int(numbers.group(1)), int(numbers.group(2))
             step = abs(int(numbers.group(3) or 1)) or 1
             values = range(a, b + 1, step) if a <= b else range(a, b - 1, -step)
-            return [str(v) for v in values] if len(values) <= limit else None
-        letters = re.fullmatch(r"([A-Za-z])\.\.([A-Za-z])", body)
+            if len(values) > limit:
+                return None
+            ends = (numbers.group(1).lstrip("-"), numbers.group(2).lstrip("-"))
+            width = max(len(numbers.group(1)), len(numbers.group(2))) if any(e.startswith("0") and len(e) > 1 for e in ends) else 0
+            return [str(v).zfill(width) if width else str(v) for v in values]  # `{01..03}` pads as bash does
+        letters = re.fullmatch(r"([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?", body)
         if letters:
             a, b = ord(letters.group(1)), ord(letters.group(2))
-            return [chr(c) for c in (range(a, b + 1) if a <= b else range(a, b - 1, -1))]
+            step = abs(int(letters.group(3) or 1)) or 1
+            return [chr(c) for c in (range(a, b + 1, step) if a <= b else range(a, b - 1, -step))]
         return []
 
     search = 0
@@ -443,7 +448,8 @@ def expand_braces(word: str, limit: int = BRACE_LIMIT):
             return [word]
         end = matching(word, start)
         if end is None:
-            return [word]
+            search = start + 1  # an unmatched `{` is literal: look further on, as bash does
+            continue
         body = word[start + 1:end]
         alternatives = parts(body)
         if len(alternatives) < 2:
@@ -455,10 +461,13 @@ def expand_braces(word: str, limit: int = BRACE_LIMIT):
             continue
         words = []
         for alternative in alternatives:
-            expanded = expand_braces(word[:start] + alternative + word[end + 1:], limit)
+            try:
+                expanded = expand_braces(word[:start] + alternative + word[end + 1:], limit)
+            except RecursionError:
+                return None
             if expanded is None:
                 return None
-            words.extend(expanded)
+            words.extend(w for w in expanded if w != "")  # bash drops a word a brace makes empty (`{origin,}`)
             if len(words) > limit:
                 return None
         return words
@@ -514,7 +523,8 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     holding a shell variable or a command substitution (`$BRANCH`, `"${TARGET}"`, a backtick) is a BranchPattern,
     the literal text before it and then anything (`release/*`, `v*`), or None (unknown) when nothing literal comes
     first; a substitution that asks git for the checked-out branch (CURRENT_BRANCH_SUBSTITUTION) is read as the branch
-    checked out in cwd (None when detached). Brace expansion is unknown. The refspec splits at its last colon. `@` is HEAD, and `heads/X` is X, as git resolves them. A word that
+    checked out in cwd (None when detached). Braces are expanded as bash expands them (expand_braces); more than 64
+    words is unknown when the push forces or deletes. The refspec splits at its last colon. `@` is HEAD, and `heads/X` is X, as git resolves them. A word that
     starts with a variable and is followed by a literal word, with two literal words besides (`git push $F origin
     main`, `git push origin $F main`; F may be --force), counts as a force; a trailing one (`git push origin main
     "$TAG"`) does not. A matching refspec (`:`) with a force or a `+` rewrites every branch both sides have, and so
@@ -523,7 +533,7 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     A `$` word before the subcommand, `-C` or `--git-dir` without a known directory, and a bare push given `-c
     push.default=upstream` or a `branch.*` setting make the checked-out branch unknown; `-c remote.<name>.mirror`
     (or `--config-env` for it) makes a mirror. cwd None means the checked-out branch is unknown, and
-    CONFIGURED_BY_ENVIRONMENT (a line assigning GIT_CONFIG_*) makes any push a mirror (see
+    CONFIGURED_BY_ENVIRONMENT (a harmful GIT_CONFIG_*, or an earlier mirror setting) makes a bare push a mirror (see
     commands_with_branch_context). The built-in check (_git_finding) treats None as protected, and the company-rules hook
     (catpilot_guard/company_rules.py) fires every protected_branch rule on it; both read pushes this way.
     """
@@ -606,7 +616,7 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
     for word in positional:
         words = expand_braces(BRACED_EXPANSION.sub("$VAR", word))
         if words is None:
-            too_many = True
+            too_many = too_many or force or delete or "+" in word or ":" in word
         else:
             expanded_words.extend(words)
     positional = expanded_words
@@ -624,9 +634,9 @@ def git_push_rewrites(args: list[str], cwd: str | None) -> tuple[bool, list[str 
         return current_branch(repo, git_dir_path) if known else None
 
     settings = [c.replace(" ", "") for c in configs]
-    if environment_config and all(variable(word) for word in positional[1:]):
-        mirror = True  # a bare push, or refspecs that may all be empty; a refspec overrides remote.<name>.push,
-        # and git refuses one with remote.<name>.mirror
+    if environment_config and len(positional) <= 1:
+        mirror = True  # a bare push; a refspec overrides remote.<name>.push, and git refuses one with
+        # remote.<name>.mirror (an unquoted variable that is empty, making a bare push, is not seen)
     if any(re.fullmatch(r"remote\..+\.mirror=(?!false$|no$|off$|0$).*", c) or re.fullmatch(r"remote\..+\.mirror", c) for c in settings):
         mirror = True  # remote.<name>.mirror makes a push behave as --mirror
     if len(positional) <= 1 and any(c.startswith("remote.") and ".push=" in c for c in settings):
@@ -734,8 +744,9 @@ def git_config_assignment_harmful(name: str, value: str | None) -> bool:
             return True
         # `'key'='value'` or `'key=value'` pairs: the key is what comes before the first `=` of each quoted chunk.
         chunks = re.findall(r"'([^']*)'", value)
-        keys = [chunk.split("=", 1)[0] for chunk in chunks if "." in chunk.split("=", 1)[0]]
-        return not keys or any(HARMFUL_CONFIG_KEY.fullmatch(key) for key in keys)
+        keys = [chunk.split("=", 1)[0] for chunk in chunks if "." in chunk.split("=", 1)[0] or "$" in chunk.split("=", 1)[0]]
+        insteadof = lambda key: key.lower().startswith("url.") and key.lower().endswith(".insteadof")
+        return not keys or any(HARMFUL_CONFIG_KEY.fullmatch(key) or ("$" in key and not insteadof(key)) for key in keys)
     if name in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
         return value != "/dev/null"
     return True

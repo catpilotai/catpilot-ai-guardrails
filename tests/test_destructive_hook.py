@@ -407,7 +407,7 @@ class DestructiveHookTests(unittest.TestCase):
                 with self.subTest(branch=branch):
                     head.write_text(f"ref: refs/heads/{branch}\n")
                     for command in ("git push -f", "git push --force-with-lease origin", "git push --force origin HEAD",
-                                    "git push -f origin @",
+                                    "git push -f origin @", "git push -f {origin,}",
                                     'git push --force-with-lease origin "$(git branch --show-current)"',
                                     "git push -f origin '`git rev-parse --abbrev-ref HEAD`'".replace("'", '"'),
                                     'git push -f origin HEAD:"$(git symbolic-ref --short HEAD)"'):
@@ -466,7 +466,8 @@ class DestructiveHookTests(unittest.TestCase):
             "git config -f .git/config remote.origin.mirror true && git push origin",
             "git config --type bool remote.origin.mirror true && git push origin",
             "git config -f x push.default matching && git push -f", "env -u FOO -C ../other git push -f",
-            "git config remote.origin.mirror true && git push origin $B",
+            "git push -f origin {ma,}in", 'GIT_CONFIG_PARAMETERS="\'$S.mirror\'=\'true\'" git push origin',
+            "git push -f origin rel{e,}ase/{01..03}",
             'git() { echo main; }; git push -f origin "$(git branch --show-current)"', "function git { :; }; git push -f",
             "git \\\n() { :; }; git push -f",
             "export GIT_DIR=../b/.git; git push -f", "GIT_DIR=../b/.git git push -f origin HEAD", "env GIT_WORK_TREE=x git push -f",
@@ -494,6 +495,8 @@ class DestructiveHookTests(unittest.TestCase):
             'git push -u origin "${BRANCH_NAME,,}"', "git push origin v{1,1.2,1.2.3}", "git push origin feature/{a,b}",
             "git push origin {feature,fix}", "git remote add --mirror=fetch up url && git push",
             "git config remote.origin.mirror false && git push", "git config push.default matching && git push",
+            'export GIT_CONFIG_GLOBAL=/tmp/g; git push origin "$BRANCH"', 'git config remote.origin.push HEAD && git push origin "$BRANCH"',
+            "git push origin v{1..100}", "git push origin HEAD@{1}:feature/{a,b}",
             "git config --get push.default && git push", "git config push.default current && git push -f",
             "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0=/w; git push origin",
             "GIT_CONFIG_GLOBAL=/dev/null git push origin",

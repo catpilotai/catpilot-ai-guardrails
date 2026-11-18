@@ -29,7 +29,7 @@ What it scans, exactly (by file name; every other file is ignored):
                                  cannot be read; PowerShell is not read. On a runner the check cannot read (a matrix
                                  expression, a group with no labels) a step with no shell is read as bash, unless it
                                  holds what only PowerShell reads (`<#`, `Invoke-Expression`, `iex` but `iex -S`,
-                                 the `&` call operator, a single backtick ending a line), and then it cannot be
+                                 the `&` call operator, a backtick ending a line unpaired or after a space), and then it cannot be
                                  read. The names in env: at every level say whether git is pointed elsewhere
                                  (GIT_DIR) or may mirror (GIT_CONFIG_*, or an env: that is an expression). Each step's `uses:`
                                  naming a deploy action (DEPLOY_ACTIONS) or a force-pushing action (PUSH_ACTIONS), and
@@ -311,7 +311,10 @@ def _strings(value: object) -> list:
 # names), unless the value is a number. Their text, which GitHub puts in before the shell runs, may end the word or the
 # refspec, so a destination taken from one is unknown; any other expression (step outputs, inputs, env, matrix, vars)
 # is the workflow's own and reads like a shell variable: `v${{ steps.v.outputs.major }}` is `v*`.
-ATTACKER_CONTEXT = re.compile(r"\bgithub\s*\.\s*(?:event\b(?!\s*\.\s*(?:number|pull_request\s*\.\s*number)\b)|head_ref\b)")
+ATTACKER_CONTEXT = re.compile(
+    r"\bgithub\s*(?:\.\s*|\[\s*['\"])\s*(?:event\b(?!['\"]?\s*\]?\s*\.\s*(?:number|inputs|pull_request\s*\.\s*number)\b)|head_ref\b)"
+    r"|\bgithub\b(?!\s*(?:\.|\[))",  # the whole object (`toJSON(github)`)
+    re.IGNORECASE)
 
 
 def _expressions_as_variables(text: str) -> str:
@@ -677,7 +680,8 @@ def _windows_runner(job) -> bool:
 POWERSHELL_ONLY = re.compile(
     r"<#|#>|\binvoke-expression\b|(?<![.\w])iex\b(?![.\w-])(?!\s+-S\b)|\bstart-process\b"
     r"|^\s*&\s+[\"'$\w({]|[;|]\s+&\s+[\"'$\w({]"  # the call operator; not bash's `|&` or a case's `;&`
-    r"|^(?:[^`\n]*`[^`\n]*`)*[^`\n]*(?<!`)`\r?$",  # PowerShell's continuation: an unpaired backtick ending a line
+    r"|^(?:[^`\n]*`[^`\n]*`)*[^`\n]*(?<!`)`\r?$|\s`\r?$",  # PowerShell's continuation: a backtick ending a line,
+    # unpaired, or after a space (PowerShell's escapes such as `n make the count unreliable)
     re.IGNORECASE | re.MULTILINE)
 
 
