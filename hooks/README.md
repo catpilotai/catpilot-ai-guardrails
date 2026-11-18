@@ -345,7 +345,9 @@ tool:
   or later; [hooks reference](https://code.claude.com/docs/en/hooks), "Block
   the action when a hook fails"). Without that key, it is a non-blocking error
   and the command or write goes ahead unchecked; `verify.sh` notes an entry
-  without it.
+  without it. Catpilot has not checked what a version before 2.1.295 does with
+  the key; a denied probe in a real session (steps 4 and 5 of "Confirm it on
+  one machine" in `docs/DEPLOY_ORG.md`) shows the hooks still run there.
 - **Codex** can let the call run: its documentation says a `PreToolUse`
   error, timeout or malformed response can let the tool run.
 - **Copilot CLI** denies the call on a non-zero exit, but lets it run when a
