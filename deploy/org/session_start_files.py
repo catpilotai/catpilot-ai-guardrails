@@ -88,7 +88,7 @@ CODEX_MATCHER_NAMES = {"Bash": ("Bash",), "apply_patch": ("apply_patch", "Edit",
 _FEATURES_ELSEWHERE = re.compile(r"^\s*([\"']?)features\1\s*(?:\.|=)", re.MULTILINE)
 CODEX_HOOK_FILES = tuple(name for _, _, names in CODEX_PRETOOLUSE for name in names)
 CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence", "policy", "company_rules", "deploy_targets",
-                      "registry_targets", "cloud_targets")
+                      "registry_targets", "cloud_targets", "powershell")
 # The company-rules hook and the compiled policy it reads (install.sh --overlay, when the rules file has enforcement
 # rules). The policy sits under the tool's tree, root-owned like the hooks; the hook takes its path on its command line.
 COMPANY_HOOK = "pretooluse-company-rules.py"
