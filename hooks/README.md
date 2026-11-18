@@ -158,19 +158,27 @@ substitution's command where it stands (`$( )`, backquotes, `<( )`, `>( )`,
 also inside double quotes, as in `URL="$(vercel --prod)"`), keeping the rest of
 its word and command (`rm -rf $(echo) ~` removes `~`; a first word that only
 expands, as in `$(echo) rm -rf ~` or `$EMPTY rm -rf ~`, may expand to nothing,
-so the word after it is read as the command). It drops redirections,
+so the word after it is read as the command, and an argument that starts with
+an expansion is also read without it when what is left is an option, as in
+``rm `echo`-rf ~`` or `bash $(echo)-c '...'`). It drops redirections,
 with their targets, wherever they are (`>/dev/null CMD`, `2>&1 CMD`,
 `git push -f > log`, a bare push), ends a word at an unquoted `<` or `>`
 (`rm -rf ~>/dev/null` removes `~`), and drops a comment only where bash does:
 a `#` after an escaped character (`a\ #`), a carriage return, or the `)` that
-ends `$( )`, `<( )`, `>( )` or `$(( ))` is part of the word, a comment in
-backquotes ends at the closing backquote, a `#` inside quotes, `${ }`,
-arithmetic or a heredoc body never starts one, a `#` inside `"$( )"` is read
-both as bash 3.2 reads it (text) and as bash 4 and later, dash and zsh do (a
-comment), and a backslash at the end of a comment does not continue it onto
-the next line. A `case` statement is read with its patterns, so the `)` that
-ends a pattern does not end a subshell or substitution. A command with a NUL
-character is refused, since shells read it differently. A heredoc body is
+ends `$( )`, `<( )`, `>( )` or `$(( ))` is part of the word, while backquotes are open a comment,
+or a quote, ends at the next unescaped backquote (bash ends them there,
+whatever lies between), a `#` inside quotes, `${ }`, arithmetic or a heredoc body never
+starts one, a `#` inside `"$( )"` is read both as bash 3.2 reads it (text) and
+as bash 4 and later, dash and zsh do (a comment), and a backslash at the end of
+a comment does not continue it onto the next line. A `case` statement is read
+with its patterns, so the `)` that ends a pattern does not end a subshell or
+substitution; `esac` ends it only as the first word of a pattern list or of a
+command in a branch, and `case` is found after `if`, `!`, `f()`, `function f`
+and `time -p` and across a backslash-newline, but not after an assignment. A
+quoted or escaped `;`, `|`, `&` or parenthesis is a word, not an operator
+(`rm -rf ';' ~` removes `~`). A command with a NUL or SOH character is refused,
+since shells read a NUL differently and the hook uses SOH to mark quoted
+words. A heredoc body is
 literal text up to its delimiter (with its substitutions read when the
 delimiter is unquoted), so a quote character in it cannot hide the commands
 after the heredoc; its lines are still read as commands, so a heredoc that

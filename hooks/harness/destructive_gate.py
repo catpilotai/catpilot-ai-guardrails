@@ -28,7 +28,7 @@ def gate_destructive_command(command: str, cwd: str | None = None) -> str | None
 
     cwd is the directory the command will run in (default: the current one); it is
     used only to read the checked-out branch for a bare `git push --force`.
-    Raises ValueError on a non-string command, on a command with a NUL character,
+    Raises ValueError on a non-string command, on a command with a NUL or SOH character,
     on a command longer than 200,000 characters (no timer runs here to bound
     reading it), and on a command that takes longer than six seconds to read
     (catpilot_guard.destructive.ReadTimeout), so a broken caller fails closed

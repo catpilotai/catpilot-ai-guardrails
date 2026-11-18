@@ -318,6 +318,39 @@ DENIED = {
     "rm with its options after a backquoted command": "rm `echo`-rf ~",
     "rm after a nested parameter expansion as the command name": "${X:-${Y}} rm -rf ~",
     "rm after a special parameter as the command name": "true; $! rm -rf ~",
+    # Review of f571ec5: backquotes end at the first unescaped backquote, whatever lies between.
+    "rm after an escaped backquote in a comment in backquotes": "echo `echo # \\` #` ; rm -rf ~",
+    "rm after a comment in a substitution in backquotes": "echo `echo $(echo # x`; rm -rf ~",
+    "rm after backquotes holding an unbalanced single quote": "x=`echo '`\n# \"quoted\nrm -rf ~ # #\"\necho \"x\"",
+    "force push between backquotes holding unbalanced quotes": "echo `echo '`; git push --force origin main; echo `echo '`",
+    "rm after backquotes holding an unbalanced double quote": "x=`echo \"` # don't\nrm -rf ~ # # a ` b\necho 'x'",
+    # Review of f571ec5: `esac` ends a case only as the first word of a pattern list or of a command in a branch.
+    "force push after esac as a pattern": 'echo "$(case a in (a|esac) git push --force origin main;; esac)"',
+    "rm after esac right after in": "echo $(case a in esac)#; rm -rf ~",
+    "force push after esac as a second pattern": 'echo "$(case a in a|esac) git push --force origin main;; esac)"',
+    "rm after a case with a pattern paren in a substitution": "echo $(case a in (a) echo;; esac)#; rm -rf ~",
+    "rm after a case with two branches in a substitution": "echo $(case a in a) echo;; b) echo;; esac)#; rm -rf ~",
+    "rm after if case in a substitution": "echo $(if case a in a) true;; esac; then echo; fi)#; rm -rf ~",
+    "rm after ! case in a substitution": "echo $(! case a in a) true;; esac)#; rm -rf ~",
+    "rm after an assignment before esac in a branch": "x=$(case a in a) x=1 esac;; b) echo;; esac)#; rm -rf ~",
+    "rm after a function whose body is a case": "x=$(f() case a in a) echo;; esac; f)#; rm -rf ~",
+    "rm after a function keyword whose body is a case": "x=$(function f() case a in a) echo;; esac; f)#; rm -rf ~",
+    "rm after time -p case": "x=$(time -p case a in a) echo;; esac)#; rm -rf ~",
+    "rm after case split by a line continuation": "echo $(ca\\\nse a in a) echo;; esac)#; rm -rf ~",
+    # Review of f571ec5: a comment in "$( )", read both as bash 3.2 (text) and as bash 4 and later (a comment).
+    "force push after a comment with an apostrophe in a quoted substitution": (
+        "x=\"$(: # it's\n)\"; git push --force origin main; echo \"')\""),
+    # Review of f571ec5: a shell option after an expansion (`$(echo)-c` is -c).
+    "rm in bash -c after a command substitution": "bash $(echo)-c 'rm -rf ~'",
+    "rm in sh -c after a parameter expansion": "sh ${X}-c 'rm -rf ~'",
+    "rm in bash -c after a backquoted command": "bash `echo`-c 'rm -rf ~'",
+    # Review of #133 (on main too): a quoted or escaped operator is a word, not a command separator.
+    "rm of home after a quoted semicolon": "rm -rf ';' ~",
+    "rm of home after an escaped semicolon": "rm -rf \\; ~",
+    "rm of root after a quoted pipe": 'rm -rf "|" /',
+    "rm of home after a quoted &&": "rm -rf '&&' ~",
+    "rm of root after an escaped pipe": "rm -rf \\| /",
+    "force update of main after a quoted semicolon as the repo": "git push --repo ';' origin +main",
 }
 
 ALLOWED = {
@@ -437,6 +470,15 @@ ALLOWED = {
     "a case with a comment": "case \"$1\" in start) npm start;; esac # don't",
     "a case in a substitution, then a comment": "x=$(case a in a) echo;; esac) # it's fine\nls",
     "the word case as an argument": "echo case in; ls # don't",
+    # Review of f571ec5: a path that starts with an expansion is not read without it.
+    "rm of a directory under a braced variable": 'rm -rf "${BUILD_DIR}/lib"',
+    "rm of two directories under a variable": "rm -rf ${VENV}/bin ${VENV}/lib",
+    "rm of a directory under the working directory": 'rm -rf "$(pwd)/bin"',
+    "rm of a new temporary directory": 'rm -rf "$(mktemp -d)/"',
+    "rm of a directory under a defaulted prefix": 'rm -rf "${PREFIX:-/opt/x}/lib"',
+    "a quoted semicolon echoed": "echo ';'",
+    "a quoted pipe printed": "printf '%s\\n' '|'",
+    "find -exec ending in an escaped semicolon": "find . -name '*.pyc' -exec rm {} \\;",
 }
 
 
@@ -522,6 +564,7 @@ class DestructiveHookTests(unittest.TestCase):
             # line break, and a CR read as a blank; a simple command a later reading repeats comes once.
             # An empty word is an argument; redirections are not part of the command.
             "rm -rf $'' ~": [["rm", "-rf", "", "~"]],
+            "rm -rf ';' \\| ~": [["rm", "-rf", ";", "|", "~"]],  # quoted and escaped operators are words
             ">/dev/null 2>&1 ls -l >out 2> err": [["ls", "-l"]],  # a target after a blank joins its operator
             "ls -l>out": [["ls", "-l"]],
             "env -i -S 'git push -f' origin main": [["git", "push", "-f", "origin", "main"]],
@@ -582,6 +625,8 @@ class DestructiveHookTests(unittest.TestCase):
             'echo "$(a "b #c")"': 'echo "$()"\na "b #c"',
             "(( 1 #x ))": "(( 1 #x ))",
             "(( (1 #x) ))": "(( (1 #x) ))",  # nor in parentheses inside arithmetic
+            "(ls # x\n)": "(ls \n)",  # a subshell is read like the command around it
+            "x=$((a); b)": "x=\\$\\(\\)\n(a); b",  # `$((a); b)` is a command substitution starting with a subshell
             "echo $(a #b\n)": "echo \\$\\(\\)\na \n",
             "( ls ) #x": "( ls ) ",
             "echo a\\ #b": "echo a\\ #b",
@@ -703,6 +748,24 @@ class DestructiveHookTests(unittest.TestCase):
         # The wrapper reader checks the deadline too.
         with self.assertRaises(destructive.ReadTimeout):
             destructive._wrapper_commands("env", ["ls", "-i"], None, time.monotonic() - 1)
+
+    def test_the_timer_fires_with_sigalrm_blocked(self):
+        # Review of 0d2a0ed: a mask inherited from the host must not hold the alarm back.
+        import signal
+        import time
+        from unittest import mock
+
+        from catpilot_guard import destructive
+
+        if not hasattr(signal, "pthread_sigmask"):
+            self.skipTest("no pthread_sigmask")
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+        try:
+            with mock.patch.object(destructive, "HOOK_TIME_LIMIT_SECONDS", 0.2):
+                with self.assertRaises(destructive.ReadTimeout):
+                    destructive.within_time_limit(time.sleep, 2)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
     def test_a_command_with_a_nul_is_refused(self):
         # Review of 0d2a0ed: bash drops a NUL and zsh keeps it in its word, which changes where a comment starts.
