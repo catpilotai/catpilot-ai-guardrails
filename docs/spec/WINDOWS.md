@@ -281,6 +281,10 @@ The goal: a command sent through the PowerShell tool is read as PowerShell.
 
 ## 5. Decisions for the maintainer
 
+**Decided on 2026-11-18 by the maintainer:** 1, the embedded pinned interpreter by default with `-PythonPath`;
+2, increments 1 and 2 ship together, increment 1's CI job first; 3, `--evidence-default` on every OS, the current
+prefix kept on macOS and Linux for one release; 4, the full list in §3.2.
+
 1. **Python on Windows:** the embedded, pinned interpreter by default, with
    `-PythonPath` as the alternative (recommended), or require IT to deploy
    Python.
