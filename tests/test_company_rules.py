@@ -209,9 +209,21 @@ class DecisionTests(unittest.TestCase):
                         "if true; then git push --force origin main; fi", "{ git push -f origin release/x; }",
                         "! git push --force origin main", "while true; do git push -f origin main; break; done",
                         "echo a\\ #; git push --force origin main", "echo hi\r# ; git push --force origin main",
-                        "ls # note \\\ngit push --force origin main", "git push --force origin main\r\n"):
+                        "ls # note \\\ngit push --force origin main", "git push --force origin main\r\n",
+                        # Review of #137: empty words, redirections, env -S and here-strings.
+                        "git push $'' --force origin main", "2>&1 git push --force origin main",
+                        "echo $(date)#; git push --force origin main", "env -S 'git push -f origin main'",
+                        "bash <<< 'git push --force origin main'"):
             with self.subTest(command=command):
                 self.assertEqual(effect(self.decide(command)), "deny")
+
+    def test_a_command_too_slow_to_read_raises_so_the_hook_blocks(self):
+        # Review of #137: past the reading budget, decide raises a ValueError and main() exits 2.
+        from catpilot_guard import destructive
+
+        with mock.patch.object(destructive, "READ_BUDGET_SECONDS", 0.0):
+            with self.assertRaises(ValueError):
+                self.decide("git push --force origin main")
 
     def test_what_the_rule_does_not_cover_passes(self):
         for command in ("git push origin main", "git push --force origin feature/x", "git push -f origin releases/x",

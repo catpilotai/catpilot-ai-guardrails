@@ -55,7 +55,7 @@ import sys
 from . import COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, event_for_host, write_decision, write_reason
 from . import policy as policy_module
 from .deploy_targets import deploy_targets, host_covered
-from .destructive import _simple_commands, git_push_rewrites
+from .destructive import _deadline, _simple_commands, git_push_rewrites
 
 MAX_INPUT_BYTES = 1_048_576
 HOOK_NAME = "pretooluse-company-rules"
@@ -119,14 +119,15 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy) -> li
     """The policy's rules this command fires, in policy order."""
     working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
     kinds = {rule.kind for rule in policy.rules}
+    deadline = _deadline()  # one reading budget for both kinds; past it, ReadTimeout and the hook blocks
     pushes = []
     if "protected_branch" in kinds:
-        for argv in _simple_commands(command):
+        for argv in _simple_commands(command, 0, deadline):
             if argv[0] == "git":
                 push = git_push_rewrites(argv[1:], working_dir)
                 if push is not None:
                     pushes.append(push)
-    targets = deploy_targets(command, working_dir) if "deploy_host" in kinds else []
+    targets = deploy_targets(command, working_dir, deadline=deadline) if "deploy_host" in kinds else []
     fired = []
     for rule in policy.rules:
         if rule.kind == "protected_branch":

@@ -197,6 +197,39 @@ DENIED = {
     "force push with a CRLF line ending": "git push --force origin main\r\n",
     "rm with CRLF line endings": "cd /tmp\r\nrm -rf ~\r\n",
     "rm after a carriage return alone": "echo ok\rrm -rf ~",
+    # Review of #137: an empty word is an argument, not a command separator.
+    "rm with an empty ANSI-C word before home": "rm -rf $'' ~",
+    "force push with an empty ANSI-C word before the options": "git push $'' --force origin main",
+    "rm with an empty ANSI-C word before its options": "rm $'' -rf ~",
+    "delete with an empty ANSI-C word": "git push origin $'' --delete main",
+    "rm with an empty quoted word": "rm -rf '' ~",
+    "rm after an empty command name": "'' rm -rf ~",
+    # Review of #137: no comment after the ) that ends a substitution, or inside backquotes, ${ } or arithmetic.
+    "force push after a command substitution and hash": "echo $(date)#; git push --force origin main",
+    "rm after an arithmetic expansion and hash": "echo $((1+1))#; rm -rf ~",
+    "rm after a process substitution and hash": "cat <(ls)#; rm -rf ~",
+    "force push after a hash inside backquotes": "echo `echo a #b`; git push --force origin main",
+    "force push after a hash inside a parameter expansion": "echo ${x:-a #b}; git push --force origin main",
+    "force push after a hash inside a quoted command substitution": 'echo "$(echo "a #b")"; git push --force origin main',
+    "rm after a hash in an arithmetic command": "(( 1 #x )); rm -rf ~",
+    "rm after $, a line continuation and an ANSI-C string": "echo $\\\n'\\'' ; rm -rf ~ ; echo \\'",
+    # Review of #137: redirections are not the command, and < and > end a word.
+    "rm after a leading redirection": ">/dev/null rm -rf ~",
+    "force push after a leading 2>&1": "2>&1 git push --force origin main",
+    "rm after then and a redirection": "then >log rm -rf ~",
+    "rm after a spaced leading redirection": "> log rm -rf ~",
+    "rm of home with a redirection attached": "rm -rf ~>/dev/null",
+    "force push to main with a redirection attached": "git push --force origin main>/dev/null",
+    "rm of home before &>": "rm -rf ~&>/dev/null",
+    # Review of #137: zsh precommands, env -S and here-strings to a shell.
+    "rm behind noglob": "noglob rm -rf ~",
+    "force push behind nocorrect": "nocorrect git push -f origin main",
+    "rm behind repeat": "repeat 3 rm -rf ~",
+    "force push in an env -S string": "env -S 'git push -f origin main'",
+    "rm in an env --split-string": "env --split-string='rm -rf ~'",
+    "rm in an attached env -S string": "env -S'rm -rf ~'",
+    "rm in a here-string to bash": "bash <<< 'rm -rf ~'",
+    "force push in a here-string to sh -s": "sh -s <<<'git push --force origin main'",
 }
 
 ALLOWED = {
@@ -286,6 +319,18 @@ ALLOWED = {
     "a single-quoted backslash-newline": "echo 'a\\\nrm -rf ~'",
     "a comment line with CRLF line endings": "# rm -rf ~\r\nls\r\n",
     "a feature force push with a CRLF line ending": "git push --force origin feature-x\r\n",
+    # Review of #137: comments after a space, redirections, and here-strings a script reads.
+    "a comment after a command substitution": "echo $(date) # rm -rf ~",
+    "a comment after an arithmetic command": "(( i++ )) # rm -rf ~",
+    "output and errors redirected": "make >/dev/null 2>&1",
+    "errors piped to tail": "npm test 2>&1 | tail -5",
+    "a feature force push with errors redirected": "git push --force origin feature-x 2>&1",
+    "a quoted redirection character": "echo '>' ok",
+    "process substitutions": "diff <(ls a) <(ls b)",
+    "a here-string given to a script": "bash script.sh <<< 'rm -rf ~'",
+    "env with an assignment": "env FOO=1 npm test",
+    "noglob ls": "noglob ls *.txt",
+    "a heredoc into a file": "cat <<EOF > notes.txt\nhello\nEOF",
 }
 
 
@@ -367,15 +412,69 @@ class DestructiveHookTests(unittest.TestCase):
             "echo $$'x'": [["echo", "$$x"]],
             # $'...' holding \' is read as bash does, then as dash does (a plain single-quoted string after `$`).
             "echo $'\\'' ; ls ; echo \\'": [["echo", "'"], ["ls"], ["echo", "'"], ["echo", "$\\ ; ls ; echo \\"]],
-            # A carriage return: bash's reading first, then a CR-LF line ending read as a line feed, then a CR read as
-            # a line break; a simple command a later reading repeats comes once.
+            # A carriage return: bash's reading first, then a CR-LF line ending read as a line feed, a CR read as a
+            # line break, and a CR read as a blank; a simple command a later reading repeats comes once.
+            # An empty word is an argument; redirections are not part of the command.
+            "rm -rf $'' ~": [["rm", "-rf", "", "~"]],
+            ">/dev/null 2>&1 ls -l >out 2> err": [["ls", "-l", "2>", "err"]],
+            "ls -l>out": [["ls", "-l"]],
+            "env -i -S 'git push -f' origin main": [["git", "push", "-f", "origin", "main"]],
+            "noglob repeat 2 ls": [["ls"]],
+            "- rm -rf ~": [["rm", "-rf", "~"]],  # zsh's - precommand (a shell's -c string cannot start with -)
+            "bash <<< 'ls -l'": [["ls", "-l"]],
+            "bash run.sh <<< 'ls'": [["bash", "run.sh", "<<<", "ls"]],
             "ls -l\r\n": [["ls", "-l\r"], ["ls", "-l"]],
             "echo hi\r#": [["echo", "hi\r#"], ["echo", "hi"]],
-            "echo ok\rls": [["echo", "ok\rls"], ["echo", "ok"], ["ls"]],
+            "echo ok\rls": [["echo", "ok\rls"], ["echo", "ok"], ["ls"], ["echo", "ok", "ls"]],
         }
         for command, want in cases.items():
             with self.subTest(command=command):
                 self.assertEqual(list(_simple_commands(command)), want)
+
+    def test_comments_end_where_bash_ends_them(self):
+        from catpilot_guard.destructive import _strip_comments
+
+        cases = {
+            "ls # x": "ls ",
+            "echo $(date) #x": "echo $(date) ",
+            "echo $(date)#x": "echo $(date)#x",
+            "echo $((1+1))#x": "echo $((1+1))#x",
+            "cat <(ls)#x": "cat <(ls)#x",
+            "echo `a #b`": "echo `a #b`",
+            "echo ${x:-a #b}": "echo ${x:-a #b}",
+            'echo "$(a "b #c")"': 'echo "$(a "b #c")"',
+            "(( 1 #x ))": "(( 1 #x ))",
+            "echo $(a #b\n)": "echo $(a \n)",
+            "( ls ) #x": "( ls ) ",
+            "echo a\\ #b": "echo a\\ #b",
+            "echo hi\r#x": "echo hi\r#x",
+            "ls # x \\\nwc": "ls \nwc",
+        }
+        for command, want in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(_strip_comments(command), want)
+
+    def test_reading_stops_at_the_deadline_and_fails_closed(self):
+        import time
+        from unittest import mock
+
+        from catpilot_guard import destructive
+
+        with mock.patch.object(destructive, "READ_BUDGET_SECONDS", 0.0):
+            with self.assertRaises(destructive.ReadTimeout):
+                destructive.find_destructive_op("ls", "/nonexistent")
+        self.assertTrue(issubclass(destructive.ReadTimeout, ValueError))  # main() exits 2 on it
+        # An extra reading that would not finish in time is not started: the CR-LF reading here.
+        real_lex = destructive._lex
+
+        def slow_lex(text):
+            time.sleep(0.2)
+            return real_lex(text)
+
+        with mock.patch.object(destructive, "READ_BUDGET_SECONDS", 0.3), mock.patch.object(destructive, "_lex", slow_lex):
+            self.assertIsNone(destructive.find_destructive_op("ls", "/nonexistent"))
+            with self.assertRaises(destructive.ReadTimeout):
+                destructive.find_destructive_op("ls\r\n", "/nonexistent")
 
     def test_running_users_home_by_absolute_path(self):
         for home in ("/srv/agent-home", "/var/lib/jenkins/"):

@@ -28,8 +28,9 @@ def gate_destructive_command(command: str, cwd: str | None = None) -> str | None
 
     cwd is the directory the command will run in (default: the current one); it is
     used only to read the checked-out branch for a bare `git push --force`.
-    Raises ValueError on a non-string command, so a broken caller fails closed
-    rather than silently allowing.
+    Raises ValueError on a non-string command, and on a command that takes longer
+    than six seconds to read (catpilot_guard.destructive.ReadTimeout), so a broken
+    caller fails closed rather than silently allowing.
     """
     if not isinstance(command, str):
         raise ValueError("command must be a string")

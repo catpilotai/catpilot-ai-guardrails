@@ -147,24 +147,35 @@ off for that repository.
 
 `claude-code/pretooluse-destructive-ops.py` blocks high-blast-radius shell
 commands on the `Bash` tool path. It splits the command into simple commands
-the way a shell would (pipes, `;`, `&&`, `||`, subshells, and each line of a
-multi-line command, with a backslash at the end of a line joining it to the
-next), reads the commands inside compound commands (`if ...; then CMD; fi`,
-`for ...; do CMD; done`, `while`/`until` loops, `{ CMD; }`, `! CMD`, `case`
-branches, `coproc`, and function bodies, `f() { CMD; }` and
+the way a shell would (pipes, `;`, `&&`, `||`, subshells, `case` branches, and
+each line of a multi-line command, with a backslash at the end of a line
+joining it to the next), reads the commands inside compound commands
+(`if ...; then CMD; fi`, `for ...; do CMD; done`, `while`/`until` loops,
+`{ CMD; }`, `! CMD`, `coproc`, and function bodies, `f() { CMD; }` and
 `function f { CMD; }`; a reserved word is read as one only as the first word
-of a command, so `echo then` is an ordinary `echo`), drops a comment only
-where bash does (a `#` after an escaped character such as `a\ #`, or after a
-carriage return, is part of the word, and a backslash at the end of a comment
-does not continue it onto the next line), reads a `$'...'` string as bash
-does (`\'` inside it does not end it) and, when one holds `\'`, also as dash
-does, reads a command that contains a carriage return each way a shell may
-(bash keeps it in the word, bash on Windows may drop it before a line feed,
-PowerShell ends the line there), and checks every reading, looks through
-`sudo`, `env`, `time`, `timeout`, `stdbuf`, `ionice`, `setsid`, `unbuffer`, and
-similar wrappers and through a shell's command string, however its options
-are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
-`bash --login -c`), and then checks:
+of a command, so `echo then` is an ordinary `echo`), drops redirections before
+a command (`>/dev/null CMD`, `2>&1 CMD`) and redirections with their target
+attached, ends a word at an unquoted `<` or `>` (`rm -rf ~>/dev/null` removes
+`~`), and drops a comment only where bash does: a `#` after an escaped
+character (`a\ #`), a carriage return, or the `)` that ends `$( )`, `<( )`,
+`>( )` or `$(( ))` is part of the word, a `#` inside quotes, `${ }`,
+backquotes or arithmetic never starts a comment, and a backslash at the end of
+a comment does not continue it onto the next line. It reads a `$'...'` string
+as bash does (`\'` inside it does not end it) and, when one holds `\'`, also
+as dash does; reads a command that contains a carriage return each way a shell
+may (bash keeps it in the word, bash on Windows may drop it before a line
+feed, PowerShell ends the line there, and a shell may ignore it) and checks
+every reading; looks through `sudo`, `env` (and the string of `env -S`),
+`time`, `timeout`, `stdbuf`, `ionice`, `setsid`, `unbuffer`, zsh's `-`,
+`noglob`, `nocorrect` and `repeat N`, and similar wrappers; and reads a shell's
+here-string (`bash <<< 'CMD'`) and command string, however its options are
+written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
+`bash --login -c`). Reading stops once six seconds have passed, checked
+between readings and between simple commands, and the command is then refused
+with exit code 2, so a command that is slow to read (about a megabyte of
+carriage returns and `$'...'` strings, or one very long word) is blocked rather
+than left to the hook's timeout, which Codex and Copilot CLI let a call run
+past. It then checks:
 
 - Cloud and infrastructure CLIs: partial-resource updates that reset
   unspecified fields (`az containerapp update --yaml` / `--replace-env-vars`,
