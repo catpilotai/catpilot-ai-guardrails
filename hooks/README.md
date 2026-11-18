@@ -336,8 +336,22 @@ Each hook fails closed once Python is running: malformed input, a missing
 (for example, the host closed the pipe) exits 2, which blocks. Before
 that point it cannot. If the `python3` in the hook command is missing, is the
 macOS Command Line Tools stub on a machine without the tools, or is older than
-3.8, the command exits with another code, which Claude Code treats as a
-non-blocking error: the command or write goes ahead unchecked. `deploy/org/verify.sh` checks the interpreter, runs each
+3.8, the command exits with another code. What happens then depends on the
+tool:
+
+- **Claude Code** blocks the call, because the managed hooks `install.sh`
+  writes set `"onFailure": "block"`: a hook that cannot start, exits with
+  another code or times out then blocks, as exit 2 does (Claude Code 2.1.295
+  or later; [hooks reference](https://code.claude.com/docs/en/hooks), "Block
+  the action when a hook fails"). Without that key, it is a non-blocking error
+  and the command or write goes ahead unchecked; `verify.sh` notes an entry
+  without it.
+- **Codex** can let the call run: its documentation says a `PreToolUse`
+  error, timeout or malformed response can let the tool run.
+- **Copilot CLI** denies the call on a non-zero exit, but lets it run when a
+  hook times out.
+
+`deploy/org/verify.sh` checks the interpreter, runs each
 installed hook on harmless probes, and runs each hook command in
 `managed-settings.json` the same way. Run it as a normal user on each machine
 after install and after an OS or Python upgrade. It cannot see Claude Code's

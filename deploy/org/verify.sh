@@ -28,7 +28,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 RULES_FILES="$(cd "$(dirname "$0")" && pwd)/session_start_files.py"
 HOOK_DIR="$CC_DIR/catpilot-guardrails/hooks"
 TIMEOUT_SECONDS=10  # the timeout managed-settings.json gives each hook
-NO_START="Claude Code treats a hook that cannot start as a non-blocking error, so commands and writes would run unchecked."
+NO_START="Claude Code (with onFailure block) then blocks every command and write the hooks cover, and Codex can let them run unchecked."
 ok=0; missing=0; failed=0; python_ok=0
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/catpilot-verify.XXXXXX")" || { echo "cannot create a temporary directory" >&2; exit 2; }
@@ -144,17 +144,18 @@ for group in groups if isinstance(groups, list) else []:
         for filename, kind, tools in HOOKS:
             if filename in command:
                 uncovered = ",".join(t for t in tools if not covers(group.get("matcher"), t))
-                sys.stdout.write("%s\037%s\037%s\037%s\0" % (kind, filename, uncovered, command))
+                on_failure = entry.get("onFailure") if isinstance(entry.get("onFailure"), str) else ""
+                sys.stdout.write("%s\037%s\037%s\037%s\037%s\0" % (kind, filename, uncovered, on_failure, command))
 '
 
 # check_wiring: run each Catpilot hook command in managed-settings.json the way Claude Code would (through a
 # shell, with this shell's PATH), with HOME pointed at the temporary directory so the command's own
 # CATPILOT_EVIDENCE_LOG="$HOME/..." writes nowhere real.
 check_wiring() {
-  local settings="$CC_DIR/managed-settings.json" kind filename uncovered command event status
+  local settings="$CC_DIR/managed-settings.json" kind filename uncovered on_failure command event status
   local seen_secrets=0 seen_destructive=0 seen_write=0
   "$PYTHON_BIN" -c "$WIRING_PY" "$settings" > "$WORK/wiring" 2>/dev/null || { echo "skipped  managed-settings.json hook commands (could not read the file)"; return; }
-  while IFS=$'\037' read -r -d '' kind filename uncovered command; do
+  while IFS=$'\037' read -r -d '' kind filename uncovered on_failure command; do
     case "$kind" in
       secrets) seen_secrets=1; event="$WORK/event-credential" ;;
       destructive) seen_destructive=1; event="$WORK/event-force-push" ;;
@@ -162,6 +163,9 @@ check_wiring() {
     esac
     if [ -n "$uncovered" ]; then
       fail "managed-settings.json runs $filename under a matcher that does not cover $uncovered"
+    fi
+    if [ "$on_failure" != "block" ]; then
+      echo "note     managed-settings.json runs $filename without \"onFailure\": \"block\", so Claude Code lets a call run when the hook cannot start or times out (the key needs Claude Code 2.1.295 or later)"
     fi
     case "$command" in
       *CATPILOT_EVIDENCE_SYSLOG*) echo "skipped  managed-settings.json command for $filename (it forwards evidence to syslog; check it in a session)"; continue ;;

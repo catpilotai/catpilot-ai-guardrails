@@ -147,7 +147,7 @@ class DeployOrgScriptTests(unittest.TestCase):
             self.assertNotEqual(verify.returncode, 0, verify.stdout)
             fail_lines = [line for line in verify.stdout.splitlines() if line.startswith("FAIL") and "python3" in line]
             self.assertTrue(fail_lines, verify.stdout)
-            self.assertIn("non-blocking error", fail_lines[0])
+            self.assertIn("blocks every command and write the hooks cover", fail_lines[0])
             self.assertIn("unchecked", fail_lines[0])
             # With no working interpreter the JSON check is skipped, not reported as a parse failure.
             self.assertNotIn("INVALID", verify.stdout)
