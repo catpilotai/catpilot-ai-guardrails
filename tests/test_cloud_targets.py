@@ -129,6 +129,91 @@ class CloudTargetTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [])
 
+    def test_an_arn_with_a_variable_it_cannot_read_around_is_unknown(self):
+        # Review of PR #135: a command substitution with a space in the account field, and a variable partition, gave
+        # no target at all.
+        for command in ('aws iam attach-role-policy --role-name r --policy-arn "arn:aws:iam::$(cat other):policy/x"',
+                        'aws iam attach-role-policy --role-name r --policy-arn "arn:aws:iam::`cat other`:policy/x"',
+                        'aws iam attach-role-policy --role-name r --policy-arn "arn:${PARTITION}:iam::111122223333:policy/x"',
+                        'aws iam attach-role-policy --role-name r --policy-arn "arn:$P:iam::111122223333:policy/x"',
+                        'aws iam attach-role-policy --role-name r --policy-arn "arn:`echo aws`:iam::111122223333:policy/x"',
+                        'aws lambda invoke --function-name "arn:aws:lambda:$(aws configure get region):999988887777:function:f" o',
+                        'aws lambda invoke --function-name "arn:aws:lambda:${R:-us}:999988887777:function:f" o',
+                        "AWS_ROLE_ARN='arn:aws:iam::$(cat id):role/ci' aws s3 ls"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(UNKNOWN, None)])
+        # A variable region before a literal account still names the account; an S3 ARN has no account.
+        self.assertEqual(targets('aws lambda invoke --function-name "arn:aws:lambda:${AWS_REGION}:123456789012:function:f" o'),
+                         [(ACCOUNT, "aws:123456789012")])
+        self.assertEqual(targets('aws s3api get-object --bucket b --key "arn:aws:s3:::${BUCKET}/k" out'), [])
+
+    def test_abbreviated_account_options(self):
+        # The AWS CLI and az parse with argparse, which takes a unique prefix of a long option.
+        cases = {
+            "aws organizations describe-account --account-i 999988887777": "aws:999988887777",
+            "aws organizations describe-account --acc=999988887777": "aws:999988887777",
+            "aws quicksight list-users --aws 999988887777 --namespace default": "aws:999988887777",
+            "aws quicksight list-users --aws-account-i=999988887777 --namespace default": "aws:999988887777",
+            "aws lambda add-permission --function-name f --source-ac 999988887777 --action x": "aws:999988887777",
+            "aws securityhub invite-members --account-id 999988887777": "aws:999988887777",
+            "az vm list --subs %s" % GUID: "azure:" + GUID,
+            "az vm list --sub=%s" % GUID: "azure:" + GUID,
+            "az account set --na %s" % GUID: "azure:" + GUID,
+            "az account set --n %s" % GUID: "azure:" + GUID,
+            "az account alias create --name x --subscription-id %s" % GUID: "azure:" + GUID,
+            "bq -project_id acme-data ls": "gcp:acme-data",
+        }
+        for command, name in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(ACCOUNT, name)])
+        self.assertEqual(targets("aws sts assume-role --role-a $ROLE --role-session-name s"), [(UNKNOWN, None)])
+        self.assertEqual(targets("az graph query -q x --subscriptions %s %s" % (GUID, GUID.replace("a", "b"))),
+                         [(ACCOUNT, "azure:" + GUID), (ACCOUNT, "azure:" + GUID.replace("a", "b"))])
+        # Another command's own option that a shorter prefix would match, and options that only share a prefix.
+        for command in ("aws codebuild create-project --source '{\"type\":\"S3\"}' --name x",
+                        "aws lambda create-function --role-name x --function-name f", "aws glacier list-vaults --account -",
+                        "aws ec2 describe-instances --accept x", "az network vnet subnet create --subnet x -n y",
+                        "az account set --no-wait"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
+
+    def test_gsutil_project_options_and_role_arn_settings(self):
+        for command in ("gsutil mb -p acme-other-1 gs://bucket", "gsutil -m mb -l us -p acme-other-1 gs://bucket",
+                        "gsutil ls -p acme-other-1", "gsutil ls -lp acme-other-1", "gsutil hmac create -p acme-other-1 sa@x.example",
+                        "gsutil kms authorize -p acme-other-1 -k key"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(ACCOUNT, "gcp:acme-other-1")])
+        self.assertEqual(targets("gsutil notification create -f json -p prefix gs://b"), [])  # -p is an object prefix there
+        self.assertEqual(targets('aws configure set role_arn "$ROLE"'), [(UNKNOWN, None)])
+        self.assertEqual(targets("aws configure set profile.dev.role_arn arn:aws:iam::999988887777:role/x"),
+                         [(ACCOUNT, "aws:999988887777")])
+
+    def test_runners_are_looked_through_as_the_registry_reader_does(self):
+        for command in ("uv run aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x --role-session-name s",
+                        "uv run --no-project -- aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x",
+                        "poetry run aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x",
+                        "pipenv run aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x",
+                        "uvx --from awscli aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x",
+                        "uv tool run --from awscli aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x",
+                        "python -m awscli sts assume-role --role-arn arn:aws:iam::999988887777:role/x",
+                        "bundle exec aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(ACCOUNT, "aws:999988887777")])
+        self.assertEqual(targets("poetry -C infra run gcloud config set project acme-other-1"), [(ACCOUNT, "gcp:acme-other-1")])
+
+    def test_an_account_option_left_last_is_unknown(self):
+        # xargs or stdin supplies the value, which the hook cannot read.
+        for command in ("echo x | xargs gcloud run deploy --project", "echo x | xargs az vm list --subscription",
+                        "echo x | xargs aws organizations describe-account --account-id",
+                        "echo x | xargs aws securityhub invite-members --account-ids",
+                        "echo x | xargs aws sts assume-role --role-session-name s --role-arn", "echo x | xargs bq ls --project_id",
+                        "echo x | xargs gcloud config set project", "echo x | xargs gcloud projects describe",
+                        "echo x | xargs gsutil -u", "echo x | xargs gsutil mb -p", "echo x | xargs az account set -s",
+                        "echo x | xargs aws configure set sso_account_id", "echo x | xargs aws configure set role_arn"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(UNKNOWN, None)])
+        self.assertEqual(targets("gcloud projects describe --help"), [])
+
     def test_coverage_is_an_exact_match(self):
         cases = [
             ("aws:123456789012", Target(ACCOUNT, "aws:123456789012"), True),
@@ -183,6 +268,17 @@ class HookDecisionTests(unittest.TestCase):
 
     def test_every_account_must_be_covered(self):
         self.assertEqual(self.effect("gcloud config set project acme-prod-1 && gcloud run deploy --project other-proj-1"), "deny")
+
+    def test_review_findings_fire(self):
+        # Review of PR #135: each of these named an account the rule does not list and decided nothing.
+        for command in ('aws iam attach-role-policy --role-name r --policy-arn "arn:aws:iam::$(cat other):policy/x"',
+                        'aws iam attach-role-policy --role-name r --policy-arn "arn:${PARTITION}:iam::111122223333:policy/x"',
+                        "aws organizations describe-account --account-i 999988887777", "az vm list --subs " + GUID.replace("a", "b"),
+                        "uv run aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x --role-session-name s",
+                        "gsutil mb -p other-proj-1 gs://b", "echo x | xargs gcloud run deploy --project"):
+            with self.subTest(command=command):
+                self.assertEqual(self.effect(command), "deny")
+        self.assertEqual(self.effect("uv run aws sts assume-role --role-arn arn:aws:iam::111122223333:role/x"), "none")
 
     def test_modes_hosts_and_expiry(self):
         command = "gcloud config set project personal-proj-1"

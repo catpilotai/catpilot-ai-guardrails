@@ -23,17 +23,18 @@ Scope, stated exactly:
   - Kind package_registry, an allow-list: fires on a command that names a registry no value of the rule covers.
     catpilot_guard/registry_targets.py says which commands name one and how: `--registry` on npm, pnpm, yarn, bun and
     their runners, npm/pnpm/yarn `config set` of a registry key, pip and uv index options and `pip config set`, `poetry
-    source add`, `twine --repository-url`, gem sources and hosts, `go env -w GOPROXY`, docker and podman push, pull
-    and login with an explicit registry, and assignments such as NPM_CONFIG_REGISTRY, PIP_INDEX_URL and GOPROXY. A
-    command that names none (`npm install`, `docker pull ubuntu`) is no target, and a registry it cannot read (a
-    variable) no value covers. A value `host` covers that host, `host/path` that path and below, `*.D` every name
-    under D.
+    source add`, `uv publish --publish-url`, `twine --repository-url`, gem sources and hosts, `go env -w GOPROXY`,
+    docker and podman push, pull, run, create and login with an explicit registry, and assignments such as
+    NPM_CONFIG_REGISTRY, PIP_INDEX_URL and GOPROXY, also through `python -m`, `uv run`, `uvx` and the other runners it
+    names. A command that names none (`npm install`, `docker pull ubuntu`) is no target, and a registry it cannot read
+    (a variable, a URL that URL parsers read differently, a value xargs supplies) no value covers. A value `host`
+    covers that host, `host/path` that path and below, `*.D` every name under D.
   - Kind cloud_account, an allow-list: fires on a command that names an account no value of the rule covers.
     catpilot_guard/cloud_targets.py says which: an ARN's account in aws, sam and cdk arguments, aws account-id
-    options, gcloud --project and `config set project`, gsutil -u, bq --project_id, az --subscription and resource ids,
-    and assignments such as CLOUDSDK_CORE_PROJECT and AZURE_SUBSCRIPTION_ID. A profile names no account, so `aws
-    --profile prod` is no target; a variable, a project number or a subscription name is unknown, and no value covers
-    it. Values match exactly.
+    options, gcloud --project and `config set project`, gsutil -u and `mb -p`, bq --project_id, az --subscription and
+    resource ids, and assignments such as CLOUDSDK_CORE_PROJECT and AZURE_SUBSCRIPTION_ID, through the same runners.
+    A profile names no account, so `aws --profile prod` is no target; a variable, a project number or a subscription
+    name is unknown, and no value covers it. Values match exactly.
   - Modes (§2.3): block denies. monitor decides nothing and writes a would_deny line. ask acts as block unless
     the hook's own command line has --ask (decision 2: ask means a person decides first). A Claude Code run with
     a program that approves (`claude -p` with a permission-prompt tool, an Agent SDK canUseTool callback) sends

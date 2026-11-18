@@ -1,49 +1,68 @@
 """What package registry a shell command names: the targets the company-rules hook checks against package_registry rules.
 
 registry_targets(command) splits the command the way the destructive-operation check does (pipes, `;`, `&&`, each line,
-wrappers such as sudo, env and timeout, and `bash -c` bodies). It also reads the variable assignments that split drops
-(`NAME=value` before a command, on its own, or after `env`) and the arguments of export, declare, typeset, local and
-readonly. It looks through package runners (npx, bunx, pnpx, `npm exec`/`npm x`, `pnpm dlx`/`exec`, `yarn dlx`/`exec`,
-and the `-c` string of npx and `npm exec`), `poetry run`, `uv run`, `pipenv run`, `bundle exec` and `python -m pip`.
-It returns one Target for each registry the command names explicitly. A command that names none is no target: `npm
-install`, `pip install requests`, `docker pull ubuntu` and `twine upload dist/*` use the tool's configured or default
-registry, which the hook does not read. A Target is one of:
+wrappers such as sudo, env, xargs and timeout, and `bash -c` bodies). It also reads the variable assignments that split
+drops (`NAME=value` before a command, on its own, or after `env`) and the arguments of export, declare, typeset, local
+and readonly. It looks through package runners (npx, bunx, pnpx, `npm exec`/`npm x`, `pnpm dlx`/`exec`, `yarn
+dlx`/`exec`, and the `-c` string of npx and `npm exec`) and through the runners runner_split names: `python -m MODULE`
+(also `-mMODULE` and `-Im MODULE`), `poetry run`, `uv run`, `uv tool run`, `uvx`, `pipenv run` and `bundle exec`, skipping
+each runner's own options; where a runner has an option this module does not know, both readings (a flag, or an option
+that takes the next word) are read. It returns one Target for each registry the command names explicitly. A command
+that names none is no target: `npm install`, `pip install requests`, `docker pull ubuntu` and `twine upload dist/*` use
+the tool's configured or default registry, which the hook does not read. A Target is one of:
 
   a registry   host[/path]: the URL's host, lowercase, without credentials or port, and its path, lowercase, with empty
-               and `.` segments dropped, `..` applied and no trailing slash; for an image, the registry host and the
-               repository path without its tag or digest
+               and `.` segments dropped, `..` applied and no trailing slash, or no path at all when a segment holds a
+               variable, a `%`, a `\\` or a `;`; for an image, the registry host and the repository path without its tag
+               or digest, ended before a segment that holds a variable
   unknown      a registry the hook cannot read: a variable where the host would be (`--registry $REGISTRY`, `docker
-               push $IMAGE`), or a host that is not a dotted name (`localhost:5000/app`, an IP address, `[::1]`)
+               push $IMAGE`); a host that is not a dotted name (`localhost:5000/app`, an IP address, `[::1]`); a URL
+               whose authority holds a backslash or a character a URL authority cannot hold, or an `http:`/`https:`
+               value without `//` after the colon (URL parsers disagree on which host those name); a value option last
+               in the command, with nothing after it (xargs or stdin supplies the value: `xargs npm install
+               --registry`); a docker or podman push, pull, run or create with no image
 
 What is recognized, exactly:
 
-  npm, pnpm, yarn, bun,      any run with `--registry URL` or `--registry=URL`, or npm's `--@scope:registry=URL`,
-  npx, bunx, pnpx            anywhere in its arguments: an install, a publish, a login, a runner's package source
-  npm|pnpm config set, set   the keys `registry` and `@scope:registry`, as `KEY URL` or `KEY=URL`
+  npm, pnpm, yarn, bun,      any run with `--registry URL`, `--registry=URL`, an abbreviation down to `--reg`, npm's
+  npx, bunx, pnpx            `-reg` shorthand, or npm's `--@scope:registry=URL`, anywhere in its arguments: an install,
+                             a publish, a login, a runner's package source
+  npm|pnpm config set, set   the keys `registry` and `@scope:registry`, as `KEY URL` or `KEY=URL` (also `npm c set`
+                             and `npm conf set`)
   yarn config set            `registry`, `npmRegistryServer`, `npmPublishRegistry`, and either under `npmScopes.<scope>.`
-  pip, pip3, pip3.N,         install, download, wheel: `-i`/`--index-url`, `--extra-index-url`, `-f`/`--find-links`, as
-  python[3[.N]] -m pip       `OPT URL`, `OPT=URL` or `-iURL`
-  pip config set             `<section>.index-url`, `.extra-index-url`, `.find-links`: each URL of the value
-  uv pip install|sync|       the pip options above, and `--default-index` and `--index` (`URL` or `NAME=URL`)
-  compile; uv add|lock|sync
-  poetry source add          its URL; `poetry config repositories.<name> URL`
-  twine                      `--repository-url URL`
-  gem install|fetch|update   `-s`/`--source URL`; `gem sources -a|--add URL`; `gem push|yank|owner --host URL`
+  pip, pip3, pip3.N,         install, download, wheel, lock: `-i`/`--index-url`, `--extra-index-url`, `-f`/`--find-links`,
+  python[3[.N]] -m pip       as `OPT URL`, `OPT=URL` or `-iURL`; any abbreviation of the long options (`--ind`, `--ext`,
+                             `--fi`: pip takes a unique prefix); i or f at the end of a cluster of short options (`-Ui URL`)
+  pip config set             `<section>.index-url`, `.extra-index-url`, `.find-links` (any case, `_` for `-`): each URL
+  uv                         pip, add, remove, sync, lock, export, tree, venv, build, version and tool subcommands, and
+                             the own options of `uv run`, `uv tool run` and `uvx`: the pip options above (exact names:
+                             uv takes no abbreviations), `--default-index` and `--index` (`URL` or `NAME=URL`); `uv
+                             publish --publish-url URL` and `--check-url URL`
+  poetry source add          its URL (unknown when it has none, unless the source is pypi); `poetry config
+                             repositories.<name> URL`
+  twine                      `--repository-url URL`, or an abbreviation down to `--repository-`
+  gem install|fetch|update   `-s`/`--source URL`; `gem sources -a|--add URL`; `gem push|yank|owner --host URL`; the long
+                             options abbreviated down to two letters (`--so`, `--ad`, `--ho`)
   go env -w                  `GOPROXY=...`
-  docker, podman             push and pull (also `image push`/`image pull`): an image whose first path component has a
+  docker, podman             push and pull (also `image push`/`image pull`), run and create (also `container run`/
+                             `container create`, which pull a missing image): an image whose first path component has a
                              dot or a colon or is localhost (`ghcr.io/org/app:1`, `registry.example.org:5000/app`,
                              podman's `docker://` form); login: its server argument
   assignments                NPM_CONFIG_REGISTRY, PNPM_CONFIG_REGISTRY, BUN_CONFIG_REGISTRY, YARN_REGISTRY,
                              YARN_NPM_REGISTRY_SERVER, YARN_NPM_PUBLISH_REGISTRY (any case); PIP_INDEX_URL,
                              PIP_EXTRA_INDEX_URL, PIP_FIND_LINKS; UV_INDEX_URL, UV_EXTRA_INDEX_URL, UV_DEFAULT_INDEX,
-                             UV_INDEX, UV_FIND_LINKS; POETRY_REPOSITORIES_<NAME>_URL; TWINE_REPOSITORY_URL; RUBYGEMS_HOST;
-                             GOPROXY (each entry of a comma- or pipe-separated list; `direct` and `off` name none)
+                             UV_INDEX, UV_FIND_LINKS, UV_PUBLISH_URL, UV_PUBLISH_CHECK_URL; POETRY_REPOSITORIES_<NAME>_URL;
+                             TWINE_REPOSITORY_URL; RUBYGEMS_HOST; GOPROXY (each entry of a comma- or pipe-separated list;
+                             `direct` and `off` name none)
 
 A value is read as a URL: `scheme://[credentials@]host[:port][/path]`, skipping the credentials, variables in them
-included. A value without a scheme is read as https:// where the option only takes a URL, and as a local path, which
-names no registry, for find-links; a value starting with /, ./, ../ or ~, and a file:// URL, name none. A variable in
-the host is unknown; a variable in the path ends the path there, so only a value with no path, or a shorter one, can
-cover it.
+included; the authority ends at the first /, \\, ? or #. A value without a scheme is read as https:// where the option
+only takes a URL, and as a local path, which names no registry, for find-links; a value starting with /, ./, ../ or ~,
+and a file:// URL, name none. A variable in the host is unknown. A path segment that holds a variable, a `%` (`%2e%2e`
+is `..` to a URL parser), a `\\` (a path separator to the WHATWG and urllib3 parsers) or a `;` (`..;` is `..` to some
+servers) may reach any path on the host once read, so the target is the host alone, which only a value with no path
+covers. In an image, which cannot hold `..`, a variable ends the path there instead (`ghcr.io/acme/$APP` is
+`ghcr.io/acme`).
 
 Coverage (registry_covered): a value `host` covers that host with any path; `host/path` covers that host when the
 target's path is that path or under it, by whole segments (`pypi.example.org/simple` covers `/simple` and
@@ -51,12 +70,16 @@ target's path is that path or under it, by whole segments (`pypi.example.org/sim
 rule. Paths compare ignoring case, as the validator compares values for duplicates. An unknown target is covered by
 nothing. Ports are not compared: a value cannot carry one.
 
-Not recognized: a registry set in a file (`.npmrc`, `.yarnrc.yml`, `pip.conf`, `pyproject.toml`, a requirements
-file's `--index-url` line, `~/.docker/config.json`), including one a command writes with `echo` or `tee`; a configured
-repository given by name (`twine upload -r NAME`, `poetry publish -r NAME`); a package given as a URL, tarball or git
-remote (`npm install https://host/pkg.tgz`, `pip install https://host/pkg.whl`); Docker Hub, which an image with no
-registry and `docker login` with no server use; `docker build --push`, `buildx`, `tag` and compose; registries a script
-or CI job uses internally; and other ecosystems (cargo, maven, gradle, nuget, composer, conda, helm, apt, brew).
+Not recognized: a registry set in a file (`.npmrc`, `.yarnrc.yml`, `pip.conf`, `pyproject.toml`, `uv.toml`, a
+requirements file's `--index-url` line, `~/.docker/config.json`), whether the file exists or a command writes it with
+`echo`, `printf` or `tee` (a heredoc body line that reads as an assignment, such as `PIP_INDEX_URL=...` alone on its
+line, is read as one, so writing it that way can fire the rule); arguments xargs or stdin supplies, other than an
+option left last without its value; a configured repository given by name (`twine upload -r NAME`, `poetry publish -r
+NAME`, `uv publish --index NAME`); a package given as a URL, tarball or git remote (`npm install https://host/pkg.tgz`,
+`pip install https://host/pkg.whl`, `uv run --with URL`); Docker Hub, which an image with no registry and `docker
+login` with no server use; `docker build --push`, `buildx`, `tag`, `service create` and compose; pipenv's own options
+(`--pypi-mirror`, `pipenv install -i`); pipx, pdm, hatch and rye, their options and the commands they run; registries a
+script or CI job uses internally; and other ecosystems (cargo, maven, gradle, nuget, composer, conda, helm, apt, brew).
 
 Standard library only. Python 3.8+.
 """
@@ -67,32 +90,75 @@ import re
 from dataclasses import dataclass
 
 from .deploy_targets import HOST_NAME, RUNNERS, _call_string, _tool
-from .destructive import ASSIGNMENT, YARN_PNPM_VALUE_OPTIONS, _simple_commands, _skip_options, _unwrap_runner
+from .destructive import ASSIGNMENT, YARN_PNPM_VALUE_OPTIONS, _simple_commands, _skip_options
 
 REGISTRY = "registry"
 UNKNOWN = "unknown"
 
 NPM_FAMILY = {"npm", "pnpm", "yarn", "bun", "npx", "bunx", "pnpx"}
-SCOPED_REGISTRY_FLAG = re.compile(r"^--@[^:=\s]+:registry(?:=|$)")
+SCOPED_REGISTRY_FLAG = re.compile(r"^--@[^:=\s]+:registry$")
 NPM_CONFIG_KEY = re.compile(r"^(?:registry|@[^:=\s]+:registry)$")
 YARN_CONFIG_KEY = re.compile(r"^(?:registry|npmRegistryServer|npmPublishRegistry|npmScopes\.[^.\s]+\.(?:npmRegistryServer|npmPublishRegistry))$")
+NPM_CONFIG_WORDS = {"config", "c", "con", "conf", "confi"}  # npm takes `c` as an alias and a unique prefix of a command
+NPM_VALUE_OPTIONS = {"-w", "--workspace", "-C", "--dir", "--filter", "-F", "--prefix", "--userconfig", "--globalconfig",
+                     "--location", "--loglevel", "--cache"}
 PIP_NAME = re.compile(r"^pip(?:[0-9]+(?:\.[0-9]+)?)?$")
 PYTHON_NAME = re.compile(r"^(?:python|pypy)(?:[0-9]+(?:\.[0-9]+)?)?$")
-PYTHON_VALUE_OPTIONS = {"-W", "-X", "-c", "--check-hash-based-pycs"}
+PYTHON_LONG_VALUE_OPTIONS = {"--check-hash-based-pycs"}
 PIP_VALUE_OPTIONS = {"--editor", "--proxy", "--cert", "--client-cert", "--timeout", "--retries", "--log", "--log-file", "--cache-dir",
                      "--python", "--exists-action", "--trusted-host", "--use-feature", "--use-deprecated",
                      "--resume-retries", "--keyring-provider", "--local-log", "--config-settings", "-C"}
-PIP_FETCHING = {"install", "download", "wheel"}
-PIP_CONFIG_KEY = re.compile(r"^[A-Za-z0-9_-]+\.(?:index-url|extra-index-url|find-links)$")
-UV_VALUE_OPTIONS = {"--directory", "--project", "--config-file", "--cache-dir", "--color", "-p", "--python", "--python-preference"}
-UV_PIP_COMMANDS = {"install", "sync", "compile"}
-UV_COMMANDS = {"add", "lock", "sync"}
-POETRY_VALUE_OPTIONS = {"-C", "--directory", "-P", "--project", "--priority"}
+PIP_COMMANDS = {"install", "download", "uninstall", "freeze", "inspect", "list", "show", "check", "config", "search", "cache",
+                "index", "wheel", "hash", "completion", "debug", "help", "lock"}
+PIP_FETCHING = {"install", "download", "wheel", "lock"}
+PIP_CONFIG_KEY = re.compile(r"^[^.\s]+\.(?:index[-_]url|extra[-_]index[-_]url|find[-_]links)$", re.IGNORECASE)
+# Long options whose value is a registry URL: {name: (the shortest abbreviation the tool takes, whether a value without
+# a scheme is a local path)}. pip's parser (optparse) takes any unique prefix, and no pip option is a prefix of these
+# three, so every prefix is read (an ambiguous one, such as `--i` in `pip install`, is refused by pip anyway).
+PIP_INDEX_LONG = {"--index-url": ("--i", False), "--extra-index-url": ("--e", False), "--find-links": ("--f", True)}
+# uv's parser (clap) takes exact names only: `uv sync --extra dev` is the extras option, not an abbreviation.
+UV_INDEX_LONG = {"--index-url": ("--index-url", False), "--extra-index-url": ("--extra-index-url", False),
+                 "--find-links": ("--find-links", True), "--default-index": ("--default-index", False),
+                 "--index": ("--index", False)}
+UV_PUBLISH_LONG = {"--publish-url": ("--publish-url", False), "--check-url": ("--check-url", False)}
+INDEX_SHORT = {"i": False, "f": True}
+# The letters of pip's and uv's other short options that take a value: in a cluster, the rest is that option's value.
+SHORT_VALUE_STOPS = set("CPbcdeoprtw")
+REGISTRY_LONG = {"--registry": ("--reg", False)}  # npm's parser (nopt) takes a unique prefix; `--re` is ambiguous
+TWINE_LONG = {"--repository-url": ("--repository-", False)}  # shorter is ambiguous with --repository NAME
+# Ruby's OptionParser takes a unique prefix: two letters name each of these in its command.
+GEM_SOURCE_LONG = {"--source": ("--so", False)}
+GEM_ADD_LONG = {"--add": ("--ad", False)}
+GEM_HOST_LONG = {"--host": ("--ho", False)}
+GEM_SHORT_VALUE_STOPS = set("vingPpk")
+UV_INDEX_COMMANDS = {"pip", "add", "remove", "sync", "lock", "export", "tree", "venv", "build", "tool", "version"}
+UV_GLOBAL_VALUE_OPTIONS = {"--directory", "--project", "--config-file", "--cache-dir", "--color", "--python-preference",
+                           "--allow-insecure-host", "--python", "-p"}
+# Every uv option that takes a value, across run, tool run (uvx) and the global options, so a runner's command is found.
+UV_VALUE_OPTIONS = UV_GLOBAL_VALUE_OPTIONS | {
+    "--with", "--with-editable", "--with-requirements", "--from", "--package", "--extra", "--no-extra", "--group",
+    "--no-group", "--only-group", "--env-file", "--index", "--default-index", "--index-url", "-i", "--extra-index-url",
+    "--find-links", "-f", "--index-strategy", "--keyring-provider", "--resolution", "--prerelease", "--fork-strategy",
+    "--exclude-newer", "--exclude-newer-package", "--no-build-package", "--no-binary-package", "--refresh-package",
+    "--upgrade-package", "-P", "--reinstall-package", "--config-setting", "-C", "--config-settings-package", "--link-mode",
+    "--constraints", "-c", "--overrides", "--build-constraints", "-b", "--python-platform", "--torch-backend",
+}
+POETRY_GLOBAL_VALUE_OPTIONS = {"-C", "--directory", "-P", "--project"}
+POETRY_VALUE_OPTIONS = POETRY_GLOBAL_VALUE_OPTIONS | {"--priority"}
+PIPENV_VALUE_OPTIONS = {"--python", "--pypi-mirror"}
+BUNDLE_VALUE_OPTIONS = {"--gemfile", "-r", "--retry"}
+# Runners and the words that start their command: {name: (options that take a value, verbs)}.
+RUN_VERBS = {
+    "poetry": (POETRY_GLOBAL_VALUE_OPTIONS, (("run",),)),
+    "uv": (UV_VALUE_OPTIONS, (("run",), ("tool", "run"))),
+    "pipenv": (PIPENV_VALUE_OPTIONS, (("run",),)),
+    "bundle": (BUNDLE_VALUE_OPTIONS, (("exec",),)),
+}
+PACKAGE_VERSION = re.compile(r"[@=<>!~\[;]")  # where a package spec's version or extras start (`ruff@0.6`, `x[cli]`)
+GEM_VALUE_OPTIONS = {"-s", "--source", "--host", "-a", "--add", "-r", "--remove", "-v", "--version", "-i", "--install-dir",
+                     "-n", "--bindir", "--platform", "-g", "--file", "-k", "--key", "--otp", "-p", "--http-proxy"}
 GEM_SOURCE_COMMANDS = {"install", "fetch", "update"}
 GEM_HOST_COMMANDS = {"push", "yank", "owner"}
-# Options of each tool whose value is a registry URL: (options, whether a value without a scheme is a local path).
-INDEX_OPTIONS = {"-i": False, "--index-url": False, "--extra-index-url": False, "-f": True, "--find-links": True}
-UV_INDEX_OPTIONS = dict(INDEX_OPTIONS, **{"--default-index": False, "--index": False})
 DOCKER_GLOBAL_VALUE_OPTIONS = {"--config", "-c", "--context", "-H", "--host", "-l", "--log-level", "--tlscacert",
                                "--tlscert", "--tlskey", "--connection", "--url", "--identity", "--root", "--runroot",
                                "--storage-driver", "--storage-opt", "--cgroup-manager", "--events-backend", "--hooks-dir",
@@ -104,6 +170,36 @@ DOCKER_TRANSFER_VALUE_OPTIONS = {"--platform", "--authfile", "--cert-dir", "--cr
                                  "--arch", "--os", "--variant", "--decryption-key", "--encryption-key", "--encrypt-layer",
                                  "--policy", "--signature-policy"}
 DOCKER_LOGIN_VALUE_OPTIONS = {"-u", "--username", "-p", "--password", "--authfile", "--cert-dir", "--secret", "--compat-auth-file"}
+# docker and podman run/create: the options that take a value and the flags, so the image is found. An option in
+# neither set is read both ways (see _command_starts).
+DOCKER_RUN_VALUE_OPTIONS = {
+    "-a", "--attach", "--add-host", "--annotation", "--blkio-weight", "--blkio-weight-device", "--cap-add", "--cap-drop",
+    "--cgroup-parent", "--cgroupns", "--cidfile", "--cpu-count", "--cpu-percent", "--cpu-period", "--cpu-quota",
+    "--cpu-rt-period", "--cpu-rt-runtime", "-c", "--cpu-shares", "--cpus", "--cpuset-cpus", "--cpuset-mems", "--device",
+    "--device-cgroup-rule", "--device-read-bps", "--device-read-iops", "--device-write-bps", "--device-write-iops", "--dns",
+    "--dns-opt", "--dns-option", "--dns-search", "--domainname", "--entrypoint", "-e", "--env", "--env-file", "--expose",
+    "--gpus", "--group-add", "--health-cmd", "--health-interval", "--health-retries", "--health-start-interval",
+    "--health-start-period", "--health-timeout", "-h", "--hostname", "--ip", "--ip6", "--ipc", "--isolation",
+    "--kernel-memory", "-l", "--label", "--label-file", "--link", "--link-local-ip", "--log-driver", "--log-opt",
+    "--mac-address", "-m", "--memory", "--memory-reservation", "--memory-swap", "--memory-swappiness", "--mount", "--name",
+    "--network", "--net", "--network-alias", "--net-alias", "--oom-score-adj", "--pid", "--pids-limit", "--platform", "-p",
+    "--publish", "--pull", "--restart", "--runtime", "--security-opt", "--shm-size", "--stop-signal", "--stop-timeout",
+    "--storage-opt", "--sysctl", "--tmpfs", "--ulimit", "-u", "--user", "--userns", "--uts", "-v", "--volume",
+    "--volume-driver", "--volumes-from", "-w", "--workdir", "--detach-keys",
+    # podman's own
+    "--arch", "--authfile", "--cert-dir", "--creds", "--decryption-key", "--os", "--variant", "--pod", "--pod-id-file",
+    "--secret", "--pidfile", "--conmon-pidfile", "--gidmap", "--uidmap", "--subgidname", "--subuidname", "--init-path",
+    "--passwd-entry", "--group-entry", "--personality", "--preserve-fds", "--rdt-class", "--requires", "--retry",
+    "--retry-delay", "--seccomp-policy", "--timeout", "--tz", "--umask", "--unsetenv", "--cgroup-conf", "--cgroups",
+    "--chrootdirs", "--health-on-failure", "--health-startup-cmd", "--health-startup-interval",
+    "--health-startup-retries", "--health-startup-success", "--health-startup-timeout", "--health-log-destination",
+    "--health-max-log-count", "--health-max-log-size", "--hostuser", "--image-volume", "--sdnotify", "--systemd",
+    "--shm-size-systemd", "--env-merge", "--hosts-file",
+}
+DOCKER_RUN_FLAGS = {"--rm", "--read-only", "--init", "--privileged", "--detach", "-d", "--interactive", "--tty",
+                    "--sig-proxy", "--oom-kill-disable", "--no-healthcheck", "--disable-content-trust", "--publish-all",
+                    "--quiet", "--use-api-socket", "--replace", "--http-proxy", "--no-hosts", "--read-only-tmpfs",
+                    "--env-host", "--rmi", "--tls-verify", "--help", "--rootfs"}
 LOCAL_TRANSPORT = re.compile(r"^(?:docker-archive|docker-daemon|oci|oci-archive|dir|containers-storage|sif):")
 EXPORTERS = {"export", "declare", "typeset", "local", "readonly"}
 # Assignments that name a registry, by upper-cased name: whether a value without a scheme is a local path.
@@ -111,9 +207,21 @@ NPM_VARIABLES = {"NPM_CONFIG_REGISTRY", "PNPM_CONFIG_REGISTRY", "BUN_CONFIG_REGI
                  "YARN_NPM_REGISTRY_SERVER", "YARN_NPM_PUBLISH_REGISTRY"}
 URL_VARIABLES = {"PIP_INDEX_URL": False, "PIP_EXTRA_INDEX_URL": False, "PIP_FIND_LINKS": True, "UV_INDEX_URL": False,
                  "UV_EXTRA_INDEX_URL": False, "UV_DEFAULT_INDEX": False, "UV_INDEX": False, "UV_FIND_LINKS": True,
-                 "TWINE_REPOSITORY_URL": False, "RUBYGEMS_HOST": False}
+                 "UV_PUBLISH_URL": False, "UV_PUBLISH_CHECK_URL": False, "TWINE_REPOSITORY_URL": False,
+                 "RUBYGEMS_HOST": False}
+LIST_VARIABLES = {"PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "UV_EXTRA_INDEX_URL", "UV_INDEX", "UV_FIND_LINKS"}
 POETRY_VARIABLE = re.compile(r"^POETRY_REPOSITORIES_[A-Z0-9_]+_URL$")
 SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*)://")
+# A web scheme not followed by `//`: `https:evil.example`, `https:/\evil.example`. A WHATWG parser (npm, uv) still reads
+# a host from it, so the hook does not guess which.
+WEB_SCHEME = re.compile(r"^(?:https?|wss?|ftp):", re.IGNORECASE)
+# The characters a URL authority can hold (RFC 3986 userinfo, host and port, percent escapes), with { } and ` for the
+# shell variables a credential may hold. Anything else (a backslash, a space, a quote) is read differently by different
+# URL parsers.
+URL_AUTHORITY = re.compile(r"[A-Za-z0-9\-._~!$&'()*+,;=:@\[\]%{}`]*")
+# A last label a WHATWG parser reads as an IPv4 number (`1.2.3.0x4` is 1.2.3.4).
+NUMERIC_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")
+PATH_ENDERS = ("%", "\\", ";")
 LOCAL_PREFIXES = ("/", "./", "../", "~")
 HOME_VARIABLES = {"$HOME", "${HOME}", "$PWD", "${PWD}"}  # a path under them is local
 
@@ -128,14 +236,20 @@ def _has_variable(text: str) -> bool:
     return "$" in text or "`" in text
 
 
-def _host_target(host: str, path: str) -> Target:
-    """A registry target for a host and a path, or unknown when the host is not a dotted name."""
+def _host_target(host: str, path: str, image: bool = False) -> Target:
+    """A registry target for a host and a path, or unknown when the host is not a dotted name. A path segment that
+    holds a variable, a `%`, a `\\` or a `;` may be `..` once read (`%2e%2e`, `$X` holding `../..`, `..\\`, `..;`), which
+    reaches any path on the host, so the target is the host alone, which only a value with no path covers. An image
+    path cannot hold `..` (Docker's reference grammar), so there the path ends before that segment."""
     host = host.lower().rstrip(".")
-    if _has_variable(host) or host.startswith("[") or not HOST_NAME.fullmatch(host) or host.rsplit(".", 1)[-1].isdigit():
+    if (_has_variable(host) or host.startswith("[") or not HOST_NAME.fullmatch(host)
+            or NUMERIC_LABEL.fullmatch(host.rsplit(".", 1)[-1])):
         return Target(UNKNOWN)
     segments: list = []
     for segment in path.split("/"):
-        if _has_variable(segment):
+        if _has_variable(segment) or any(c in segment for c in PATH_ENDERS):
+            if not image:
+                segments = []
             break
         if segment in ("", "."):
             continue
@@ -155,6 +269,8 @@ def url_target(value: str, path_without_scheme: bool = False) -> Target | None:
         return None
     match = SCHEME.match(value)
     if match is None:
+        if WEB_SCHEME.match(value):
+            return Target(UNKNOWN)
         first = value.split("/", 1)[0]
         if value == "." or value.startswith(LOCAL_PREFIXES) or value.lower().startswith("file:") or first in HOME_VARIABLES:
             return None
@@ -167,48 +283,93 @@ def url_target(value: str, path_without_scheme: bool = False) -> Target | None:
         if match.group(1).lower() == "file":
             return None
         rest = value[match.end():]
-    authority = re.split(r"[/?#]", rest, 1)[0]
-    path = re.split(r"[?#]", rest[len(authority):], 1)[0]
+    # The authority ends at /, ?, # or a backslash, which the WHATWG parser (npm, uv) and urllib3 (pip, twine, poetry)
+    # take as the start of the path, though Python's urllib.parse does not: a backslash there is unknown.
+    authority = re.split(r"[/\\?#]", rest, maxsplit=1)[0]
+    if rest[len(authority):len(authority) + 1] == "\\" or not URL_AUTHORITY.fullmatch(authority):
+        return Target(UNKNOWN)
+    path = re.split(r"[?#]", rest[len(authority):], maxsplit=1)[0]
     host = authority.rsplit("@", 1)[-1]  # credentials, variables in them included, are skipped
     if host.startswith("["):
         return Target(UNKNOWN)
     return _host_target(host.split(":", 1)[0], path)
 
 
-def _option_values(args: list, options: dict) -> list:
-    """(value, path_without_scheme) for each of these options in args: `OPT VALUE`, `OPT=VALUE`, and `-xVALUE` for a
-    single-letter option."""
+def _url(value: str | None, local: bool = False) -> Target | None:
+    """url_target, and unknown for an option with no value after it."""
+    return Target(UNKNOWN) if value is None else url_target(value, local)
+
+
+def _long_option(name: str, longs: dict) -> str | None:
+    """The long option an argument names, exactly or abbreviated down to the shortest form the tool takes, or None."""
+    for canonical, spec in longs.items():
+        if name.startswith(spec[0]) and canonical.startswith(name):
+            return canonical
+    return None
+
+
+def _values(args: list, longs: dict, shorts: dict | None = None, stops: set | None = None) -> list:
+    """(value, path_without_scheme) for each of these options in args, value None when the option is last with nothing
+    after it. longs: {name: (shortest abbreviation, local)}, as `OPT VALUE` or `OPT=VALUE`. shorts: {letter: local}, as
+    `-x VALUE` or `-xVALUE`; with stops, the letters of the tool's other short options that take a value, also at the
+    end of a cluster of flags (`-Ux VALUE`, `-UxVALUE`), as getopt-style parsers read it."""
     out, i = [], 0
     while i < len(args):
-        arg = args[i]
-        name, sep, value = arg.partition("=")
-        if name in options and name.startswith("--") and sep:
-            out.append((value, options[name]))
-        elif arg in options:
+        arg, local, wants_next = args[i], False, False
+        if arg.startswith("--"):
+            name, sep, attached = arg.partition("=")
+            canonical = _long_option(name, longs)
+            if canonical is not None:
+                local = longs[canonical][1]
+                if sep:
+                    out.append((attached, local))
+                else:
+                    wants_next = True
+        elif shorts and arg.startswith("-") and len(arg) > 1:
+            letters = arg[1:]
+            for k, letter in enumerate(letters):
+                if letter in shorts:
+                    local = shorts[letter]
+                    if letters[k + 1:]:
+                        out.append((letters[k + 1:], local))
+                    else:
+                        wants_next = True
+                    break
+                if stops is None or letter in stops:
+                    break
+        if wants_next:
             if i + 1 < len(args):
-                out.append((args[i + 1], options[arg]))
+                out.append((args[i + 1], local))
                 i += 1
-        elif len(arg) > 2 and arg[:2] in options and not arg.startswith("--"):
-            out.append((arg[2:], options[arg[:2]]))
+            else:
+                out.append((None, local))
         i += 1
     return out
+
+
+def _registry_option(arg: str) -> bool:
+    """Whether an argument, before any `=`, is npm's --registry (or an abbreviation, -reg) or --@scope:registry."""
+    name = arg.split("=", 1)[0]
+    return name == "-reg" or bool(SCOPED_REGISTRY_FLAG.match(name)) or _long_option(name, REGISTRY_LONG) is not None
 
 
 def _registry_flags(args: list) -> list:
     out, i = [], 0
     while i < len(args):
         arg = args[i]
-        if arg == "--registry" or SCOPED_REGISTRY_FLAG.match(arg) and "=" not in arg:
-            if i + 1 < len(args):
+        if _registry_option(arg):
+            if "=" in arg:
+                out.append(url_target(arg.split("=", 1)[1]))
+            elif i + 1 < len(args):
                 out.append(url_target(args[i + 1]))
                 i += 1
-        elif arg.startswith("--registry=") or SCOPED_REGISTRY_FLAG.match(arg):
-            out.append(url_target(arg.split("=", 1)[1]))
+            else:
+                out.append(Target(UNKNOWN))
         i += 1
     return out
 
 
-def _positionals(args: list, value_options: set) -> list:
+def _positionals(args: list, value_options: set, takes_value=None) -> list:
     out, i = [], 0
     while i < len(args):
         arg = args[i]
@@ -216,16 +377,119 @@ def _positionals(args: list, value_options: set) -> list:
             out.extend(args[i + 1:])
             break
         if arg.startswith("-") and len(arg) > 1:
-            i += 2 if (arg in value_options and "=" not in arg) else 1
+            valued = "=" not in arg and (arg in value_options or (takes_value is not None and takes_value(arg)))
+            i += 2 if valued else 1
             continue
         out.append(arg)
         i += 1
     return out
 
 
-def _config_set(words: list, key_pattern) -> list:
-    """`config set KEY URL`, `config set KEY=URL`, or `set ...` (npm and pnpm's shorthand): the URL when KEY matches."""
-    if words[:2] == ["config", "set"]:
+def _command_starts(args: list, value_options: set, flags: set | frozenset = frozenset()) -> list:
+    """Where the first positional argument (a runner's command, an image) may start, past leading options. `--` ends
+    the options; a short option in value_options takes the rest of its cluster or the next word. A long option in
+    neither set may be a flag or take the next word, so both readings are kept, for up to three such options."""
+    starts: list = []
+    seen: set = set()  # (position, budget) already walked: each is walked once, so the work stays linear
+
+    def walk(i: int, budget: int) -> None:
+        while i < len(args):
+            if (i, budget) in seen:
+                return
+            seen.add((i, budget))
+            arg = args[i]
+            if arg == "--":
+                if i + 1 < len(args):
+                    starts.append(i + 1)
+                return
+            if arg == "-" or not arg.startswith("-"):
+                starts.append(i)
+                return
+            if arg.startswith("--"):
+                if "=" in arg or arg in flags:
+                    i += 1
+                elif arg in value_options:
+                    i += 2
+                else:
+                    if budget:
+                        walk(i + 2, budget - 1)
+                    i += 1
+                continue
+            letters, step = arg[1:], 1
+            for k, letter in enumerate(letters):
+                if "-" + letter in value_options:
+                    step = 1 if letters[k + 1:] else 2
+                    break
+            i += step
+
+    walk(0, 3)
+    return sorted(set(starts))
+
+
+def _python_module(args: list) -> list | None:
+    """[module, its arguments] for `python [options] -m MODULE ...`, or None (a script, -c code, stdin). Python's own
+    options may be clustered (`-Im pip`) and -m may hold its module (`-mpip`)."""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-", "--") or not arg.startswith("-"):
+            return None
+        if arg.startswith("--"):
+            i += 2 if arg in PYTHON_LONG_VALUE_OPTIONS else 1
+            continue
+        letters = arg[1:]
+        for k, letter in enumerate(letters):
+            if letter == "c":
+                return None
+            if letter == "m":
+                inner = [letters[k + 1:]] + args[i + 1:] if letters[k + 1:] else args[i + 1:]
+                # The package a module belongs to names the tool: `-m pip.__main__` is pip.
+                return [inner[0].split(".", 1)[0]] + inner[1:] if inner else None
+            if letter in "WX":
+                if not letters[k + 1:]:
+                    i += 1
+                break
+        i += 1
+    return None
+
+
+def _run_split(args: list, offset: int, value_options: set, package: bool = False) -> tuple:
+    rest = args[offset:]
+    starts = _command_starts(rest, value_options)
+    own = args[:offset] + (rest[:starts[0]] if starts else rest)
+    inners = []
+    for start in starts:
+        command = PACKAGE_VERSION.split(rest[start], maxsplit=1)[0] if package else rest[start]
+        inners.append([command] + rest[start + 1:])
+    return own, inners
+
+
+def runner_split(name: str, args: list) -> tuple | None:
+    """For a command that runs another one: (the runner's own arguments, [the command it runs, as an argv, for each
+    reading of the runner's options]); None for any other command. Python's -m (`python3 -m pip`, `-mpip`, `-Im pip`),
+    `poetry run`, `uv run`, `uv tool run`, `uvx`, `pipenv run` and `bundle exec`, past their own options (`uv
+    --directory d run --no-project pip`, `uv run -- pip`). npx and the other package runners are deploy_targets._tool's.
+    cloud_targets.py looks through the same runners with this."""
+    if PYTHON_NAME.match(name) or name == "py":
+        inner = _python_module(args)
+        return None if inner is None else ([], [inner])
+    if name == "uvx":
+        return _run_split(args, 0, UV_VALUE_OPTIONS, package=True)
+    spec = RUN_VERBS.get(name)
+    if spec is None:
+        return None
+    value_options, verbs = spec
+    for start in _command_starts(args, value_options):
+        for verb in verbs:
+            if args[start:start + len(verb)] == list(verb):
+                return _run_split(args, start + len(verb), value_options, package=verb == ("tool", "run"))
+    return None
+
+
+def _config_set(words: list, key_pattern, config_words=("config",)) -> list:
+    """`config set KEY URL`, `config set KEY=URL`, or `set ...` (npm and pnpm's shorthand): the URL when KEY matches;
+    unknown for a matching KEY with no value after it."""
+    if words[:1] and words[0] in config_words and words[1:2] == ["set"]:
         rest = words[2:]
     elif words[:1] == ["set"]:
         rest = words[1:]
@@ -240,8 +504,8 @@ def _config_set(words: list, key_pattern) -> list:
                 out.append(url_target(value))
             i += 1
         else:
-            if key_pattern.match(key) and i + 1 < len(rest):
-                out.append(url_target(rest[i + 1]))
+            if key_pattern.match(key):
+                out.append(url_target(rest[i + 1]) if i + 1 < len(rest) else Target(UNKNOWN))
             i += 2
     return out
 
@@ -249,60 +513,95 @@ def _config_set(words: list, key_pattern) -> list:
 def _npm_config(name: str, args: list) -> list:
     """npm, pnpm and yarn's `config set` of a registry key."""
     if name in ("npm", "pnpm"):
-        return _config_set(_positionals(args, {"--registry", "-w", "--workspace", "-C", "--dir", "--filter", "-F"}), NPM_CONFIG_KEY)
+        return _config_set(_positionals(args, NPM_VALUE_OPTIONS, _registry_option), NPM_CONFIG_KEY, NPM_CONFIG_WORDS)
     if name == "yarn":
-        return _config_set(_positionals(args, {"--registry", "--cwd"}), YARN_CONFIG_KEY)
+        return _config_set(_positionals(args, {"--cwd"}, _registry_option), YARN_CONFIG_KEY)
     return []
+
+
+def _pip_subcommand(args: list) -> int | None:
+    """The index of pip's subcommand: the first argument past the general options that names a pip command. A word that
+    names none is taken as the value of an option this module does not know (`pip --cache-d /tmp install`)."""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg.startswith("-") and len(arg) > 1:
+            i += 2 if (arg in PIP_VALUE_OPTIONS and "=" not in arg) else 1
+            continue
+        if arg in PIP_COMMANDS:
+            return i
+        i += 1
+    return None
 
 
 def _pip(args: list) -> list:
-    words = _positionals(args, PIP_VALUE_OPTIONS | set(INDEX_OPTIONS))
-    if not words:
+    sub = _pip_subcommand(args)
+    if sub is None:
         return []
-    if words[0] in PIP_FETCHING:
-        start = args.index(words[0]) + 1
-        return [url_target(v, local) for v, local in _option_values(args[start:], INDEX_OPTIONS)]
-    if words[0] == "config" and len(words) >= 4 and words[1] == "set" and PIP_CONFIG_KEY.match(words[2]):
-        local = words[2].endswith(".find-links")
-        return [url_target(v, local) for v in words[3].split()]
+    command, rest = args[sub], args[sub + 1:]
+    if command in PIP_FETCHING:
+        return [_url(v, local) for v, local in _values(rest, PIP_INDEX_LONG, INDEX_SHORT, SHORT_VALUE_STOPS)]
+    if command == "config":
+        words = _positionals(rest, {"--editor"})
+        if words[:1] == ["set"] and len(words) >= 2 and PIP_CONFIG_KEY.match(words[1]):
+            if len(words) < 3:
+                return [Target(UNKNOWN)]
+            local = words[1].lower().replace("_", "-").endswith(".find-links")
+            return [url_target(v, local) for v in words[2].split()]
     return []
 
 
-def _uv(args: list) -> list:
-    words = _positionals(args, UV_VALUE_OPTIONS | set(UV_INDEX_OPTIONS))
-    if not ((words[:1] == ["pip"] and words[1:2] and words[1] in UV_PIP_COMMANDS) or (words[:1] and words[0] in UV_COMMANDS)):
-        return []
+def _index_url(value: str) -> str:
+    """The URL of a uv index value: `NAME=URL` (--index, UV_INDEX) or a URL."""
+    name, sep, rest = value.partition("=")
+    if sep and not SCHEME.match(value) and "/" not in name and ":" not in name:
+        return rest
+    return value
+
+
+def _uv_index_targets(args: list) -> list:
     out = []
-    for value, local in _option_values(args, UV_INDEX_OPTIONS):
-        name, sep, rest = value.partition("=")
-        if sep and not SCHEME.match(value) and "/" not in name and ":" not in name:
-            value = rest  # --index NAME=URL
-        out.append(url_target(value, local))
+    for value, local in _values(args, UV_INDEX_LONG, INDEX_SHORT, SHORT_VALUE_STOPS):
+        out.append(Target(UNKNOWN) if value is None else url_target(_index_url(value), local))
     return out
+
+
+def _uv(args: list) -> list:
+    """uv's subcommands other than its runners: index options anywhere for those that resolve or install, and the
+    publish URLs for `uv publish` (whose --index is a name)."""
+    for start in _command_starts(args, UV_VALUE_OPTIONS):
+        command = args[start]
+        if command == "publish":
+            return [_url(v, local) for v, local in _values(args, UV_PUBLISH_LONG)]
+        if command in UV_INDEX_COMMANDS:
+            return _uv_index_targets(args)
+    return []
 
 
 def _poetry(args: list) -> list:
     words = _positionals(args, POETRY_VALUE_OPTIONS)
-    if words[:2] == ["source", "add"] and len(words) >= 4:
-        return [url_target(words[3])]
+    if words[:2] == ["source", "add"] and len(words) >= 3:
+        if len(words) >= 4:
+            return [url_target(words[3])]
+        return [] if words[2].lower() == "pypi" else [Target(UNKNOWN)]  # poetry takes no URL only for PyPI
     if words[:1] == ["config"] and len(words) >= 3 and words[1].startswith("repositories."):
         return [url_target(words[2])]
     return []
 
 
 def _gem(args: list) -> list:
-    words = _positionals(args, {"-s", "--source", "--host", "-a", "--add", "-r", "--remove", "-v", "--version",
-                                "-i", "--install-dir", "-n", "--bindir", "--platform", "-g", "--file", "-k", "--key",
-                                "--otp", "-p", "--http-proxy"})
+    words = _positionals(args, GEM_VALUE_OPTIONS)
     if not words:
         return []
     if words[0] in GEM_SOURCE_COMMANDS:
-        return [url_target(v) for v, _ in _option_values(args, {"-s": False, "--source": False})]
-    if words[0] == "sources":
-        return [url_target(v) for v, _ in _option_values(args, {"-a": False, "--add": False})]
-    if words[0] in GEM_HOST_COMMANDS:
-        return [url_target(v) for v, _ in _option_values(args, {"--host": False})]
-    return []
+        longs, shorts = GEM_SOURCE_LONG, {"s": False}
+    elif words[0] == "sources":
+        longs, shorts = GEM_ADD_LONG, {"a": False}
+    elif words[0] in GEM_HOST_COMMANDS:
+        longs, shorts = GEM_HOST_LONG, None
+    else:
+        return []
+    return [_url(v) for v, _ in _values(args, longs, shorts, GEM_SHORT_VALUE_STOPS)]
 
 
 def _goproxy(value: str) -> list:
@@ -343,7 +642,7 @@ def image_target(ref: str) -> Target | None:
         return Target(UNKNOWN)
     segments = rest.split("/")
     segments[-1] = segments[-1].split(":", 1)[0]  # the tag
-    return _host_target(first.rsplit(":", 1)[0] if first.count(":") == 1 else first, "/".join(segments))
+    return _host_target(first.rsplit(":", 1)[0] if first.count(":") == 1 else first, "/".join(segments), image=True)
 
 
 def _login_server(server: str) -> Target | None:
@@ -363,14 +662,21 @@ def _container(args: list) -> list:
         return []
     start = args.index(words[0])
     command, rest = words[0], args[start + 1:]
-    if command == "image" and len(words) > 1:
+    if command in ("image", "container") and len(words) > 1:
         command = words[1]
         rest = args[args.index(words[1], start + 1) + 1:]
     if command in ("push", "pull"):
         refs = _positionals(rest, DOCKER_TRANSFER_VALUE_OPTIONS)
         if command == "push":
             refs = refs[-1:]  # podman push IMAGE DESTINATION: the destination
+        if not refs:
+            return [] if "--help" in rest else [Target(UNKNOWN)]  # xargs or stdin supplies the image
         return [image_target(ref) for ref in refs]
+    if command in ("run", "create"):  # pulls the image when it is not there
+        starts = _command_starts(rest, DOCKER_RUN_VALUE_OPTIONS, DOCKER_RUN_FLAGS)
+        if not starts:
+            return [] if "--help" in rest else [Target(UNKNOWN)]
+        return [image_target(rest[s]) for s in starts]
     if command == "login" and words[0] == "login":
         servers = _positionals(rest, DOCKER_LOGIN_VALUE_OPTIONS)
         return [_login_server(servers[0])] if servers else []
@@ -384,15 +690,11 @@ def _assignment_targets(assignment: str) -> list:
         return [url_target(value)]
     if upper in URL_VARIABLES:
         local = URL_VARIABLES[upper]
-        if upper in ("PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "UV_EXTRA_INDEX_URL", "UV_INDEX", "UV_FIND_LINKS"):
-            values = value.split()
-        else:
-            values = [value]
+        values = value.split() if upper in LIST_VARIABLES else [value]
         out = []
         for one in values:
-            key, sep, rest = one.partition("=")
-            if upper == "UV_INDEX" and sep and not SCHEME.match(one) and "/" not in key and ":" not in key:
-                one = rest
+            if upper in ("UV_INDEX", "UV_DEFAULT_INDEX"):
+                one = _index_url(one)
             out.append(url_target(one, local))
         return out
     if POETRY_VARIABLE.match(upper):
@@ -400,27 +702,6 @@ def _assignment_targets(assignment: str) -> list:
     if upper == "GOPROXY":
         return _goproxy(value)
     return []
-
-
-def _resolve(argv: list) -> tuple:
-    """(name, args) with `python -m pip`, `poetry|uv|pipenv run` and `bundle exec` looked through."""
-    name, args = os.path.basename(argv[0]).lower(), list(argv[1:])
-    for _ in range(3):
-        if PYTHON_NAME.match(name) or name == "py":
-            i = 0
-            while i < len(args) and args[i].startswith("-") and args[i] != "-m":
-                i += 2 if args[i] in PYTHON_VALUE_OPTIONS else 1
-            if args[i:i + 1] == ["-m"] and i + 1 < len(args):
-                name, args = os.path.basename(args[i + 1]).lower(), args[i + 2:]
-                continue
-            return name, args
-        if name in ("poetry", "uv", "pipenv", "bundle") and args[:1] in (["run"], ["exec"]):
-            inner, rest = _unwrap_runner(name, args)
-            if inner != name:
-                name, args = inner.lower(), rest
-                continue
-        return name, args
-    return name, args
 
 
 def _is_runner(name: str, args: list) -> bool:
@@ -434,7 +715,14 @@ def _is_runner(name: str, args: list) -> bool:
 
 
 def _argv_targets(argv: list, depth: int, flags: bool = True) -> list:
-    name, args = _resolve(argv)
+    name, args = os.path.basename(argv[0]).lower(), list(argv[1:])
+    split = runner_split(name, args) if depth < 4 else None
+    if split is not None:
+        own, inners = split
+        out = _uv_index_targets(own) if name in ("uv", "uvx") else []  # uv run's and uvx's own index options
+        for inner in inners:
+            out.extend(_argv_targets(inner, depth + 1))
+        return out
     if name in NPM_FAMILY:
         # --registry anywhere in the arguments, a runner's own and its package's alike, read once.
         out = _registry_flags(args) if flags else []
@@ -456,7 +744,7 @@ def _argv_targets(argv: list, depth: int, flags: bool = True) -> list:
     if name == "poetry":
         return _poetry(args)
     if name == "twine":
-        return [url_target(v) for v, _ in _option_values(args, {"--repository-url": False})]
+        return [_url(v) for v, _ in _values(args, TWINE_LONG)]
     if name == "gem":
         return _gem(args)
     if name == "go":

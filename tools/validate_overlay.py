@@ -635,6 +635,7 @@ def _host_problem(value: str) -> str | None:
 
 
 BRANCH_MAX = 255  # catpilot_guard/policy.py VALUE_MAX_CHARS: the hook refuses a longer value
+REGISTRY_MAX = 255  # the same limit
 
 
 def _branch_problem(value: str) -> str | None:
@@ -667,12 +668,16 @@ def value_problem(kind: str, value: str) -> str | None:
     if kind == "deploy_host":
         return _host_problem(value)
     if kind == "package_registry":
+        if len(value) > REGISTRY_MAX:
+            return f"expected a registry of at most {REGISTRY_MAX} characters"
         host, _, path = value.partition("/")
         problem = _host_problem(host)
         if problem:
             return problem
         if path and not _REGISTRY_PATH_RE.fullmatch(path):
             return "expected a registry host name and an optional path of letters, digits, ., _, - and /; no scheme, query or credentials"
+        if any(segment in (".", "..") for segment in path.split("/")):
+            return "expected a path without . or .. segments: a .. segment makes the value cover more than its path"
         return None
     if kind == "cloud_account":
         if not _CLOUD_ACCOUNT_RE.fullmatch(value):

