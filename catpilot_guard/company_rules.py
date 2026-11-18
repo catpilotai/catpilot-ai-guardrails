@@ -12,8 +12,9 @@ Scope, stated exactly:
     --force-if-includes, or a +refspec) or deletes (--delete, -d, or `:branch`) a branch one of the rule's values
     covers, including a bare force push while such a branch is checked out, and on `git push --mirror`, which
     rewrites every branch. Pushes are read the way the built-in destructive-operation check reads them
-    (destructive.git_push_rewrites), through the same wrappers and `bash -c` bodies. A value ending in `/*`
-    covers every branch under that prefix; case is ignored, as in the built-in check.
+    (destructive.git_push_rewrites), through the same splitting, compound commands, wrappers and `bash -c` bodies.
+    A value ending in `/*` covers every branch under that prefix; case is ignored, as in the built-in check. A
+    branch the shell expands (`$b`) matches no value; the built-in check blocks that push.
   - Kind deploy_host, an allow-list: fires on a deploy or publish whose target no value of the rule covers.
     catpilot_guard/deploy_targets.py says which commands deploy and to what: a named host (`scp dist/
     deploy@web1.example.org:/srv`), a hosting service's own domain when the command shows no name (`vercel --prod`

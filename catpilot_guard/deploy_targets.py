@@ -1,7 +1,8 @@
 """What a shell command deploys or publishes to: the targets the company-rules hook checks against deploy_host rules.
 
 deploy_targets(command) splits the command the way the destructive-operation check does (pipes, `;`, `&&`, each line,
-wrappers such as sudo, env and timeout, and `bash -c` bodies), looks through package runners (npx, bunx, pnpx,
+the commands inside compound commands such as `if ...; then vercel --prod; fi`, wrappers such as sudo, env and timeout,
+and `bash -c` bodies), looks through package runners (npx, bunx, pnpx,
 `npm exec`/`npm x`, `pnpm dlx`/`exec`, `yarn dlx`/`exec`), reading a package name with a version (`vercel@latest`) or
 a package whose command has another name (`netlify-cli`, `firebase-tools`, `@railway/cli`, `@aws-amplify/cli`), and
 returns one Target for each deploy or publish it recognizes. A Target is one of:

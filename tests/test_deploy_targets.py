@@ -87,6 +87,25 @@ class DeployTargetTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [])
 
+    def test_compound_commands_and_comments_are_read_as_bash_reads_them(self):
+        # Independent review, 2026-11-17: the command after a leading reserved word was not read.
+        cases = {
+            "if [ -n \"$CI\" ]; then vercel --prod; fi": [(SUFFIX, "vercel.app")],
+            "if x; then\n  netlify deploy --prod\nfi": [(SUFFIX, "netlify.app")],
+            "for i in 1; do fly deploy; done": [(SUFFIX, "fly.dev")],
+            "{ npm run build; vercel --prod; }": [(SUFFIX, "vercel.app")],
+            "! scp dist/app.tar deploy@web1.example.org:/srv": [(HOST, "web1.example.org")],
+            "echo a\\ #; vercel --prod": [(SUFFIX, "vercel.app")],
+            "ls # no deploy here \\\nvercel --prod": [(SUFFIX, "vercel.app")],
+            "echo then vercel --prod": [],
+            "if vercel --help; then echo ok; fi": [],
+        }
+        for command, want in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), want)
+        # A carriage return is read each way a shell may read it; every reading's target counts.
+        self.assertEqual(set(targets("vercel --prod\r\n")), {(SUFFIX, "vercel.app")})
+
     def test_a_vercel_directory_counts_whether_or_not_it_exists_yet(self):
         # The build before it may create it (review of #130); VERCEL_OTHER lists the words that are not deploys.
         for command in ("vercel dist --prod", "vercel my-site", "npm run build && vercel dist --prod", "vercel --cwd site dist"):
@@ -155,6 +174,8 @@ class HookDecisionTests(unittest.TestCase):
         self.assertEqual(self.effect("vercel --prod", values=("*.vercel.app",)), "none")
         self.assertEqual(self.effect("ls && npm test"), "none")
         self.assertEqual(self.effect("vercel env ls"), "none")
+        self.assertEqual(self.effect("if x; then vercel --prod; fi"), "deny")
+        self.assertEqual(self.effect("for f in a; do rsync -av dist/ deploy@apps.example.org:/srv; done"), "none")
 
     def test_every_target_must_be_covered(self):
         self.assertEqual(self.effect("scp a apps.example.org:/srv && vercel --prod"), "deny")

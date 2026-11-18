@@ -164,6 +164,39 @@ DENIED = {
     "terraform chdir apply double dash": "terraform -chdir=envs/prod apply --auto-approve",
     "tofu destroy": "tofu destroy -auto-approve",
     "tofu chdir apply": "tofu -chdir=infra apply -auto-approve",
+    # Compound commands: the command after a leading reserved word is read (independent review, 2026-11-17).
+    "force push after then": "if true; then git push --force origin main; fi",
+    "force push in a for loop over a variable": "for b in main; do git push -f origin $b; done",
+    "force push in a brace group": "{ git push --force origin main; }",
+    "force push after !": "! git push --force origin main",
+    "rm in an until loop": "until false; do rm -rf ~; done",
+    "rm in a while loop": "while true; do rm -rf ~; break; done",
+    "force push as an if condition": "if git push --force origin main; then echo ok; fi",
+    "rm after elif": "if false; then :; elif true; then rm -rf ~; fi",
+    "rm after else": "if false; then :; else rm -rf ~; fi",
+    "force push in a case branch": "case x in x) git push --force origin main;; esac",
+    "rm in a multi-line case branch": "case $1 in\n  go)\n    rm -rf ~\n    ;;\nesac",
+    "rm in a function body": "f() { rm -rf ~; }; f",
+    "rm in a function keyword body": "function f { rm -rf ~; }; f",
+    "force push behind coproc": "coproc git push --force origin main",
+    "rm in a named coproc group": "coproc N { rm -rf ~; }",
+    "rm in a timed group": "time -p { rm -rf ~; }",
+    "force push in a subshell": "( git push --force origin main )",
+    "force push to a quoted variable branch": 'git push --force origin "$BRANCH"',
+    "delete a variable branch": "git push origin --delete $OLD",
+    # A comment starts where bash starts one, and ends at the end of its line (independent review, 2026-11-17).
+    "force push after an escaped space and hash": "echo a\\ #; git push --force origin main",
+    "force push after an escaped paren and hash": "echo a\\(#; git push --force origin main",
+    "force push after an escaped semicolon and hash": "echo a\\;#; git push --force origin main",
+    "force push after a carriage return and hash": "echo hi\r# ; git push --force origin main",
+    "rm after a comment ending in a backslash": "ls # note \\\nrm -rf ~",
+    "rm after an ANSI-C string with an escaped quote": "echo $'\\'' ; rm -rf ~ ; echo \\'",
+    "rm of / in an ANSI-C string": "rm -rf $'/'",
+    "rm after an ANSI-C string as dash reads it": "echo $'\\'\nrm -rf ~\necho '",
+    # A carriage return, read the ways a shell may read one.
+    "force push with a CRLF line ending": "git push --force origin main\r\n",
+    "rm with CRLF line endings": "cd /tmp\r\nrm -rf ~\r\n",
+    "rm after a carriage return alone": "echo ok\rrm -rf ~",
 }
 
 ALLOWED = {
@@ -235,6 +268,24 @@ ALLOWED = {
     "terraform chdir plan": "terraform -chdir=infra plan -out=tfplan",
     "tofu apply plan file": "tofu -chdir=infra apply tfplan",
     "terraform chdir auto-approve false": "terraform -chdir=infra apply -auto-approve=false",
+    # Ordinary compound commands, and reserved words that are arguments (2026-11-17).
+    "if test then echo": "if [ -f x ]; then echo ok; fi",
+    "for loop over files": 'for f in *.txt; do wc -l "$f"; done',
+    "while read loop": 'while read -r line; do echo "$line"; done < input.txt',
+    "case with npm scripts": 'case "$1" in start) npm start;; stop) npm stop;; esac',
+    "brace group redirected": "{ echo a; echo b; } > out.txt",
+    "negated grep": "! grep -q foo file && echo missing",
+    "function definition and call": "f() { echo hi; }; f",
+    "function keyword build": "function build { npm run build; }; build",
+    "reserved words as arguments": "echo then do rm -rf ~",
+    "for loop words are not a command": "for d in ~ /; do echo $d; done",
+    "commit message with reserved words": 'git commit -m "if then else: do it"',
+    "force push a feature branch in a loop": "for b in feature-x; do git push -f origin feature-x; done",
+    "push a variable branch without force": 'git push origin "$BRANCH"',
+    "an escaped hash in a word, then a comment": "echo a\\ #b && ls # rm -rf ~",
+    "a single-quoted backslash-newline": "echo 'a\\\nrm -rf ~'",
+    "a comment line with CRLF line endings": "# rm -rf ~\r\nls\r\n",
+    "a feature force push with a CRLF line ending": "git push --force origin feature-x\r\n",
 }
 
 
@@ -294,6 +345,37 @@ class DestructiveHookTests(unittest.TestCase):
                         continue  # not a complete command once wrapped
                     with self.subTest(form=form, label=label):
                         self.assertIsNone(hook.find_destructive_op(wrap(command), not_a_repo))
+
+    def test_compound_commands_comments_and_carriage_returns_split_as_bash_does(self):
+        from catpilot_guard.destructive import _simple_commands
+
+        cases = {
+            # A leading reserved word is dropped, and a closing one leaves nothing; the same word as an argument stays.
+            "if true; then echo then; fi": [["true"], ["echo", "then"]],
+            "for x in do done; do ls; done": [["for", "x", "in", "do", "done"], ["ls"]],
+            "! { ls; }": [["ls"]],
+            "coproc N { ls; }": [["ls"]],
+            "coproc cat file": [["cat", "file"]],
+            "function f { ls; }": [["ls"]],
+            "f() { ls; }": [["f"], ["ls"]],
+            "case $x in a) ls;; esac": [["case", "$x", "in", "a"], ["ls"]],
+            # A `#` after an escaped character or a carriage return is part of its word, as in bash, and a comment
+            # ends at the end of its line even when it ends in a backslash.
+            "echo a\\ #b": [["echo", "a #b"]],
+            "ls # x \\\nwc": [["ls"], ["wc"]],
+            "IFS=$'\\n' read -r a # x": [["read", "-r", "a"]],
+            "echo $$'x'": [["echo", "$$x"]],
+            # $'...' holding \' is read as bash does, then as dash does (a plain single-quoted string after `$`).
+            "echo $'\\'' ; ls ; echo \\'": [["echo", "'"], ["ls"], ["echo", "'"], ["echo", "$\\ ; ls ; echo \\"]],
+            # A carriage return: bash's reading first, then a CR-LF line ending read as a line feed, then a CR read as
+            # a line break; a simple command a later reading repeats comes once.
+            "ls -l\r\n": [["ls", "-l\r"], ["ls", "-l"]],
+            "echo hi\r#": [["echo", "hi\r#"], ["echo", "hi"]],
+            "echo ok\rls": [["echo", "ok\rls"], ["echo", "ok"], ["ls"]],
+        }
+        for command, want in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(list(_simple_commands(command)), want)
 
     def test_running_users_home_by_absolute_path(self):
         for home in ("/srv/agent-home", "/var/lib/jenkins/"):

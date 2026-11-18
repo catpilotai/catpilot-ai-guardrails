@@ -6,7 +6,17 @@ calls decide(). It needs no other check module; it imports catpilot_guard/eviden
 Scope, stated exactly:
   - Runs only for the Bash tool (the matcher in settings selects it).
   - Splits the proposed command into simple commands the way a shell would
-    (pipes, ;, &&, ||, subshells, and each line of a multi-line command), looks through sudo/env/time-style wrappers
+    (pipes, ;, &&, ||, subshells, and each line of a multi-line command), reads
+    the commands inside compound commands (after if, then, elif, else, while,
+    until, do, !, {, coproc and function NAME, so in `if ...; then CMD; fi`,
+    `for ...; do CMD; done`, `{ CMD; }`, `! CMD`, case branches and function
+    bodies), drops comments where bash does (an escaped character or a carriage
+    return does not start a word, and a comment's trailing backslash does not
+    continue it), reads a $'...' string as bash does (\\' inside it does not
+    end it) and, when it holds \\', also as dash does, reads a command with a
+    carriage return each way a shell may (bash keeps it in the word, bash on
+    Windows may drop it before a line feed, PowerShell ends the line there),
+    looks through sudo/env/time-style wrappers
     (also timeout, gtimeout, stdbuf, ionice, setsid, unbuffer) and a shell's
     command string (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
     `bash --login -c`), and checks each one against deterministic signatures
@@ -30,7 +40,8 @@ Scope, stated exactly:
         those when unset ("$TARGET", $TARGET/, ${TARGET}/*); chmod -R 777;
         dd to a raw block device; a force push (--force, -f, --force-with-lease,
         or a +refspec) or a deletion aimed at main, master, trunk, production,
-        prod, staging, develop, or release/*, including a bare `git push -f`
+        prod, staging, develop, or release/*, or at a branch the shell expands
+        (`$b`, `"$BRANCH"`), including a bare `git push -f`
         while the checked-out branch is one of those; git push --mirror, --all
         or --branches with a force or --prune, and a forced or pruned refspec
         pattern (an option's value, as in -o ci.skip, is not read as the remote)
@@ -199,50 +210,93 @@ KUBECTL_VALUE_FLAGS = {"-n", "--namespace", "-l", "--selector", "-f", "--filenam
 SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", ")", "\n"}
 
 
-# A backslash-newline continues a line only when the backslash is not itself escaped: an odd number of backslashes.
-LINE_CONTINUATION = re.compile(r"(?<!\\)((?:\\\\)*)\\\n")
-SHELL_WORD_BREAKS = set(" \t\r\n;&|()")
+# Unquoted characters that end a word, so that a `#` after one starts a comment. To bash a carriage return is an
+# ordinary character, part of its word, and so is an escaped character (`\ `, `\;`).
+SHELL_WORD_BREAKS = set(" \t\n;&|()")
+# Reserved words that can come first in a simple command as _simple_commands splits it. After each of them but the
+# closing words comes a command that runs (`then git push ...`, `while git push ...`, `do rm ...`, `! git push ...`,
+# `{ git push ...; }`); the closing words end a compound command, and only redirections can follow them (`} > out`).
+# `time` (and `time -p`) is in WRAPPERS.
+RESERVED_PREFIXES = {"if", "then", "elif", "else", "do", "while", "until", "!", "{", "}", "fi", "done", "esac"}
+# Reserved words that begin a compound command: `coproc NAME` is followed by one (`coproc NAME { cmd; }`); before a
+# simple command there is no NAME (`coproc cmd args`).
+COMPOUND_STARTS = {"{", "if", "while", "until", "for", "case", "select", "[["}
+# Carriage returns that end a line where a CR-LF line ending is read as a line feed: before one, or at the very end.
+CR_LINE_ENDING = re.compile(r"\r+(?=\n)|\r+\Z")
 
 
-def _strip_comments(command: str) -> str:
-    """The command without its comments: an unquoted `#` at the start of a word, up to the end of its line. A
-    shell ignores them, and a quote character inside one (`# what's left`) must not open a quote that hides the
-    lines after it. The newline that ends a comment is kept."""
+def _strip_comments(command: str, ansi_c: bool = True) -> str:
+    """The command as a shell reads it before splitting it into words: comments dropped, each backslash-newline
+    removed, and, with ansi_c, each ANSI-C string ($'...') written as a plain single-quoted string, so that the lexer
+    splits words and lines where bash does. Without ansi_c, `$'` is `$` and a plain single quote, as dash reads it.
+
+    A comment is an unquoted `#` at the start of a word, up to the end of its line: a quote character in one
+    (`# what's left`) does not open a quote, and a backslash at its end does not continue it onto the next line. A
+    word starts at the start of the command and after an unquoted, unescaped space, tab, newline or one of `;&|()`;
+    after an escaped character (`a\\ #`), a carriage return or anything else, `#` is part of the word. A
+    backslash-newline joins two lines, outside single quotes and when the backslash is not itself escaped. In
+    $'...' a backslash escapes the next character, so `\\'` does not end it. The newline that ends a comment is kept."""
     out, i, quote, n = [], 0, None, len(command)
+    word_start = True  # the next character starts a word
     while i < n:
         c = command[i]
         if quote == "'":
             out.append(c)
             if c == "'":
                 quote = None
+        elif quote == "$'":
+            if c == "\\" and i + 1 < n:
+                escaped = command[i + 1]
+                # Inside the single-quoted copy: \' becomes ' (close, a quoted ', reopen), \\ becomes \; any other
+                # escape stays as it is written, which does not change where the string ends.
+                out.append("'\"'\"'" if escaped == "'" else "\\" if escaped == "\\" else command[i:i + 2])
+                i += 2
+                continue
+            out.append(c)
+            if c == "'":
+                quote = None
         elif c == "\\" and i + 1 < n:
-            out.append(command[i:i + 2])
+            if command[i + 1] != "\n":  # a backslash-newline is removed: the line goes on
+                out.append(command[i:i + 2])
+                word_start = False
             i += 2
             continue
         elif quote == '"':
             out.append(c)
             if c == '"':
                 quote = None
+        elif c == "$" and command.startswith("$$", i):
+            out.append("$$")  # the shell's process id, so a quote after it is an ordinary one
+            word_start = False
+            i += 2
+            continue
+        elif ansi_c and c == "$" and command.startswith("$'", i):
+            quote = "$'"
+            out.append("'")
+            word_start = False
+            i += 2
+            continue
         elif c in "'\"":
             quote = c
             out.append(c)
-        elif c == "#" and (i == 0 or command[i - 1] in SHELL_WORD_BREAKS):
+        elif c == "#" and word_start:
             end = command.find("\n", i)
             i = n if end == -1 else end
             continue
         else:
             out.append(c)
+        word_start = quote is None and c in SHELL_WORD_BREAKS
         i += 1
     return "".join(out)
 
 
-def _tokens(command: str) -> list[str]:
+def _tokens(command: str, ansi_c: bool = True) -> list[str]:
     """The command's words and operators. An unquoted newline separates commands, as in a shell, a backslash-newline
     joins two lines into one, and comments are dropped, so every line of a multi-line command is read."""
-    command = _strip_comments(LINE_CONTINUATION.sub(r"\1", command))
+    command = _strip_comments(command, ansi_c)
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
-        lexer.whitespace = " \t\r"
+        lexer.whitespace = " \t"
         lexer.whitespace_split = True
         lexer.commenters = ""
         return list(lexer)
@@ -251,26 +305,61 @@ def _tokens(command: str) -> list[str]:
         return [t.strip("\"'") for t in command.replace("\n", " ; ").replace(";", " ; ").replace("&&", " && ").replace("|", " | ").split()]
 
 
+def _readings(command: str, depth: int = 0) -> list:
+    """(text, ansi_c) for each way a shell that may run the command reads it. Every reading is checked.
+
+    A carriage return: bash and zsh read it as an ordinary character, part of its word, so `main\\r` is not main;
+    bash on Windows may read a CR-LF line ending as a line feed, and PowerShell reads a carriage return as a line
+    break. The tool's own shell may be any of these, so the command it is given (depth 0) is read all three ways; the
+    text of a `bash -c` string inside it is as each reading left it.
+    `$'...'`: bash, zsh and ksh read an ANSI-C string, which `\\'` does not end; dash (`sh` on Debian and Ubuntu) reads
+    `$` and a plain single-quoted string, which `\\'` does end. Only a string with `\\'` in it ends in a different
+    place, so a command with both `$'` and `\\'` is read both ways, at every depth (`sh -c` may start dash)."""
+    texts = [command]
+    if depth == 0 and "\r" in command:
+        texts = list(dict.fromkeys([command, CR_LINE_ENDING.sub("", command), command.replace("\r", "\n")]))
+    both = (True, False)
+    return [(text, ansi_c) for text in texts for ansi_c in (both if "$'" in text and "\\'" in text else both[:1])]
+
+
 def _simple_commands(command: str, depth: int = 0):
-    """Yield argv lists for each simple command, with wrappers removed and `sh -c` bodies expanded."""
-    current: list[str] = []
-    for token in _tokens(command) + [";"]:
-        if token in SEPARATORS or set(token) <= set(";&|()\n"):
-            if current:
-                yield from _unwrap(current, depth)
-            current = []
-        else:
-            current.append(token)
+    """Yield argv lists for each simple command, with wrappers and leading reserved words removed and `sh -c` bodies
+    expanded. A command with a carriage return, or with a $'...' string holding \\', is read each way a shell may
+    read it (_readings); a simple command a later reading repeats is yielded once."""
+    seen: set = set()
+    for number, (reading, ansi_c) in enumerate(_readings(command, depth)):
+        current: list[str] = []
+        for token in _tokens(reading, ansi_c) + [";"]:
+            if token in SEPARATORS or set(token) <= set(";&|()\n"):
+                for argv in _unwrap(current, depth) if current else ():
+                    if number == 0 or tuple(argv) not in seen:
+                        seen.add(tuple(argv))
+                        yield argv
+                current = []
+            else:
+                current.append(token)
 
 
 def _strip_wrappers(argv: list[str]) -> list[str]:
-    """Drop leading assignments and wrapper commands (sudo, env, timeout 60, ...) with their options."""
+    """Drop leading assignments, reserved words (`then`, `do`, `!`, `{`, ...; `coproc` and a NAME before a compound
+    command; `function NAME`) and wrapper commands (sudo, env, timeout 60, ...) with their options. Only the first
+    word of a simple command can be a reserved word, so `echo then` keeps its argument."""
     while True:
         while argv and ASSIGNMENT.match(argv[0]):
             argv = argv[1:]
         if not argv:
             return argv
-        name = os.path.basename(argv[0].lstrip("`"))
+        word = argv[0].lstrip("`")
+        if word in RESERVED_PREFIXES:
+            argv = argv[1:]
+            continue
+        if word == "coproc":
+            argv = argv[2:] if len(argv) > 2 and argv[2] in COMPOUND_STARTS else argv[1:]
+            continue
+        if word == "function":
+            argv = argv[2:]  # function NAME { ...; }: the body follows the name
+            continue
+        name = os.path.basename(word)
         if name in WRAPPERS:
             argv = argv[1:]
             while argv and (argv[0].startswith("-") or ASSIGNMENT.match(argv[0])):
@@ -472,7 +561,11 @@ def _git_finding(args: list[str], cwd: str) -> bool:
     if push is None:
         return False
     mirror, branches = push
-    return mirror or any(branch is None or PROTECTED_BRANCH.match(branch) for branch in branches)
+    # A destination the shell expands (`$b`, `"$BRANCH"`, `$(...)`, a backquote) cannot be read here, and may be a
+    # protected branch (`for b in main; do git push -f origin $b; done`): like a branch that cannot be read, it blocks.
+    return mirror or any(
+        branch is None or PROTECTED_BRANCH.match(branch) or "$" in branch or "`" in branch for branch in branches
+    )
 
 
 def _kubectl_finding(args: list[str]) -> bool:

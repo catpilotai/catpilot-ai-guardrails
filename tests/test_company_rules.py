@@ -204,13 +204,19 @@ class DecisionTests(unittest.TestCase):
                         "git push --force origin 'refs/heads/*:refs/heads/*'",
                         "git push origin --delete release/x", "git push origin :main", "git push --mirror origin",
                         "git push --force-with-lease origin %s/a" % BRANCH_MARKER, 'bash -lc "git push -f origin main"',
-                        "cd repo && sudo git push --force origin MAIN"):
+                        "cd repo && sudo git push --force origin MAIN",
+                        # Compound commands, and comments read as bash reads them (independent review, 2026-11-17).
+                        "if true; then git push --force origin main; fi", "{ git push -f origin release/x; }",
+                        "! git push --force origin main", "while true; do git push -f origin main; break; done",
+                        "echo a\\ #; git push --force origin main", "echo hi\r# ; git push --force origin main",
+                        "ls # note \\\ngit push --force origin main", "git push --force origin main\r\n"):
             with self.subTest(command=command):
                 self.assertEqual(effect(self.decide(command)), "deny")
 
     def test_what_the_rule_does_not_cover_passes(self):
         for command in ("git push origin main", "git push --force origin feature/x", "git push -f origin releases/x",
-                        "ls", "", "echo git push --force origin main"):
+                        "ls", "", "echo git push --force origin main", "echo then git push --force origin main",
+                        "if true; then git push origin main; fi", "# git push --force origin main\r\nls"):
             with self.subTest(command=command):
                 self.assertEqual(self.decide(command), {})
         self.assertEqual(self.lines, [])

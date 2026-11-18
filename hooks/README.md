@@ -149,7 +149,18 @@ off for that repository.
 commands on the `Bash` tool path. It splits the command into simple commands
 the way a shell would (pipes, `;`, `&&`, `||`, subshells, and each line of a
 multi-line command, with a backslash at the end of a line joining it to the
-next), looks through
+next), reads the commands inside compound commands (`if ...; then CMD; fi`,
+`for ...; do CMD; done`, `while`/`until` loops, `{ CMD; }`, `! CMD`, `case`
+branches, `coproc`, and function bodies, `f() { CMD; }` and
+`function f { CMD; }`; a reserved word is read as one only as the first word
+of a command, so `echo then` is an ordinary `echo`), drops a comment only
+where bash does (a `#` after an escaped character such as `a\ #`, or after a
+carriage return, is part of the word, and a backslash at the end of a comment
+does not continue it onto the next line), reads a `$'...'` string as bash
+does (`\'` inside it does not end it) and, when one holds `\'`, also as dash
+does, reads a command that contains a carriage return each way a shell may
+(bash keeps it in the word, bash on Windows may drop it before a line feed,
+PowerShell ends the line there), and checks every reading, looks through
 `sudo`, `env`, `time`, `timeout`, `stdbuf`, `ionice`, `setsid`, `unbuffer`, and
 similar wrappers and through a shell's command string, however its options
 are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
@@ -180,7 +191,9 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   `release/*` (exact branch names, so `feature/main-fix` is fine), a bare
   `git push --force` while one of those is checked out (read from
   `.git/HEAD`, and blocked when the branch cannot be read), a deletion of one
-  of those branches, and `git push --mirror`, `--all` or `--branches` with a
+  of those branches, a force push or deletion whose branch the shell expands
+  (`$b`, `"$BRANCH"`, `$(...)`), which cannot be read and so is blocked too
+  (`for b in main; do git push -f origin $b; done`), and `git push --mirror`, `--all` or `--branches` with a
   force or `--prune`, and a forced or pruned refspec pattern
   (`refs/heads/*:refs/heads/*`). An option's value (`-o ci.skip`,
   `--push-option`, `--repo`) is not read as the remote.
@@ -266,9 +279,12 @@ blocked on stale values, and each match still writes `would_deny`.
   deletes (`--delete`, `-d`, or `:branch`) a branch a value covers, a bare
   force push while such a branch is checked out, and `git push --mirror`.
   Pushes are read exactly as the destructive-operation check reads them,
-  through the same wrappers and `bash -c` bodies, so `--all` or `--branches`
+  through the same splitting, compound commands, wrappers and `bash -c`
+  bodies, so `--all` or `--branches`
   with a force or `--prune`, and a forced refspec pattern
-  (`refs/heads/*:refs/heads/*`), match every rule. A value ending in `/*`
+  (`refs/heads/*:refs/heads/*`), match every rule. A branch the shell expands
+  (`$b`) matches no value; the destructive-operation check blocks that push.
+  A value ending in `/*`
   covers every branch under the prefix; case is ignored. A value is a branch
   name: the validator refuses a `refs/` prefix and names longer than 255
   characters. An ordinary push is not a match.
