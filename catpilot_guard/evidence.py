@@ -7,8 +7,8 @@ line goes to syslog. Off unless one is set.
 
 What a line carries: the schema version, a random event id, the time, the source, the event,
 and the enumerated fields its caller passes (a hook name, a label, a tool name, a session id, a
-policy hash, a size). Never a command, a file path, file content, a prompt, a plan description, or a
-value from the company rules file.
+company rule or exception id, a policy hash, a size). Never a command, a file path, file content,
+a prompt, a plan description, or a value from the company rules file.
 
 Several hooks and sessions may append to one file at once. Each line is one write to a file
 opened for append, under an exclusive fcntl lock where the platform has one. The writer waits at
@@ -37,7 +37,8 @@ except ImportError:  # Windows has no fcntl: each line is still one write, witho
 SCHEMA_VERSION = 1
 # The closed list. Written today: deny and input_error (hooks), ask, would_deny and policy_error (the
 # company-rules hook), lookup (server), and rules_delivered, rules_expired and policy_error (the session-start
-# script); see docs/spec/EVIDENCE.md.
+# script); see docs/spec/EVIDENCE.md. A company rule an expiring exception relaxed writes would_deny with
+# exception_id: adding an event would change this list, which needs a new schema version (EVIDENCE.md §6).
 EVENTS = ("rules_delivered", "rules_expired", "deny", "ask", "would_deny", "policy_error", "input_error", "lookup")
 MODES = ("monitor", "ask", "block")
 
@@ -54,11 +55,13 @@ LOCK_WAIT_SECONDS = 0.5
 
 # An opaque identifier, never free text. A session id outside this shape is left out of the line.
 SESSION_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
-# Fields the writer refuses to write in any other shape: (pattern, longest length). Rule ids follow
+# Fields the writer refuses to write in any other shape: (pattern, longest length). Rule and exception ids follow
 # docs/spec/OVERLAY_V2.md §2.1: lowercase letters, digits and single hyphens, at most 64 characters.
+RULE_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 CHECKED = {
     "session_id": (SESSION_ID, 128),
-    "rule_id": (re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*"), 64),
+    "rule_id": (RULE_ID, 64),
+    "exception_id": (RULE_ID, 64),
     "policy_sha256": (re.compile(r"[0-9a-f]{64}"), 64),
 }
 ENVELOPE = ("schema_version", "event_id", "ts", "source", "event")
@@ -91,6 +94,10 @@ def build_line(event: str, source: str, fields: dict | None = None) -> dict:
         if key == "mode" and value is not None and value not in MODES:
             raise ValueError("unknown mode")
         line[key] = value
+    # An exception id says which exception relaxed the rule a company-rules hook's would_deny line names
+    # (OVERLAY_V2.md §3.1); on any other line, or without the rule, it would say nothing true. The schema refuses the same.
+    if line.get("exception_id") is not None and (event != "would_deny" or source != HOOK_SOURCE or line.get("rule_id") is None):
+        raise ValueError("exception_id belongs on a hook's would_deny line with its rule_id")
     return line
 
 

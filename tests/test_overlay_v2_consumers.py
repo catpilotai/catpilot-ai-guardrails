@@ -56,8 +56,14 @@ CANARIES = (
     "canary-wild-0a1b",  # a wildcard deploy host, *.canary-wild-0a1b.example.net
     "canary-alias-2f4e",  # use_instead, an alias only enforcement refers to
     "ca7a1b9e3d5f0c8264e1f7b2d9a0c3e5",  # the salt
+    "canary-exception-6c2d",  # an exception id
+    "canary-allow-4e5f",  # an exception's allowed host, canary-allow-4e5f.example.net
+    "canary-role-8a9b",  # an exception's approver_role
+    "canary-exception-7d3e",  # an exception id, limited by where
+    "canary-org-3b4c",  # a repository owner in where
+    "canary-repo-5d6e",  # a repository name in where
 )
-STRUCTURE = ("protected_branch", "deploy_host", "default_mode", "use_instead")
+STRUCTURE = ("protected_branch", "deploy_host", "default_mode", "use_instead", "approver_role")
 
 try:
     from starlette.testclient import TestClient
@@ -67,7 +73,7 @@ except ImportError:  # pragma: no cover
 
 
 def canary_overlay() -> dict:
-    """The version 2 example with canaries in every enforcement field, current as of today."""
+    """The version 2 example with canaries in every enforcement field, exceptions included, current as of today."""
     data, _ = validate_overlay.load_overlay_file(EXAMPLE_V2)
     data["reviewed_on"] = TODAY - dt.timedelta(days=1)
     data["expires_on"] = TODAY + dt.timedelta(days=30)
@@ -80,6 +86,13 @@ def canary_overlay() -> dict:
              "values": ["canary-branch-1a2b", "release-canary-3c4d/*"]},
             {"id": "canary-rule-hosts-9b7c", "kind": "deploy_host", "mode": "ask", "use_instead": "canary-alias-2f4e",
              "values": ["canary-host-7e8f.example.net", "*.canary-wild-0a1b.example.net"]},
+        ],
+        "exceptions": [
+            {"id": "canary-exception-6c2d", "rule": "canary-rule-hosts-9b7c", "allows": ["canary-allow-4e5f.example.net"],
+             "approver_role": "canary-role-8a9b lead", "expires_on": TODAY + dt.timedelta(days=10)},
+            {"id": "canary-exception-7d3e", "rule": "canary-rule-branches-5d1e", "allows": ["canary-branch-1a2b"],
+             "approver_role": "canary-role-8a9b lead", "expires_on": TODAY + dt.timedelta(days=10),
+             "where": {"repositories": ["canary-org-3b4c/canary-repo-5d6e"]}},
         ],
     }
     return data

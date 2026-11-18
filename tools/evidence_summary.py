@@ -5,7 +5,7 @@ Reads one or more files written by CATPILOT_EVIDENCE_LOG from the Claude Code
 hooks (pretooluse-secrets, pretooluse-write-secrets, pretooluse-destructive-ops; entries
 from before the write hook's rename, logged as pretooluse-write-private-key, are counted
 under its new name), the company-rules hook (pretooluse-company-rules: deny, ask and
-would_deny per rule id, and policy errors by label)
+would_deny per rule id, how often each expiring exception relaxed its rule, and policy errors by label)
 and the reference MCP server (get_guidance, check_plan, get_template, list_approved).
 
 Because the evidence log never records command text, file paths, file content,
@@ -40,6 +40,7 @@ def summarize_lines(lines: list[str]) -> dict[str, Any]:
     hook_input_errors: Counter[str] = Counter()
     unique_sessions: set[str] = set()
     company_by_rule: dict[str, Counter[str]] = {}
+    company_by_exception: dict[str, dict[str, Any]] = {}
     company_policy_errors: Counter[str] = Counter()
 
     mcp_calls_by_tool: Counter[str] = Counter()
@@ -92,7 +93,13 @@ def summarize_lines(lines: list[str]) -> dict[str, Any]:
             hook = str(entry.get("hook") or "unknown")
             hook = HOOK_ALIASES.get(hook, hook)
             rule_id = entry.get("rule_id")
-            if event in ("deny", "ask", "would_deny") and isinstance(rule_id, str) and rule_id:
+            exception_id = entry.get("exception_id")
+            if event == "would_deny" and isinstance(exception_id, str) and exception_id and isinstance(rule_id, str) and rule_id:
+                # An expiring exception relaxed the rule: counted apart, so would_deny keeps counting what monitor mode
+                # or an expired file would have blocked.
+                used = company_by_exception.setdefault(exception_id, {"rule": rule_id, "count": 0})
+                used["rule"], used["count"] = rule_id, used["count"] + 1
+            elif event in ("deny", "ask", "would_deny") and isinstance(rule_id, str) and rule_id:
                 company_by_rule.setdefault(rule_id, Counter())[event] += 1
             elif event == "policy_error":
                 company_policy_errors[str(entry.get("label") or "unknown")] += 1
@@ -156,6 +163,7 @@ def summarize_lines(lines: list[str]) -> dict[str, Any]:
                 rule: {event: counts.get(event, 0) for event in ("deny", "ask", "would_deny")}
                 for rule, counts in sorted(company_by_rule.items())
             },
+            "by_exception": {exception: dict(used) for exception, used in sorted(company_by_exception.items())},
             "policy_errors": dict(sorted(company_policy_errors.items())),
         },
         "mcp_server": {
@@ -202,17 +210,22 @@ def render_markdown(summary: dict[str, Any]) -> str:
         for label, count in hooks["denials_by_label"].items():
             out.append(f"| `{label}` | {count} |")
     company = summary["company_rules"]
-    if company["by_rule"] or company["policy_errors"]:
+    if company["by_rule"] or company["by_exception"] or company["policy_errors"]:
         out += [
             "",
             "## Company rules (`pretooluse-company-rules`)",
             "",
-            "`would_deny` counts what a rule in monitor mode, or an expired rules file, would have blocked.",
+            "`would_deny` counts what a rule in monitor mode, or an expired rules file, would have blocked. What an "
+            "expiring exception let through is counted under the exception.",
         ]
         if company["by_rule"]:
             out += ["", "| Rule | deny | ask | would_deny |", "| --- | --- | --- | --- |"]
             for rule, counts in company["by_rule"].items():
                 out.append(f"| `{rule}` | {counts['deny']} | {counts['ask']} | {counts['would_deny']} |")
+        if company["by_exception"]:
+            out += ["", "| Exception | Rule it relaxed | Times it relaxed the rule |", "| --- | --- | --- |"]
+            for exception, used in company["by_exception"].items():
+                out.append(f"| `{exception}` | `{used['rule']}` | {used['count']} |")
         if company["policy_errors"]:
             out += ["", "| Policy errors (no company rule applied) | Count |", "| --- | --- |"]
             for label, count in company["policy_errors"].items():

@@ -1,7 +1,7 @@
 # Evidence events
 
 **Status:** Active, schema version 1. Schema: [`evidence-event.schema.json`](./evidence-event.schema.json). Writer: [`catpilot_guard/evidence.py`](../../catpilot_guard/evidence.py).
-**Companion to:** [`docs/DEPLOY_ORG.md`](../DEPLOY_ORG.md#the-evidence-log) (turning the log on, and what it is for), [`OVERLAY_V2.md`](./OVERLAY_V2.md) (where `rule_id` and `mode` come from).
+**Companion to:** [`docs/DEPLOY_ORG.md`](../DEPLOY_ORG.md#the-evidence-log) (turning the log on, and what it is for), [`OVERLAY_V2.md`](./OVERLAY_V2.md) (where `rule_id`, `mode` and `exception_id` come from).
 
 ---
 
@@ -41,7 +41,8 @@ value for them, and are left out otherwise.
 | `policy_sha256` | server, session start, company-rules hook | SHA-256 of the company rules file's bytes. Server: on every call where the file was read and parsed, error answers included; absent with no file, a missing file, or one that fails the structure check. Session start: the hash the private build recorded, on `rules_delivered` and `rules_expired`. Company-rules hook: the hash its compiled policy records, on `deny`, `ask` and `would_deny`. |
 | `block_chars`, `block_lines` | session start | On `rules_delivered`: the size of `company-checklist.md` in characters and in lines. Sizes only, so an administrator can see a block that is over a host's budget. |
 | `rule_id` | company-rules hook | The id of the company rule that matched ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.1), on `deny`, `ask` and `would_deny`. When several rules match one command, each writes its own line. |
-| `mode` | company-rules hook | The mode that applied to that rule: `monitor`, `ask` or `block` ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.3), and `monitor` for every rule once the rules file has expired. The built-in checks have no mode. |
+| `mode` | company-rules hook | The mode that applied to that rule: `monitor`, `ask` or `block` ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §2.3), and `monitor` for every rule once the rules file has expired. On a `would_deny` line with `exception_id`, the rule's own mode, which the exception set aside. The built-in checks have no mode. |
+| `exception_id` | company-rules hook | The id of the expiring exception that relaxed the rule `rule_id` names ([`OVERLAY_V2.md`](./OVERLAY_V2.md) §3.1), so the rule decided nothing. Only on `would_deny`, always with `rule_id`: one line per exception that covered something the rule matched. Absent when no exception changed the decision. Same shape as `rule_id`. |
 | `hook` | hooks | `pretooluse-secrets`, `pretooluse-write-secrets`, `pretooluse-destructive-ops` or `pretooluse-company-rules`. |
 | `tool` | all | Hooks: the tool checked (`Bash`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, or Codex's `apply_patch`). Server: the MCP tool called. |
 | `label` | hooks, session start | Hooks: the fixed label of what matched: a credential type, `private-key-block`, or a destructive-operation type. Company-rules hook, on `policy_error`: why its compiled policy could not be used, one of `bad-arguments`, `missing`, `unreadable`, `wrong-owner`, `malformed` or `internal-error`. Session start, on `policy_error`: why the rules could not be loaded, one of `bad-arguments`, `missing`, `unreadable`, `malformed`, `hash-mismatch` or `internal-error`. |
@@ -59,7 +60,7 @@ value for them, and are left out otherwise.
 | `input_error` | A hook could not read its input and exited 2, which blocks. | the four hooks |
 | `lookup` | The server answered a tool call, including with an error. | the server |
 | `ask` | A rule in `ask` mode had the host ask the person. The line records that they were asked, not what they chose: a `PreToolUse` hook does not see the answer. | the company-rules hook |
-| `would_deny` | A rule in `monitor` mode, or any rule of an expired rules file, matched; nothing was blocked. | the company-rules hook |
+| `would_deny` | A rule in `monitor` mode, or any rule of an expired rules file, matched; nothing was blocked. With `exception_id`: a rule matched and an active expiring exception covered everything it matched, so the rule decided nothing, whatever its `mode`. | the company-rules hook |
 | `policy_error` | A company rules file could not be loaded or did not validate. The company-rules hook then applies no company rule; the built-in checks are unaffected. | the session-start script, the company-rules hook |
 | `rules_delivered` | The company rules were delivered at session start. On Claude Code, the script delivers a one-line status; the managed `CLAUDE.md` carries the rules. | the session-start script |
 | `rules_expired` | At session start, the company rules file was past its expiry date. | the session-start script |
@@ -78,9 +79,11 @@ description, a data class, hosting or service text, a credential reference
 name, a matched secret, or any value from the company rules file, including
 its owner and its dates. A
 `session_id` that is not an opaque id is dropped. The writer refuses a line
-whose `event`, `mode`, `rule_id`, `session_id` or `policy_sha256` has the
+whose `event`, `mode`, `rule_id`, `exception_id`, `session_id` or `policy_sha256` has the
 wrong shape, and the schema allows no field beyond those in §2. The schema
-also limits a session-start line's `event` and `label` to the values above.
+also limits a session-start line's `event` and `label` to the values above,
+and, with the writer, refuses `exception_id` anywhere but on a company-rules
+hook's `would_deny` line that has `rule_id`.
 
 ## 5. How lines are written
 
@@ -100,9 +103,11 @@ also limits a session-start line's `event` and `label` to the values above.
 `schema_version` goes up when a field is removed or renamed, a field changes
 meaning or type, or the `event` list changes. Adding an optional field, or a
 value to any other list, keeps version 1. The `session-start` source, the
-`codex` host, and the `session_source`, `block_chars` and `block_lines` fields
-were added this way, so a session-start line is version 1 too, and so is a
-hook line with `host` `codex`. Validate a line
+`codex` host, and the `session_source`, `block_chars`, `block_lines` and
+`exception_id` fields were added this way, so a session-start line is version
+1 too, and so is a hook line with `host` `codex`. That rule is why an
+exception that changed a decision writes `would_deny` with `exception_id`
+rather than an event of its own. Validate a line
 against the schema in the release that wrote it.
 
 ## 7. Not in version 1

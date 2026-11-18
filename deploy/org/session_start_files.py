@@ -30,7 +30,9 @@ CLAUDE.md shapes what the model does without enforcing anything.
   verify-company-rules --cc-dir DIR --codex-dir DIR --home DIR [--copilot-dir DIR] [--timeout SECONDS]
                                    verify.sh's checks of the company-rules hook on each tool with a compiled policy:
                                    the files and their ownership, the policy loading, a probe for its first
-                                   protected_branch rule, and the hook as the managed file registers it
+                                   protected_branch rule and its first deploy_host rule, picked outside the active
+                                   exceptions where it can be and otherwise expected as the exceptions make it, and
+                                   the hook as the managed file registers it
 
 What each host reads, from the vendors' documentation (read on 2026-11-16):
   Claude Code  the managed CLAUDE.md in the managed directory, /Library/Application Support/ClaudeCode/CLAUDE.md
@@ -1045,22 +1047,41 @@ def branch_matches(value: str, branch: str) -> bool:
     return value.casefold() == branch.casefold()
 
 
-def first_branch_probe(policy_file: Path):
-    """(rule id, mode, command, expired, modes) for a force push to a branch the policy's first protected_branch rule
-    covers, or None. modes are the effective modes of every rule that covers that branch, the probed one included, so
-    the expected decision is the strictest of them, as the hook decides. The caller never prints the command."""
+def exception_allows(data: dict, rule_id: str, today: dt.date) -> list:
+    """The allows of every exception the hook applies to this rule today (catpilot_guard/policy.py active_exceptions):
+    not past its expires_on, no `where`, and none once the policy itself has expired."""
+    if dt.date.fromisoformat(data["expires_on"]) < today:
+        return []
+    return [value for exception in data.get("exceptions") or []
+            if exception["rule"] == rule_id and "where" not in exception
+            and dt.date.fromisoformat(exception["expires_on"]) >= today
+            for value in exception["allows"]]
+
+
+def first_branch_probe(policy_file: Path, today=None):
+    """(rule id, mode, command, expired, modes, excepted) for a force push to a branch the policy's first protected_branch
+    rule covers, or None. The branch is the first of the rule's values that no active exception to the rule allows;
+    when an exception allows them all, the first, and excepted is True. modes are the effective modes of every rule
+    that covers that branch and has no active exception allowing it, the probed one included, so the expected decision
+    is the strictest of them, as the hook decides. The caller never prints the command."""
     try:
+        today = today or dt.date.today()
         data = json.loads(policy_file.read_text(encoding="utf-8"))
-        expired = dt.date.fromisoformat(data["expires_on"]) < dt.date.today()
+        expired = dt.date.fromisoformat(data["expires_on"]) < today
         branch_rules = [rule for rule in data["rules"] if rule["kind"] == "protected_branch"]
         if not branch_rules:
             return None
         first = branch_rules[0]
-        value = first["values"][0]
-        branch = value[:-1] + "catpilot-verify" if value.endswith("/*") else value
-        modes = ["monitor" if expired else rule["mode"] for rule in branch_rules
-                 if any(branch_matches(v, branch) for v in rule["values"])]
-        return first["id"], first["mode"], "git push --force origin %s" % shlex.quote(branch), expired, modes
+
+        def fires(rule: dict, branch: str) -> bool:
+            return (any(branch_matches(v, branch) for v in rule["values"])
+                    and not any(branch_matches(a, branch) for a in exception_allows(data, rule["id"], today)))
+
+        candidates = [value[:-1] + "catpilot-verify" if value.endswith("/*") else value for value in first["values"]]
+        branch = next((candidate for candidate in candidates if fires(first, candidate)), candidates[0])
+        modes = ["monitor" if expired else rule["mode"] for rule in branch_rules if fires(rule, branch)]
+        return (first["id"], first["mode"], "git push --force origin %s" % shlex.quote(branch), expired, modes,
+                not fires(first, branch))
     except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
         return None
 
@@ -1077,20 +1098,25 @@ def suffix_covered(value: str, suffix: str) -> bool:
     return value.startswith("*.") and (suffix == value[2:] or suffix.endswith("." + value[2:]))
 
 
-def first_deploy_probe(policy_file: Path):
+def first_deploy_probe(policy_file: Path, today=None):
     """(rule id, mode, command, expired, modes) for a deploy the policy's first deploy_host rule does not allow, or None.
-    modes are the effective modes of every deploy_host rule that does not allow it either: each is its own allow-list."""
+    An active exception's allows count as allowed, so the probe is a deploy no exception lets through. modes are the
+    effective modes of every deploy_host rule that does not allow it either: each is its own allow-list."""
     try:
+        today = today or dt.date.today()
         data = json.loads(policy_file.read_text(encoding="utf-8"))
-        expired = dt.date.fromisoformat(data["expires_on"]) < dt.date.today()
+        expired = dt.date.fromisoformat(data["expires_on"]) < today
         rules = [rule for rule in data["rules"] if rule["kind"] == "deploy_host"]
         if not rules:
             return None
         first = rules[0]
+
+        def allowed(rule: dict, suffix: str) -> bool:
+            return any(suffix_covered(v, suffix) for v in list(rule["values"]) + exception_allows(data, rule["id"], today))
+
         for command, suffix in DEPLOY_PROBES:
-            if not any(suffix_covered(v, suffix) for v in first["values"]):
-                modes = ["monitor" if expired else rule["mode"] for rule in rules
-                         if not any(suffix_covered(v, suffix) for v in rule["values"])]
+            if not allowed(first, suffix):
+                modes = ["monitor" if expired else rule["mode"] for rule in rules if not allowed(rule, suffix)]
                 return first["id"], first["mode"], command, expired, modes
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
@@ -1162,9 +1188,10 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
         probe = first_branch_probe(policy_file)
         runs = [("ls", [], "a harmless command")]
         if probe is not None:
-            rule_id, mode, command, expired, modes = probe
-            runs.append((command, modes,
-                         "a force push to a branch rule %s protects (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
+            rule_id, mode, command, expired, modes, excepted = probe
+            excepted_note = ", allowed by an active exception: the rule decides nothing" if excepted else ""
+            runs.append((command, modes, "a force push to a branch rule %s protects (%s%s%s)" % (
+                rule_id, mode, ", expired: monitor" if expired else "", excepted_note)))
         deploy = first_deploy_probe(policy_file)
         if deploy is not None:
             rule_id, mode, command, expired, modes = deploy
