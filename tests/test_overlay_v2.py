@@ -86,7 +86,9 @@ class ExampleTests(V2Case):
         self.assertValid(self.data)
         overlay = vo.validate_structure(self.data)
         self.assertEqual(overlay["schema_version"], 2)
-        self.assertEqual([r["id"] for r in overlay["enforcement"]["rules"]], ["protected-branches", "deploy-hosts"])
+        self.assertEqual([r["id"] for r in overlay["enforcement"]["rules"]],
+                         ["protected-branches", "deploy-hosts", "package-registries", "cloud-accounts"])
+        self.assertEqual([r["kind"] for r in overlay["enforcement"]["rules"]], list(vo.RULE_KINDS))
 
     def test_the_v1_example_still_passes_unchanged(self):
         _, errors = vo.validate_overlay(load(EXAMPLE_V1), today=V1_TODAY)
@@ -169,7 +171,7 @@ class Rule3IdsTests(V2Case):
 
     def test_a_repeated_id_is_named_by_position_not_value(self):
         message = self.assertStructureRejects(self.mutated(lambda d: d["enforcement"]["rules"].append(rule(rule_id="deploy-hosts"))))
-        self.assertEqual(message, "enforcement.rules[2].id: already used at enforcement.rules[1].id; ids, aliases and template kinds are unique across the file")
+        self.assertEqual(message, "enforcement.rules[4].id: already used at enforcement.rules[1].id; ids, aliases and template kinds are unique across the file")
 
     def test_ids_and_aliases_pass_at_the_limits(self):
         long_id = "a" * 64
@@ -217,11 +219,12 @@ class Rule4EnforcementTests(V2Case):
             "no rules": (lambda d: d["enforcement"].update(rules=[]), "1 to 50"),
             "51 rules": (lambda d: d["enforcement"].update(rules=[rule(rule_id=f"rule-{n}") for n in range(51)]), "1 to 50"),
             "rules missing": (lambda d: d["enforcement"].pop("rules"), "missing fields ['rules']"),
-            "unknown kind": (lambda d: d["enforcement"]["rules"][0].update(kind="open_port"), "expected one of protected_branch, deploy_host"),
-            "package_registry before its consumer": (
-                lambda d: d["enforcement"]["rules"].append(rule(kind="package_registry", values=["npm.example.org"])), "enters the schema with its first consumer"),
-            "cloud_account before its consumer": (
-                lambda d: d["enforcement"]["rules"].append(rule(kind="cloud_account", values=["aws:111122223333"])), "enters the schema with its first consumer"),
+            "unknown kind": (lambda d: d["enforcement"]["rules"][0].update(kind="open_port"),
+                             "expected one of protected_branch, deploy_host, package_registry, cloud_account"),
+            "a package_registry value of the wrong kind": (
+                lambda d: d["enforcement"]["rules"].append(rule(kind="package_registry", values=["aws:111122223333"])), "expected a lowercase host name"),
+            "a cloud_account value of the wrong kind": (
+                lambda d: d["enforcement"]["rules"].append(rule(kind="cloud_account", values=["npm.example.net"])), "expected aws:<12 digits>"),
             "exceptions are the next increment": (lambda d: d["enforcement"].update(exceptions=[]), "enforcement: 1 unknown field;"),
             "free text in a rule": (lambda d: d["enforcement"]["rules"][0].update(reason="Because"), "no free text"),
             "not an object": (lambda d: d.update(enforcement=["main"]), "expected an object"),
@@ -229,6 +232,22 @@ class Rule4EnforcementTests(V2Case):
         for label, (mutate, fragment) in cases.items():
             with self.subTest(case=label):
                 self.assertStructureRejects(self.mutated(mutate), fragment)
+
+    def test_every_kind_is_accepted_now_that_its_consumer_has_shipped(self):
+        # §2.2: a kind enters the schema with its first consumer; package_registry and cloud_account came with the
+        # company-rules hook (catpilot_guard/registry_targets.py, catpilot_guard/cloud_targets.py).
+        self.assertEqual(vo.ACCEPTED_KINDS, vo.RULE_KINDS)
+        self.assertEqual(vo.ENFORCED_KINDS, vo.RULE_KINDS)
+
+        def add(d):
+            d["enforcement"]["rules"].append(rule(rule_id="registries-2", kind="package_registry",
+                                                  values=["npm.example.net", "*.mirror.example.net/simple"], mode="block"))
+            d["enforcement"]["rules"].append(rule(rule_id="accounts-2", kind="cloud_account", values=["aws:999988887777"], mode="monitor"))
+        data = self.mutated(add)
+        self.assertValid(data)
+        kinds = [r["kind"] for r in vo.validate_structure(data)["enforcement"]["rules"]]
+        self.assertEqual(kinds.count("package_registry"), 2)
+        self.assertEqual(kinds.count("cloud_account"), 2)
 
 
 class EnforcementMessagesTests(V2Case):
@@ -266,8 +285,7 @@ class Rule5ValuesTests(V2Case):
     }
 
     def test_each_kind_s_grammar(self):
-        # package_registry and cloud_account are checked here too, so the pull request that ships
-        # their first consumer only has to accept the kind (§2.2).
+        # Every kind's grammar, package_registry and cloud_account included (accepted since their hook consumer).
         for kind in vo.RULE_KINDS:
             for value in self.GOOD[kind]:
                 with self.subTest(kind=kind, value=value):
@@ -348,6 +366,25 @@ class Rule7HostsInModelTextTests(V2Case):
         errors = self.errors(self.mutated(lambda d: d["enforcement"]["rules"][1].update(values=["*.example.org"])))
         self.assertIn("overlay.owner: names a value of enforcement rule 'deploy-hosts'; enforcement values never appear in model-facing text", errors)
 
+    def test_a_listed_registry_or_account_in_model_facing_text_is_an_error(self):
+        cases = {
+            "registry host in a phrase": (lambda d: d["services"]["approved"][3].update(text="The mirror at NPM.example.org"), "package-registries"),
+            "host of a registry with a path": (lambda d: d["services"]["approved"][3].update(text="Mirror on pypi.example.org"), "package-registries"),
+            "registry in an alias": (lambda d: d["services"]["approved"][3].update(aliases=["service-npm-example-org"]), "package-registries"),
+            "aws account in a phrase": (lambda d: d["hosting"]["approved"][2].update(text="Account 111122223333"), "cloud-accounts"),
+            "gcp project in an alias": (lambda d: d["hosting"]["approved"][2].update(aliases=["hosting-example-org-apps"]), "cloud-accounts"),
+            "azure subscription in a contact": (
+                lambda d: d["contacts"]["hosting"].update(name="Subscription 00000000-0000-0000-0000-000000000000 owners"), "cloud-accounts"),
+        }
+        for label, (mutate, rule_id) in cases.items():
+            with self.subTest(case=label):
+                errors = self.errors(self.mutated(mutate))
+                rule7 = [e for e in errors if f"enforcement rule '{rule_id}'" in e]
+                self.assertTrue(rule7, errors)
+                for error in rule7:
+                    for value in ("npm.example.org", "pypi.example.org", "111122223333", "example-org-apps", "00000000-0000"):
+                        self.assertNotIn(value, error.lower())
+
     def test_a_branch_name_in_a_phrase_is_not_a_rule_7_error(self):
         # Rule 7 covers the allow-list kinds; protected branch names are ordinary words like "main".
         self.assertValid(self.mutated(lambda d: d["review_triggers"][0].update(text="External users of the main site")))
@@ -366,7 +403,7 @@ class Rule8SecretScanTests(V2Case):
         for label, bad in cases.items():
             with self.subTest(case=label):
                 errors = self.errors(self.mutated(lambda d: d["enforcement"]["rules"].append(bad)))
-                self.assertTrue(any(e.startswith("overlay.enforcement.rules[2].values[0]") and "secret" in e for e in errors), errors)
+                self.assertTrue(any(e.startswith("overlay.enforcement.rules[4].values[0]") and "secret" in e for e in errors), errors)
 
 
 class Rule10SaltTests(V2Case):
@@ -660,8 +697,8 @@ class DuplicateKeyTests(unittest.TestCase):
 class Rule9LintTests(V2Case):
     def test_monitor_rules_draw_no_warning(self):
         def all_monitor(d):
-            d["enforcement"]["rules"][0]["mode"] = "monitor"
-            del d["enforcement"]["rules"][1]
+            for r in d["enforcement"]["rules"]:
+                r["mode"] = "monitor"
         self.assertEqual(vo.lint_overlay(vo.validate_structure(self.mutated(all_monitor))), [])
         self.assertEqual(vo.lint_overlay(vo.validate_structure(load(EXAMPLE_V1))), [])
 
@@ -686,10 +723,16 @@ class Rule9LintTests(V2Case):
         self.assertValid(data)
         warnings = vo.lint_overlay(vo.validate_structure(data))
         # protected_branch has a host verification note (2026-11-17), so block on it draws no warning, and
-        # deploy-hosts is in monitor.
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("(more-branches): mode ask differs by host", warnings[0])
-        self.assertIn("acts as block", warnings[0])
+        # deploy-hosts and package-registries are in monitor. The example's cloud-accounts rule is in ask.
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("(cloud-accounts): mode ask differs by host", warnings[0])
+        self.assertIn("(more-branches): mode ask differs by host", warnings[1])
+        self.assertIn("acts as block", warnings[1])
+        # Block on the new kinds, which have no host verification note either, warns.
+        for index, kind in ((2, "package_registry"), (3, "cloud_account")):
+            blocked = self.mutated(lambda d: d["enforcement"]["rules"][index].update(mode="block"))
+            self.assertTrue(any(f"mode block for kind {kind}, which has no host verification note yet" in w
+                                for w in vo.lint_overlay(vo.validate_structure(blocked))))
         # Block on deploy_host, which has no host verification note yet, warns.
         blocked = self.mutated(lambda d: d["enforcement"]["rules"][1].update(mode="block"))
         self.assertIn("enforcement.rules[1] (deploy-hosts): mode block for kind deploy_host, which has no host verification note yet; consider monitor first",
@@ -713,8 +756,10 @@ class Rule9LintTests(V2Case):
         self.assertEqual(code, 0, err.getvalue())
         self.assertIn("WARNING: enforcement.rules[1] (deploy-hosts): mode block for kind deploy_host", err.getvalue())
         self.assertIn("OK: overlay for Example Org", out.getvalue())
-        self.assertIn("2 enforcement rules: `compile` writes them as the policy the company-rules hook reads", out.getvalue())
-        for value in ("release/*", "hotfix/*", "apps.example.org", TEST_SALT):
+        self.assertIn("4 enforcement rules: `compile` writes them as the policy the company-rules hook reads", out.getvalue())
+        self.assertIn("acts on protected_branch, deploy_host, package_registry and cloud_account rules", out.getvalue())
+        for value in ("release/*", "hotfix/*", "apps.example.org", "npm.example.org", "pypi.example.org", "111122223333",
+                      "00000000-0000", "example-org-apps", TEST_SALT):
             self.assertNotIn(value, out.getvalue() + err.getvalue())
 
 
@@ -920,7 +965,9 @@ class JsonSchemaTests(unittest.TestCase):
             "bad id": lambda d: d["hosting"]["approved"][1].update(id="Bad Id"),
             "six aliases": lambda d: d["hosting"]["approved"][1].update(aliases=[f"a-{n}" for n in range(6)]),
             "bad mode": lambda d: d["enforcement"]["rules"][0].update(mode="warn"),
-            "kind not yet accepted": lambda d: d["enforcement"]["rules"].append(rule(kind="cloud_account", values=["aws:111122223333"])),
+            "unknown kind": lambda d: d["enforcement"]["rules"].append(rule(kind="open_port", values=["aws:111122223333"])),
+            "bad registry": lambda d: d["enforcement"]["rules"][2].update(values=["https://npm.example.org"]),
+            "bad account": lambda d: d["enforcement"]["rules"][3].update(values=["aws:1234"]),
             "bad branch": lambda d: d["enforcement"]["rules"][0].update(values=["a..b"]),
             "bad host": lambda d: d["enforcement"]["rules"][1].update(values=["https://apps.example.org"]),
             "no rules": lambda d: d["enforcement"].update(rules=[]),
@@ -935,7 +982,9 @@ class JsonSchemaTests(unittest.TestCase):
                     vo.validate_structure(data)
 
     def test_value_patterns_agree_with_the_validator(self):
-        patterns = {"protected_branch": self.schema["$defs"]["branch"]["pattern"], "deploy_host": self.schema["$defs"]["host"]["pattern"]}
+        patterns = {"protected_branch": self.schema["$defs"]["branch"]["pattern"], "deploy_host": self.schema["$defs"]["host"]["pattern"],
+                    "package_registry": self.schema["$defs"]["registry"]["pattern"],
+                    "cloud_account": self.schema["$defs"]["cloud_account"]["pattern"]}
         for kind, pattern in patterns.items():
             compiled = re.compile(pattern)
             for value in Rule5ValuesTests.GOOD[kind] + Rule5ValuesTests.BAD[kind]:

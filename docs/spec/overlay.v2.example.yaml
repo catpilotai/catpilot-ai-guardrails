@@ -76,9 +76,8 @@ review_triggers:
 salt: "0123456789abcdef0123456789abcdef"
 
 # Machine-only: never rendered into a prompt, never returned by the server.
-# This release validates these rules and nothing reads them yet. It accepts the
-# first build's two kinds, protected_branch and deploy_host; package_registry and
-# cloud_account enter the schema with their first consumer (OVERLAY_V2.md §2.2).
+# `compile` writes these rules as the policy the company-rules hook reads; the
+# hook acts on all four kinds (OVERLAY_V2.md §2.2, hooks/README.md).
 enforcement:
   default_mode: monitor
   rules:
@@ -90,3 +89,12 @@ enforcement:
       kind: deploy_host
       use_instead: hosting-app-platform
       values: ["apps.example.org", "*.apps.example.org"]
+    - id: package-registries        # default_mode applies: monitor
+      kind: package_registry
+      use_instead: service-package-mirror
+      values: ["npm.example.org", "pypi.example.org/simple"]
+    - id: cloud-accounts
+      kind: cloud_account
+      mode: ask
+      use_instead: hosting-cloud-subscription
+      values: ["aws:111122223333", "azure:00000000-0000-0000-0000-000000000000", "gcp:example-org-apps"]

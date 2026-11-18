@@ -38,6 +38,8 @@ SHA = "a" * 64
 # Values a rule may list. Planted so a test can show none of them leaves the hook or compile's printout.
 BRANCH_MARKER = "zq-marker-branch"
 HOST_MARKER = "zq-marker.apps.example.org"
+REGISTRY_MARKER = "zq-marker.registry.example.org/zq-path"
+ACCOUNT_MARKER = "gcp:zq-marker-project"
 
 
 def policy_dict(rules=None, expires="2099-01-01", **top) -> dict:
@@ -95,7 +97,7 @@ class PolicyFormatTests(unittest.TestCase):
             "a short hash": json.dumps(policy_dict(source_sha256="abc")).encode(),
             "an impossible date": json.dumps(policy_dict(expires="2027-13-45")).encode(),
             "no rules": json.dumps(policy_dict(rules=[])).encode(),
-            "an unknown kind": json.dumps(policy_dict(rules=[branch_rule(kind="cloud_account")])).encode(),
+            "an unknown kind": json.dumps(policy_dict(rules=[branch_rule(kind="dns_zone")])).encode(),
             "an unknown mode": json.dumps(policy_dict(rules=[branch_rule(mode="warn")])).encode(),
             "a bad id": json.dumps(policy_dict(rules=[branch_rule(rule_id="Bad_Id")])).encode(),
             "a repeated id": json.dumps(policy_dict(rules=[branch_rule(), branch_rule()])).encode(),
@@ -114,6 +116,15 @@ class PolicyFormatTests(unittest.TestCase):
         policy = parsed([branch_rule(), {"id": "deploy-hosts", "kind": "deploy_host", "mode": "block", "values": ["apps.example.org"]}])
         self.assertEqual([r.kind for r in policy.rules], ["protected_branch", "deploy_host"])
         self.assertIn("deploy_host", pol.ENFORCED_KINDS)
+
+    def test_package_registry_and_cloud_account_rules_are_carried_and_enforced(self):
+        policy = parsed([{"id": "registries", "kind": "package_registry", "mode": "monitor", "values": ["npm.example.org/x"]},
+                         {"id": "accounts", "kind": "cloud_account", "mode": "ask", "values": ["aws:111122223333"]}])
+        self.assertEqual([r.kind for r in policy.rules], ["package_registry", "cloud_account"])
+        for kind in ("package_registry", "cloud_account"):
+            self.assertIn(kind, pol.KINDS)
+            self.assertIn(kind, pol.ENFORCED_KINDS)
+            self.assertIn(kind, cr.WHAT)
 
     def test_branch_values_match_like_the_built_in_check(self):
         cases = [("refs/heads/deploy", "deploy", True),("main", "main", True), ("main", "MAIN", True), ("main", "mainline", False), ("main", "", False),
@@ -428,6 +439,10 @@ class CompileTests(unittest.TestCase):
         text = EXAMPLE_V2.read_text(encoding="utf-8").replace(f'salt: "{vo.EXAMPLE_SALT}"', f'salt: "{TEST_SALT}"')
         text = text.replace('values: ["main", "release/*", "hotfix/*"]', 'values: ["main", "release/*", "%s/*"]' % BRANCH_MARKER)
         text = text.replace('values: ["apps.example.org", "*.apps.example.org"]', 'values: ["%s"]' % HOST_MARKER)
+        text = text.replace('values: ["npm.example.org", "pypi.example.org/simple"]', 'values: ["%s"]' % REGISTRY_MARKER)
+        text = text.replace('values: ["aws:111122223333", "azure:00000000-0000-0000-0000-000000000000", "gcp:example-org-apps"]',
+                            'values: ["%s"]' % ACCOUNT_MARKER)
+        assert REGISTRY_MARKER in text and ACCOUNT_MARKER in text
         self.rules = self.tmp / "rules.yaml"
         self.rules.write_text(text, encoding="utf-8")
         self.out = self.tmp / "policy.json"
@@ -453,8 +468,12 @@ class CompileTests(unittest.TestCase):
         self.assertEqual(policy.source_sha256, __import__("hashlib").sha256(self.rules.read_bytes()).hexdigest())
         self.assertEqual(policy.expires_on, dt.date(2027, 5, 17))
         self.assertEqual([(r.id, r.kind, r.mode) for r in policy.rules],
-                         [("protected-branches", "protected_branch", "block"), ("deploy-hosts", "deploy_host", "monitor")])
+                         [("protected-branches", "protected_branch", "block"), ("deploy-hosts", "deploy_host", "monitor"),
+                          ("package-registries", "package_registry", "monitor"), ("cloud-accounts", "cloud_account", "ask")])
         self.assertEqual(policy.rules[1].use_instead_text, "Internal App Platform (company sign-in)")
+        self.assertEqual(policy.rules[2].use_instead_text, "The internal package mirror")
+        self.assertEqual(policy.rules[3].use_instead_text, "The approved cloud subscription managed by IT")
+        self.assertEqual(policy.rules[2].values, (REGISTRY_MARKER,))
         self.assertEqual(stat.S_IMODE(os.stat(self.out).st_mode), 0o644)
 
     def test_compile_is_deterministic_and_copies_nothing_else(self):
@@ -470,7 +489,13 @@ class CompileTests(unittest.TestCase):
         code, out, err = self.compile()
         self.assertIn("protected-branches | protected_branch | block | deny | deny", out)
         self.assertIn("deploy-hosts | deploy_host | monitor | log would_deny only | log would_deny only", out)
-        for value in (BRANCH_MARKER, HOST_MARKER, "release/*", TEST_SALT):
+        self.assertIn("package-registries | package_registry | monitor | log would_deny only | log would_deny only", out)
+        self.assertIn("cloud-accounts | cloud_account | ask | deny; asks the person only if the hook command has --ask | "
+                      "deny (Codex cannot ask)", out)
+        self.assertNotIn("not enforced in this release", out)
+        self.assertIn("WARNING: enforcement.rules[3] (cloud-accounts): mode ask differs by host", err)
+        for value in (BRANCH_MARKER, HOST_MARKER, REGISTRY_MARKER, "zq-marker.registry", "zq-path", ACCOUNT_MARKER,
+                      "zq-marker-project", "release/*", TEST_SALT):
             self.assertNotIn(value, out + err)
 
     def test_ask_is_shown_as_deny_on_codex(self):
@@ -573,7 +598,16 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
         self.assertRegex(verify.stdout, r"denies\s+pretooluse-company-rules.py --host claude-code denies a force push")
         self.assertRegex(verify.stdout, r"wired\s+\S*requirements.toml runs pretooluse-company-rules.py, which denies")
-        self.assertNotIn("hotfix", verify.stdout)
+        # The example's package-registries rule is in monitor and its cloud-accounts rule in ask, which acts as block
+        # without --ask; verify probes both on each tool, without printing a probe command or a listed value.
+        self.assertRegex(verify.stdout, r"logs\s+pretooluse-company-rules.py --host claude-code logs, without blocking, a package "
+                                        r"install from a registry rule package-registries does not allow \(monitor\)")
+        self.assertRegex(verify.stdout, r"denies\s+pretooluse-company-rules.py --host codex denies a cloud command naming an "
+                                        r"account rule cloud-accounts does not allow \(ask\)")
+        self.assertRegex(verify.stdout, r"wired\s+\S*managed-settings.json runs pretooluse-company-rules.py, which denies a cloud command")
+        for text in ("hotfix", "npm.example.org", "pypi.example.org", "111122223333", "example-org-apps", "registry.npmjs.org",
+                     "000000000000", "assume-role"):
+            self.assertNotIn(text, verify.stdout)
         uninstall = self.run_script("uninstall.sh", "--server-url", URL)
         self.assertEqual(uninstall.returncode, 0, uninstall.stdout + uninstall.stderr)
         self.assertFalse((self.cc / "managed-settings.json").exists())

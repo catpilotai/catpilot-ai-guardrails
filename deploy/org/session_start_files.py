@@ -29,8 +29,8 @@ CLAUDE.md shapes what the model does without enforcing anything.
                                    and each command the policy file declares run through a shell
   verify-company-rules --cc-dir DIR --codex-dir DIR --home DIR [--copilot-dir DIR] [--timeout SECONDS]
                                    verify.sh's checks of the company-rules hook on each tool with a compiled policy:
-                                   the files and their ownership, the policy loading, a probe for its first
-                                   protected_branch rule, and the hook as the managed file registers it
+                                   the files and their ownership, the policy loading, a probe for its first rule
+                                   of each kind, and the hook as the managed file registers it
 
 What each host reads, from the vendors' documentation (read on 2026-11-16):
   Claude Code  the managed CLAUDE.md in the managed directory, /Library/Application Support/ClaudeCode/CLAUDE.md
@@ -82,7 +82,8 @@ CODEX_MATCHER_NAMES = {"Bash": ("Bash",), "apply_patch": ("apply_patch", "Edit",
 # [features] written as a dotted key or an inline table, which the minimal reader does not read.
 _FEATURES_ELSEWHERE = re.compile(r"^\s*([\"']?)features\1\s*(?:\.|=)", re.MULTILINE)
 CODEX_HOOK_FILES = tuple(name for _, _, names in CODEX_PRETOOLUSE for name in names)
-CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence", "policy", "company_rules", "deploy_targets")
+CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence", "policy", "company_rules", "deploy_targets",
+                      "registry_targets", "cloud_targets")
 # The company-rules hook and the compiled policy it reads (install.sh --overlay, when the rules file has enforcement
 # rules). The policy sits under the tool's tree, root-owned like the hooks; the hook takes its path on its command line.
 COMPANY_HOOK = "pretooluse-company-rules.py"
@@ -1077,24 +1078,86 @@ def suffix_covered(value: str, suffix: str) -> bool:
     return value.startswith("*.") and (suffix == value[2:] or suffix.endswith("." + value[2:]))
 
 
-def first_deploy_probe(policy_file: Path):
-    """(rule id, mode, command, expired, modes) for a deploy the policy's first deploy_host rule does not allow, or None.
-    modes are the effective modes of every deploy_host rule that does not allow it either: each is its own allow-list."""
+# Package installs the probe can name, each with the registry the hook reads from it (catpilot_guard/registry_targets.py).
+# The last one is under .invalid, a name reserved never to resolve, so a probe is left even if a rule lists the others.
+REGISTRY_PROBES = (("npm install --registry https://registry.npmjs.org/ left-pad", "registry.npmjs.org"),
+                   ("pip install --index-url https://pypi.org/simple left-pad", "pypi.org/simple"),
+                   ("npm install --registry https://registry.catpilot-verify.invalid/ left-pad", "registry.catpilot-verify.invalid"))
+# Cloud commands the probe can name, each with the account the hook reads from it (catpilot_guard/cloud_targets.py):
+# synthetic accounts, none of them real.
+CLOUD_PROBES = (("aws sts assume-role --role-arn arn:aws:iam::000000000000:role/catpilot-verify --role-session-name catpilot-verify",
+                 "aws:000000000000"),
+                ("gcloud config set project catpilot-verify-probe", "gcp:catpilot-verify-probe"),
+                ("az account set --subscription 00000000-0000-0000-0000-00000000c0de", "azure:00000000-0000-0000-0000-00000000c0de"))
+
+
+def _path_segments(path: str) -> list:
+    out = []
+    for segment in path.lower().split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            if out:
+                out.pop()
+            continue
+        out.append(segment)
+    return out
+
+
+def registry_covered(value: str, name: str) -> bool:
+    """catpilot_guard/registry_targets.py's registry_covered for a registry it read (host[/path]), repeated so this
+    helper imports only the standard library (a test checks the two agree)."""
+    value_host, _, value_path = value.lower().partition("/")
+    target_host, _, target_path = name.partition("/")
+    if value_host.startswith("*."):
+        if not target_host.endswith("." + value_host[2:]):
+            return False
+    elif target_host != value_host:
+        return False
+    wanted = _path_segments(value_path)
+    return _path_segments(target_path)[:len(wanted)] == wanted
+
+
+def account_covered(value: str, name: str) -> bool:
+    """catpilot_guard/cloud_targets.py's account_covered for an account it read, repeated so this helper imports only the
+    standard library (a test checks the two agree): an exact match, ignoring case."""
+    return value.lower() == name
+
+
+def first_allow_list_probe(policy_file: Path, kind: str, probes: tuple, covered):
+    """(rule id, mode, command, expired, modes) for a probe command whose target the policy's first rule of this
+    allow-list kind does not cover, or None. modes are the effective modes of every rule of the kind that does not
+    cover it either: each is its own allow-list."""
     try:
         data = json.loads(policy_file.read_text(encoding="utf-8"))
         expired = dt.date.fromisoformat(data["expires_on"]) < dt.date.today()
-        rules = [rule for rule in data["rules"] if rule["kind"] == "deploy_host"]
+        rules = [rule for rule in data["rules"] if rule["kind"] == kind]
         if not rules:
             return None
         first = rules[0]
-        for command, suffix in DEPLOY_PROBES:
-            if not any(suffix_covered(v, suffix) for v in first["values"]):
+        for command, target in probes:
+            if not any(covered(v, target) for v in first["values"]):
                 modes = ["monitor" if expired else rule["mode"] for rule in rules
-                         if not any(suffix_covered(v, suffix) for v in rule["values"])]
+                         if not any(covered(v, target) for v in rule["values"])]
                 return first["id"], first["mode"], command, expired, modes
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
     return None
+
+
+def first_deploy_probe(policy_file: Path):
+    """A deploy the policy's first deploy_host rule does not allow (first_allow_list_probe), or None."""
+    return first_allow_list_probe(policy_file, "deploy_host", DEPLOY_PROBES, suffix_covered)
+
+
+def first_registry_probe(policy_file: Path):
+    """A package install from a registry the policy's first package_registry rule does not allow, or None."""
+    return first_allow_list_probe(policy_file, "package_registry", REGISTRY_PROBES, registry_covered)
+
+
+def first_cloud_probe(policy_file: Path):
+    """A cloud command naming an account the policy's first cloud_account rule does not allow, or None."""
+    return first_allow_list_probe(policy_file, "cloud_account", CLOUD_PROBES, account_covered)
 
 
 def company_commands(host: str, managed: Path, prefer_tomllib: bool):
@@ -1134,7 +1197,7 @@ def company_commands(host: str, managed: Path, prefer_tomllib: bool):
 def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, prefer_tomllib: bool = True,
                          copilot_dir: Path | None = None) -> int:
     """For each tool with a compiled policy: the files, the hook run directly on a harmless command and on a probe
-    for the first protected_branch rule, and the hook as the tool's managed file registers it. A policy the hook
+    for the first rule of each kind, and the hook as the tool's managed file registers it. A policy the hook
     refuses (wrong owner, writable by others, malformed) shows as a policy_error line, which is a FAIL here."""
     report = Report()
     tools = [(CLAUDE_CODE, cc_dir), (CODEX, codex_dir)] + ([(COPILOT, copilot_dir)] if copilot_dir is not None else [])
@@ -1165,14 +1228,17 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             rule_id, mode, command, expired, modes = probe
             runs.append((command, modes,
                          "a force push to a branch rule %s protects (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
-        deploy = first_deploy_probe(policy_file)
-        if deploy is not None:
-            rule_id, mode, command, expired, modes = deploy
-            runs.append((command, modes,
-                         "a deploy to a host rule %s does not allow (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
-        if probe is None and deploy is None:
-            report.line("note", "no rule probe for %s: the policy has no protected_branch rule, and no deploy_host rule or none "
-                        "that a probe deploy falls outside, so only a harmless command is probed" % host)
+        allow_lists = ((first_deploy_probe(policy_file), "a deploy to a host rule %s does not allow"),
+                       (first_registry_probe(policy_file), "a package install from a registry rule %s does not allow"),
+                       (first_cloud_probe(policy_file), "a cloud command naming an account rule %s does not allow"))
+        for found, words in allow_lists:
+            if found is not None:
+                rule_id, mode, command, expired, modes = found
+                runs.append((command, modes, (words % rule_id) + " (%s%s)" % (mode, ", expired: monitor" if expired else "")))
+        if len(runs) == 1:
+            report.line("note", "no rule probe for %s: the policy has no protected_branch rule, and no deploy_host, "
+                        "package_registry or cloud_account rule that a probe falls outside, so only a harmless command "
+                        "is probed" % host)
         log = home / ("verify-company-%s.jsonl" % host)
         for command, modes, what in runs:
             expected = expected_effect(host, modes, ask_enabled=False)  # run directly, without --ask

@@ -33,8 +33,8 @@ What is recognized, exactly:
 Every scp or rsync upload to another machine counts, a backup to a dev box included, and a host without a dot cannot be
 listed in a rule, so a deploy_host rule fires on those too: start such rules in monitor. Not recognized: a deploy a
 script or CI job runs internally, a vendor this list does not name, a custom domain set in a project file (the service's
-own domain is the target then), `ssh` sessions, `curl` uploads, container pushes (a package_registry matter) and cloud
-object copies (a cloud_account matter).
+own domain is the target then), `ssh` sessions, `curl` uploads, container pushes (a package_registry matter, read by
+registry_targets.py) and cloud object copies (a cloud_account matter, read by cloud_targets.py when they name an account).
 
 Standard library only. Python 3.8+.
 """

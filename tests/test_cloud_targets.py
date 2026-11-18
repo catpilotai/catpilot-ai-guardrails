@@ -1,0 +1,301 @@
+"""cloud_account rules: what cloud account a command names (catpilot_guard/cloud_targets.py), and the company-rules
+hook's decision on it (docs/spec/OVERLAY_V2.md §2.2: an allow-list, so an account no value covers fires the rule)."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from catpilot_guard import company_rules as cr  # noqa: E402
+from catpilot_guard import policy as pol  # noqa: E402
+from catpilot_guard.cloud_targets import ACCOUNT, UNKNOWN, Target, account_covered, cloud_targets  # noqa: E402
+
+HOOK = ROOT / "hooks" / "claude-code" / "pretooluse-company-rules.py"
+# Planted in commands and in a rule's values; none may reach a reason or an evidence line.
+MARKER_AWS = "730194628517"
+MARKER_GCP = "zq-marker-project"
+MARKER_AZURE = "c4a7e1d2-9b3f-4e8a-b6c5-2d1f0e9a8b7c"
+GUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+
+
+def targets(command):
+    return [(t.kind, t.name) for t in cloud_targets(command)]
+
+
+class CloudTargetTests(unittest.TestCase):
+    def test_commands_that_name_an_account(self):
+        cases = {
+            # AWS: an ARN's account in any argument of aws, sam or cdk, and the account-id options.
+            "aws sts assume-role --role-arn arn:aws:iam::123456789012:role/x --role-session-name s": "aws:123456789012",
+            "aws lambda invoke --function-name arn:aws:lambda:us-east-1:123456789012:function:f out.json": "aws:123456789012",
+            "aws lambda get-function --function-name arn:aws-us-gov:lambda:us-gov-west-1:123456789012:function:f": "aws:123456789012",
+            "aws s3 ls --region cn-north-1 --profile x arn:aws-cn:s3:cn-north-1:123456789012:accesspoint/a": "aws:123456789012",
+            "aws s3api put-bucket-policy --bucket b --policy '{\"Principal\":{\"AWS\":\"arn:aws:iam::123456789012:root\"},"
+            "\"Resource\":\"arn:aws:s3:::b/*\"}'": "aws:123456789012",
+            "aws organizations describe-account --account-id 123456789012": "aws:123456789012",
+            "aws s3control list-jobs --account-id=123456789012": "aws:123456789012",
+            "aws quicksight list-users --aws-account-id 123456789012 --namespace default": "aws:123456789012",
+            "aws lambda add-permission --function-name f --source-account 123456789012 --action x": "aws:123456789012",
+            "aws configure set sso_account_id 123456789012": "aws:123456789012",
+            "aws configure set profile.dev.sso_account_id 123456789012 --profile dev": "aws:123456789012",
+            "aws configure set role_arn arn:aws:iam::123456789012:role/admin": "aws:123456789012",
+            "sam deploy --role-arn arn:aws:iam::123456789012:role/deployer": "aws:123456789012",
+            "cdk bootstrap aws://123456789012/us-east-1": "aws:123456789012",
+            "npx aws-cdk deploy --role-arn arn:aws:iam::123456789012:role/d": "aws:123456789012",
+            "npx aws-cdk@2 bootstrap aws://123456789012/eu-west-1": "aws:123456789012",
+            "AWS_ROLE_ARN=arn:aws:iam::123456789012:role/ci aws s3 ls": "aws:123456789012",
+            # GCP.
+            "gcloud run deploy svc --project acme-prod-1": "gcp:acme-prod-1",
+            "gcloud --project=acme-prod-1 compute instances list": "gcp:acme-prod-1",
+            "gcloud storage ls --billing-project acme-billing": "gcp:acme-billing",
+            "gcloud config set project acme-prod-1": "gcp:acme-prod-1",
+            "gcloud config set core/project Acme-Prod-1": "gcp:acme-prod-1",
+            "gcloud projects describe acme-prod-1": "gcp:acme-prod-1",
+            "gcloud projects create acme-new-1 --name 'New one'": "gcp:acme-new-1",
+            "gcloud beta projects add-iam-policy-binding acme-prod-1 --member=user:a@example.org --role=roles/viewer": "gcp:acme-prod-1",
+            "gsutil -u acme-billing cp gs://a/b .": "gcp:acme-billing",
+            "gsutil -m -u acme-billing ls gs://a": "gcp:acme-billing",
+            "gsutil -mu acme-billing ls gs://a": "gcp:acme-billing",
+            "bq --project_id=acme-data query 'select 1'": "gcp:acme-data",
+            "bq --project_id acme-data ls": "gcp:acme-data",
+            "CLOUDSDK_CORE_PROJECT=acme-dev-1 gcloud app deploy": "gcp:acme-dev-1",
+            "GOOGLE_CLOUD_PROJECT=acme-dev-1 python deploy.py": "gcp:acme-dev-1",
+            "export CLOUDSDK_CORE_PROJECT=acme-dev-1": "gcp:acme-dev-1",
+            # Azure.
+            "az vm list --subscription %s" % GUID: "azure:" + GUID,
+            "az vm list --subscription=%s" % GUID.upper(): "azure:" + GUID,
+            "az account set -s %s" % GUID: "azure:" + GUID,
+            "az account set --name %s" % GUID: "azure:" + GUID,
+            "az role assignment create --scope /subscriptions/%s/resourceGroups/rg --role Reader --assignee x" % GUID: "azure:" + GUID,
+            "az rest --method get --url https://management.azure.com/subscriptions/%s/resourcegroups?api-version=2021-04-01" % GUID: "azure:" + GUID,
+            "AZURE_SUBSCRIPTION_ID=%s terraform apply" % GUID: "azure:" + GUID,
+            "env ARM_SUBSCRIPTION_ID=%s terraform plan" % GUID: "azure:" + GUID,
+            # Through the same splitting and wrappers as the other checks.
+            "sudo -E aws sts assume-role --role-arn arn:aws:iam::123456789012:role/x --role-session-name s": "aws:123456789012",
+            "bash -lc 'gcloud config set project acme-prod-1'": "gcp:acme-prod-1",
+            "cd infra && az account set -s %s" % GUID: "azure:" + GUID,
+            "npx -c 'aws organizations describe-account --account-id 123456789012'": "aws:123456789012",
+        }
+        for command, name in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(ACCOUNT, name)])
+
+    def test_several_accounts_in_one_command(self):
+        self.assertEqual(targets("aws securityhub invite-members --account-ids 111111111111 222222222222 --region us-east-1"),
+                         [(ACCOUNT, "aws:111111111111"), (ACCOUNT, "aws:222222222222")])
+        self.assertEqual(targets("aws iam put-role-policy --policy-document "
+                                 "'{\"Resource\":[\"arn:aws:iam::111111111111:role/a\",\"arn:aws:iam::222222222222:role/b\"]}'"),
+                         [(ACCOUNT, "aws:111111111111"), (ACCOUNT, "aws:222222222222")])
+        self.assertEqual(targets("gcloud config set project acme-a-1 && az account set -s %s" % GUID),
+                         [(ACCOUNT, "gcp:acme-a-1"), (ACCOUNT, "azure:" + GUID)])
+
+    def test_accounts_the_hook_cannot_read_are_unknown(self):
+        for command in ("aws sts assume-role --role-arn $ROLE --role-session-name s",
+                        "aws sts assume-role --role-arn \"$(terraform output -raw role)\" --role-session-name s",
+                        "aws s3control list-jobs --account-id $ACCOUNT", "aws organizations describe-account --account-id 1234",
+                        "aws sts assume-role --role-arn arn:aws:iam::$ACCOUNT_ID:role/x --role-session-name s",
+                        "gcloud run deploy --project $PROJECT", "gcloud projects describe 123456789012",
+                        "gcloud config set project ${P}", "gcloud --project=a compute instances list", "gsutil -u $P ls",
+                        "bq --project_id=$P ls", "az account set -s 'My Subscription'", "az vm list --subscription Production",
+                        "az group list --subscription $SUB", "az resource show --ids /subscriptions/$SUB/resourceGroups/rg",
+                        "AZURE_SUBSCRIPTION_ID=$SUB terraform apply", "CLOUDSDK_CORE_PROJECT=$P gcloud app deploy",
+                        "cdk bootstrap aws://$ACCOUNT/us-east-1"):
+            with self.subTest(command=command):
+                self.assertIn((UNKNOWN, None), targets(command))
+                self.assertFalse([t for t in targets(command) if t[0] == ACCOUNT])
+
+    def test_commands_that_name_no_account(self):
+        for command in ("aws s3 ls", "aws --profile prod s3 ls", "AWS_PROFILE=prod aws s3 ls", "aws sts get-caller-identity",
+                        "aws iam get-policy --policy-arn arn:aws:iam::aws:policy/AdministratorAccess",
+                        "aws s3api get-bucket-policy --bucket arn:aws:s3:::bucket", "aws glacier list-vaults --account-id -",
+                        "aws iam create-policy --policy-document '{\"Resource\":\"arn:aws:iam::*:role/x\"}'",
+                        "aws ec2 describe-instances --max-items 123456789012", "cdk deploy", "cdk bootstrap aws://unknown-account/us-east-1",
+                        "sam deploy", "gcloud run deploy", "gcloud projects list", "gcloud config set account a@example.org",
+                        "gcloud config configurations activate prod", "gcloud --configuration prod compute instances list",
+                        "gsutil -m rsync -u -r src gs://bucket", "gsutil ls gs://acme-prod-1-bucket", "bq ls",
+                        "az group list", "az login", "az account show", "terraform apply", "pulumi up",
+                        "echo arn:aws:iam::123456789012:role/x", "terraform import aws_iam_role.r arn:aws:iam::123456789012:role/x",
+                        "kubectl --context arn:aws:eks:us-east-1:123456789012:cluster/c get pods", "FOO=123456789012 ls", "ls"):
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [])
+
+    def test_coverage_is_an_exact_match(self):
+        cases = [
+            ("aws:123456789012", Target(ACCOUNT, "aws:123456789012"), True),
+            ("aws:123456789012", Target(ACCOUNT, "aws:123456789013"), False),
+            ("gcp:acme-prod-1", Target(ACCOUNT, "gcp:acme-prod-1"), True),
+            ("gcp:acme-prod", Target(ACCOUNT, "gcp:acme-prod-1"), False),
+            ("azure:" + GUID, Target(ACCOUNT, "azure:" + GUID), True),
+            ("AZURE:" + GUID.upper(), Target(ACCOUNT, "azure:" + GUID), True),
+            ("aws:123456789012", Target(ACCOUNT, "gcp:123456789012"), False),
+            ("aws:123456789012", Target(UNKNOWN), False),
+        ]
+        for value, target, want in cases:
+            with self.subTest(value=value, target=target):
+                self.assertIs(account_covered(value, target), want)
+
+
+def policy(values=("aws:111122223333", "gcp:acme-prod-1", "azure:" + GUID), mode="block", use_instead=None, extra=(), expires="2099-01-01"):
+    rule = {"id": "cloud-accounts", "kind": "cloud_account", "mode": mode, "values": list(values)}
+    if use_instead:
+        rule["use_instead_text"] = use_instead
+    return pol.parse(json.dumps({
+        "format": "catpilot-company-policy", "format_version": 1, "source_sha256": "c" * 64, "expires_on": expires,
+        "rules": [rule, *extra],
+    }).encode())
+
+
+def bash(command, permission_mode="default"):
+    return {"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/tmp", "permission_mode": permission_mode}
+
+
+class HookDecisionTests(unittest.TestCase):
+    def setUp(self):
+        self.lines = []
+        patcher = mock.patch.object(cr, "record_evidence", lambda event, hook_event=None, host=None, **f: self.lines.append((event, f)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def effect(self, command, host="claude-code", ask=False, permission_mode="default", **kw):
+        result = cr.decide(bash(command, permission_mode), host, policy(**kw), ask_enabled=ask)
+        return result.get("hookSpecificOutput", {}).get("permissionDecision", "none")
+
+    def test_an_unlisted_account_fires_and_a_listed_one_does_not(self):
+        self.assertEqual(self.effect("aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x --role-session-name s"), "deny")
+        self.assertEqual(self.effect("gcloud config set project personal-proj-1"), "deny")
+        self.assertEqual(self.effect("az account set -s 'Pay-As-You-Go'"), "deny")  # a name: unknown, nothing covers it
+        self.assertEqual(self.effect("gcloud run deploy --project $PROJECT"), "deny")
+        self.assertEqual(self.effect("aws sts assume-role --role-arn arn:aws:iam::111122223333:role/x --role-session-name s"), "none")
+        self.assertEqual(self.effect("gcloud config set project acme-prod-1"), "none")
+        self.assertEqual(self.effect("az account set -s %s" % GUID.upper()), "none")
+        self.assertEqual(self.effect("aws --profile personal s3 ls && gcloud run deploy && az group list"), "none")
+        self.assertEqual([e for e, _ in self.lines], ["deny"] * 4)
+
+    def test_every_account_must_be_covered(self):
+        self.assertEqual(self.effect("gcloud config set project acme-prod-1 && gcloud run deploy --project other-proj-1"), "deny")
+
+    def test_modes_hosts_and_expiry(self):
+        command = "gcloud config set project personal-proj-1"
+        self.assertEqual(self.effect(command, mode="monitor"), "none")
+        self.assertEqual([(e, f["rule_id"], f["mode"]) for e, f in self.lines], [("would_deny", "cloud-accounts", "monitor")])
+        self.assertEqual(self.effect(command, mode="ask"), "deny")
+        self.assertEqual(self.effect(command, mode="ask", ask=True), "ask")
+        self.assertEqual(self.effect(command, mode="ask", ask=True, host="codex"), "deny")
+        self.assertEqual(self.effect(command, mode="ask", ask=True, permission_mode="auto"), "deny")
+        self.lines.clear()
+        self.assertEqual(self.effect(command, expires="2020-01-01"), "none")
+        self.assertEqual([(e, f["mode"]) for e, f in self.lines], [("would_deny", "monitor")])
+
+    def test_the_reason_and_evidence_name_the_rule_never_the_account(self):
+        command = ("aws sts assume-role --role-arn arn:aws:iam::%s:role/x --role-session-name s && gcloud config set project %s "
+                   "&& az account set -s %s" % (MARKER_AWS, MARKER_GCP, MARKER_AZURE))
+        result = cr.decide(bash(command), "claude-code",
+                           policy(values=("aws:" + MARKER_AWS[::-1], "gcp:%s-2" % MARKER_GCP, "azure:" + MARKER_AZURE[::-1]),
+                                  use_instead="The approved cloud subscription managed by IT"))
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("Catpilot company rule `cloud-accounts`: this command names a cloud account the company has not approved.", reason)
+        self.assertIn("Use instead: The approved cloud subscription managed by IT.", reason)
+        for text in (MARKER_AWS, MARKER_AWS[::-1], MARKER_GCP, MARKER_AZURE, MARKER_AZURE[::-1], "assume-role", "gcloud", "az "):
+            self.assertNotIn(text, reason)
+        self.assertEqual(self.lines, [("deny", {"tool": "Bash", "rule_id": "cloud-accounts", "mode": "block", "policy_sha256": "c" * 64})])
+
+    def test_registry_and_account_rules_together(self):
+        registries = {"id": "package-registries", "kind": "package_registry", "mode": "monitor", "values": ["npm.example.org"]}
+        result = cr.decide(bash("npm publish --registry https://registry.npmjs.org && gcloud config set project personal-proj-1"),
+                           "claude-code", policy(mode="ask", extra=(registries,)), ask_enabled=True)
+        self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "ask")
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("`cloud-accounts`", reason)
+        self.assertNotIn("package-registries", reason)  # monitor: logged, not part of the decision
+        self.assertEqual(sorted((e, f["rule_id"]) for e, f in self.lines), [("ask", "cloud-accounts"), ("would_deny", "package-registries")])
+
+
+class HookProcessTests(unittest.TestCase):
+    """The shim as the host runs it, with a cloud_account policy: the decision, and an evidence log without the account."""
+
+    def test_denies_and_logs_content_free(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "policy"
+            directory.mkdir()
+            os.chmod(directory, 0o755)
+            path = directory / "company-policy.json"
+            path.write_text(json.dumps({"format": "catpilot-company-policy", "format_version": 1, "source_sha256": "d" * 64,
+                                        "expires_on": "2099-01-01", "rules": [
+                                            {"id": "cloud-accounts", "kind": "cloud_account", "mode": "ask",
+                                             "values": ["gcp:%s-2" % MARKER_GCP, "aws:" + MARKER_AWS[::-1]]}]}), encoding="utf-8")
+            os.chmod(path, 0o644)
+            log = Path(tmp) / "evidence.jsonl"
+            env = {k: v for k, v in os.environ.items() if not k.startswith("CATPILOT_EVIDENCE")}
+            env["CATPILOT_EVIDENCE_LOG"] = str(log)
+            command = "aws organizations describe-account --account-id %s" % MARKER_AWS
+            proc = subprocess.run([sys.executable, str(HOOK), "--policy", str(path)], input=json.dumps(bash(command)),
+                                  capture_output=True, text=True, env=env, timeout=30)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            output = json.loads(proc.stdout)["hookSpecificOutput"]
+            self.assertEqual(output["permissionDecision"], "deny")  # ask without --ask acts as block
+            self.assertIn("nobody can be asked here", output["permissionDecisionReason"])
+            (line,) = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual((line["event"], line["rule_id"], line["mode"]), ("deny", "cloud-accounts", "ask"))
+            everything = log.read_text(encoding="utf-8") + proc.stdout + proc.stderr
+            for text in (MARKER_AWS, MARKER_AWS[::-1], MARKER_GCP):
+                self.assertNotIn(text, everything)
+
+
+class VerifyProbeTests(unittest.TestCase):
+    """verify.sh's stdlib copy of the coverage, and its probes, agree with the hook (deploy/org/session_start_files.py)."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("session_start_files_for_accounts", ROOT / "deploy" / "org" / "session_start_files.py")
+        self.helper = importlib.util.module_from_spec(spec)
+        previous = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(self.helper)
+        finally:
+            sys.dont_write_bytecode = previous
+
+    def test_the_copy_of_the_coverage_agrees(self):
+        values = ("aws:000000000000", "AWS:000000000000", "aws:111122223333", "gcp:catpilot-verify-probe", "gcp:catpilot-verify",
+                  "azure:00000000-0000-0000-0000-00000000c0de", "azure:00000000-0000-0000-0000-00000000C0DE")
+        for value in values:
+            for _, name in self.helper.CLOUD_PROBES:
+                with self.subTest(value=value, name=name):
+                    self.assertEqual(self.helper.account_covered(value, name), account_covered(value, Target(ACCOUNT, name)))
+
+    def test_the_hook_reads_each_probe_as_the_helper_expects(self):
+        for command, name in self.helper.CLOUD_PROBES:
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), [(ACCOUNT, name)])
+
+    def test_the_probe_falls_outside_the_first_rule(self):
+        def probe(rules, expires="2099-01-01"):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "policy.json"
+                path.write_text(json.dumps({"expires_on": expires, "rules": rules}), encoding="utf-8")
+                return self.helper.first_cloud_probe(path)
+
+        rule = lambda rule_id, mode, values: {"id": rule_id, "kind": "cloud_account", "mode": mode, "values": values}  # noqa: E731
+        found = probe([rule("cloud-accounts", "ask", ["aws:111122223333"])])
+        self.assertEqual((found[0], found[1], found[3], found[4]), ("cloud-accounts", "ask", False, ["ask"]))
+        self.assertIn("000000000000", found[2])
+        found = probe([rule("a", "block", ["aws:000000000000"]), rule("b", "monitor", ["gcp:catpilot-verify-probe"])])
+        self.assertIn("gcloud config set project", found[2])
+        self.assertEqual(found[4], ["block"])  # b covers this probe
+        self.assertIsNone(probe([{"id": "d", "kind": "deploy_host", "mode": "block", "values": ["apps.example.org"]}]))
+        for command, _ in self.helper.CLOUD_PROBES:  # the hook, not only the helper, reads it as outside the rule
+            with mock.patch.object(cr, "record_evidence", lambda *a, **k: None):
+                self.assertEqual(cr.decide(bash(command), "claude-code", policy())["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
+if __name__ == "__main__":
+    unittest.main()
