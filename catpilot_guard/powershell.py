@@ -670,7 +670,8 @@ def _paths(name: str, args: list) -> list:
 def _feed_removals(pipeline: list) -> list:
     """The pipeline with each Remove-Item that has no path of its own given the paths the pipeline feeds it: the
     first command's, when that is Get-ChildItem, Get-Item or Resolve-Path, or the first element itself when it is a
-    quoted path or a variable that names a place ($HOME, $env:USERPROFILE, ...). A variable that holds items
+    quoted path or a variable that names a place ($HOME, $env:USERPROFILE, ...). With -Filter, -Include or -Exclude
+    on the Get-ChildItem, only a drive root or system directory is fed. A variable that holds items
     (`$files | Remove-Item -Recurse`) is not read."""
     if len(pipeline) < 2:
         return pipeline
@@ -678,6 +679,11 @@ def _feed_removals(pipeline: list) -> list:
     head_name = _command_name(head[0]) if getattr(head[0], "literal", True) else None
     if head_name in GET_ITEM:
         fed = _paths(head_name, head[1:])
+        given = Parameters(head[1:], GET_SWITCHES, GET_VALUES, PATH_ALIASES)
+        if any(given.values.get(k) for k in ("filter", "include", "exclude")):
+            # Only the matching children go down the pipeline, so the folder itself is the target only when it is a
+            # drive root or a system directory, where even a filtered removal is not something an agent should run.
+            fed = [p for p in fed if dangerous_target(p, system_only=True)]
     elif len(head) == 1 and (not head[0].bare or PLACE.match(head[0].lower().replace("/", "\\"))):
         fed = [head[0]]
     else:
@@ -777,6 +783,7 @@ SYSTEM_PLACES = re.compile(r"^[a-z]:\\(?:windows(?:\\system32)?|program files(?:
 HOME_PLACES = re.compile(r"^~(?:\\(?:\.ssh|\.aws|\.azure|\.kube|\.docker|\.gnupg|\.openclaw|\.config|\.config\\gcloud"
                          r"|appdata\\roaming\\gcloud))?$")
 BARE_VARIABLE = re.compile(r"^(?:\$(?:\{[^}]*\}|[\w]+(?::[\w()]+)?)|%[^%]+%)$")
+POSIX_SYSTEM_TARGET = re.compile(r"^/+(?:[A-Za-z0-9]+/*)?\*?$")  # / and one-segment system directories such as /etc
 NOT_A_PATH = {"$_", "$psitem", "$null", "$true", "$false"}
 
 
@@ -787,15 +794,19 @@ def _home_prefix() -> str | None:
     return home.replace("/", "\\").rstrip("\\").lower() or None
 
 
-def dangerous_target(target: str) -> bool:
+def dangerous_target(target: str, system_only: bool = False) -> bool:
     """Whether a Remove-Item or rd /s target is a drive root, a system directory, a home directory, a credential
     directory in one, or a bare variable, in any spelling: / or \\, any case, a trailing \\ or \\*, a provider prefix
     (FileSystem::) or a \\\\?\\ prefix. POSIX spellings (/, /etc, ~/.ssh) are read as destructive.RM_DANGEROUS_TARGET
-    reads them."""
+    reads them. With system_only, only a drive root or a system directory counts: home directories, credential
+    directories and bare variables do not."""
     if target.strip().lower() in NOT_A_PATH:
         return False  # the pipeline's current item, or no path at all
     if RM_DANGEROUS_TARGET.match(target) or _running_users_home_target(target):
-        return True
+        if not system_only:
+            return True
+        if POSIX_SYSTEM_TARGET.match(target):
+            return True
     text = target.strip().replace("/", "\\")
     if not text:
         return False
@@ -817,6 +828,8 @@ def dangerous_target(target: str) -> bool:
     if home and (lowered == home or lowered.startswith(home + "\\")):
         lowered = "~" + lowered[len(home):]
     lowered = re.sub(r"^(?:[a-z]:)?\\users\\(?!public(?:\\|$))[^\\]+", "~", lowered)
+    if system_only:
+        return bool(DRIVE.match(lowered) or SYSTEM_PLACES.match(lowered))
     return bool(DRIVE.match(lowered) or SYSTEM_PLACES.match(lowered) or HOME_PLACES.match(lowered)
                 or BARE_VARIABLE.match(lowered))
 

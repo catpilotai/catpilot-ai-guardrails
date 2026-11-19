@@ -64,6 +64,8 @@ DENIED = {
     "cmd with switches joined": "cmd /c rd/s/q C:\\",
     # A pipeline that feeds Remove-Item.
     "Get-ChildItem of a root into Remove-Item": "Get-ChildItem C:\\ | Remove-Item -Recurse -Force",
+    "filtered Get-ChildItem of a root into Remove-Item": "Get-ChildItem C:\\ -Filter *.log | Remove-Item -Recurse",
+    "filtered Get-ChildItem of the Windows directory": "gci $env:SystemRoot -Include *.dll | Remove-Item -Recurse",
     "ls of home into rm -r": "ls ~ | rm -r -fo",
     "a literal path into Remove-Item": "'C:\\' | Remove-Item -Recurse",
     "a variable into Remove-Item": "$env:USERPROFILE | Remove-Item -Recurse -Force",
@@ -127,6 +129,9 @@ ALLOWED = {
     "a file at the root, not recursive": "Remove-Item C:\\temp.txt",
     "pipeline of matches without -Recurse": "Get-ChildItem -Recurse -Include *.pyc | Remove-Item -Force",
     "pipeline from a subfolder": "Get-ChildItem .\\dist | Remove-Item -Recurse -Force",
+    "filtered children of TEMP": "Get-ChildItem -Path $env:TEMP -Filter 'tmp*' | Remove-Item -Recurse -Force",
+    "filtered children of home": "Get-ChildItem ~ -Filter *.tmp | Remove-Item -Recurse",
+    "children of home but some": "Get-ChildItem $HOME -Exclude .ssh -Include *.bak | Remove-Item -Recurse",
     "each item of the working directory": "Get-ChildItem | ForEach-Object { Remove-Item $_ -Recurse -Force }",
     "items held in a variable": "$files = Get-ChildItem -Recurse *.log; $files | Remove-Item -Recurse",
     "each item's FullName": "Get-ChildItem .\\tmp | ForEach-Object { Remove-Item $_.FullName -Recurse -Force }",
