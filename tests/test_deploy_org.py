@@ -475,5 +475,43 @@ class InterpreterTests(unittest.TestCase):
                 self.assertFalse(path.exists(), uninstall.stdout)
 
 
+class EntryProtectionTests(unittest.TestCase):
+    """entry_unprotected in deploy/org/interpreter.sh, on synthetic ls -ldn fields, as install.sh calls it as root
+    (trusted uid 0, gid 0)."""
+
+    def decide(self, perms: str, uid: str, gid: str, uids: str = "0", gids: str = "0") -> str:
+        script = '. "$1"; entry_unprotected "$2" "$3" "$4" "$5" "$6"'
+        proc = subprocess.run(["bash", "-c", script, "_", str(ROOT / "deploy" / "org" / "interpreter.sh"), perms, uid, gid, uids, gids],
+                              capture_output=True, text=True, timeout=10)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc.stdout.strip()
+
+    def test_root_owned_755_is_protected(self):
+        self.assertEqual(self.decide("-rwxr-xr-x", "0", "0"), "")
+        self.assertEqual(self.decide("drwxr-xr-x", "0", "80"), "")
+
+    def test_group_writable_by_a_non_root_group_is_refused(self):
+        self.assertEqual(self.decide("drwxrwxr-x", "0", "20"), "writable by group 20")
+
+    def test_group_writable_by_gid_0_is_protected(self):
+        self.assertEqual(self.decide("drwxrwxr-x", "0", "0"), "")
+
+    def test_world_writable_is_refused(self):
+        self.assertEqual(self.decide("drwxr-xrwx", "0", "0"), "writable by everyone")
+        self.assertEqual(self.decide("drwxrwxrwt", "0", "0"), "writable by everyone")
+
+    def test_a_non_root_owner_is_refused(self):
+        self.assertEqual(self.decide("-rwxr-xr-x", "501", "20"), "owned by uid 501")
+
+    def test_a_symlink_itself_is_not_judged(self):
+        self.assertEqual(self.decide("lrwxrwxrwx", "501", "20"), "")
+
+    def test_the_non_root_test_relaxation_is_only_what_the_wrapper_passes(self):
+        # unprotected_entry passes uids "0 <me>" and gids "*" when not root; that skips group write only.
+        self.assertEqual(self.decide("drwxrwxr-x", "1001", "1000", uids="0 1001", gids="*"), "")
+        self.assertEqual(self.decide("drwxr-xrwx", "1001", "1000", uids="0 1001", gids="*"), "writable by everyone")
+        self.assertEqual(self.decide("drwxr-xr-x", "1002", "1000", uids="0 1001", gids="*"), "owned by uid 1002")
+
+
 if __name__ == "__main__":
     unittest.main()

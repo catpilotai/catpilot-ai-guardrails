@@ -82,28 +82,33 @@ resolve_path() {
   printf '%s/%s\n' "$(cd -P "$(dirname "$p")" 2>/dev/null && pwd)" "$(basename "$p")"
 }
 
-# unprotected_entry PATH: the first of PATH and its parent directories that someone other than root can change: not
-# owned by root, or writable by its group (unless the group is root's, gid 0) or by everyone. A symlink's own mode
-# does not matter (its directory decides who can replace it). Running as a non-root user (CATPILOT_ALLOW_NONROOT,
-# tests only), that user also counts as root and group write is not checked (CI runners keep their Python group-
-# writable); a non-root install writes nowhere a person runs from. Prints "PATH (reason)", or nothing.
+# entry_unprotected PERMS UID GID TRUSTED_UIDS TRUSTED_GIDS: why one ls -ldn entry can be changed by someone not
+# trusted, or nothing. TRUSTED_UIDS and TRUSTED_GIDS are space-separated lists; "*" for TRUSTED_GIDS means group write
+# is not checked. A symlink's own mode and owner do not matter (its directory decides who can replace it). Refused:
+# an owner not in TRUSTED_UIDS, group write for a group not in TRUSTED_GIDS, write for everyone.
+entry_unprotected() {
+  local perms="$1" uid="$2" gid="$3" uids=" $4 " gids=" $5 "
+  case "$perms" in l*) return 0 ;; esac
+  if [ "${uids#* $uid }" = "$uids" ]; then printf 'owned by uid %s\n' "$uid"; return 0; fi
+  if [ "${perms:5:1}" = w ] && [ "$5" != "*" ] && [ "${gids#* $gid }" = "$gids" ]; then printf 'writable by group %s\n' "$gid"; return 0; fi
+  if [ "${perms:8:1}" = w ]; then printf 'writable by everyone\n'; return 0; fi
+  return 0
+}
+
+# unprotected_entry PATH: the first of PATH and its parent directories that someone other than root can change
+# (entry_unprotected, trusting uid 0 and gid 0). Prints "PATH (reason)", or nothing. Running as a non-root user
+# (CATPILOT_ALLOW_NONROOT, tests only), that user is trusted too and group write is not checked, because CI runners
+# keep their Python group-writable; a non-root install writes nowhere a person runs from. The root path is unchanged.
 unprotected_entry() {
-  local p="$1" listing perms uid gid me groups=" 0 "
-  me="$(id -u)"
-  [ "$me" = 0 ] || groups="any"
+  local p="$1" listing perms uid gid reason uids=0 gids=0
+  if [ "$(id -u)" != 0 ]; then uids="0 $(id -u)"; gids="*"; fi
   while :; do
     listing="$(ls -ldn -- "$p" 2>/dev/null)" || { printf '%s (cannot be read)\n' "$p"; return 0; }
     perms="${listing%% *}"
     uid="$(printf '%s\n' "$listing" | awk '{print $3}')"
     gid="$(printf '%s\n' "$listing" | awk '{print $4}')"
-    case "$perms" in
-      l*) ;;
-      *)
-        if [ "$uid" != 0 ] && [ "$uid" != "$me" ]; then printf '%s (owned by uid %s)\n' "$p" "$uid"; return 0; fi
-        if [ "${perms:5:1}" = w ] && [ "$groups" != any ] && [ "$gid" != 0 ]; then printf '%s (writable by group %s)\n' "$p" "$gid"; return 0; fi
-        if [ "${perms:8:1}" = w ]; then printf '%s (writable by everyone)\n' "$p"; return 0; fi
-        ;;
-    esac
+    reason="$(entry_unprotected "$perms" "$uid" "$gid" "$uids" "$gids")"
+    if [ -n "$reason" ]; then printf '%s (%s)\n' "$p" "$reason"; return 0; fi
     [ "$p" = / ] && return 0
     p="$(dirname "$p")"
   done
