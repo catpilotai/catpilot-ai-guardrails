@@ -36,7 +36,7 @@ To ask for a parked item, comment on its issue. That is how parked work gets pic
 | Windows company rules in the installer (`-Overlay`), the Windows host check and PowerShell hardening | Waiting for a Windows customer | #156, #141–#143 |
 | Admin-settings guides for Lovable, Replit, Bolt and v0 | Each needs an admin account on that tool to check against | #154 |
 | Hook hardening: crafted shell spellings the parser misreads | Fixed when a real case shows up | #137, #144–#148 |
-| Coaching, and SIEM-loaded evidence | Being redesigned around just-in-time coaching inside the AI tool | #155 |
+| Evidence loaded into a real SIEM | Waiting for a customer's SIEM to test against | n/a |
 | Framework bundles (`catpilot-<framework>-security`) and agentic-loop packaging | Content is kept in `frameworks/`; no bundle is promised | n/a |
 | `catpilot-security-advanced`, `tools/recommend.py`, HIPAA and GDPR mappings | No current demand | n/a |
 
