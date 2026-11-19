@@ -263,6 +263,10 @@ class PolicyFileTests(unittest.TestCase):
 
 
 class DeployTests(unittest.TestCase):
+    # These tests check the package-tree layout, which install.sh keeps behind --package-tree for one release;
+    # tests/test_deploy_zipapp.py runs the layout-agnostic ones again with the zipapp, the default.
+    PACKAGE_TREE = "1"
+
     @staticmethod
     def expected(copilot_dir: str, enforce: bool = False) -> str:
         """The policy file install.sh writes: with the interpreter it records (PYTHON_BIN)."""
@@ -277,7 +281,8 @@ class DeployTests(unittest.TestCase):
         self.home.mkdir()
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("CATPILOT_EVIDENCE")}
         self.env.update(CATPILOT_ALLOW_NONROOT="1", CATPILOT_CC_DIR=str(self.cc), CATPILOT_CODEX_DIR=str(self.codex),
-                        CATPILOT_COPILOT_DIR=str(self.copilot), PYTHON_BIN=sys.executable, HOME=str(self.home))
+                        CATPILOT_COPILOT_DIR=str(self.copilot), PYTHON_BIN=sys.executable, HOME=str(self.home),
+                        CATPILOT_PACKAGE_TREE=self.PACKAGE_TREE)
 
     def tearDown(self):
         self._tmp.cleanup()

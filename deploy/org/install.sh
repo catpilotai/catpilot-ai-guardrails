@@ -48,8 +48,16 @@
 #                With no --overlay, nothing about session-start rules or company enforcement is placed or registered.
 # The interpreter: before anything is written, PYTHON_BIN (default python3) is run with a version check and must
 # be Python 3.8 or later, not the macOS Command Line Tools stub; otherwise nothing is installed. Its absolute path is
-# recorded in every hook command, so the hooks do not depend on a session's PATH (issue #97, option 1). Run it again
-# to update: hooks and package are replaced, an unchanged managed file is reported current, a changed one is printed.
+# recorded in every hook command, so the hooks do not depend on a session's PATH (issue #97, option 1).
+# The hooks as one file (issue #97, option 2), the default: in place of the hook scripts and the catpilot_guard package
+# described above, each tool's catpilot-guardrails/hooks/ gets catpilot-guard.pyz, built from this checkout by
+# tools/build_zipapp.py (reproducible: the same sources give the same bytes), mode 444 and owned by root, with its
+# SHA-256 recorded beside it in catpilot-guard.pyz.sha256; every hook command runs the recorded interpreter on it with
+# the check's name (secrets, write-secrets, destructive, company-rules, session-start). --package-tree (or
+# CATPILOT_PACKAGE_TREE=1) places the hook scripts and the package instead, as earlier releases did; it is kept for
+# this release only. Switching layouts removes the files the other layout placed, unless a managed file this run kept
+# still runs them. Run it again to update: hooks and package or zipapp are replaced, an unchanged managed file is
+# reported current, one an earlier install wrote is replaced, any other is printed.
 # It does not touch user settings, does not restart anything, and does not send anything anywhere.
 # On Windows, use deploy/org/install.ps1; see docs/DEPLOY_ORG.md.
 set -euo pipefail
@@ -60,6 +68,7 @@ MANAGED_MCP_JSON=0
 OVERLAY_FILE=""
 ALLOW_HOSTS=()
 ALLOW_UNPROTECTED_PYTHON="${CATPILOT_ALLOW_UNPROTECTED_PYTHON:-0}"  # the same as --allow-unprotected-python
+PACKAGE_TREE="${CATPILOT_PACKAGE_TREE:-0}"  # the same as --package-tree
 while [ $# -gt 0 ]; do
   case "$1" in
     --server-url) SERVER_URL="$2"; shift 2 ;;
@@ -68,6 +77,7 @@ while [ $# -gt 0 ]; do
     --overlay) OVERLAY_FILE="$2"; shift 2 ;;
     --allow-host) ALLOW_HOSTS+=("--allow-host" "$2"); shift 2 ;;
     --allow-unprotected-python) ALLOW_UNPROTECTED_PYTHON=1; shift ;;
+    --package-tree) PACKAGE_TREE=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -123,8 +133,29 @@ if ! protected_interpreter "$PROVEN_PYTHON"; then
 fi
 PYTHON_BIN="$PROVEN_PYTHON"
 echo "python  $PYTHON_BIN (Python $PROVEN_VERSION), recorded in every hook command"
-cleanup() { [ -n "$PRIVATE_TMP" ] && rm -rf "$PRIVATE_TMP" || true; }
+BUILD_TMP=""
+cleanup() {
+  [ -n "$PRIVATE_TMP" ] && rm -rf "$PRIVATE_TMP"
+  [ -n "$BUILD_TMP" ] && rm -rf "$BUILD_TMP"
+  return 0
+}
 trap cleanup EXIT
+
+# The zipapp, built before anything is written; its SHA-256 is recorded beside each copy (install_hooks).
+ZIPAPP=catpilot-guard.pyz
+ZIPAPP_SHA256=""
+LAYOUT=(--zipapp)
+if [ "$PACKAGE_TREE" -eq 1 ]; then
+  LAYOUT=()
+  echo "layout  package tree (--package-tree): hook scripts and the catpilot_guard package, as earlier releases"
+else
+  BUILD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/catpilot-zipapp.XXXXXX")"
+  ZIPAPP_SHA256="$("$PYTHON_BIN" "$REPO/tools/build_zipapp.py" --out "$BUILD_TMP/$ZIPAPP" | awk '{print $1}')" || ZIPAPP_SHA256=""
+  if ! printf '%s' "$ZIPAPP_SHA256" | grep -Eq '^[0-9a-f]{64}$' || [ ! -f "$BUILD_TMP/$ZIPAPP" ]; then
+    echo "Not installed: tools/build_zipapp.py did not build $ZIPAPP" >&2; exit 2
+  fi
+  echo "zipapp  $ZIPAPP built from this checkout, SHA-256 $ZIPAPP_SHA256, recorded beside each copy"
+fi
 
 if [ -n "$OVERLAY_FILE" ]; then
   [ -f "$OVERLAY_FILE" ] || { echo "no such overlay file: $OVERLAY_FILE" >&2; exit 2; }
@@ -154,11 +185,17 @@ if [ -n "$HOSTS_DIR" ]; then
   [ -n "$POLICY_FILE" ] && VARIANT=(--enforce)
 fi
 [ -n "$POLICY_FILE" ] && COPILOT_VARIANT=(--enforce)
-# generate INTERPRETER: the three generated files of this variant naming INTERPRETER (python3: the earlier form),
-# in GENERATED_SETTINGS, GENERATED_REQUIREMENTS and GENERATED_COPILOT.
+# generate INTERPRETER [LAYOUT]: the three generated files of this variant naming INTERPRETER (python3: the earlier
+# form), in LAYOUT (--zipapp, or empty for the package tree; this run's when omitted), in GENERATED_SETTINGS,
+# GENERATED_REQUIREMENTS and GENERATED_COPILOT.
 generate() {
   local args=(--python "$1")
   [ "$1" = python3 ] && args=()
+  if [ $# -ge 2 ]; then
+    [ -n "$2" ] && args+=("$2")
+  else
+    args+=(${LAYOUT[@]+"${LAYOUT[@]}"})
+  fi
   GENERATED_SETTINGS="$(printf '%s\n' "$TEMPLATE_JSON" | "$PYTHON_BIN" "$RULES_FILES" ${args[@]+"${args[@]}"} settings --cc-dir "$CC_DIR" ${VARIANT[@]+"${VARIANT[@]}"})" || return 1
   GENERATED_REQUIREMENTS="$("$PYTHON_BIN" "$RULES_FILES" ${args[@]+"${args[@]}"} requirements --codex-dir "$CODEX_DIR" ${VARIANT[@]+"${VARIANT[@]}"})" || return 1
   GENERATED_COPILOT="$("$PYTHON_BIN" "$RULES_FILES" ${args[@]+"${args[@]}"} copilot-policy --copilot-dir "$COPILOT_DIR" ${COPILOT_VARIANT[@]+"${COPILOT_VARIANT[@]}"})" || return 1
@@ -175,12 +212,15 @@ SETTINGS_CANDIDATES=()
 REQUIREMENTS_CANDIDATES=()
 COPILOT_CANDIDATES=()
 [ "${VARIANT[*]-}" = --no-rules ] && SETTINGS_CANDIDATES+=("$TEMPLATE_JSON")
+# In either layout, so a re-install that switches between the zipapp and the package tree replaces the earlier file.
 for interp in python3 ${RECORDED_PYTHON:+"$RECORDED_PYTHON"}; do
-  if generate "$interp" 2>/dev/null; then
-    SETTINGS_CANDIDATES+=("$GENERATED_SETTINGS")
-    REQUIREMENTS_CANDIDATES+=("$GENERATED_REQUIREMENTS")
-    COPILOT_CANDIDATES+=("$GENERATED_COPILOT")
-  fi
+  for layout in "" --zipapp; do
+    if generate "$interp" "$layout" 2>/dev/null; then
+      SETTINGS_CANDIDATES+=("$GENERATED_SETTINGS")
+      REQUIREMENTS_CANDIDATES+=("$GENERATED_REQUIREMENTS")
+      COPILOT_CANDIDATES+=("$GENERATED_COPILOT")
+    fi
+  done
 done
 
 # place_managed FILE CONTENT VERB [OURS...]: write FILE when absent; an identical file is current (a re-run changes
@@ -218,15 +258,80 @@ install_package() {
   chmod 755 "$dir"; chmod 644 "$dir/"*.py; echo "package $dir/"
 }
 
-# install_rules MANAGED_DIR: the session-start script and the two files it reads, under catpilot-guardrails/.
+# install_rules MANAGED_DIR: the session-start script (in the package tree; the zipapp holds it otherwise) and the two
+# files it reads, under catpilot-guardrails/.
 install_rules() {
   local root="$1/catpilot-guardrails"
   mkdir -p "$root/hooks" "$root/instructions"
-  cp "$REPO/hooks/session-start/catpilot-company-rules.py" "$root/hooks/"
   cp "$HOSTS_DIR/company-checklist.md" "$HOSTS_DIR/company-checklist.json" "$root/instructions/"
   chmod 755 "$root" "$root/hooks" "$root/instructions"
-  chmod 644 "$root/hooks/catpilot-company-rules.py" "$root/instructions/company-checklist.md" "$root/instructions/company-checklist.json"
-  echo "rules   $root/ (hooks/catpilot-company-rules.py, instructions/company-checklist.md and .json)"
+  chmod 644 "$root/instructions/company-checklist.md" "$root/instructions/company-checklist.json"
+  if [ "$PACKAGE_TREE" -eq 1 ]; then
+    cp "$REPO/hooks/session-start/catpilot-company-rules.py" "$root/hooks/"
+    chmod 644 "$root/hooks/catpilot-company-rules.py"
+    echo "rules   $root/ (hooks/catpilot-company-rules.py, instructions/company-checklist.md and .json)"
+  else
+    echo "rules   $root/instructions/ (company-checklist.md and .json, which $ZIPAPP session-start reads)"
+  fi
+}
+
+# install_hooks HOOKS_DIR HOOK_FILE...: the checks a tool runs. The zipapp and its recorded SHA-256, each written
+# beside its final name and renamed into place, so a session never runs a half-written file; or, with --package-tree,
+# the hook scripts and the catpilot_guard package beside them.
+install_hooks() {
+  local dir="$1" name
+  shift
+  mkdir -p "$dir"; chmod 755 "$(dirname "$dir")" "$dir"
+  if [ "$PACKAGE_TREE" -eq 1 ]; then
+    for name in "$@"; do cp "$REPO/hooks/claude-code/$name" "$dir/"; chmod 644 "$dir/$name"; done
+    echo "hooks   $dir/"
+    install_package "$dir"
+    return
+  fi
+  rm -f "$dir/.$ZIPAPP.new" "$dir/.$ZIPAPP.sha256.new"
+  cp "$BUILD_TMP/$ZIPAPP" "$dir/.$ZIPAPP.new"
+  printf '%s  %s\n' "$ZIPAPP_SHA256" "$ZIPAPP" > "$dir/.$ZIPAPP.sha256.new"
+  chmod 444 "$dir/.$ZIPAPP.new" "$dir/.$ZIPAPP.sha256.new"
+  if [ "$(id -u)" -eq 0 ]; then chown 0:0 "$dir/.$ZIPAPP.new" "$dir/.$ZIPAPP.sha256.new"; fi
+  mv -f "$dir/.$ZIPAPP.new" "$dir/$ZIPAPP"
+  mv -f "$dir/.$ZIPAPP.sha256.new" "$dir/$ZIPAPP.sha256"
+  echo "zipapp  $dir/$ZIPAPP (SHA-256 recorded in $ZIPAPP.sha256)"
+}
+
+# The package tree's hook scripts, which an earlier install may have placed in a tool's hooks/ beside catpilot_guard/.
+TREE_FILES=(pretooluse-secrets.py pretooluse-write-secrets.py pretooluse-write-private-key.py pretooluse-destructive-ops.py
+            pretooluse-company-rules.py catpilot-company-rules.py)
+
+# retire_other_layout HOOKS_DIR MANAGED_FILE...: once the tool's managed file is placed, remove what an install in the
+# other layout placed in HOOKS_DIR, and only those files. While a managed file (one kept above as edited or not ours)
+# still runs them, they stay: removing a file a hook command runs would block every command it covers, or let them
+# run unchecked on a host that skips a hook it cannot start.
+retire_other_layout() {
+  local dir="$1" f name found="" names=()
+  shift
+  if [ "$PACKAGE_TREE" -eq 1 ]; then
+    [ -e "$dir/$ZIPAPP" ] || [ -e "$dir/$ZIPAPP.sha256" ] || return 0
+    names=("$ZIPAPP")
+  else
+    [ -e "$dir/catpilot_guard" ] && names=("${TREE_FILES[@]}")
+    for name in "${TREE_FILES[@]}"; do [ -e "$dir/$name" ] && names=("${TREE_FILES[@]}"); done
+    [ "${#names[@]}" -gt 0 ] || return 0
+  fi
+  for f in "$@"; do
+    [ -f "$f" ] || continue
+    for name in "${names[@]}"; do
+      if grep -qF "$name" "$f" 2>/dev/null; then found="$f"; break 2; fi
+    done
+  done
+  if [ -n "$found" ]; then
+    echo "kept    the earlier install's files in $dir ($found still runs them; once it no longer does, run install.sh again)"
+  elif [ "$PACKAGE_TREE" -eq 1 ]; then
+    rm -f "$dir/$ZIPAPP" "$dir/$ZIPAPP.sha256"; echo "removed $dir/$ZIPAPP and its SHA-256 (an earlier install's; now the package tree)"
+  else
+    for name in "${TREE_FILES[@]}"; do rm -f "$dir/$name"; done
+    rm -rf "$dir/catpilot_guard"
+    echo "removed the package tree an earlier install placed in $dir (hook scripts and catpilot_guard/; now $ZIPAPP)"
+  fi
 }
 
 # install_policy MANAGED_DIR: the compiled company policy the company-rules hook reads, under catpilot-guardrails/policy/,
@@ -263,17 +368,10 @@ install_skill() {  # $1 = destination root
   done
 }
 
-# Claude Code: hooks, managed settings, skills
-mkdir -p "$CC_DIR/catpilot-guardrails/hooks"
-cp "$REPO/hooks/claude-code/pretooluse-secrets.py" \
-   "$REPO/hooks/claude-code/pretooluse-write-secrets.py" \
-   "$REPO/hooks/claude-code/pretooluse-write-private-key.py" \
-   "$REPO/hooks/claude-code/pretooluse-destructive-ops.py" \
-   "$REPO/hooks/claude-code/pretooluse-company-rules.py" \
-   "$CC_DIR/catpilot-guardrails/hooks/"
-chmod 644 "$CC_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $CC_DIR/catpilot-guardrails/hooks/"
-# The hooks are shims that import catpilot_guard from beside themselves.
-install_package "$CC_DIR/catpilot-guardrails/hooks"
+# Claude Code: hooks, managed settings, skills. In the package tree the hooks are shims that import catpilot_guard
+# from beside themselves.
+install_hooks "$CC_DIR/catpilot-guardrails/hooks" pretooluse-secrets.py pretooluse-write-secrets.py \
+  pretooluse-write-private-key.py pretooluse-destructive-ops.py pretooluse-company-rules.py
 
 if [ -n "$HOSTS_DIR" ]; then
   mkdir -p "$CC_DIR/catpilot-guardrails/instructions"
@@ -292,6 +390,7 @@ elif [ -e "$CC_DIR/catpilot-guardrails/instructions/company-checklist.json" ] ||
 fi
 
 place_managed "$CC_DIR/managed-settings.json" "$SETTINGS_JSON" "merge these keys into it" ${SETTINGS_CANDIDATES[@]+"${SETTINGS_CANDIDATES[@]}"}
+retire_other_layout "$CC_DIR/catpilot-guardrails/hooks" "$CC_DIR/managed-settings.json"
 install_skill "$CC_DIR/.claude/skills"
 if [ "$MANAGED_MCP_JSON" -eq 1 ]; then
   MCP_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/claude-code/managed-mcp.json")"
@@ -306,35 +405,24 @@ install_skill "$CODEX_DIR/skills"
 # A copy of its own, so each tool reads only from its own managed directory. The hooks and their package go in
 # hooks/, the managed_dir that requirements.toml names; Codex loads managed hooks only when that directory exists.
 # Codex sends file edits as apply_patch, so the legacy pretooluse-write-private-key.py name is not needed here.
-mkdir -p "$CODEX_DIR/catpilot-guardrails/hooks"
-cp "$REPO/hooks/claude-code/pretooluse-secrets.py" \
-   "$REPO/hooks/claude-code/pretooluse-write-secrets.py" \
-   "$REPO/hooks/claude-code/pretooluse-destructive-ops.py" \
-   "$REPO/hooks/claude-code/pretooluse-company-rules.py" \
-   "$CODEX_DIR/catpilot-guardrails/hooks/"
-chmod 755 "$CODEX_DIR/catpilot-guardrails" "$CODEX_DIR/catpilot-guardrails/hooks"
-chmod 644 "$CODEX_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $CODEX_DIR/catpilot-guardrails/hooks/"
-install_package "$CODEX_DIR/catpilot-guardrails/hooks"
+install_hooks "$CODEX_DIR/catpilot-guardrails/hooks" pretooluse-secrets.py pretooluse-write-secrets.py \
+  pretooluse-destructive-ops.py pretooluse-company-rules.py
 if [ -n "$HOSTS_DIR" ]; then install_rules "$CODEX_DIR"; install_policy "$CODEX_DIR"; fi
 place_managed "$CODEX_DIR/requirements.toml" "$REQUIREMENTS_TOML" "merge this into it, keeping one [features] and one [hooks] table" ${REQUIREMENTS_CANDIDATES[@]+"${REQUIREMENTS_CANDIDATES[@]}"}
+retire_other_layout "$CODEX_DIR/catpilot-guardrails/hooks" "$CODEX_DIR/requirements.toml"
 
 # Copilot CLI: the same three checks, and with a compiled policy the company-rules hook, as policy hooks. Copilot
 # loads a policy file only when root owns it and no one else can write it; it reads them before user and project
 # hooks, and people cannot turn them off.
-mkdir -p "$COPILOT_DIR/catpilot-guardrails/hooks"
-cp "$REPO/hooks/claude-code/pretooluse-secrets.py" \
-   "$REPO/hooks/claude-code/pretooluse-write-secrets.py" \
-   "$REPO/hooks/claude-code/pretooluse-destructive-ops.py" \
-   "$REPO/hooks/claude-code/pretooluse-company-rules.py" \
-   "$COPILOT_DIR/catpilot-guardrails/hooks/"
-chmod 755 "$COPILOT_DIR/catpilot-guardrails" "$COPILOT_DIR/catpilot-guardrails/hooks"
-chmod 644 "$COPILOT_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $COPILOT_DIR/catpilot-guardrails/hooks/"
-install_package "$COPILOT_DIR/catpilot-guardrails/hooks"
+install_hooks "$COPILOT_DIR/catpilot-guardrails/hooks" pretooluse-secrets.py pretooluse-write-secrets.py \
+  pretooluse-destructive-ops.py pretooluse-company-rules.py
 if [ -n "$HOSTS_DIR" ]; then install_policy "$COPILOT_DIR"; fi
 # policy.d is created, mode 755, only when it does not exist: an existing directory, which may hold the
 # organization's own policy files, keeps its owner and mode.
 if [ ! -d "$COPILOT_DIR/policy.d" ]; then mkdir -p "$COPILOT_DIR/policy.d"; chmod 755 "$COPILOT_DIR/policy.d"; fi
 place_managed "$COPILOT_DIR/policy.d/catpilot-guardrails.json" "$COPILOT_POLICY_JSON" "replace it with" ${COPILOT_CANDIDATES[@]+"${COPILOT_CANDIDATES[@]}"}
+# On Copilot CLI any policy.d/*.json file may run the hooks, not only the one written above.
+retire_other_layout "$COPILOT_DIR/catpilot-guardrails/hooks" "$COPILOT_DIR"/policy.d/*.json
 
 echo
 echo "Done. Verify on this machine as a normal user: deploy/org/verify.sh, then the checks in docs/DEPLOY_ORG.md."

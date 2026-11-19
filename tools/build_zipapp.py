@@ -12,8 +12,11 @@ CI builds it twice and compares SHA-256 (.github/workflows/baseline.yml).
 
 It holds catpilot_guard/*.py and a __main__.py that runs one check by name: secrets, write-secrets, destructive,
 company-rules or session-start. An unknown name, or a check that cannot load, exits 2, which the hosts treat as a
-block. install.sh and install.ps1 do not place it yet: wiring it in, and attesting it, is the next step.
-Standard library only, Python 3.8+.
+block; session-start, which cannot block, prints that the company rules could not be loaded and exits 0, as its shim
+does. deploy/org/install.sh places it by default (issue #97, option 2) as
+<managed dir>/catpilot-guardrails/hooks/catpilot-guard.pyz, with its SHA-256 recorded beside it in
+catpilot-guard.pyz.sha256, and verify.sh checks the two match. install.ps1 does not place it: Windows keeps the
+package tree for now. Standard library only, Python 3.8+.
 """
 from __future__ import annotations
 
@@ -28,6 +31,8 @@ FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 SHEBANG = b"#!/usr/bin/env python3\n"
 MAIN = '''"""Run one Catpilot check by name: python catpilot-guard.pyz CHECK [options]. Built by tools/build_zipapp.py."""
 import importlib
+import json
+import os
 import sys
 
 CHECKS = {
@@ -37,6 +42,29 @@ CHECKS = {
     "company-rules": "catpilot_guard.company_rules",
     "session-start": "catpilot_guard.session_start",
 }
+# The text catpilot_guard.session_start.UNAVAILABLE and the session-start shim print.
+RULES_UNAVAILABLE = "Company rules could not be loaded and are unknown. Ask your IT or security owner."
+
+
+def archive():
+    """This archive's path: the zip importer's, else the directory part of this file's path."""
+    path = getattr(globals().get("__loader__"), "archive", None)
+    return path if isinstance(path, str) and path else os.path.dirname(os.path.abspath(__file__))
+
+
+def rules_unavailable():
+    """SessionStart cannot block on either host: a session-start check that cannot load says so and exits 0."""
+    output = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": RULES_UNAVAILABLE},
+              "systemMessage": RULES_UNAVAILABLE}
+    try:
+        sys.stdout.write(json.dumps(output) + "\\n")
+        sys.stdout.flush()
+    except Exception:
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), 1)
+        except Exception:
+            pass
+    return 0
 
 
 def run():
@@ -47,9 +75,18 @@ def run():
     name = sys.argv.pop(1)
     try:
         module = importlib.import_module(CHECKS[name])
+        if name == "session-start":
+            # Without --dir, the rules are read from instructions/ beside the directory that holds this archive,
+            # <managed dir>/catpilot-guardrails/instructions/, as the session-start shim reads them beside its own.
+            from pathlib import Path
+            default_dir = Path(os.path.realpath(archive())).parent.parent / "instructions"
     except Exception as exc:  # fail closed: a check that cannot load blocks
+        if name == "session-start":
+            return rules_unavailable()
         sys.stderr.write("Catpilot %s check unavailable (%s), so nothing was allowed.\\n" % (name, exc.__class__.__name__))
         return 2
+    if name == "session-start":
+        return module.main(sys.argv[1:], default_dir=default_dir)
     return module.main()
 
 
