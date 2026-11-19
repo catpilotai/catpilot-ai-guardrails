@@ -34,7 +34,8 @@ and writes `enforcement` as the JSON policy the company-rules hook reads
 (catpilot_guard/company_rules.py), with each rule's mode resolved and the
 exceptions copied. The hook acts on `protected_branch`, `deploy_host`,
 `package_registry` and `cloud_account` rules, and applies the exceptions that
-have no `where`.
+have no `where`. `export FILE --out JSON` (experimental) writes a generic allow/deny list instead
+(docs/spec/policy-export.schema.json).
 """
 
 from __future__ import annotations
@@ -1414,7 +1415,7 @@ def effective_modes(policy: dict, today: dt.date | None = None) -> list[str]:
     return lines
 
 
-def write_policy(path: Path, text: str) -> None:
+def write_policy(path: Path, text: str, mode: int = 0o644) -> None:
     """Write the policy beside its destination and move it into place, mode 644. A symlink is refused."""
     if path.is_symlink():
         raise OverlayError(f"{path}: symlinks are not allowed")
@@ -1423,7 +1424,7 @@ def write_policy(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
-        os.chmod(temporary, 0o644)
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
     except BaseException:
         try:
@@ -1473,6 +1474,85 @@ def compile_main(argv: list[str]) -> int:
         "Install it root-owned, mode 644, where the company-rules hook's --policy names it.",
         file=sys.stderr,
     )
+    return 0
+
+
+# ----------------------------------------------------------------- export (issue #100, experimental)
+
+EXPORT_FORMAT = "catpilot-allowlist-export"
+EXPORT_FORMAT_VERSION = 2
+# Allow-list kinds are `allow` lists; a protect-list kind is a `deny` list (OVERLAY_V2.md §2.2).
+EXPORT_LISTS = {"deploy_host": "allow", "package_registry": "allow", "cloud_account": "allow", "protected_branch": "deny"}
+
+
+def export_policy(overlay: dict, today: dt.date | None = None) -> dict | None:
+    """A generic list of the company rules for a gateway or policy engine; None without enforcement rules.
+
+    One object per rule, as the hook evaluates them: a target is outside policy if ANY rule of its kind does not list
+    it (an allow rule), or inside a rule's values and not excepted (a deny rule). Rules are never merged. Each carries
+    its id, kind, resolved mode, sorted values and that rule's active exceptions without `where` (id, allows, expiry);
+    an expired exception is dropped and one with `where` is left out (only the pull-request check reads it). No
+    timestamp, salt, source hash, owner, approver_role or use_instead text: the same file and date give identical output.
+    """
+    enforcement = overlay.get("enforcement")
+    if not enforcement:
+        return None
+    today = today or dt.date.today()
+    out = []
+    for rule in enforcement["rules"]:
+        entry = {
+            "rule_id": rule["id"],
+            "kind": rule["kind"],
+            "list": EXPORT_LISTS[rule["kind"]],
+            "mode": rule.get("mode", enforcement["default_mode"]),
+            "values": sorted(rule["values"]),
+        }
+        exceptions = [
+            {"exception_id": e["id"], "allows": sorted(e["allows"]), "expires_on": e["expires_on"].isoformat()}
+            for e in enforcement.get("exceptions", [])
+            if e["rule"] == rule["id"] and "where" not in e and e["expires_on"] >= today
+        ]
+        if exceptions:
+            entry["exceptions"] = sorted(exceptions, key=lambda e: e["exception_id"])
+        out.append(entry)
+    out.sort(key=lambda e: e["rule_id"])
+    return {
+        "format": EXPORT_FORMAT,
+        "format_version": EXPORT_FORMAT_VERSION,
+        "experimental": True,
+        "expires_on": overlay["expires_on"].isoformat(),
+        "rules": out,
+    }
+
+
+def export_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="validate_overlay.py export",
+        description="EXPERIMENTAL. Validate a company rules file and write a generic allow/deny list as JSON "
+        "(docs/spec/policy-export.schema.json). It holds the enforcement values, so treat it like the rules file.",
+    )
+    parser.add_argument("overlay", type=Path)
+    parser.add_argument("--out", type=Path, required=True, help="where to write the export (replaced if present)")
+    parser.add_argument("--today", help="YYYY-MM-DD, for which exceptions are active (default: today)")
+    parser.add_argument("--allow-host", action="append", default=[], help="as for compile (repeatable)")
+    args = parser.parse_args(argv)
+    try:
+        today = dt.date.fromisoformat(args.today) if args.today else None
+        data, _ = load_overlay_file(args.overlay)
+        overlay, errors = validate_overlay(data, set(args.allow_host))
+        if errors:
+            for error in errors:
+                print(f"INVALID: {error}", file=sys.stderr)
+            return 1
+        document = export_policy(overlay, today)
+        if document is None:
+            print("no enforcement rules in this file: nothing to export, and nothing was written", file=sys.stderr)
+            return 0
+        write_policy(args.out, policy_text(document), 0o600)
+    except (OSError, OverlayError, ValueError) as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 1
+    print(f"exported (experimental) to {args.out}; it lists the company's enforcement values, so it is written mode 600; keep it private.", file=sys.stderr)
     return 0
 
 
@@ -1546,6 +1626,8 @@ def main(argv: list[str] | None = None) -> int:
         return salt_main(argv[1:])
     if argv[:1] == ["compile"]:
         return compile_main(argv[1:])
+    if argv[:1] == ["export"]:
+        return export_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("overlay", type=Path, help="the file to validate; `migrate FILE` converts a version 1 file, `salt FILE` sets a new salt, and `compile FILE --out POLICY` writes the hook's policy instead")
     parser.add_argument("--allow-host", action="append", default=[], help="hostname allowed in templates[].location and intake_url, top-level or a contact's (repeatable)")

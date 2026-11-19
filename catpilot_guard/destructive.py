@@ -1382,7 +1382,7 @@ def find_destructive_op(command: str, cwd: str | None = None, shell: str = "bash
 
 
 # --- evidence (content-free) ---------------------------------------------------------------
-# Written by catpilot_guard/evidence.py when CATPILOT_EVIDENCE_LOG or CATPILOT_EVIDENCE_SYSLOG is set:
+# Written by catpilot_guard/evidence.py when CATPILOT_EVIDENCE_LOG, CATPILOT_EVIDENCE_SYSLOG or CATPILOT_EVIDENCE_HTTPS is set:
 # one line per deny or input error, with the hook, the tool, the operation label and the session id.
 HOOK_NAME = "pretooluse-destructive-ops"
 HOST = "claude-code"  # main()'s host with no --host (hook_host); decide() called from a harness passes no host
