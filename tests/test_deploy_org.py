@@ -23,6 +23,10 @@ HOOK_NAMES = (
 
 
 class DeployOrgScriptTests(unittest.TestCase):
+    # These tests check the package-tree layout, which install.sh keeps behind --package-tree for one release;
+    # tests/test_deploy_zipapp.py runs the layout-agnostic ones again with the zipapp, the default.
+    PACKAGE_TREE = "1"
+
     def _env(self, cc_dir: Path, codex_dir: Path) -> dict[str, str]:
         env = dict(os.environ)
         env.update(
@@ -32,6 +36,7 @@ class DeployOrgScriptTests(unittest.TestCase):
                 "CATPILOT_CODEX_DIR": str(codex_dir),
                 "CATPILOT_COPILOT_DIR": str(Path(codex_dir).parent / "copilot"),
                 "PYTHON_BIN": sys.executable,
+                "CATPILOT_PACKAGE_TREE": self.PACKAGE_TREE,
             }
         )
         return env
@@ -363,6 +368,7 @@ class InterpreterTests(unittest.TestCase):
     absolute path in every hook command; verify.sh checks the recorded one; uninstall.sh still recognizes its files."""
 
     URL = "https://mcp.internal.example.org/mcp"
+    PACKAGE_TREE = DeployOrgScriptTests.PACKAGE_TREE
     _env = DeployOrgScriptTests._env
     _install = DeployOrgScriptTests._install
     _verify = DeployOrgScriptTests._verify

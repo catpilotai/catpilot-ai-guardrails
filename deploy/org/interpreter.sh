@@ -129,7 +129,7 @@ protected_interpreter() {
 
 # managed_candidates SETTINGS_TEMPLATE: every managed file install.sh may have written, in SETTINGS_CANDIDATES,
 # REQUIREMENTS_CANDIDATES and COPILOT_CANDIDATES: each variant (with and without the company rules and their
-# enforcement), naming python3 (an earlier install) or RECORDED_PYTHON. Needs PYTHON_BIN, RULES_FILES, CC_DIR,
+# enforcement), naming python3 (an earlier install) or RECORDED_PYTHON, in either layout (zipapp or package tree). Needs PYTHON_BIN, RULES_FILES, CC_DIR,
 # CODEX_DIR and COPILOT_DIR. uninstall.sh removes such a file; install.sh replaces it.
 managed_candidates() {
   local template="$1" interp variant
@@ -137,12 +137,16 @@ managed_candidates() {
   REQUIREMENTS_CANDIDATES=()
   COPILOT_CANDIDATES=()
   for interp in python3 ${RECORDED_PYTHON:+"$RECORDED_PYTHON"}; do
-    CANDIDATE_PY_ARGS=()
-    [ "$interp" = python3 ] || CANDIDATE_PY_ARGS=(--python "$interp")
-    COPILOT_CANDIDATES+=("$(candidate copilot-policy --copilot-dir "$COPILOT_DIR")" "$(candidate copilot-policy --copilot-dir "$COPILOT_DIR" --enforce)")
-    for variant in --no-rules "" --enforce; do
-      SETTINGS_CANDIDATES+=("$(printf '%s\n' "$template" | candidate settings --cc-dir "$CC_DIR" ${variant:+"$variant"})")
-      REQUIREMENTS_CANDIDATES+=("$(candidate requirements --codex-dir "$CODEX_DIR" ${variant:+"$variant"})")
+    # Each layout: the hook files of the package tree, and the zipapp (issue #97, option 2).
+    for layout in "" --zipapp; do
+      CANDIDATE_PY_ARGS=()
+      [ "$interp" = python3 ] || CANDIDATE_PY_ARGS=(--python "$interp")
+      [ -n "$layout" ] && CANDIDATE_PY_ARGS+=("$layout")
+      COPILOT_CANDIDATES+=("$(candidate copilot-policy --copilot-dir "$COPILOT_DIR")" "$(candidate copilot-policy --copilot-dir "$COPILOT_DIR" --enforce)")
+      for variant in --no-rules "" --enforce; do
+        SETTINGS_CANDIDATES+=("$(printf '%s\n' "$template" | candidate settings --cc-dir "$CC_DIR" ${variant:+"$variant"})")
+        REQUIREMENTS_CANDIDATES+=("$(candidate requirements --codex-dir "$CODEX_DIR" ${variant:+"$variant"})")
+      done
     done
   done
 }

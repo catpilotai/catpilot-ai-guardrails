@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Remove what deploy/org/install.sh placed, and nothing else. Run as an administrator (sudo).
 # Copilot CLI: /etc/github-copilot/catpilot-guardrails/ and policy.d/catpilot-guardrails.json under the same rules.
-# Removes the hook copies and the catpilot_guard package beside them (all under
-# <managed dir>/catpilot-guardrails/), the skills it installed, and the managed files only when they are
-# byte-for-byte what install.sh writes for the given server URL, with or without --overlay; a managed file you
+# Removes the hooks, as the zipapp catpilot-guard.pyz with its recorded SHA-256 or as hook copies with the
+# catpilot_guard package beside them (all under <managed dir>/catpilot-guardrails/), the skills it installed, and the
+# managed files only when they are byte-for-byte what install.sh writes for the given server URL, in either layout,
+# with or without --overlay; a managed file you
 # have since edited or merged is left in place and named, so you can remove our keys by hand.
 # It removes /etc/codex/catpilot-guardrails/ (the Codex hooks and their package, and from an --overlay install the
 # session-start script and rules) and /etc/codex/requirements.toml under the same byte-for-byte rule, with or
@@ -34,6 +35,10 @@ esac
 CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
 CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
 COPILOT_DIR="${CATPILOT_COPILOT_DIR:-/etc/github-copilot}"
+# A trailing slash would keep the paths written into managed files from matching the ones checked and rewritten.
+no_trailing_slash() { local d="$1"; while [ "${d%/}" != "$d" ]; do d="${d%/}"; done; printf '%s' "${d:-/}"; }
+CC_DIR="$(no_trailing_slash "$CC_DIR")"; CODEX_DIR="$(no_trailing_slash "$CODEX_DIR")"
+COPILOT_DIR="$(no_trailing_slash "$COPILOT_DIR")"
 RULES_FILES="$REPO/deploy/org/session_start_files.py"
 # shellcheck source=interpreter.sh
 . "$REPO/deploy/org/interpreter.sh"

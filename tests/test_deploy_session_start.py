@@ -80,6 +80,10 @@ def parse_toml(text: str) -> dict:
 
 
 class SessionStartDeployTests(unittest.TestCase):
+    # These tests check the package-tree layout, which install.sh keeps behind --package-tree for one release;
+    # tests/test_deploy_zipapp.py runs the layout-agnostic ones again with the zipapp, the default.
+    PACKAGE_TREE = "1"
+
     @staticmethod
     def expected(function, *args, **kwargs):
         """What install.sh writes: the helper's output with the interpreter it records (PYTHON_BIN)."""
@@ -106,6 +110,7 @@ class SessionStartDeployTests(unittest.TestCase):
                 "CATPILOT_COPILOT_DIR": str(self.tmp / "copilot"),
                 "PYTHON_BIN": sys.executable,
                 "HOME": str(self.home),
+                "CATPILOT_PACKAGE_TREE": self.PACKAGE_TREE,
             }
         )
 

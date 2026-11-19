@@ -55,6 +55,10 @@ def parse_toml(text: str) -> dict:
 
 
 class CodexManagedHookTests(unittest.TestCase):
+    # These tests check the package-tree layout, which install.sh keeps behind --package-tree for one release;
+    # tests/test_deploy_zipapp.py runs the layout-agnostic ones again with the zipapp, the default.
+    PACKAGE_TREE = "1"
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
@@ -64,7 +68,8 @@ class CodexManagedHookTests(unittest.TestCase):
         self.home.mkdir()
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("CATPILOT_EVIDENCE")}
         self.env.update({"CATPILOT_ALLOW_NONROOT": "1", "CATPILOT_CC_DIR": str(self.cc), "CATPILOT_CODEX_DIR": str(self.codex),
-                         "CATPILOT_COPILOT_DIR": str(self.tmp / "copilot"), "PYTHON_BIN": sys.executable, "HOME": str(self.home)})
+                         "CATPILOT_COPILOT_DIR": str(self.tmp / "copilot"), "PYTHON_BIN": sys.executable, "HOME": str(self.home),
+                         "CATPILOT_PACKAGE_TREE": self.PACKAGE_TREE})
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -343,9 +348,15 @@ class CodexManagedHookTests(unittest.TestCase):
 
     def test_the_hook_table_matches_the_files_install_copies(self):
         install = (ORG / "install.sh").read_text(encoding="utf-8")
+        # install_hooks copies each file it is given from hooks/claude-code/ (with --package-tree); the Codex call
+        # names every hook the table declares.
+        self.assertIn('cp "$REPO/hooks/claude-code/$name" "$dir/"', install)
+        codex_call = install[install.index('install_hooks "$CODEX_DIR/catpilot-guardrails/hooks"'):]
+        codex_call = codex_call[:codex_call.index("\n", codex_call.index("\\\n") + 2)]
         for name in helper.CODEX_HOOK_FILES:
-            self.assertIn(f'"$REPO/hooks/claude-code/{name}"', install)
+            self.assertIn(name, codex_call)
             self.assertTrue((ROOT / "hooks" / "claude-code" / name).is_file())
+            self.assertIn(name, helper.ZIPAPP_CHECKS)  # and the zipapp, the default, has a check for it
         self.assertEqual(set(helper.CODEX_HOOK_FILES), set(HOOK_FILES))
 
 

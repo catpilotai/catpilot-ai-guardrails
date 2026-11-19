@@ -102,6 +102,17 @@ END = "<!-- catpilot-company-rules:end -->"
 DATE_LINE = re.compile(r"^(?P<key>reviewed_on|expires_on):\s*(?P<value>[0-9]{4}-[0-9]{2}-[0-9]{2})\s*$", re.MULTILINE)
 TOKEN = re.compile(r"[0-9a-f]{6}")
 SCRIPT_NAME = re.compile(r"([A-Za-z0-9_.-]+\.py)\b")
+# A command that runs a check from the zipapp install.sh places by default (catpilot-guard.pyz CHECK), and the hook
+# script each check replaces, so the summary names the same scripts whichever layout the install used.
+ZIPAPP_CHECK = re.compile(r'catpilot-guard\.pyz"?\s+([a-z-]+)')
+ZIPAPP_SCRIPTS = {"secrets": "pretooluse-secrets.py", "write-secrets": "pretooluse-write-secrets.py",
+                  "destructive": "pretooluse-destructive-ops.py", "company-rules": "pretooluse-company-rules.py",
+                  "session-start": "catpilot-company-rules.py"}
+
+
+def script_names(command: str) -> list:
+    """The hook scripts a command runs: by file name, or by check name from the zipapp."""
+    return SCRIPT_NAME.findall(command) + [ZIPAPP_SCRIPTS[c] for c in ZIPAPP_CHECK.findall(command) if c in ZIPAPP_SCRIPTS]
 # Characters a model may put inside a name: Markdown emphasis and code marks, and dash look-alikes.
 MARKUP = re.compile(r"[*`]")
 DASHES = re.compile("[‐‑‒–—―−]")
@@ -322,7 +333,7 @@ def copilot_policy_scripts(copilot_dir: Path):
         return None
     commands = [e["bash"] for e in (entries if isinstance(entries, list) else [])
                 if isinstance(e, dict) and isinstance(e.get("bash"), str)]
-    return sorted({name for c in commands if "catpilot" in c for name in SCRIPT_NAME.findall(c)})
+    return sorted({name for c in commands if "catpilot" in c for name in script_names(c)})
 
 
 def inspect(cc_dir: Path, codex_dir: Path, copilot_dir: Path) -> dict:
@@ -334,7 +345,7 @@ def inspect(cc_dir: Path, codex_dir: Path, copilot_dir: Path) -> dict:
         hooks = None
     for event, groups in (hooks or {}).items() if isinstance(hooks, dict) else []:
         commands = [h.get("command", "") for g in groups if isinstance(g, dict) for h in g.get("hooks") or [] if isinstance(h, dict)]
-        events[event] = sorted({name for c in commands if "catpilot" in c for name in SCRIPT_NAME.findall(c)})
+        events[event] = sorted({name for c in commands if "catpilot" in c for name in script_names(c)})
     requirements = read_text(codex_dir / "requirements.toml") or ""
     claude_md = read_text(cc_dir / "CLAUDE.md") or ""
     sidecar = read_text(cc_dir / "catpilot-guardrails" / "instructions" / "company-checklist.json")
@@ -358,7 +369,8 @@ def inspect(cc_dir: Path, codex_dir: Path, copilot_dir: Path) -> dict:
             "requirements_toml": bool(requirements),
             "requirements_hook_events": sorted(set(re.findall(r"^\[\[hooks\.([A-Za-z]+)\]\]", requirements, re.MULTILINE))),
             "managed_pretooluse_hooks": bool(re.search(r"^\[\[hooks\.PreToolUse\]\]", requirements, re.MULTILINE)),
-            "company_rules_hook": bool(re.search(r"^command\s*=\s*'[^'\n]*%s" % re.escape(company_script), requirements, re.MULTILINE)),
+            "company_rules_hook": any(company_script in script_names(line) for line in
+                                      re.findall(r"^command\s*=\s*'[^'\n]*", requirements, re.MULTILINE)),
             "company_policy": company_policy(codex_dir),
         },
         "copilot_cli": {

@@ -46,6 +46,38 @@ whose commands name `python3`, it says so and checks `python3` from its own `PAT
 and `install.sh` replaces a managed file that is exactly what an earlier install with the same options wrote, naming either interpreter,
 so re-installing with another interpreter updates the hook commands.
 
+**The hooks as one file, with its hash recorded** (issue #97, option 2; macOS and Linux). Not yet run on a real host:
+it is tested offline only, in temporary directories ([status](#verification-status)). By default `install.sh` builds
+the hooks from the checkout into one zipapp, `catpilot-guard.pyz`, with `tools/build_zipapp.py`, which is
+reproducible: the same sources give the same bytes on any machine, so the build's SHA-256 can be attested and compared
+(CI builds it twice, on two Pythons, and compares). It places one copy in each tool's
+`<managed dir>/catpilot-guardrails/hooks/`, owned by root, mode 444, written beside its final name and renamed into
+place, and records its SHA-256 beside it in `catpilot-guard.pyz.sha256` (the `sha256sum` format, so
+`shasum -a 256 -c catpilot-guard.pyz.sha256` checks it from that directory). Every hook command then runs the recorded
+interpreter on the archive with the check's name, in place of a hook file:
+
+```
+CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" "/usr/local/bin/python3" "/etc/codex/catpilot-guardrails/hooks/catpilot-guard.pyz" secrets --evidence-default --host codex
+```
+
+The checks are `secrets`, `write-secrets`, `destructive`, `company-rules` and `session-start`, for
+`pretooluse-secrets.py`, `pretooluse-write-secrets.py`, `pretooluse-destructive-ops.py`,
+`pretooluse-company-rules.py` and `catpilot-company-rules.py`; the examples in this document show the hook files, the
+form `--package-tree` writes. A check that cannot load exits 2, which blocks, as a hook file without its package does;
+`session-start`, which cannot block, prints that the company rules could not be loaded. The company-rules hook accepts
+a policy only when the policy and its directory have the owner of what the hook runs from: inside the zipapp that is
+the archive file (root), as the `catpilot_guard/` directory is in the package tree. `verify.sh` checks each copy's
+SHA-256 against the recorded one and fails on a mismatch, fails a copy or its directory that someone other than root
+can change, checks the modules in it, notes whether it is byte for byte what the checkout you run `verify.sh` from
+builds, and runs every check from it on the same probes as before; its report lines keep the hook files' names.
+`uninstall.sh` removes it with the rest of `catpilot-guardrails/`.
+
+`--package-tree` (or `CATPILOT_PACKAGE_TREE=1`) places the hook files and the `catpilot_guard` package instead, as
+earlier releases did. It stays for this release only, as a fallback while the zipapp has not run on a host. Switching
+layouts in either direction replaces the managed files an earlier install wrote and removes the files the other layout
+placed in `hooks/`, and only those; while a managed file `install.sh` kept (one you edited) still runs them, they stay
+and it says so. Windows keeps the package tree for now: `install.ps1` does not place the zipapp.
+
 On Windows, `install.ps1` by default places Python's official embeddable distribution, version 3.12.10, checked
 against its pinned SHA-256 (AMD64 and ARM64), under `C:\Program Files\ClaudeCode\catpilot-guardrails\python\`
 (`CATPILOT_PYTHON_ZIP` names a copy fetched beforehand, for a machine without internet; it is checked the same way).
@@ -83,9 +115,9 @@ Everything an administrator places is under [`deploy/org/`](../deploy/org/):
 | `claude-code/managed-mcp.json` | The stricter alternative for the server: a fixed set, and users cannot add others |
 | `codex/managed_config.toml` | The server as a managed default for Codex CLI |
 | `/etc/codex/requirements.toml` (generated) | The three hooks as managed Codex `PreToolUse` hooks, with `--host codex`, and `[features].hooks = true`; with `--overlay`, also the session-start hook. Written by `install.sh` from `session_start_files.py`, only when there is none |
-| `install.sh` | Places all of it on one macOS or Linux machine as root, with your server URL substituted: the hooks and the `catpilot_guard` package they run go to `<managed dir>/catpilot-guardrails/hooks/` (the package as `hooks/catpilot_guard/`, its `.py` files only, never `__pycache__` or `.pyc`); refuses to overwrite a managed file that already exists and prints what to merge instead; `--managed-mcp-json` also writes the fixed-set `managed-mcp.json`; `--overlay` also places the company rules at session start on both tools (below) |
-| `verify.sh` | Checks as a normal user: the files are present, including each module of the `catpilot_guard` package beside the hooks; the interpreter the hook commands name (recorded by `install.sh`) runs Python 3.8 or later; each installed hook, run directly, denies a harmless probe and lets `ls` through; `managed-settings.json` runs each hook on the tools it covers; after `--overlay`, the company rules at session start (below); and the evidence log's last line. Writes its probes' evidence lines only to a temporary directory, as long as the registered commands keep install.sh's evidence prefix (a built-in hook command changed to another path writes them there; a company-rules command that is not install.sh's is not run); exits non-zero on any failure |
-| `uninstall.sh` | Removes exactly what `install.sh` placed, including the `catpilot_guard` package beside the hooks and, after `--overlay`, the session-start files and the marked section of the managed `CLAUDE.md`; leaves a managed file alone if it was edited since |
+| `install.sh` | Places all of it on one macOS or Linux machine as root, with your server URL substituted: the hooks go to `<managed dir>/catpilot-guardrails/hooks/` as one zipapp, `catpilot-guard.pyz`, with its SHA-256 in `catpilot-guard.pyz.sha256` ([above](#one-command-per-machine)), or with `--package-tree` as hook files with the `catpilot_guard` package they run (the package as `hooks/catpilot_guard/`, its `.py` files only, never `__pycache__` or `.pyc`); refuses to overwrite a managed file that already exists and prints what to merge instead; `--managed-mcp-json` also writes the fixed-set `managed-mcp.json`; `--overlay` also places the company rules at session start on both tools (below) |
+| `verify.sh` | Checks as a normal user: the files are present, including the zipapp with the SHA-256 `install.sh` recorded, owned by root, or each module of the `catpilot_guard` package beside the hooks; the interpreter the hook commands name (recorded by `install.sh`) runs Python 3.8 or later; each installed hook, run directly, denies a harmless probe and lets `ls` through; `managed-settings.json` runs each hook on the tools it covers; after `--overlay`, the company rules at session start (below); and the evidence log's last line. Writes its probes' evidence lines only to a temporary directory, as long as the registered commands keep install.sh's evidence prefix (a built-in hook command changed to another path writes them there; a company-rules command that is not install.sh's is not run); exits non-zero on any failure |
+| `uninstall.sh` | Removes exactly what `install.sh` placed, including the zipapp or the `catpilot_guard` package beside the hooks and, after `--overlay`, the session-start files and the marked section of the managed `CLAUDE.md`; leaves a managed file alone if it was edited since |
 | `interpreter.sh` | Sourced by the three scripts: proves an interpreter runs Python 3.8 or later and reads back the one the managed files record |
 | `install.ps1`, `verify.ps1`, `uninstall.ps1`, `windows-common.ps1` | The same on Windows (Windows PowerShell 5.1 or PowerShell 7), [above](#one-command-per-machine) |
 | `windows_files.py` | The standard-library helper the PowerShell scripts call: writes the Windows managed files (only when absent), removes them only when unchanged, and runs `verify.ps1`'s probes and access-list readback |
@@ -231,7 +263,7 @@ Precedence, highest first: MDM, cloud-delivered requirements from the ChatGPT ad
 
 **What `install.sh` places.**
 
-- `/etc/codex/catpilot-guardrails/hooks/`: `pretooluse-secrets.py`, `pretooluse-write-secrets.py` and `pretooluse-destructive-ops.py`, and the `catpilot_guard` package beside them (its `.py` files only);
+- `/etc/codex/catpilot-guardrails/hooks/`: `catpilot-guard.pyz` and `catpilot-guard.pyz.sha256`, or with `--package-tree` `pretooluse-secrets.py`, `pretooluse-write-secrets.py` and `pretooluse-destructive-ops.py`, and the `catpilot_guard` package beside them (its `.py` files only);
 - `/etc/codex/requirements.toml`, only when there is none; otherwise it prints the file for you to merge, keeping one `[features]` and one `[hooks]` table. Without `--overlay` it is exactly:
 
 ```toml
@@ -279,7 +311,7 @@ With `--overlay`, `install.sh` declares a managed `SessionStart` hook that gives
 
 **What `install.sh` places.**
 
-- `/etc/codex/catpilot-guardrails/hooks/catpilot-company-rules.py` and, beside it, the `catpilot_guard` package (`hooks/catpilot_guard/`, its `.py` files only);
+- with `--package-tree`, `/etc/codex/catpilot-guardrails/hooks/catpilot-company-rules.py` and, beside it, the `catpilot_guard` package (`hooks/catpilot_guard/`, its `.py` files only); by default the zipapp above runs it as `catpilot-guard.pyz session-start`;
 - `/etc/codex/catpilot-guardrails/instructions/company-checklist.md` and `company-checklist.json`;
 - in `/etc/codex/requirements.toml`, after the blocking hooks above, the session-start hook:
 
@@ -317,7 +349,7 @@ If your `requirements.toml` already has a `[hooks]` table with its own `managed_
 
 **What `install.sh` places.**
 
-- `/etc/github-copilot/catpilot-guardrails/hooks/`: the secret, file-write, destructive-operation and company-rules hooks and the `catpilot_guard` package beside them;
+- `/etc/github-copilot/catpilot-guardrails/hooks/`: `catpilot-guard.pyz` and its SHA-256, or with `--package-tree` the secret, file-write, destructive-operation and company-rules hooks and the `catpilot_guard` package beside them;
 - `/etc/github-copilot/policy.d/catpilot-guardrails.json`, only when there is none; otherwise it prints the file to put in its place. It creates `policy.d`, mode 755, only when the directory does not exist; an existing `policy.d` keeps its owner and mode. It registers the checks under `PreToolUse`, so Copilot sends Claude Code's event shape, with `--host copilot-cli` on each command so the hooks read Copilot's file-edit arguments and write the decision fields Copilot reads. The credential and destructive-operation checks run on `Bash|write_bash|write_powershell`, the file-write check on `Write|Edit`, each with a 30-second timeout. With enforcement rules, the company-rules hook is added on the shell tools with `--policy /etc/github-copilot/catpilot-guardrails/policy/company-policy.json`.
 
 **A timeout lets the call run.** Copilot fails open when a hook times out, policy hooks included. The same exposure to a `python3` that does not start applies as on the other tools ([above](#blocking-hooks-on-codex)): a hook that exits with an error, rather than timing out, denies the call on Copilot.
@@ -548,6 +580,7 @@ What a pilot report reads from it: denials per hook per day (the hooks were in f
 | GitHub Copilot CLI, policy hooks in `/etc/github-copilot/policy.d/` (`install.sh`), the company-rules hook included | verified on Copilot CLI 1.0.113 on macOS through the host check (one full run at `d605495`, then two Copilot-only reruns at `4cf50c1` with the corrected kit): Copilot loaded the policy file and reported `Denied by preToolUse hook:` with the hook's reason for two force pushes to `main`, an `rm -rf` of a home-directory path, a `terraform` auto-approve apply, AWS's documentation key in a command, a synthetic key block written with `apply_patch`, and the force push a company `block` rule covers (remote branch unmoved); it let the push a `monitor` rule covers through with a `would_deny` line, and the branch moved; with no hooks installed both pushes ran (control). At `4cf50c1` the probe and the control passed in different runs, because the model declined some items in the other session each time. Evidence lines labeled `copilot-cli` ([note](../evals/reports/2026.11.17-host-check-company-rules.md)) | 2026-11-17 (reruns 2026-11-18 UTC) | The maintainer ran the host check; Catpilot recorded |
 | Pull-request check (`tools/pr_check.py`, the `deploy/ci/catpilot-pr-check.yml` template) | not yet run in a repository's CI; tested offline in temporary git repositories (`tests/test_pr_check.py`) | | |
 | Evidence log, hooks and server | unit and stdio contract tests in `tests/` | 2026-09-20 | Catpilot |
+| macOS and Linux: the hooks as one zipapp (`catpilot-guard.pyz`, the default of `install.sh`; issue #97, option 2) | not yet run on a host. Tested offline in temporary directories: the build is byte for byte reproducible (`tests/test_zipapp.py`); `install.sh`, `verify.sh` and `uninstall.sh` place, check and remove it for the three tools, with and without company enforcement rules, a changed copy fails `verify.sh`, and every check, the company-rules hook with a policy included, denies from inside it (`tests/test_deploy_zipapp.py`). The host verifications above ran hook files, not the zipapp | | |
 | Windows: the hooks, the PowerShell reader and the policy access-list check ([`docs/spec/WINDOWS.md`](spec/WINDOWS.md) increments 1 and 2) | not verified on a host. Unit tests run on a `windows-latest` CI runner (`tests/windows_suite.py`, Python 3.8 and 3.12), including policy files whose owner and access list `icacls` sets; no Claude Code, Codex or Copilot CLI session has run on Windows | | |
 | Windows: `install.ps1`, `verify.ps1`, `uninstall.ps1` (increment 3) | not verified on a host. On the `windows-latest` CI runner (elevated), `tests/test_windows_install.py` installs into temporary directories with `-PythonPath` (Python 3.8 and 3.12) and with the pinned embeddable interpreter, runs `verify.ps1`, installs again (nothing changes) and uninstalls; it runs no tool | | |
 
