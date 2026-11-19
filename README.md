@@ -168,7 +168,7 @@ Everything company-specific lives in one **company rules** file (the format is c
 | Open source (this repository) | Catpilot Plus |
 | --- | --- |
 | The company-rules format (overlay schema) and validator, local merge into a private bundle, generic defaults, the same eight checkpoints as a course for people | Authoring the company rules from the company's actual policies, named-reviewer approval, versioning, tenant-scoped serving to tools, per-person coaching in Slack and Teams, and the evidence trail that links a coached moment to a policy version |
-| Three enforcement hooks, the same checks as harness gates plus outbound-URL and file-path gates, a content-free evidence log with optional syslog forwarding, `tools/evidence_summary.py` for a pilot readout, and an `escalation_draft` (with an optional `intake_url`) whenever `check_plan` asks for a human | Serving `check_plan` per company, so every `escalation_draft` carries the company's own contact and intake link |
+| Three enforcement hooks, the same checks as harness gates plus outbound-URL and file-path gates, a content-free evidence log with optional syslog or HTTPS forwarding and an opt-in hash chain, OCSF and ECS export, `tools/evidence_summary.py` for a pilot readout, and an `escalation_draft` (with an optional `intake_url`) whenever `check_plan` asks for a human | Serving `check_plan` per company, so every `escalation_draft` carries the company's own contact and intake link |
 
 Do not put private incidents, customer data, secrets, employee identifiers, or internal policy excerpts into this public baseline or a public fork. The bundler refuses to build if an overlay-shaped file is inside the tree, and a private build must be written outside it. A fork of a public repository is not private storage. Never turn an unreviewed event or document into an authoritative company rule automatically.
 
@@ -201,7 +201,11 @@ PRs welcome: propose a rule, fix a false positive, review a control mapping, add
 
 ## Roadmap
 
-What is shipped, what is deferred, and what this quarter is for: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+What is shipped, what is next, and what is parked until requested: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+## Project policies
+
+[Stability tiers](docs/STABILITY.md) (what is stable, beta or experimental, and the two-release notice before removals), [support](SUPPORT.md), [governance](GOVERNANCE.md), [maintainers](MAINTAINERS.md) and the [release notes template](docs/RELEASE_NOTES_TEMPLATE.md). Releases are monthly, with patches as needed.
 
 ## License
 
@@ -209,4 +213,4 @@ MIT. See [LICENSE](./LICENSE).
 
 ## Security
 
-Found something dangerous? See [SECURITY.md](./SECURITY.md). For specific vulnerabilities, email **hi@catpilot.ai**.
+Found something dangerous? See [SECURITY.md](./SECURITY.md). For specific vulnerabilities, use [GitHub private vulnerability reporting](https://github.com/catpilotai/catpilot-ai-guardrails/security/advisories/new) or email **hi@catpilot.ai**.

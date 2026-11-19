@@ -39,6 +39,8 @@ mcp-server/                 # reference MCP server: four read-only tools over th
 deploy/                     # Azure and Cloudflare scripts for hosting the reference server, notes on Catpilot's instance, and verify.sh
   org/                      # install.sh, verify.sh, uninstall.sh and templates for the Claude Code and Codex managed locations,
                             # and session_start_files.py, which writes, checks and removes the session-start rules files
+  ci/                       # catpilot-pr-check.yml, a workflow template for a company's own repositories that runs
+                            # tools/pr_check.py, and the hash-pinned PyYAML it installs
 .claude-plugin/             # skills-only plugin manifest and one-entry marketplace
 tools/
   bundle.py                 # deterministic bundler: --target all, --overlay, --check
@@ -47,10 +49,13 @@ tools/
                             # target, and its company-checklist.json sidecar for the session-start script
   validate_skill.py         # skill directory validator
   validate_overlay.py       # organization overlay validator
+  pr_check.py               # pull-request check: the compiled company rules applied to the files a pull request changes
   validate_evals.py         # cases.json validator
   eval.py                   # safe-building with/without runner
   bench.py, bench/          # benchmark runner: conditions, scanners, functional checks, reports
   evidence_summary.py       # pilot readout from the content-free evidence log
+  evidence_export.py        # the evidence log as OCSF or ECS JSON lines
+  evidence_verify.py        # checks the evidence log's opt-in hash chain
   sbom.py                   # SPDX SBOM of the pinned dependencies, for signed releases
 docs/spec/                  # format, packaging, overlay and evidence specs; V2 postmortem
 frameworks/                 # long-form framework guides, kept as reference and not packaged as skills

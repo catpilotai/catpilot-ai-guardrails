@@ -27,10 +27,16 @@ CLAUDE.md shapes what the model does without enforcing anything.
                                    verify.sh's checks of the Copilot CLI policy hooks: the files, the policy file's
                                    owner and mode, each hook run directly on harmless probes in Copilot's event shape,
                                    and each command the policy file declares run through a shell
+  verify-zipapp --hooks-dir DIR    verify.sh's checks of the zipapp in one tool's hooks directory: present, the SHA-256
+                                   install.sh recorded beside it, owned by root and writable by no one else, holding
+                                   the modules, and whether it is what this checkout builds
+  --python PATH, --zipapp          (before the action) the interpreter the written commands name, and whether they run
+                                   the checks from the zipapp (install.sh's default) instead of the hook files
   verify-company-rules --cc-dir DIR --codex-dir DIR --home DIR [--copilot-dir DIR] [--timeout SECONDS]
                                    verify.sh's checks of the company-rules hook on each tool with a compiled policy:
-                                   the files and their ownership, the policy loading, a probe for its first
-                                   protected_branch rule, and the hook as the managed file registers it
+                                   the files and their ownership, the policy loading, a probe for its first rule
+                                   of each kind, picked outside the active exceptions where it can be and otherwise
+                                   expected as the exceptions make it, and the hook as the managed file registers it
 
 What each host reads, from the vendors' documentation (read on 2026-11-16):
   Claude Code  the managed CLAUDE.md in the managed directory, /Library/Application Support/ClaudeCode/CLAUDE.md
@@ -47,6 +53,7 @@ read with tomllib where there is one and otherwise with a reader for the few sha
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -57,6 +64,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 BEGIN = "<!-- catpilot-company-rules:begin -->"
@@ -69,6 +77,10 @@ START_SOURCES = ("startup", "resume", "clear", "compact", "fork")
 MATCHER = "|".join(START_SOURCES)
 # The prefix the managed PreToolUse hook commands carry, so each person's evidence lands in their own home.
 EVIDENCE_PREFIX = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl"'
+# The hook option that names the same file without a shell (docs/spec/WINDOWS.md §3.1). Every command install.sh writes
+# carries it after the hook's path; the prefix stays on macOS and Linux for this release, and a command without the
+# option (an earlier install) is still accepted (§5, decision 3).
+EVIDENCE_DEFAULT = "--evidence-default"
 TIMEOUT_SECONDS = 10  # the timeout the managed PreToolUse hooks have
 # The blocking hooks install.sh registers for Codex in requirements.toml: (matcher, tool the matcher must cover,
 # hook files). Codex reports every file edit as apply_patch, whichever of apply_patch, Edit or Write the matcher
@@ -82,7 +94,8 @@ CODEX_MATCHER_NAMES = {"Bash": ("Bash",), "apply_patch": ("apply_patch", "Edit",
 # [features] written as a dotted key or an inline table, which the minimal reader does not read.
 _FEATURES_ELSEWHERE = re.compile(r"^\s*([\"']?)features\1\s*(?:\.|=)", re.MULTILINE)
 CODEX_HOOK_FILES = tuple(name for _, _, names in CODEX_PRETOOLUSE for name in names)
-CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence", "policy", "company_rules", "deploy_targets")
+CODEX_HOOK_MODULES = ("__init__", "secrets", "write_secrets", "destructive", "evidence", "policy", "company_rules", "deploy_targets",
+                      "registry_targets", "cloud_targets", "powershell")
 # The company-rules hook and the compiled policy it reads (install.sh --overlay, when the rules file has enforcement
 # rules). The policy sits under the tool's tree, root-owned like the hooks; the hook takes its path on its command line.
 COMPANY_HOOK = "pretooluse-company-rules.py"
@@ -90,6 +103,74 @@ POLICY_NAME = "company-policy.json"
 # A managed directory is written into a double-quoted shell word and a TOML literal string, so it may hold none
 # of the characters either would read specially.
 UNSAFE_PATH = re.compile("[\"'\\\\$`\x00-\x1f\x7f]")
+# The interpreter the hook commands name (issue #97, option 1). install.sh passes --python with the absolute path it
+# proved runs Python 3.8 or later, so a session does not depend on its own PATH or on the macOS Command Line Tools
+# stub. Without --python, the commands name python3 from PATH, as installs before this release did, and verify still
+# accepts such a command.
+DEFAULT_INTERPRETER = "python3"
+_INTERPRETER = DEFAULT_INTERPRETER
+# How a registered command may name the interpreter: python3 from PATH, or a double-quoted absolute path.
+INTERPRETER_PATTERN = r'(?:python3|"/[^"\\$`\x00-\x1f\x7f]+")'
+# The hooks as one file (issue #97, option 2): tools/build_zipapp.py builds catpilot-guard.pyz, and install.sh places it,
+# by default, in each tool's catpilot-guardrails/hooks/ with its SHA-256 beside it; every hook command then runs the
+# recorded interpreter on the archive with the check's name. install.sh --package-tree places the hook files and the
+# catpilot_guard package instead, as earlier releases did (for this release only). Without --zipapp, this module
+# writes the package-tree commands.
+ZIPAPP_NAME = "catpilot-guard.pyz"
+ZIPAPP_HASH_NAME = ZIPAPP_NAME + ".sha256"
+# The check in the zipapp each hook file runs (tools/build_zipapp.py, CHECKS).
+ZIPAPP_CHECKS = {
+    "pretooluse-secrets.py": "secrets",
+    "pretooluse-write-secrets.py": "write-secrets",
+    "pretooluse-destructive-ops.py": "destructive",
+    "pretooluse-company-rules.py": "company-rules",
+    "catpilot-company-rules.py": "session-start",
+}
+_ZIPAPP = False
+
+
+def set_interpreter(value: str) -> None:
+    """Name VALUE, an absolute path without the characters a double-quoted shell word or a TOML literal string reads
+    specially, in every command this module writes from now on."""
+    global _INTERPRETER
+    if not value.startswith("/") or UNSAFE_PATH.search(value):
+        raise UsageError(
+            "interpreter %r must be an absolute path without quotes, backslashes, $, ` or control characters" % value
+        )
+    _INTERPRETER = value
+
+
+@contextlib.contextmanager
+def interpreter(value: str):
+    """Name VALUE in the commands written inside the block (tests compare install.sh's files with these)."""
+    global _INTERPRETER
+    before = _INTERPRETER
+    set_interpreter(value)
+    try:
+        yield
+    finally:
+        _INTERPRETER = before
+
+
+def interpreter_word() -> str:
+    """The interpreter as it appears in a hook command: python3, or the absolute path in double quotes."""
+    return _INTERPRETER if _INTERPRETER == DEFAULT_INTERPRETER else '"%s"' % _INTERPRETER
+
+
+def with_interpreter(command: str, cc_dir: str | None = None) -> str:
+    """A command from deploy/org/claude-code/managed-settings.json, which names python3 and a hook file, with the chosen
+    interpreter, and in the zipapp layout the zipapp and the check's name in place of a hook file under cc_dir."""
+    legacy = EVIDENCE_PREFIX + " " + DEFAULT_INTERPRETER + " "
+    if not command.startswith(legacy):
+        return command
+    rest = command[len(legacy):]
+    if _ZIPAPP and cc_dir is not None:
+        for filename in ZIPAPP_CHECKS:
+            quoted = '"%s/hooks/%s"' % (tree(checked_dir(cc_dir)), filename)
+            if rest.startswith(quoted + " ") or rest == quoted:
+                rest = hook_target(cc_dir, filename) + rest[len(quoted):]
+                break
+    return EVIDENCE_PREFIX + " " + interpreter_word() + " " + rest
 # The texts catpilot_guard/session_start.py prints; verify reads its output against them.
 UNAVAILABLE = "Company rules could not be loaded and are unknown. Ask your IT or security owner."
 POLICY_HASH_LINE = re.compile(r"^Overlay SHA-256: ([0-9a-f]{64})$", re.MULTILINE)
@@ -133,9 +214,190 @@ def tree(managed_dir: str) -> str:
     return managed_dir.rstrip("/") + "/catpilot-guardrails"
 
 
+def set_zipapp(value: bool) -> None:
+    """Write commands that run the checks from the zipapp (True, install.sh's default) or from the package tree's hook
+    files (False, install.sh --package-tree)."""
+    global _ZIPAPP
+    _ZIPAPP = bool(value)
+
+
+@contextlib.contextmanager
+def zipapp_layout(value: bool):
+    """Write the commands inside the block for that layout (tests compare install.sh's files with these)."""
+    global _ZIPAPP
+    before = _ZIPAPP
+    set_zipapp(value)
+    try:
+        yield
+    finally:
+        _ZIPAPP = before
+
+
+def hook_target(managed_dir: str, filename: str) -> str:
+    """What a hook command runs after the interpreter: the hook file, double-quoted, or in the zipapp layout the
+    archive, double-quoted, and the check's name."""
+    hooks = "%s/hooks" % tree(checked_dir(managed_dir))
+    if _ZIPAPP:
+        return '"%s/%s" %s' % (hooks, ZIPAPP_NAME, ZIPAPP_CHECKS[filename])
+    return '"%s/%s"' % (hooks, filename)
+
+
+def runs_hook(command: str, filename: str) -> bool:
+    """Whether a registered command runs the check FILENAME names: the hook file of a package-tree install, or the
+    zipapp with that check's name."""
+    if filename in command:
+        return True
+    check = ZIPAPP_CHECKS.get(filename)
+    return check is not None and re.search(r'%s"?\s+%s(?=[\s"\']|$)' % (re.escape(ZIPAPP_NAME), re.escape(check)), command) is not None
+
+
+def command_paths(command: str, filename: str) -> list:
+    """The words of a command that name the hook file or the zipapp."""
+    return [token for token in _split(command) if token.endswith(filename) or token.endswith("/" + ZIPAPP_NAME)]
+
+
+def zipapp_in(hooks_dir: Path) -> Path | None:
+    """The zipapp in a tool's hooks directory, when install.sh placed one there."""
+    archive = hooks_dir / ZIPAPP_NAME
+    return archive if archive.exists() else None
+
+
+def hook_argv(hooks_dir: Path, filename: str) -> list | None:
+    """How verify runs one check directly: the zipapp and the check's name when the zipapp is there, else the hook
+    file; None when neither is."""
+    archive = zipapp_in(hooks_dir)
+    if archive is not None and filename in ZIPAPP_CHECKS:
+        return [sys.executable, str(archive), ZIPAPP_CHECKS[filename]]
+    script = hooks_dir / filename
+    return [sys.executable, str(script)] if script.exists() else None
+
+
+def present_check(report, hooks_dir: Path, filename: str) -> bool:
+    """Report the file one check runs from, the zipapp when it is there, else the hook file."""
+    archive = zipapp_in(hooks_dir)
+    return report.present(archive if archive is not None and filename in ZIPAPP_CHECKS else hooks_dir / filename)
+
+
+def present_hooks(report, hooks_dir: Path, filenames, modules) -> None:
+    """The files the checks need: in the zipapp layout the archive, the SHA-256 install.sh recorded, and the modules in
+    the archive (check_zipapp); otherwise each hook file and each module beside them in catpilot_guard/."""
+    if zipapp_in(hooks_dir) is not None:
+        check_zipapp(report, hooks_dir, modules)
+        return
+    for name in filenames:
+        report.present(hooks_dir / name)
+    for module in modules:
+        report.present(hooks_dir / "catpilot_guard" / (module + ".py"))
+
+
+def zipapp_sha256(archive: Path) -> str:
+    return hashlib.sha256(archive.read_bytes()).hexdigest()
+
+
+def recorded_sha256(record: Path) -> str | None:
+    """The SHA-256 install.sh recorded (the sha256sum format: the hex digest, two spaces, the file name), or None."""
+    try:
+        text = record.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    found = re.fullmatch(r"([0-9a-f]{64})  %s\n?" % re.escape(ZIPAPP_NAME), text)
+    return found.group(1) if found else None
+
+
+def protected_by_root(path: Path) -> str | None:
+    """Why someone other than root (or, under CATPILOT_ALLOW_NONROOT=1 in tests, this account) could change PATH, or
+    None."""
+    trusted = {0}
+    if os.environ.get("CATPILOT_ALLOW_NONROOT") == "1":
+        trusted.add(os.getuid())
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return "it cannot be read"
+    if stat.S_ISLNK(info.st_mode):
+        return "it is a symbolic link"
+    if info.st_uid not in trusted:
+        return "it is owned by uid %d" % info.st_uid
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return "it is writable by its group or everyone"
+    return None
+
+
+def check_zipapp(report, hooks_dir: Path, modules=()) -> None:
+    """The zipapp in hooks_dir: present, its SHA-256 the one install.sh recorded beside it, root-owned and writable by
+    no one else (with the directory that holds it), and holding the modules the checks import. Then whether it is
+    byte for byte what this checkout builds, which is information: a checkout of another release builds another."""
+    archive = hooks_dir / ZIPAPP_NAME
+    record = hooks_dir / ZIPAPP_HASH_NAME
+    if not report.present(archive):
+        return
+    expected = recorded_sha256(record) if report.present(record) else None
+    try:
+        actual = zipapp_sha256(archive)
+    except OSError:
+        report.line("FAIL", "%s cannot be read" % archive)
+        return
+    if expected is None:
+        if record.exists():
+            report.line("INVALID", "%s does not hold one SHA-256 for %s in the sha256sum format" % (record, ZIPAPP_NAME))
+    elif actual == expected:
+        report.line("matches", "%s has the SHA-256 install.sh recorded (%s...)" % (archive, actual[:12]))
+    else:
+        report.line("FAIL", "%s has SHA-256 %s..., not the %s... install.sh recorded in %s: it was changed after the "
+                    "install; run install.sh again" % (archive, actual[:12], expected[:12], record.name))
+    # The archive, its record, and the directories up to the tool's managed directory: whoever can replace any of them
+    # can replace what the hooks run.
+    for path in (archive, record, hooks_dir, hooks_dir.parent, hooks_dir.parent.parent):
+        why = protected_by_root(path) if path.exists() else None
+        if why:
+            message = "%s must be owned by root and writable by no one else (%s): whoever can change it changes what every person's hooks run" % (path, why)
+            report.line("FAIL", message)
+    try:
+        with zipfile.ZipFile(str(archive)) as bundle:
+            names = set(bundle.namelist())
+    except Exception as exc:  # zipfile.BadZipFile, OSError
+        report.line("FAIL", "%s is not a readable zip archive (%s)" % (archive, exc.__class__.__name__))
+        return
+    for module in ("__main__",):
+        if module + ".py" not in names:
+            report.line("MISSING", "%s/%s.py" % (archive, module))
+    for module in modules:
+        name = "catpilot_guard/%s.py" % module
+        report.line("present" if name in names else "MISSING", "%s/%s" % (archive, name))
+    built = checkout_build_sha256()
+    if built is None:
+        return
+    if built == actual:
+        report.line("matches", "%s is byte for byte what this checkout builds (tools/build_zipapp.py)" % ZIPAPP_NAME)
+    else:
+        report.line("note", "%s is not what this checkout builds (SHA-256 %s...): it was installed from another release, "
+                    "or the checkout has changed since" % (ZIPAPP_NAME, built[:12]))
+
+
+_CHECKOUT_BUILD: list = []
+
+
+def checkout_build_sha256() -> str | None:
+    """The SHA-256 of the zipapp this checkout builds (tools/build_zipapp.py beside deploy/), once, or None."""
+    if _CHECKOUT_BUILD:
+        return _CHECKOUT_BUILD[0]
+    builder = Path(__file__).resolve().parents[2] / "tools" / "build_zipapp.py"
+    digest = None
+    if builder.is_file():
+        with tempfile.TemporaryDirectory(prefix="catpilot-zipapp-") as tmp:
+            try:
+                done = subprocess.run([sys.executable, str(builder), "--out", str(Path(tmp) / ZIPAPP_NAME)],
+                                      capture_output=True, encoding="utf-8", errors="replace", timeout=60)
+                if done.returncode == 0 and re.fullmatch(r"[0-9a-f]{64}", done.stdout.split()[0] if done.stdout.split() else ""):
+                    digest = done.stdout.split()[0]
+            except (OSError, subprocess.TimeoutExpired):
+                digest = None
+    _CHECKOUT_BUILD.append(digest)
+    return digest
+
+
 def hook_command(managed_dir: str, host: str) -> str:
-    script = "%s/hooks/%s" % (tree(checked_dir(managed_dir)), SCRIPT)
-    return '%s python3 "%s" --host %s' % (EVIDENCE_PREFIX, script, host)
+    return '%s %s %s --evidence-default --host %s' % (EVIDENCE_PREFIX, interpreter_word(), hook_target(managed_dir, SCRIPT), host)
 
 
 def policy_path(managed_dir: str) -> str:
@@ -143,13 +405,12 @@ def policy_path(managed_dir: str) -> str:
 
 
 def company_hook_command(managed_dir: str, host: str) -> str:
-    script = "%s/hooks/%s" % (tree(checked_dir(managed_dir)), COMPANY_HOOK)
-    return '%s python3 "%s" --host %s --policy "%s"' % (EVIDENCE_PREFIX, script, host, policy_path(managed_dir))
+    return '%s %s %s --evidence-default --host %s --policy "%s"' % (
+        EVIDENCE_PREFIX, interpreter_word(), hook_target(managed_dir, COMPANY_HOOK), host, policy_path(managed_dir))
 
 
 def copilot_command(copilot_dir: str, filename: str, enforce_policy: bool = False) -> str:
-    script = "%s/hooks/%s" % (tree(checked_dir(copilot_dir)), filename)
-    command = '%s python3 "%s" --host %s' % (EVIDENCE_PREFIX, script, COPILOT)
+    command = '%s %s %s --evidence-default --host %s' % (EVIDENCE_PREFIX, interpreter_word(), hook_target(copilot_dir, filename), COPILOT)
     if enforce_policy:
         command += ' --policy "%s"' % policy_path(copilot_dir)
     return command
@@ -177,22 +438,29 @@ def session_start_group(cc_dir: str) -> dict:
     }
 
 
-def settings_with_session_start(base: str, cc_dir: str, enforce: bool = False) -> str:
+def settings_with_session_start(base: str, cc_dir: str, enforce: bool = False, rules: bool = True) -> str:
     """managed-settings.json with the SessionStart group appended to hooks, in the template's own layout, and with
     enforce, a PreToolUse group on Bash that runs the company-rules hook with the compiled policy."""
     data = json.loads(base)
     if not isinstance(data, dict) or not isinstance(data.setdefault("hooks", {}), dict):
         raise UsageError("managed-settings.json must be a JSON object whose hooks key is an object")
+    for groups in data["hooks"].values():
+        for group in groups if isinstance(groups, list) else []:
+            for entry in (group.get("hooks") or []) if isinstance(group, dict) else []:
+                if isinstance(entry, dict) and isinstance(entry.get("command"), str):
+                    entry["command"] = with_interpreter(entry["command"], cc_dir)
     if enforce:
         pretooluse = data["hooks"].setdefault("PreToolUse", [])
         if not isinstance(pretooluse, list):
             raise UsageError("hooks.PreToolUse in managed-settings.json must be a list")
         pretooluse.append({
-            "matcher": "Bash",
+            "matcher": "Bash|PowerShell",
             # A hook that cannot start or times out blocks the call instead of letting it run (Claude Code 2.1.295+).
             "hooks": [{"type": "command", "command": company_hook_command(cc_dir, CLAUDE_CODE), "timeout": TIMEOUT_SECONDS,
                        "onFailure": "block"}],
         })
+    if not rules:
+        return json.dumps(data, indent=2)
     groups = data["hooks"].setdefault("SessionStart", [])
     if not isinstance(groups, list):
         raise UsageError("hooks.SessionStart in managed-settings.json must be a list")
@@ -201,8 +469,7 @@ def settings_with_session_start(base: str, cc_dir: str, enforce: bool = False) -
 
 
 def codex_pretooluse_command(codex_dir: str, filename: str) -> str:
-    script = "%s/hooks/%s" % (tree(checked_dir(codex_dir)), filename)
-    return '%s python3 "%s" --host %s' % (EVIDENCE_PREFIX, script, CODEX)
+    return '%s %s %s --evidence-default --host %s' % (EVIDENCE_PREFIX, interpreter_word(), hook_target(codex_dir, filename), CODEX)
 
 
 def requirements_toml(codex_dir: str, rules: bool = True, enforce: bool = False) -> str:
@@ -616,8 +883,9 @@ def judge(report: Report, label: str, host: str, state: str, rules, result, succ
 def clean_env(home: Path) -> dict:
     """This environment without the evidence variables, with HOME at verify.sh's temporary directory, so neither a
     variable from the environment nor a command's own CATPILOT_EVIDENCE_LOG="$HOME/..." writes anywhere real."""
-    env = {k: v for k, v in os.environ.items() if k not in ("CATPILOT_EVIDENCE_LOG", "CATPILOT_EVIDENCE_SYSLOG")}
-    env["HOME"] = str(home)
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("CATPILOT_EVIDENCE_LOG", "CATPILOT_EVIDENCE_SYSLOG", "BASH_ENV", "ENV") and not k.startswith("BASH_FUNC_")}
+    env["HOME"] = str(home)  # BASH_ENV, ENV and exported functions could set an evidence sink before a probe runs
     return env
 
 
@@ -654,7 +922,7 @@ def registered(groups, anchored: bool):
             continue
         for handler in group.get("hooks") or []:
             command = handler.get("command") if isinstance(handler, dict) else None
-            if isinstance(command, str) and SCRIPT in command:
+            if isinstance(command, str) and runs_hook(command, SCRIPT):
                 found.append((group.get("matcher"), command))
     return found
 
@@ -717,7 +985,7 @@ def verify(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, today=None, 
             for sub in ("hooks/" + SCRIPT, "instructions/" + BLOCK_NAME, "instructions/" + SIDECAR_NAME))
         or cc_entries or codex_entries
         or (claude_md_text is not None and BEGIN in claude_md_text)
-        or (requirements_error is None and requirements_path.exists() and SCRIPT in requirements_path.read_bytes().decode("utf-8", "replace"))
+        or (requirements_error is None and requirements_path.exists() and runs_hook(requirements_path.read_bytes().decode("utf-8", "replace"), SCRIPT))
     )
     if not placed:
         report.line("absent", "company rules at session start (install.sh places them only with --overlay)")
@@ -725,7 +993,7 @@ def verify(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, today=None, 
 
     # Claude Code: the rules in the managed CLAUDE.md, a status at session start.
     print("Claude Code")
-    report.present(cc_root / "hooks" / SCRIPT)
+    present_check(report, cc_root / "hooks", SCRIPT)
     cc_rules = load_copy(report, cc_root)
     if report.present(claude_md):
         body = section_body(claude_md_text) if claude_md_text is not None else None
@@ -747,10 +1015,10 @@ def verify(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, today=None, 
         else:
             report.line("valid", "company rules from %s, reviewed %s, valid until %s (today is %s on this machine)"
                         % (cc_rules["owner"], cc_rules["reviewed_on"], cc_rules["expires_on"], today.isoformat()))
-    script = cc_root / "hooks" / SCRIPT
-    if script.exists():
+    argv = hook_argv(cc_root / "hooks", SCRIPT)
+    if argv is not None:
         judge(report, "%s --host %s, run directly," % (SCRIPT, CLAUDE_CODE), CLAUDE_CODE, state, cc_rules,
-              run([sys.executable, str(script), "--host", CLAUDE_CODE], home, timeout))
+              run(argv + ["--host", CLAUDE_CODE], home, timeout))
     if settings is None:
         report.line("FAIL", "%s is missing or does not parse, so no SessionStart hook runs" % settings_path)
     else:
@@ -759,9 +1027,7 @@ def verify(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, today=None, 
 
     # Codex: the rules as developer context from a managed SessionStart hook.
     print("Codex CLI")
-    report.present(codex_root / "hooks" / SCRIPT)
-    for module in ("__init__", "session_start", "evidence"):
-        report.present(codex_root / "hooks" / "catpilot_guard" / (module + ".py"))
+    present_hooks(report, codex_root / "hooks", (SCRIPT,), ("__init__", "session_start", "evidence"))
     codex_rules = load_copy(report, codex_root)
     codex_state = expected_state(codex_rules, today)
     if cc_rules is not None and codex_rules is not None:
@@ -771,10 +1037,10 @@ def verify(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, today=None, 
             report.line("FAIL", "the Codex and Claude Code copies differ: run install.sh --overlay again")
     if codex_rules is not None and codex_state == "expired" and state != "expired":
         report.line("FAIL", "the Codex copy of the company rules expired on %s" % codex_rules["expires_on"])
-    script = codex_root / "hooks" / SCRIPT
-    if script.exists():
+    argv = hook_argv(codex_root / "hooks", SCRIPT)
+    if argv is not None:
         judge(report, "%s --host %s, run directly," % (SCRIPT, CODEX), CODEX, codex_state, codex_rules,
-              run([sys.executable, str(script), "--host", CODEX], home, timeout))
+              run(argv + ["--host", CODEX], home, timeout))
     if report.present(requirements_path):
         if requirements_error is not None:
             report.line("INVALID", "%s does not parse as TOML" % requirements_path)
@@ -794,7 +1060,7 @@ def verify(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, today=None, 
         else:
             report.line("present", "%s ([hooks] managed_dir)" % managed_dir)
             for _, command in codex_entries:
-                paths = [token for token in _split(command) if token.endswith(SCRIPT)]
+                paths = command_paths(command, SCRIPT)
                 if paths and not paths[0].startswith(managed_dir.rstrip("/") + "/"):
                     report.line("note", "the command runs %s, outside managed_dir; Codex's documentation says managed "
                                 "hook commands should use absolute script paths under it" % paths[0])
@@ -829,11 +1095,13 @@ def codex_event(tool: str, command: str, cwd: Path) -> str:
                        "tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)})
 
 
-def run_hook(argv: list, event: str, home: Path, timeout: int):
+def run_hook(argv: list, event: str, home: Path, timeout: int, extra_env: dict | None = None):
     """A CompletedProcess, or a sentence saying why there is none."""
+    env = clean_env(home)
+    env.update(extra_env or {})
     try:
         return subprocess.run(argv, input=event, capture_output=True, encoding="utf-8", errors="replace",
-                              timeout=timeout, env=clean_env(home), cwd=str(home))
+                              timeout=timeout, env=env, cwd=str(home))
     except subprocess.TimeoutExpired:
         return "did not finish within the %ds hook timeout" % timeout
     except OSError as exc:
@@ -871,7 +1139,7 @@ def codex_registrations(groups) -> list:
             if not isinstance(command, str):
                 continue
             for name in CODEX_HOOK_FILES:
-                if name in command:
+                if runs_hook(command, name):
                     found.append((group.get("matcher"), name, command))
     return found
 
@@ -879,17 +1147,14 @@ def codex_registrations(groups) -> list:
 def verify_codex_hooks(codex_dir: Path, home: Path, timeout: int, prefer_tomllib: bool = True) -> int:
     report = Report()
     hooks_dir = Path(tree(str(codex_dir))) / "hooks"
-    for name in CODEX_HOOK_FILES:
-        report.present(hooks_dir / name)
-    for module in CODEX_HOOK_MODULES:
-        report.present(hooks_dir / "catpilot_guard" / (module + ".py"))
+    present_hooks(report, hooks_dir, CODEX_HOOK_FILES, CODEX_HOOK_MODULES)
     tool_of = {name: tool for _, tool, names in CODEX_PRETOOLUSE for name in names}
     for name in CODEX_HOOK_FILES:
-        script = hooks_dir / name
-        if not script.exists():
+        argv = hook_argv(hooks_dir, name)
+        if argv is None:
             continue
         for (tool, command, what), expected in zip(CODEX_PROBES[name], ("deny", "none")):
-            got = decision(run_hook([sys.executable, str(script), "--host", CODEX], codex_event(tool, command, home), home, timeout))
+            got = decision(run_hook(argv + ["--host", CODEX], codex_event(tool, command, home), home, timeout))
             if got == expected:
                 report.line("denies" if expected == "deny" else "passes", "%s --host codex: %s" % (name, what))
             elif got in ("deny", "none"):
@@ -940,7 +1205,7 @@ def verify_codex_hooks(codex_dir: Path, home: Path, timeout: int, prefer_tomllib
             if "--host codex" not in command and "--host=codex" not in command:
                 report.line("note", "requirements.toml runs %s without --host codex, so its evidence lines say claude-code" % name)
             if isinstance(managed_dir, str):
-                paths = [token for token in _split(command) if token.endswith(name)]
+                paths = command_paths(command, name)
                 if paths and not paths[0].startswith(managed_dir.rstrip("/") + "/"):
                     report.line("note", "the command runs %s, outside managed_dir; Codex's documentation says managed "
                                 "hook commands should use absolute script paths under it" % paths[0])
@@ -981,7 +1246,7 @@ def expected_effect(host: str, modes: list, ask_enabled: bool) -> str:
 def has_ask_flag(command: str) -> bool:
     return "--ask" in _split(command)
 EFFECT_WORDS = {"deny": "denies", "ask": "asks the person about", "none": "logs, without blocking,"}
-COMPANY_LOG = ".catpilot-guardrails/evidence.jsonl"  # where the registered command's own prefix sends evidence
+COMPANY_LOG = ".catpilot-guardrails/evidence.jsonl"  # where the standard prefix sends evidence under verify's temporary home
 
 
 def company_event(host: str, command: str, cwd: Path) -> str:
@@ -1016,6 +1281,68 @@ def company_decision(result, copilot: bool = False) -> str:
     return found if found in ("deny", "ask") else "printed something other than a deny, an ask or the empty decision"
 
 
+def _log_entries(log: Path) -> list:
+    """The JSON objects in an evidence log verify itself pointed the hook at."""
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    entries = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def logged_rule(entries: list, rule_id: str, excepted: bool, expected: str, host: str, policy_sha256: str | None) -> bool:
+    """Whether the company-rules hook wrote the line that proves it read rule_id from this policy for this host: a
+    would_deny line when it decided nothing (any of deny, ask or would_deny when it decided), carrying an exception_id
+    exactly when the probe was excepted. A hook that reads no rule, another hook, a stale --policy or the wrong --host
+    writes no such line."""
+    events = ("would_deny",) if expected == "none" else ("deny", "ask", "would_deny")
+    return any(e.get("hook") == "pretooluse-company-rules" and e.get("event") in events and e.get("rule_id") == rule_id
+               and e.get("host") == host and (policy_sha256 is None or e.get("policy_sha256") == policy_sha256)
+               and bool(e.get("exception_id")) == excepted for e in entries)
+
+
+def standard_company_command(command: str, hook_word, host: str, policy_file: Path) -> bool:
+    """Whether a registered company-rules command is exactly the one install.sh writes for this tool (the standard
+    evidence prefix, python3 or a quoted absolute interpreter, this hook, --host, this policy), with --evidence-default allowed right after the hook (an
+    install before it wrote none), and one --ask allowed after the hook, after --host or at the end. verify
+    runs only such a command: any other (a wrapper, an env file, another evidence sink, another policy or host) could
+    send its probe lines somewhere real or behave differently than verify can see, so it is not run. hook_word is
+    what the command runs after the interpreter: the hook file (a Path, written double-quoted) or, in the zipapp
+    layout, the double-quoted archive and the check's name."""
+    if isinstance(hook_word, Path):
+        hook_word = '"%s"' % hook_word
+    ask = r"(?: --ask)?"
+    pattern = (re.escape(EVIDENCE_PREFIX) + ' ' + INTERPRETER_PATTERN + r' ' + re.escape(hook_word) + r'(?: ' + re.escape(EVIDENCE_DEFAULT) + r')?'
+               + ask + r' --host ' + re.escape(host)
+               + ask + r' --policy "' + re.escape(str(policy_file)) + r'"' + ask)
+    return re.fullmatch(pattern, command.strip(" \t\n")) is not None and _split(command).count("--ask") <= 1
+
+
+def policy_hash(policy_file: Path) -> str | None:
+    try:
+        value = json.loads(policy_file.read_text(encoding="utf-8")).get("source_sha256")
+        return value if isinstance(value, str) else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def logged_a_rule(entries: list) -> bool:
+    """Whether the company-rules hook wrote a deny, ask or would_deny line: never right for a harmless command."""
+    return any(e.get("hook") == "pretooluse-company-rules" and e.get("event") in ("deny", "ask", "would_deny") for e in entries)
+
+
+# What the hook was expected to do, for a FAIL line: "expected it to deny a force push ...".
+EXPECTED_WORDS = {"deny": "deny", "ask": "ask the person about", "none": "log, without blocking,"}
+
+
 def policy_errors(log: Path) -> list:
     """The labels of the policy_error lines in an evidence log verify itself pointed the hook at."""
     try:
@@ -1047,22 +1374,41 @@ def branch_matches(value: str, branch: str) -> bool:
     return value.casefold() == branch.casefold()
 
 
-def first_branch_probe(policy_file: Path):
-    """(rule id, mode, command, expired, modes) for a force push to a branch the policy's first protected_branch rule
-    covers, or None. modes are the effective modes of every rule that covers that branch, the probed one included, so
-    the expected decision is the strictest of them, as the hook decides. The caller never prints the command."""
+def exception_allows(data: dict, rule_id: str, today: dt.date) -> list:
+    """The allows of every exception the hook applies to this rule today (catpilot_guard/policy.py active_exceptions):
+    not past its expires_on, no `where`, and none once the policy itself has expired."""
+    if dt.date.fromisoformat(data["expires_on"]) < today:
+        return []
+    return [value for exception in data.get("exceptions") or []
+            if exception["rule"] == rule_id and "where" not in exception
+            and dt.date.fromisoformat(exception["expires_on"]) >= today
+            for value in exception["allows"]]
+
+
+def first_branch_probe(policy_file: Path, today=None):
+    """(rule id, mode, command, expired, modes, excepted) for a force push to a branch the policy's first protected_branch
+    rule covers, or None. The branch is the first of the rule's values that no active exception to the rule allows;
+    when an exception allows them all, the first, and excepted is True. modes are the effective modes of every rule
+    that covers that branch and has no active exception allowing it, the probed one included, so the expected decision
+    is the strictest of them, as the hook decides. The caller never prints the command."""
     try:
+        today = today or dt.date.today()
         data = json.loads(policy_file.read_text(encoding="utf-8"))
-        expired = dt.date.fromisoformat(data["expires_on"]) < dt.date.today()
+        expired = dt.date.fromisoformat(data["expires_on"]) < today
         branch_rules = [rule for rule in data["rules"] if rule["kind"] == "protected_branch"]
         if not branch_rules:
             return None
         first = branch_rules[0]
-        value = first["values"][0]
-        branch = value[:-1] + "catpilot-verify" if value.endswith("/*") else value
-        modes = ["monitor" if expired else rule["mode"] for rule in branch_rules
-                 if any(branch_matches(v, branch) for v in rule["values"])]
-        return first["id"], first["mode"], "git push --force origin %s" % shlex.quote(branch), expired, modes
+
+        def fires(rule: dict, branch: str) -> bool:
+            return (any(branch_matches(v, branch) for v in rule["values"])
+                    and not any(branch_matches(a, branch) for a in exception_allows(data, rule["id"], today)))
+
+        candidates = [value[:-1] + "catpilot-verify" if value.endswith("/*") else value for value in first["values"]]
+        branch = next((candidate for candidate in candidates if fires(first, candidate)), candidates[0])
+        modes = ["monitor" if expired else rule["mode"] for rule in branch_rules if fires(rule, branch)]
+        return (first["id"], first["mode"], "git push --force origin %s" % shlex.quote(branch), expired, modes,
+                not fires(first, branch))
     except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
         return None
 
@@ -1079,24 +1425,99 @@ def suffix_covered(value: str, suffix: str) -> bool:
     return value.startswith("*.") and (suffix == value[2:] or suffix.endswith("." + value[2:]))
 
 
-def first_deploy_probe(policy_file: Path):
-    """(rule id, mode, command, expired, modes) for a deploy the policy's first deploy_host rule does not allow, or None.
-    modes are the effective modes of every deploy_host rule that does not allow it either: each is its own allow-list."""
+# Package installs the probe can name, each with the registry the hook reads from it (catpilot_guard/registry_targets.py).
+# The last one is under .invalid, a name reserved never to resolve, so a probe is left even if a rule lists the others.
+REGISTRY_PROBES = (("npm install --registry https://registry.npmjs.org/ left-pad", "registry.npmjs.org"),
+                   ("pip install --index-url https://pypi.org/simple left-pad", "pypi.org/simple"),
+                   ("npm install --registry https://registry.catpilot-verify.invalid/ left-pad", "registry.catpilot-verify.invalid"))
+# Cloud commands the probe can name, each with the account the hook reads from it (catpilot_guard/cloud_targets.py):
+# synthetic accounts, none of them real.
+CLOUD_PROBES = (("aws sts assume-role --role-arn arn:aws:iam::000000000000:role/catpilot-verify --role-session-name catpilot-verify",
+                 "aws:000000000000"),
+                ("gcloud config set project catpilot-verify-probe", "gcp:catpilot-verify-probe"),
+                ("az account set --subscription 00000000-0000-0000-0000-00000000c0de", "azure:00000000-0000-0000-0000-00000000c0de"))
+
+
+# Only ASCII letters are lowercased, as in catpilot_guard/registry_targets.py: KELVIN SIGN (U+212A) is not `k`.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _path_segments(path: str) -> list:
+    out = []
+    for segment in path.translate(_ASCII_LOWER).split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            if out:
+                out.pop()
+            continue
+        out.append(segment)
+    return out
+
+
+def registry_covered(value: str, name: str) -> bool:
+    """catpilot_guard/registry_targets.py's registry_covered for a registry it read (host[/path]), repeated so this
+    helper imports only the standard library (a test checks the two agree)."""
+    value_host, _, value_path = value.translate(_ASCII_LOWER).partition("/")
+    target_host, _, target_path = name.partition("/")
+    if value_host.startswith("*."):
+        if not target_host.endswith("." + value_host[2:]):
+            return False
+    elif target_host != value_host:
+        return False
+    wanted = _path_segments(value_path)
+    return _path_segments(target_path)[:len(wanted)] == wanted
+
+
+def account_covered(value: str, name: str) -> bool:
+    """catpilot_guard/cloud_targets.py's account_covered for an account it read, repeated so this helper imports only the
+    standard library (a test checks the two agree): an exact match, ignoring case."""
+    return value.lower() == name
+
+
+def first_allow_list_probe(policy_file: Path, kind: str, probes: tuple, covered, today=None):
+    """(rule id, mode, command, expired, modes) for a probe command whose target the policy's first rule of this
+    allow-list kind (deploy_host, package_registry, cloud_account) does not allow, or None. An active exception's allows
+    count as allowed, as the hook counts them (catpilot_guard/company_rules.py), so the probe is one no exception lets
+    through. modes are the effective modes of every rule of the kind that does not allow it either: each is its own
+    allow-list."""
     try:
+        today = today or dt.date.today()
         data = json.loads(policy_file.read_text(encoding="utf-8"))
-        expired = dt.date.fromisoformat(data["expires_on"]) < dt.date.today()
-        rules = [rule for rule in data["rules"] if rule["kind"] == "deploy_host"]
+        expired = dt.date.fromisoformat(data["expires_on"]) < today
+        rules = [rule for rule in data["rules"] if rule["kind"] == kind]
         if not rules:
             return None
         first = rules[0]
-        for command, suffix in DEPLOY_PROBES:
-            if not any(suffix_covered(v, suffix) for v in first["values"]):
-                modes = ["monitor" if expired else rule["mode"] for rule in rules
-                         if not any(suffix_covered(v, suffix) for v in rule["values"])]
+
+        def allowed(rule: dict, target: str) -> bool:
+            return any(covered(v, target) for v in list(rule["values"]) + exception_allows(data, rule["id"], today))
+
+        for command, target in probes:
+            if not allowed(first, target):
+                modes = ["monitor" if expired else rule["mode"] for rule in rules if not allowed(rule, target)]
                 return first["id"], first["mode"], command, expired, modes
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
     return None
+
+
+def first_deploy_probe(policy_file: Path, today=None):
+    """A deploy the policy's first deploy_host rule, and no active exception to it, allows (first_allow_list_probe), or
+    None."""
+    return first_allow_list_probe(policy_file, "deploy_host", DEPLOY_PROBES, suffix_covered, today)
+
+
+def first_registry_probe(policy_file: Path, today=None):
+    """A package install from a registry the policy's first package_registry rule, and no active exception to it,
+    allows, or None."""
+    return first_allow_list_probe(policy_file, "package_registry", REGISTRY_PROBES, registry_covered, today)
+
+
+def first_cloud_probe(policy_file: Path, today=None):
+    """A cloud command naming an account the policy's first cloud_account rule, and no active exception to it, allows,
+    or None."""
+    return first_allow_list_probe(policy_file, "cloud_account", CLOUD_PROBES, account_covered, today)
 
 
 def company_commands(host: str, managed: Path, prefer_tomllib: bool):
@@ -1109,7 +1530,7 @@ def company_commands(host: str, managed: Path, prefer_tomllib: bool):
         except (OSError, ValueError, AttributeError):
             return [], path, "%s cannot be read as JSON" % path
         found = [(entry.get("matcher"), entry.get("bash")) for entry in (entries if isinstance(entries, list) else [])
-                 if isinstance(entry, dict) and isinstance(entry.get("bash"), str) and COMPANY_HOOK in entry["bash"]]
+                 if isinstance(entry, dict) and isinstance(entry.get("bash"), str) and runs_hook(entry["bash"], COMPANY_HOOK)]
         return found, path, None
     if host == CLAUDE_CODE:
         path = managed / "managed-settings.json"
@@ -1128,7 +1549,7 @@ def company_commands(host: str, managed: Path, prefer_tomllib: bool):
     for group in groups if isinstance(groups, list) else []:
         for handler in (group.get("hooks") or []) if isinstance(group, dict) else []:
             command = handler.get("command") if isinstance(handler, dict) else None
-            if isinstance(command, str) and COMPANY_HOOK in command:
+            if isinstance(command, str) and runs_hook(command, COMPANY_HOOK):
                 found.append((group.get("matcher"), command))
     return found, path, None
 
@@ -1136,8 +1557,11 @@ def company_commands(host: str, managed: Path, prefer_tomllib: bool):
 def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int, prefer_tomllib: bool = True,
                          copilot_dir: Path | None = None) -> int:
     """For each tool with a compiled policy: the files, the hook run directly on a harmless command and on a probe
-    for the first protected_branch rule, and the hook as the tool's managed file registers it. A policy the hook
-    refuses (wrong owner, writable by others, malformed) shows as a policy_error line, which is a FAIL here."""
+    for the first rule of each kind, and the hook as the tool's managed file registers it. A policy the hook refuses
+    (wrong owner, writable by others, malformed) shows as a policy_error line, which is a FAIL here. Every rule probe
+    must also leave the evidence line that shows the hook read the rule from this policy for this host (logged_rule:
+    would_deny when it decides nothing, with an exception_id exactly when excepted), since a hook that reads no rule,
+    another hook or a stale policy can give the same decision; and the harmless command must leave no rule line."""
     report = Report()
     tools = [(CLAUDE_CODE, cc_dir), (CODEX, codex_dir)] + ([(COPILOT, copilot_dir)] if copilot_dir is not None else [])
     for host, managed in tools:
@@ -1147,7 +1571,7 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             managed_file = (managed / "policy.d" / COPILOT_POLICY_NAME if host == COPILOT
                             else managed / ("managed-settings.json" if host == CLAUDE_CODE else "requirements.toml"))
             try:
-                registered = COMPANY_HOOK in managed_file.read_text(encoding="utf-8", errors="replace")
+                registered = runs_hook(managed_file.read_text(encoding="utf-8", errors="replace"), COMPANY_HOOK)
             except OSError:
                 registered = False
             if registered:
@@ -1158,31 +1582,40 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
                 report.line("skipped", "company-rules hook for %s: no compiled policy at %s" % (host, policy_file))
             continue
         report.present(policy_file)
-        hook = root / "hooks" / COMPANY_HOOK
-        if not report.present(hook):
+        hook_argv_direct = hook_argv(root / "hooks", COMPANY_HOOK)
+        if not present_check(report, root / "hooks", COMPANY_HOOK) or hook_argv_direct is None:
             continue
+        hook_word = '"%s" %s' % (root / "hooks" / ZIPAPP_NAME, ZIPAPP_CHECKS[COMPANY_HOOK]) if zipapp_in(root / "hooks") is not None else '"%s"' % (root / "hooks" / COMPANY_HOOK)
         probe = first_branch_probe(policy_file)
-        runs = [("ls", [], "a harmless command")]
+        runs = [("ls", [], "a harmless command", None, False)]
         if probe is not None:
-            rule_id, mode, command, expired, modes = probe
-            runs.append((command, modes,
-                         "a force push to a branch rule %s protects (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
-        deploy = first_deploy_probe(policy_file)
-        if deploy is not None:
-            rule_id, mode, command, expired, modes = deploy
-            runs.append((command, modes,
-                         "a deploy to a host rule %s does not allow (%s%s)" % (rule_id, mode, ", expired: monitor" if expired else "")))
-        if probe is None and deploy is None:
-            report.line("note", "no rule probe for %s: the policy has no protected_branch rule, and no deploy_host rule or none "
-                        "that a probe deploy falls outside, so only a harmless command is probed" % host)
+            rule_id, mode, command, expired, modes, excepted = probe
+            excepted_note = ", allowed by an active exception: the rule decides nothing" if excepted else ""
+            runs.append((command, modes, "a force push to a branch rule %s protects (%s%s%s)" % (
+                rule_id, mode, ", expired: monitor" if expired else "", excepted_note), rule_id, excepted))
+        # The allow-list probes are picked outside the active exceptions, so none of them is excepted.
+        allow_lists = ((first_deploy_probe(policy_file), "a deploy to a host rule %s does not allow"),
+                       (first_registry_probe(policy_file), "a package install from a registry rule %s does not allow"),
+                       (first_cloud_probe(policy_file), "a cloud command naming an account rule %s does not allow"))
+        for found, words in allow_lists:
+            if found is not None:
+                rule_id, mode, command, expired, modes = found
+                runs.append((command, modes, (words % rule_id) + " (%s%s)" % (mode, ", expired: monitor" if expired else ""),
+                             rule_id, False))
+        if len(runs) == 1:
+            report.line("note", "no rule probe for %s: the policy has no protected_branch rule, and no deploy_host, "
+                        "package_registry or cloud_account rule that a probe falls outside, so only a harmless command "
+                        "is probed" % host)
         log = home / ("verify-company-%s.jsonl" % host)
-        for command, modes, what in runs:
+        sha = policy_hash(policy_file)
+        for command, modes, what, probe_rule, excepted in runs:
+            before = len(_log_entries(log))
             expected = expected_effect(host, modes, ask_enabled=False)  # run directly, without --ask
             verb = "lets through" if command == "ls" else EFFECT_WORDS[expected]
             env = clean_env(home)
             env["CATPILOT_EVIDENCE_LOG"] = str(log)
             try:
-                result = subprocess.run([sys.executable, str(hook), "--host", host, "--policy", str(policy_file)],
+                result = subprocess.run(hook_argv_direct + ["--host", host, "--policy", str(policy_file)],
                                         input=company_event(host, command, home), capture_output=True, encoding="utf-8",
                                         errors="replace", timeout=timeout, env=env, cwd=str(home))
             except subprocess.TimeoutExpired:
@@ -1190,11 +1623,21 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             except OSError as exc:
                 result = "could not start (%s)" % exc.__class__.__name__
             got = company_decision(result, copilot=(host == COPILOT))
-            if got == expected:
+            added = _log_entries(log)[before:]
+            if got == expected and probe_rule is not None and \
+                    not logged_rule(added, probe_rule, excepted, expected, host, sha):
+                # Deciding nothing is also what a hook that reads no rule does: the line for the rule is the proof.
+                report.line("FAIL", "%s --host %s gave the expected decision on %s, but its evidence has no %s line for %s%s "
+                            "from this policy, so it may not have read the rule" % (
+                                COMPANY_HOOK, host, what, "would_deny" if expected == "none" else "rule", probe_rule,
+                                " with the exception's id" if excepted else ""))
+            elif got == expected and probe_rule is None and logged_a_rule(added):
+                report.line("FAIL", "%s --host %s let %s through but wrote a company-rule line for it" % (COMPANY_HOOK, host, what))
+            elif got == expected:
                 word = "passes" if command == "ls" else {"deny": "denies", "ask": "asks", "none": "logs"}[expected]
                 report.line(word, "%s --host %s %s %s" % (COMPANY_HOOK, host, verb, what))
             else:
-                report.line("FAIL", "%s --host %s: expected it to %s %s, got %s" % (COMPANY_HOOK, host, expected, what, got))
+                report.line("FAIL", "%s --host %s: expected it to %s %s, got %s" % (COMPANY_HOOK, host, EXPECTED_WORDS[expected], what, got))
         for label in sorted(set(policy_errors(log))):
             report.line("FAIL", "the company-rules hook for %s could not use its policy (%s); it applies no company rule "
                         "until this is fixed: the policy and its directory must be owned like the hooks and writable only "
@@ -1216,18 +1659,38 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
                 report.line("FAIL", "%s runs %s under a matcher that does not cover Bash" % (managed_file, COMPANY_HOOK))
             if host == COPILOT and "--host copilot-cli" not in command and "--host=copilot-cli" not in command:
                 report.line("FAIL", "%s runs %s without --host copilot-cli, so its decisions lack the fields Copilot CLI reads" % (managed_file, COMPANY_HOOK))
-            if "CATPILOT_EVIDENCE_SYSLOG" in command:
-                report.line("skipped", "%s command for %s (it forwards evidence to syslog; check it in a session)" % (managed_file, COMPANY_HOOK))
+            # Only the command install.sh writes is run, exactly as registered, with HOME at verify's temporary home
+            # and no evidence setting of verify's own, so its standard prefix writes the proof line where verify reads
+            # it. Any other command (a wrapper, an env file, another evidence sink, policy or host) could send probe
+            # lines somewhere real or behave in ways verify cannot see: it is not run, and fails.
+            if not standard_company_command(command, hook_word, host, policy_file):
+                report.line("FAIL", "%s runs %s with a command other than the one install.sh writes (%s <interpreter> %s "
+                            "--host %s --policy \"%s\", optionally with --ask); verify does not run it, so it cannot "
+                            "prove the hook reads the rules: reinstall, or confirm this setup in a session" % (
+                                managed_file, COMPANY_HOOK, EVIDENCE_PREFIX, hook_word, host, policy_file))
                 continue
-            for probe_command, modes, what in runs:
+            for probe_cmd, modes, what, probe_rule, excepted in runs:
                 expected = expected_effect(host, modes, has_ask_flag(command))
-                verb = "lets through" if probe_command == "ls" else EFFECT_WORDS[expected]
-                got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_command, home), home, timeout),
+                verb = "lets through" if probe_cmd == "ls" else EFFECT_WORDS[expected]
+                before = len(_log_entries(registered_log))
+                got = company_decision(run_hook(["bash", "-c", command], company_event(host, probe_cmd, home), home, timeout),
                                        copilot=(host == COPILOT))
-                if got == expected:
+                added = _log_entries(registered_log)[before:]
+                proven = logged_rule(added, probe_rule, excepted, expected, host, sha) if probe_rule is not None \
+                    else not logged_a_rule(added)
+                if got == expected and proven:
                     report.line("wired", "%s runs %s, which %s %s" % (managed_file, COMPANY_HOOK, verb, what))
+                elif got == expected and probe_rule is None:
+                    report.line("FAIL", "%s runs %s, which let %s through but wrote a company-rule line for it" % (managed_file, COMPANY_HOOK, what))
+                elif got == expected:
+                    report.line("FAIL", "%s runs %s, which gave the expected decision on %s, but its evidence has no %s line "
+                                "for %s%s from this policy and host: it may read no rule (a --policy it cannot load or a stale "
+                                "copy, the wrong --host, another hook), or send its evidence somewhere verify cannot read (a "
+                                "path of its own, syslog, or nowhere); verify reads it through the standard prefix "
+                                "%s" % (managed_file, COMPANY_HOOK, what, "would_deny" if expected == "none" else "rule",
+                                        probe_rule, " with the exception's id" if excepted else "", EVIDENCE_PREFIX))
                 else:
-                    report.line("FAIL", "%s command for %s: expected it to %s %s, got %s" % (managed_file, COMPANY_HOOK, expected, what, got))
+                    report.line("FAIL", "%s command for %s: expected it to %s %s, got %s" % (managed_file, COMPANY_HOOK, EXPECTED_WORDS[expected], what, got))
             for label in sorted(set(policy_errors(registered_log))):
                 report.line("FAIL", "%s runs %s with a policy it could not use (%s)" % (managed_file, COMPANY_HOOK, label))
     return 0
@@ -1282,17 +1745,14 @@ def copilot_covers(matcher, tool: str) -> bool:
 def verify_copilot_hooks(copilot_dir: Path, home: Path, timeout: int) -> int:
     report = Report()
     hooks_dir = Path(tree(str(copilot_dir))) / "hooks"
-    for name in COPILOT_HOOK_FILES:
-        report.present(hooks_dir / name)
-    for module in CODEX_HOOK_MODULES + ("copilot",):
-        report.present(hooks_dir / "catpilot_guard" / (module + ".py"))
+    present_hooks(report, hooks_dir, COPILOT_HOOK_FILES, CODEX_HOOK_MODULES + ("copilot",))
     tools_of = {name: tools for _, tools, names in COPILOT_PRETOOLUSE for name in names}
     for name in COPILOT_HOOK_FILES:
-        script = hooks_dir / name
-        if not script.exists():
+        argv = hook_argv(hooks_dir, name)
+        if argv is None:
             continue
         for (tool, tool_input, what), expected in zip(COPILOT_PROBES[name], ("deny", "none")):
-            got = copilot_decision(run_hook([sys.executable, str(script), "--host", COPILOT], copilot_event(tool, tool_input, home), home, timeout))
+            got = copilot_decision(run_hook(argv + ["--host", COPILOT], copilot_event(tool, tool_input, home), home, timeout))
             if got == expected:
                 report.line("denies" if expected == "deny" else "passes", "%s --host copilot-cli: %s" % (name, what))
             elif got in ("deny", "none"):
@@ -1318,7 +1778,7 @@ def verify_copilot_hooks(copilot_dir: Path, home: Path, timeout: int) -> int:
     if isinstance(camel, list) and any(isinstance(e, dict) and "catpilot-guardrails" in str(e.get("bash", "")) for e in camel):
         report.line("FAIL", "%s registers Catpilot hooks under preToolUse; they read the PreToolUse event shape" % policy_file)
     for name in COPILOT_HOOK_FILES:
-        mine = [entry for entry in entries if isinstance(entry, dict) and name in str(entry.get("bash", ""))]
+        mine = [entry for entry in entries if isinstance(entry, dict) and runs_hook(str(entry.get("bash", "")), name)]
         if not mine:
             report.line("FAIL", "%s does not run %s at PreToolUse" % (policy_file, name))
             continue
@@ -1355,9 +1815,13 @@ def _split(command: str) -> list:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--python", help="the absolute interpreter path the hook commands name (default: python3)")
+    parser.add_argument("--zipapp", action="store_true",
+                        help="the commands run the checks from catpilot-guard.pyz (default: the package tree's hook files)")
     sub = parser.add_subparsers(dest="action")
     p = sub.add_parser("settings")
     p.add_argument("--cc-dir", required=True)
+    p.add_argument("--no-rules", action="store_true", help="without the session-start hook (no --overlay)")
     p.add_argument("--enforce", action="store_true", help="also the company-rules hook (a compiled policy)")
     p = sub.add_parser("requirements")
     p.add_argument("--codex-dir", required=True)
@@ -1390,10 +1854,17 @@ def main(argv=None) -> int:
     p.add_argument("--copilot-dir", required=True, type=Path)
     p.add_argument("--home", required=True, type=Path)
     p.add_argument("--timeout", type=int, default=TIMEOUT_SECONDS)
+    p = sub.add_parser("verify-zipapp")
+    p.add_argument("--hooks-dir", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.python is not None:
+            set_interpreter(args.python)
+        set_zipapp(args.zipapp)
         if args.action == "settings":
-            print(settings_with_session_start(sys.stdin.read(), args.cc_dir, enforce=args.enforce))
+            if args.no_rules and args.enforce:
+                raise UsageError("--enforce comes with the company rules: it cannot be combined with --no-rules")
+            print(settings_with_session_start(sys.stdin.read(), args.cc_dir, enforce=args.enforce, rules=not args.no_rules))
         elif args.action == "requirements":
             if args.no_rules and args.enforce:
                 raise UsageError("--enforce comes with the company rules: it cannot be combined with --no-rules")
@@ -1412,6 +1883,8 @@ def main(argv=None) -> int:
             print(copilot_policy_json(args.copilot_dir, enforce=args.enforce))
         elif args.action == "verify-copilot-hooks":
             return verify_copilot_hooks(args.copilot_dir, args.home, args.timeout)
+        elif args.action == "verify-zipapp":
+            check_zipapp(Report(), args.hooks_dir, CODEX_HOOK_MODULES + ("copilot", "session_start"))
         else:
             parser.print_usage(sys.stderr)
             return 2

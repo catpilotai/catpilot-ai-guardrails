@@ -263,6 +263,16 @@ class PolicyFileTests(unittest.TestCase):
 
 
 class DeployTests(unittest.TestCase):
+    # These tests check the package-tree layout, which install.sh keeps behind --package-tree for one release;
+    # tests/test_deploy_zipapp.py runs the layout-agnostic ones again with the zipapp, the default.
+    PACKAGE_TREE = "1"
+
+    @staticmethod
+    def expected(copilot_dir: str, enforce: bool = False) -> str:
+        """The policy file install.sh writes: with the interpreter it records (PYTHON_BIN)."""
+        with helper.interpreter(sys.executable):
+            return helper.copilot_policy_json(copilot_dir, enforce=enforce)
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
@@ -271,7 +281,8 @@ class DeployTests(unittest.TestCase):
         self.home.mkdir()
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("CATPILOT_EVIDENCE")}
         self.env.update(CATPILOT_ALLOW_NONROOT="1", CATPILOT_CC_DIR=str(self.cc), CATPILOT_CODEX_DIR=str(self.codex),
-                        CATPILOT_COPILOT_DIR=str(self.copilot), PYTHON_BIN=sys.executable, HOME=str(self.home))
+                        CATPILOT_COPILOT_DIR=str(self.copilot), PYTHON_BIN=sys.executable, HOME=str(self.home),
+                        CATPILOT_PACKAGE_TREE=self.PACKAGE_TREE)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -285,7 +296,7 @@ class DeployTests(unittest.TestCase):
     def test_install_verify_uninstall(self):
         proc = self.run_script("install.sh", "--server-url", URL)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertEqual(self.policy_file().read_text(encoding="utf-8"), helper.copilot_policy_json(str(self.copilot)) + "\n")
+        self.assertEqual(self.policy_file().read_text(encoding="utf-8"), self.expected(str(self.copilot)) + "\n")
         self.assertEqual(stat.S_IMODE(self.policy_file().stat().st_mode), 0o644)
         self.assertTrue((self.copilot / "catpilot-guardrails" / "hooks" / "catpilot_guard" / "copilot.py").exists())
         verify = self.run_script("verify.sh")
@@ -306,7 +317,7 @@ class DeployTests(unittest.TestCase):
         proc = self.run_script("install.sh", "--server-url", URL, "--overlay", str(rules))
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(self.policy_file().read_text(encoding="utf-8"),
-                         helper.copilot_policy_json(str(self.copilot), enforce=True) + "\n")
+                         self.expected(str(self.copilot), enforce=True) + "\n")
         verify = self.run_script("verify.sh")
         self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
         self.assertRegex(verify.stdout, r"denies\s+pretooluse-company-rules.py --host copilot-cli denies a force push")

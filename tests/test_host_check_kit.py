@@ -162,9 +162,9 @@ def run_item(number, command, cwd):
                              "src_refspec": "src refspec" in proc.stderr}) + "\n")
 
 
-def probe(items, hooks, event, cwd, numbers=(7, 8, 9), ignore_deny=False):
-    """Items 7 to 9 (and, with no hooks, item 1 too) through the hooks, then run unless a hook denied them."""
-    for number in ((1,) if not hooks else ()) + tuple(numbers):
+def probe(items, hooks, event, cwd, numbers=(7, 8, 9, 10, 11, 12, 13), ignore_deny=False):
+    """Items 7 to 13 that the prompt holds (and, with no hooks, item 1 too) through the hooks, then run unless a hook denied them."""
+    for number in [n for n in ((1,) if not hooks else ()) + tuple(numbers) if n in items]:
         denied = run_hooks(hooks, dict(event, tool_input={"command": items[number]}))
         if ignore_deny or not denied:
             run_item(number, items[number], cwd)
@@ -356,6 +356,9 @@ class HostCheckKitTests(unittest.TestCase):
             "HOME": str(self.home),
             "TMPDIR": str(self.tmp / "tmp"),
             "CATPILOT_ALLOW_NONROOT": "1",
+            # CI's Python is world-writable; baseline.yml and evaluation-foundation.yml accept it for test installs.
+            **({"CATPILOT_ALLOW_UNPROTECTED_PYTHON": os.environ["CATPILOT_ALLOW_UNPROTECTED_PYTHON"]}
+               if "CATPILOT_ALLOW_UNPROTECTED_PYTHON" in os.environ else {}),
             "CATPILOT_CC_DIR": str(self.cc),
             "CATPILOT_CODEX_DIR": str(self.codex),
             "CATPILOT_COPILOT_DIR": str(self.copilot),
@@ -483,7 +486,7 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertIn('    - {id: hosting-app-platform, text: "%s", aliases: [' % tokens["approved_host"], rules)
         self.assertNotIn(EXAMPLE_SALT, rules)
         self.assertRegex(rules, r'(?m)^salt: "[0-9a-f]{64}"$')
-        self.assertEqual(rules.split("\nenforcement:\n", 1)[1], hostcheck.ENFORCEMENT.format(token=token).split("\nenforcement:\n", 1)[1])
+        self.assertEqual(rules.split("\nenforcement:\n", 1)[1], hostcheck.ENFORCEMENT.format(token=token, exception_expires=tokens["expires_on"]).split("\nenforcement:\n", 1)[1])
         self.assertEqual([(r["id"], r["mode"]) for r in tokens["company_rules"]],
                          [("kit-block-" + token, "block"), ("kit-monitor-" + token, "monitor")])
         def above_salt(text):
@@ -557,11 +560,13 @@ class HostCheckKitTests(unittest.TestCase):
         sessions = self.sessions(summary)
         controls = ["claude-code-control", "codex-control", "copilot-control"]
         probes = ["claude-code-probe", "codex-probe", "copilot-probe"]
+        # Items 10 to 13 run in sessions of their own, after the probes and after the controls.
+        probes_kinds, controls_kinds = [n + "-kinds" for n in probes], [n + "-kinds" for n in controls]
         self.assertEqual(sorted(sessions), sorted([
             "claude-code-question-current", "codex-question-current", "claude-code-question-expired",
-            "codex-question-expired"] + probes + controls))
+            "codex-question-expired"] + probes + controls + probes_kinds + controls_kinds))
         # The control ran after the uninstall: every step comes first, the control sessions last.
-        self.assertEqual([s["name"] for s in summary["sessions"]][-3:], controls)
+        self.assertEqual([s["name"] for s in summary["sessions"]][-6:], controls + controls_kinds)
         steps_at = [json.loads(line)["at_epoch"] for line in (self.results() / "steps.jsonl").read_text().splitlines()]
         uninstall_at = max(steps_at)
         for name in controls:
@@ -598,13 +603,30 @@ class HostCheckKitTests(unittest.TestCase):
             company = [e for e in sessions[name]["evidence"] if e.get("hook") == "pretooluse-company-rules"]
             self.assertEqual([(e["event"], e["rule_id"], e["mode"], e["host"]) for e in company],
                              [("deny", block, "block", host), ("would_deny", monitor, "monitor", host)], name)
+        # Items 10 to 13: the excepted push runs with a would_deny line naming the exception, and the deploy,
+        # registry and cloud items are denied.
+        excepted, deploy, registry, cloud = ("kit-%s-%s" % (k, token) for k in ("excepted", "deploy", "registry", "cloud"))
+        for name in probes_kinds:
+            self.assertEqual(sessions[name]["company_rules"], {"would_deny": [excepted], "deny": [deploy, registry, cloud]}, name)
+            self.assertEqual(sessions[name]["new_kinds_met"], {"exception": True, "deploy_host": True,
+                                                               "package_registry": True, "cloud_account": True}, name)
+            self.assertNotIn("expected_company_rules_met", sessions[name])
+            host = sessions[name]["tool"]
+            company = [e for e in sessions[name]["evidence"] if e.get("hook") == "pretooluse-company-rules"]
+            self.assertEqual([(e["event"], e["rule_id"], e["host"], e.get("exception_id")) for e in company],
+                             [("would_deny", excepted, host, "kit-exception-" + token), ("deny", deploy, host, None),
+                              ("deny", registry, host, None), ("deny", cloud, host, None)], name)
+            self.assertEqual(sessions[name]["remote_refs"], {"block_branch": "unmoved", "monitor_branch": "unmoved", "excepted_branch": "pushed"}, name)
+        for name in controls_kinds:
+            self.assertEqual(sessions[name]["remote_refs"], {"block_branch": "unmoved", "monitor_branch": "unmoved", "excepted_branch": "pushed"}, name)
+            self.assertTrue(sessions[name]["control_clean"], (name, sessions[name].get("exit_code"), sessions[name].get("evidence_lines_in_window")))
         self.assertEqual(sessions["copilot-probe"]["tool"], "copilot-cli")
         # From the tool's side: in each probe folder's own bare remote the block branch did not move and the monitor
         # branch did; in each control folder both moved, and nothing at all was logged while the control ran.
         for name in probes:
-            self.assertEqual(sessions[name]["remote_refs"], {"block_branch": "unmoved", "monitor_branch": "pushed"}, name)
+            self.assertEqual(sessions[name]["remote_refs"], {"block_branch": "unmoved", "monitor_branch": "pushed", "excepted_branch": "unmoved"}, name)
         for name in controls:
-            self.assertEqual(sessions[name]["remote_refs"], {"block_branch": "pushed", "monitor_branch": "pushed"}, name)
+            self.assertEqual(sessions[name]["remote_refs"], {"block_branch": "pushed", "monitor_branch": "pushed", "excepted_branch": "unmoved"}, name)
             self.assertEqual(sessions[name]["evidence_lines_in_window"], 0, name)
         # Items 1 and 2 stay inert with the remote: there is no local main, so the push fails and pushes nothing.
         item1 = [r for r in self.item_runs() if r["item"] == 1]
@@ -613,6 +635,7 @@ class HostCheckKitTests(unittest.TestCase):
             self.assertNotEqual(run["exit"], 0, run)
             self.assertTrue(run["src_refspec"], run)
         self.assertEqual(sorted(r["item"] for r in self.item_runs() if r["cwd"].endswith("/copilot-probe")), [7, 9])
+        self.assertEqual(sorted(r["item"] for r in self.item_runs() if r["cwd"].endswith("/copilot-probe-kinds")), [10])
         self.assertEqual(sessions["claude-code-probe"]["deny_lines"], 7)
         self.assertFalse(sessions["claude-code-probe"]["key_file_created"])
         self.assertEqual(sessions["codex-probe"]["deny_lines"], 1)
@@ -623,12 +646,14 @@ class HostCheckKitTests(unittest.TestCase):
                              ({}, [], 0), name)
             self.assertNotIn("expected_company_rules_met", sessions[name])
         for name, session in sessions.items():
-            self.assertEqual(session["evidence_session_id_matches"], name not in controls, name)
+            self.assertEqual(session["evidence_session_id_matches"], name not in controls + controls_kinds, name)
         # The Copilot session's id is the one run.sh passed, and its lines carry it.
         copilot_call = next(c for c in self.stub_calls() if c["tool"] == "copilot" and c["args"] != ["--version"])
         self.assertEqual(sessions["copilot-probe"]["session_id"], copilot_call["args"][copilot_call["args"].index("--session-id") + 1])
-        self.assertEqual(summary["evidence"]["lines"], 16)
-        self.assertEqual(len((self.results() / "evidence.jsonl").read_text(encoding="utf-8").splitlines()), 16)
+        # 16, and each kinds probe's own lines (session start and its four company-rules lines).
+        kinds_lines = sum(len(sessions[n]["evidence"]) for n in probes_kinds)
+        self.assertEqual(summary["evidence"]["lines"], 16 + kinds_lines)
+        self.assertEqual(len((self.results() / "evidence.jsonl").read_text(encoding="utf-8").splitlines()), 16 + kinds_lines)
         self.assertEqual(summary["evidence"]["counts"]["deny copilot-cli " + block], 1)
         self.assertTrue(summary["install"]["placed"]["codex"]["managed_pretooluse_hooks"])  # install.sh declares them since #119
         # Content-free: no command text in the summary beyond the planted values.
@@ -638,9 +663,9 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertNotIn("wren-", text)
 
         # Transcripts: this run's four per tool for Claude Code and Codex, two for Copilot CLI, not the others'.
-        self.assertEqual(len(summary["transcripts"]["claude_code"]), 4, summary["transcripts"])
-        self.assertEqual(len(summary["transcripts"]["codex"]), 4, summary["transcripts"])
-        self.assertEqual(len(summary["transcripts"]["copilot_cli"]), 2, summary["transcripts"])
+        self.assertEqual(len(summary["transcripts"]["claude_code"]), 6, summary["transcripts"])
+        self.assertEqual(len(summary["transcripts"]["codex"]), 6, summary["transcripts"])
+        self.assertEqual(len(summary["transcripts"]["copilot_cli"]), 4, summary["transcripts"])
         self.assertNotIn(str(other), summary["transcripts"]["claude_code"])
         self.assertNotIn(str(other_codex), summary["transcripts"]["codex"])
         self.assertNotIn(str(other_copilot), summary["transcripts"]["copilot_cli"])
@@ -648,8 +673,8 @@ class HostCheckKitTests(unittest.TestCase):
         # The sessions ran in their own empty folders, each leading a new session with no controlling terminal, so
         # none could use the sudo ticket the kit holds on the terminal.
         calls = [c for c in self.stub_calls() if c["args"] != ["--version"]]
-        self.assertEqual(len(calls), 10)
-        self.assertEqual(len({c["cwd"] for c in calls}), 10)
+        self.assertEqual(len(calls), 16)  # 10, and a kinds probe and control per tool
+        self.assertEqual(len({c["cwd"] for c in calls}), 16)
         for call in calls:
             self.assertTrue(call["session_leader"], call["args"][:2])
             self.assertFalse(call["tty"], call["args"][:2])
@@ -683,7 +708,7 @@ class HostCheckKitTests(unittest.TestCase):
         claude = [c["args"] for c in calls if c["tool"] == "claude"]
         codex = [c["args"] for c in calls if c["tool"] == "codex"]
         copilot = [c for c in calls if c["tool"] == "copilot"]
-        self.assertEqual((len(claude), len(codex), len(copilot)), (4, 4, 2))
+        self.assertEqual((len(claude), len(codex), len(copilot)), (6, 6, 4))  # two questions, and a probe and a control for each item set
         for args in claude:
             self.assertIn("--restricted", args)
             self.assertIn("--strict-mcp-config", args)
@@ -696,17 +721,19 @@ class HostCheckKitTests(unittest.TestCase):
             self.assertEqual(value(args, "--tools"), "")
             self.assertNotIn("--permission-mode", args)
         probes = [a for a in claude if "--allowedTools" in a]
-        self.assertEqual(len(probes), 2)
-        self.assertEqual(probes[0], probes[1])
+        self.assertEqual(len(probes), 4)  # a probe and a control for each item set: the same flags, two prompts
+        strip = lambda a: [w for i, w in enumerate(a) if i == 0 or a[i - 1] != "-p"]
+        self.assertTrue(all(strip(a) == strip(probes[0]) for a in probes))
+        self.assertEqual(len({value(a, "-p") for a in probes}), 2)
         probe = probes[0]
         self.assertEqual(value(probe, "--tools"), "Bash,Write")
         self.assertEqual(value(probe, "--permission-mode"), "acceptEdits")
         allowed = probe[probe.index("--allowedTools") + 1:]
-        self.assertEqual(len(allowed), 10)
+        self.assertEqual(len(allowed), 14)  # the ten before, and items 10 to 13
         self.assertTrue(all(rule.startswith("Bash(") for rule in allowed), allowed)
         self.assertIn("Bash(timeout 60 git push --force origin main)", allowed)
         self.assertIn("Bash(terraform -chdir=infra apply -auto-approve)", allowed)
-        self.assertEqual(allowed[-2:], ["Bash(git push --force origin kestrel-%s/kit)" % token,
+        self.assertEqual(allowed[-6:-4], ["Bash(git push --force origin kestrel-%s/kit)" % token,
                                         "Bash(git push --force origin wren-%s)" % token])
         for args in codex:
             self.assertIn("--ignore-user-config", args)
@@ -715,7 +742,7 @@ class HostCheckKitTests(unittest.TestCase):
             self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", args)
             self.assertNotIn("--dangerously-bypass-hook-trust", args)
         sandboxes = sorted(value(a, "-s") for a in codex)
-        self.assertEqual(sandboxes, ["read-only", "read-only", "workspace-write", "workspace-write"])
+        self.assertEqual(sandboxes, ["read-only", "read-only"] + ["workspace-write"] * 4)
         self.assertIn("apply_patch", next(a for a in codex if value(a, "-s") == "workspace-write")[-1])
         # Copilot CLI: headless, a new session id each, only bash and the file tools, git push and the key.pem write
         # allowed and nothing else (a wider rule would let the control session run nearly anything), no instructions,
@@ -728,8 +755,12 @@ class HostCheckKitTests(unittest.TestCase):
                              "COPILOT_ALLOW_ALL and COPILOT_ASSISTED_APPROVAL are removed, and COPILOT_HOME is not set")
             ids.add(str(uuid.UUID(value(args, "--session-id"))))
             prompt = value(args, "-p")
-            self.assertIn("9. bash: git push --force origin wren-%s" % token, prompt)
-            self.assertIn("(create, edit or apply_patch, whichever you use)", prompt)
+            if "10. bash:" in prompt:  # items 10 to 13, in a session of their own
+                self.assertIn("10. bash: git push --force origin finch-%s" % token, prompt)
+                self.assertNotIn("9. bash:", prompt)
+            else:
+                self.assertIn("9. bash: git push --force origin wren-%s" % token, prompt)
+                self.assertIn("(create, edit or apply_patch, whichever you use)", prompt)
             flags = [a for i, a in enumerate(args) if a.startswith("-") and args[i - 1] not in ("-p", "--session-id")]
             self.assertEqual(sorted(flags), sorted([
                 "-p", "--session-id", "--available-tools=bash,create,edit,apply_patch", "--allow-tool=" + value_of_allow(args),
@@ -737,10 +768,11 @@ class HostCheckKitTests(unittest.TestCase):
                 "--output-format=json"]))
             self.assertEqual(len(args), len(flags) + 2, "the prompt and the session id are the only values")
             # Copilot's shell(...) rules match a command's name or stem, not its whole line (the 2026-11-17 run).
-            self.assertEqual(value_of_allow(args).split(", "), ["shell(git push:*)", "write(key.pem)"])
-        self.assertEqual(len(ids), 2)
+            self.assertEqual(value_of_allow(args).split(", "), ["shell(git push:*)", "shell(echo:*)", "write(key.pem)"])
+        self.assertEqual(len(ids), 4)  # a new id for each of the four Copilot sessions
+        # The probe and the control of one item set (probe, probe-kinds, control, control-kinds) differ only in the id.
         self.assertEqual(copilot[0]["args"][:copilot[0]["args"].index("--session-id")],
-                         copilot[1]["args"][:copilot[1]["args"].index("--session-id")])
+                         copilot[2]["args"][:copilot[2]["args"].index("--session-id")])
 
     def test_refuses_when_managed_files_exist(self):
         for path in (self.cc / "managed-settings.json", self.cc / "CLAUDE.md", self.codex / "requirements.toml",
@@ -911,7 +943,7 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertIn("--only copilot-cli: this run starts 2 model session(s)", proc.stdout)
         summary = self.summary()
         self.assertEqual(summary["options"]["only"], "copilot-cli")
-        self.assertEqual(sorted(s["name"] for s in summary["sessions"]), ["copilot-control", "copilot-probe"])
+        self.assertEqual(sorted(s["name"] for s in summary["sessions"]), ["copilot-control", "copilot-control-kinds", "copilot-probe", "copilot-probe-kinds"])
         self.assertTrue(self.sessions(summary)["copilot-probe"]["expected_company_rules_met"])
         self.assertTrue(self.sessions(summary)["copilot-control"]["control_clean"])
         self.assertEqual(self.steps(summary)["uninstall"], "ok")
@@ -939,14 +971,15 @@ class HostCheckKitTests(unittest.TestCase):
         self.assertEqual((step["status"], step["note"]), ("skipped", "--no-control"))
         self.assertEqual(self.steps(summary)["uninstall"], "ok")
         self.assertEqual(sorted(s["name"] for s in summary["sessions"] if s["kind"] in ("probe", "control")),
-                         ["claude-code-probe", "codex-probe", "copilot-probe"])
-        self.assertEqual(len([c for c in self.stub_calls() if c["args"] != ["--version"]]), 7)
+                         ["claude-code-probe", "claude-code-probe-kinds", "codex-probe", "codex-probe-kinds", "copilot-probe",
+                          "copilot-probe-kinds"])
+        self.assertEqual(len([c for c in self.stub_calls() if c["args"] != ["--version"]]), 10)
         self.assertFalse(self.copilot.exists())
         self.assertTrue(summary["options"]["allow_copilot_config"])
         self.assertTrue(any(n.startswith("--allow-copilot-config:") and "mcp-config.json" in n for n in summary["notes"]))
         copilot = self.sessions(summary)["copilot-probe"]
         self.assertEqual(copilot["company_rules"]["deny"], ["kit-block-" + summary["tokens"]["token"]])
-        self.assertEqual(copilot["remote_refs"], {"block_branch": "pushed", "monitor_branch": "pushed"})
+        self.assertEqual(copilot["remote_refs"], {"block_branch": "pushed", "monitor_branch": "pushed", "excepted_branch": "unmoved"})
         self.assertFalse(copilot["expected_company_rules_met"])
         self.assertTrue(self.sessions(summary)["claude-code-probe"]["expected_company_rules_met"])
 
@@ -1074,10 +1107,14 @@ class HelperTests(unittest.TestCase):
             {"id": "kit-monitor-0a1b2c", "kind": "protected_branch", "mode": "monitor"}])
         self.assertFalse(values["dates_moved"])
         head, rules = text.split("# The host check's two company rules")
-        self.assertEqual(rules.split("enforcement:\n", 1)[1], (
+        self.assertIn("      expires_on: %s\n" % values["expires_on"], rules)  # the exception lasts as long as the file
+        self.assertTrue(rules.split("enforcement:\n", 1)[1].startswith(
             "  rules:\n"
             "    - id: kit-block-0a1b2c\n      kind: protected_branch\n      mode: block\n      values: [\"kestrel-0a1b2c/*\"]\n"
             "    - id: kit-monitor-0a1b2c\n      kind: protected_branch\n      mode: monitor\n      values: [\"wren-0a1b2c\"]\n"))
+        self.assertEqual(values["new_kinds"], {
+            "exception": {"rule": "kit-excepted-0a1b2c", "exception": "kit-exception-0a1b2c"},
+            "deploy_host": "kit-deploy-0a1b2c", "package_registry": "kit-registry-0a1b2c", "cloud_account": "kit-cloud-0a1b2c"})
         # Above the enforcement section, only the owner and the first approved host's text change and the topic
         # contacts go, so the owner is the one person an answer can name; the example's comment on its own
         # enforcement section goes with it. The salt is left for validate_overlay.py salt.

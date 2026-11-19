@@ -6,16 +6,22 @@ enforcement for that path only. Everything else in the repository is advice.
 
 | Hook | Host | Path covered | What it does | Verified |
 | --- | --- | --- | --- | --- |
-| `claude-code/pretooluse-secrets.py` | Claude Code | `Bash` tool, PreToolUse | Denies a shell command that contains a literal credential (the secret-blocking patterns) with a plain-language reason. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md); earlier rows in the tested-runtimes table. |
+| `claude-code/pretooluse-secrets.py` | Claude Code | `Bash` and `PowerShell` tools, PreToolUse | Denies a shell command that contains a literal credential (the secret-blocking patterns) with a plain-language reason. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md); earlier rows in the tested-runtimes table. |
 | `claude-code/pretooluse-write-secrets.py` (formerly `pretooluse-write-private-key.py`, kept as a compatibility entry point) | Claude Code; Codex (`apply_patch`) | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, and Codex's `apply_patch`, PreToolUse | Denies file content that contains a PEM private-key header or a literal credential matching the secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input, a missing sibling file, or any internal error. | Claude Code 2.1.312, 2026-10-27, under both file names: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
-| `claude-code/pretooluse-company-rules.py` | Claude Code; Codex; Copilot CLI | `Bash` tool, PreToolUse | The company's own enforcement rules, from a compiled policy (`tools/validate_overlay.py compile`): denies, asks the person about, or only logs a force push or deletion aimed at a branch the company protects, or a deploy to a host it has not approved, by each rule's mode (`block`, `ask`, `monitor`). Names the rule and the approved alternative, never a listed value. Never returns allow. A policy it cannot use applies no company rule and is logged; the built-in hooks are unaffected. Fails closed on malformed input. | Claude Code 2.1.326, Codex CLI 0.169.0 and Copilot CLI 1.0.113, 2026-11-17, `block` and `monitor` with a control run (on Copilot, probe and control in separate runs at one commit): [`evals/reports/2026.11.17-host-check-company-rules.md`](../evals/reports/2026.11.17-host-check-company-rules.md). |
-| `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` tool, PreToolUse | Parses the command like a shell and denies a high-blast-radius operation (partial cloud-config resets, auto-approved infrastructure destroys, `kubectl delete` of a namespace or with `--all`, a recursive delete of root, a system directory, home, a credential directory, or a bare variable, a force push or deletion aimed at a protected branch, credential exfiltration pipes) with the safer alternative. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
+| `claude-code/pretooluse-company-rules.py` | Claude Code; Codex; Copilot CLI | `Bash` and `PowerShell` tools, PreToolUse | The company's own enforcement rules, from a compiled policy (`tools/validate_overlay.py compile`): denies, asks the person about, or only logs a force push or deletion aimed at a branch the company protects, a deploy to a host it has not approved, or a command that names a package registry or a cloud account it has not approved, by each rule's mode (`block`, `ask`, `monitor`). Names the rule and the approved alternative, never a listed value. Never returns allow. A policy it cannot use applies no company rule and is logged; the built-in hooks are unaffected. Fails closed on malformed input. | Claude Code 2.1.326, Codex CLI 0.169.0 and Copilot CLI 1.0.113, 2026-11-17, `block` and `monitor` with a control run (on Copilot, probe and control in separate runs at one commit): [`evals/reports/2026.11.17-host-check-company-rules.md`](../evals/reports/2026.11.17-host-check-company-rules.md). |
+| `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` and `PowerShell` tools, PreToolUse | Parses the command like a shell and denies a high-blast-radius operation (partial cloud-config resets, auto-approved infrastructure destroys, `kubectl delete` of a namespace or with `--all`, a recursive delete of root, a system directory, home, a credential directory, or a bare variable, a force push or deletion aimed at a protected branch, credential exfiltration pipes) with the safer alternative. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 
 Each file in `claude-code/` is a thin shim. The check itself is a module of the
 standard-library package [`catpilot_guard/`](../catpilot_guard/) at the repository
 root: `secrets.py`, `write_secrets.py`, `destructive.py`, and `company_rules.py`
-(with `policy.py`, which reads its compiled policy), with `evidence.py`, the
-evidence writer they share. A shim looks for
+(with `policy.py`, which reads its compiled policy, and `deploy_targets.py`,
+`registry_targets.py` and `cloud_targets.py`, which read what a command
+deploys to, the registry it names and the cloud account it names), with `evidence.py`, the
+evidence writer they share, and `powershell.py`, which reads a PowerShell or `cmd`
+command line into the same simple commands (see [Windows and PowerShell](#windows-and-powershell)).
+Every hook takes `--evidence-default`, which sends evidence to
+`~/.catpilot-guardrails/evidence.jsonl` when `CATPILOT_EVIDENCE_LOG` is unset, so a
+command needs no shell to name the file. A shim looks for
 `catpilot_guard/` next to itself (the layout `deploy/org/install.sh` places), then at
 the repository root two levels up (a checkout), and runs the module's `main()`. If
 the package is missing or cannot be imported, the shim exits 2, which blocks. The
@@ -235,12 +241,95 @@ about a millisecond. It then checks:
   `release/*` (exact branch names, so `feature/main-fix` is fine), a bare
   `git push --force` while one of those is checked out (read from
   `.git/HEAD`, and blocked when the branch cannot be read), a deletion of one
-  of those branches, a force push or deletion whose branch the shell expands
-  (`$b`, `"$BRANCH"`, `$(...)`), which cannot be read and so is blocked too
-  (`for b in main; do git push -f origin $b; done`), and `git push --mirror`, `--all` or `--branches` with a
+  of those branches (also inside `if`, `for`, `while`, `{ }` and function
+  bodies: `for b in main; do git push -f origin $b; done` is blocked, as `$b`
+  is below), and `git push --mirror`, `--all` or `--branches` with a
   force or `--prune`, and a forced or pruned refspec pattern
-  (`refs/heads/*:refs/heads/*`). An option's value (`-o ci.skip`,
-  `--push-option`, `--repo`) is not read as the remote.
+  (`refs/heads/*:refs/heads/*`). A force push or deletion whose destination
+  holds a shell variable or a substitution is read as its literal text up to
+  the first expansion followed by anything, and blocked when that could name a
+  protected branch (also spelled `heads/X` or `refs/heads/X`, or as `@` or
+  `HEAD`): `git push --force origin $BRANCH`, `"${TARGET}"`, `${B:-main}`,
+  `release/$V`, `"ma$X"` and `"$P/main"` are blocked, while `feature/$TICKET`,
+  `"v$VERSION"` and a tag (`:refs/tags/$TAG`) are not. Braces are expanded as
+  bash 5.2 expands them (a port of its brace_expand), in git's own words too
+  and before options are read (`:{feature,develop}` deletes both; `{-f,}` is
+  a force; `{x},main}` is `x}` and `main`). Since the shell's quotes are gone
+  by then, each push is also read with its words as written, and the stricter
+  reading counts. A word that would make more than 64, or one over 4,096
+  characters, is unknown where it stands, and unless it is plain text and
+  braces (a `-` inside a name such as `release-{1..100}` is plain) it may be
+  `--force`, a `+` or `:` refspec or an option; before git's subcommand, one
+  holding `push` is a push to an unknown branch. The expansion has one budget
+  per command (400,000 characters scanned and made, far past any real
+  command), so crafted braces cannot keep the hook past its timeout: once it
+  is spent, every later word with braces is unknown in the same way. A
+  braced command name (`{git,push,...}`) is not expanded. A variable whose value
+  holds a space or a colon, which splits the word or the refspec, is not seen;
+  in the pull-request check a `${{ ... }}` that names a context a pull
+  request's author sets (`github.event.*` other than a number, `github.head_ref`)
+  is unknown, since GitHub puts its text in before the shell runs, and any other
+  expression reads like a shell variable. A refspec splits at its last colon, as
+  git splits it. An ordinary push to a variable is not read at all. Three
+  exceptions:
+  - A substitution that asks git for the checked-out branch, as one quoted
+    word (`"$(git branch --show-current)"`, `"$(git rev-parse --abbrev-ref
+    HEAD)"`, `"$(git symbolic-ref --short HEAD)"`, or the same in backticks),
+    is read as that branch. Unquoted, the shell-word reader splits it, so it
+    is unknown and blocked.
+  - So are `HEAD` and `@`, and `heads/main` as `main`.
+  - After a command earlier in the same line that may change the branch or
+    the directory, the branch is unknown, and so blocked: `cd`, `chdir`,
+    `pushd`, `popd`, `git checkout` (but not `git checkout [x] -- <paths>`,
+    which restores files), `git switch`, `git init`, `git rebase
+    <upstream> <branch>` or `--root <branch>`, `git stash branch`, `git
+    symbolic-ref`, `git branch -m`, `gh pr checkout`, `gh co`, `source`,
+    `eval`, `exec` or `alias`. A switch never names the branch, since it may
+    fail, run in another repository, or take its name from a variable, so
+    `git switch feature-y && git push --force-with-lease` is blocked too.
+  - It is unknown for the whole line when the line, or a `bash -c` body in
+    it, defines a function (`name()`, `function name`), assigns `GIT_DIR`,
+    `GIT_WORK_TREE` or `GIT_COMMON_DIR` (also `export GIT_DIR` and `read
+    GIT_DIR`), or gives env or sudo a directory (`env -C`, `--chdir`), at a
+    command's start, among a declaration's names (`export FOO GIT_DIR=...`),
+    or behind a wrapper and its option values (`sudo -u bob`, `nice -n 5`,
+    `timeout 60`); and when a variable comes before a git command's
+    subcommand, other than as the value of `-C`, `-c` or `--git-dir`. A line
+    that assigns a `GIT_CONFIG_*` variable that can set `remote.<name>.mirror`
+    (not `GIT_CONFIG_COUNT` or `VALUE_n` alone, a key such as `safe.directory`
+    or `url.*.insteadOf`, or `GIT_CONFIG_GLOBAL=/dev/null`) makes a bare push
+    in it count as a mirror. These are
+    read as shell words, with assignments only where they are assignments, so
+    a mention inside a quoted message does not count. A script run earlier in
+    the line that switches branches is not seen, nor a git alias (`git co`).
+
+  A word that starts with a variable may hold an option. When it is followed
+  by a literal word, with two literal words besides (`git push $F origin
+  main`, `git push origin $F main`), the push counts as a force push. A
+  trailing one (`git push origin main "$TAG"`) does not, so `git push $F
+  origin` with `F=--force` is not caught.
+
+  Also blocked:
+  - the matching refspec (`:`) with a force or a `+`;
+  - a push given `-c remote.<name>.mirror` (it acts as `--mirror`);
+  - a bare push given `-c remote.<name>.push=...` or `--config-env` for it;
+  - a bare push given `-c push.default=matching` with a force;
+  - a bare force push given `-c push.default=upstream` or a `branch.*`
+    setting, whose destination is then unknown;
+  - a bare push after a command earlier in the line sets a true
+    `remote.<name>.mirror`, `remote.<name>.push` or an include (`git config
+    KEY VALUE`, `git config set`, `git remote add --mirror` or
+    `--mirror=push`); `push.default` set to `matching`, `upstream` or
+    `tracking` makes a bare force push's branch unknown. A read (`git config
+    --get`) and `remote.<name>.mirror false` do not count, and a push that
+    names a refspec is never a mirror (git refuses a refspec with
+    `remote.<name>.mirror`, and a refspec overrides `remote.<name>.push`); a
+    refspec that expands to nothing (an unquoted empty variable, `"$@"`),
+    which makes it a bare push, is not seen. The same holds for a `GIT_CONFIG_*` assignment.
+
+  These settings in git's config files are not read. An
+  option's value (`-o ci.skip`, `--push-option`, `--repo`) is not read as the
+  remote.
 - Database and cache resets: `prisma db push --accept-data-loss`, `prisma
   migrate reset --force`, `rails`/`rake` `db:drop`, `db:reset`,
   `db:schema:load`, and `db:structure:load`, Django `flush --noinput`,
@@ -261,9 +350,15 @@ about a millisecond. It then checks:
 Text inside quotes is not a command, so `echo "rm -rf /"` and
 `grep 'git push --force origin main'` are allowed.
 
+On Claude Code's `PowerShell` tool, and for a `pwsh -Command`, `powershell -c`,
+`-EncodedCommand` or `cmd /c` script inside any command, the command is read
+with PowerShell's or cmd's rules, and the check adds the Windows deletions and
+wipes listed under [Windows and PowerShell](#windows-and-powershell).
+
 ### Exact coverage
 
-- Covered: commands the agent runs through the `Bash` tool, as above.
+- Covered: commands the agent runs through the `Bash` tool, and through
+  Claude Code's `PowerShell` tool, as above.
 - Not covered: a deliberately disguised command (`eval`, base64, a variable
   holding the verb, ANSI-C quoting such as `bash -c $'ls\nrm -rf ~'`), commands a script runs internally, prompts, other tools,
   and any host other than Claude Code. It stops accidents, not an adversary.
@@ -286,9 +381,11 @@ one.
 It does not read the YAML file. `python tools/validate_overlay.py compile
 rules.yaml --out company-policy.json` validates the file and writes a JSON
 policy: each rule's id, kind, mode (its own, or `default_mode`) and values,
-the approved alternative's text when the rule names one, the file's
+the approved alternative's text when the rule names one, each expiring
+exception's id, rule, allows, `expires_on` and `where`, the file's
 `expires_on`, and the SHA-256 of its bytes. Nothing else from the file is
-copied. It also prints what each rule does on each tool, without the values.
+copied. It also prints what each rule does on each tool, and each exception's
+rule and expiry, without the values.
 `deploy/org/install.sh --overlay` compiles and places the policy and
 registers the hook on both tools
 ([`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md#company-enforcement-rules)).
@@ -316,6 +413,44 @@ writes its own evidence line. After the file's `expires_on`, every company
 rule acts in `monitor` until the file is renewed and recompiled: nothing is
 blocked on stale values, and each match still writes `would_deny`.
 
+The same compiled policy drives the pull-request check, `tools/pr_check.py`,
+which a company runs in its own CI
+([`docs/DEPLOY_ORG.md`](../docs/DEPLOY_ORG.md#pull-request-check)). It applies
+these rules, with this hook's matching, to the workflows, composite actions,
+`package.json` scripts and deploy configuration files a pull request adds or
+changes, so a deploy a CI job would run, which this hook never sees, is
+checked before merge. It applies the `protected_branch` and `deploy_host`
+rules, and their active exceptions without `where`; `package_registry` and
+`cloud_account` rules are not applied there yet. There `monitor` annotates and
+passes, and `ask` fails the check as `block` does. Not yet run in a real
+repository's CI.
+
+**Expiring exceptions** ([`OVERLAY_V2.md`](../docs/spec/OVERLAY_V2.md) §3.1)
+relax one company rule until a date, never a built-in check:
+
+- For a `protected_branch` rule, an exception's `allows` are branches the
+  rule stops protecting; a value ending in `/*` covers the prefix. For a
+  `deploy_host`, `package_registry` or `cloud_account` rule, they are extra
+  approved hosts, registries or accounts, covered as the rule's values cover
+  them, so a target the hook cannot read (unknown), which no value covers, no
+  exception covers either. A rule fires when something it matches is covered
+  by no rule value and no active exception. A push that can rewrite every
+  branch (`git push --mirror`, `--all` or `--branches` with a force or `--prune`, a forced pattern refspec)
+  fires a `protected_branch` rule whatever its exceptions.
+- The hook applies an exception through its `expires_on`, the day itself
+  included; after that it is ignored and the rule applies as written. No
+  exception outlives the file. An exception with `where` is never applied by
+  a hook: a repository name read from a working tree is something the agent
+  can change, and the pull-request check does not read it yet, so no check applies it.
+- The built-in checks are separate hooks and read no policy. An exception
+  allowing `main` on a company `protected_branch` rule stops that rule firing
+  on `git push --force origin main`; the destructive-operation check still
+  denies it.
+- When active exceptions cover everything a rule matched, the rule decides
+  nothing and writes a `would_deny` line with the exception's `exception_id`
+  and the rule's own `mode`, one line per exception that covered a match. The
+  decision is the strictest of the other matching rules'.
+
 ### Exact coverage
 
 - Kind `protected_branch`: a `git push` that force-pushes to (`--force`,
@@ -326,12 +461,16 @@ blocked on stale values, and each match still writes `would_deny`.
   through the same splitting, compound commands, wrappers and `bash -c`
   bodies, so `--all` or `--branches`
   with a force or `--prune`, and a forced refspec pattern
-  (`refs/heads/*:refs/heads/*`), match every rule. A branch the shell expands
-  (`$b`) matches no value; the destructive-operation check blocks that push.
-  A value ending in `/*`
-  covers every branch under the prefix; case is ignored. A value is a branch
-  name: the validator refuses a `refs/` prefix and names longer than 255
-  characters. An ordinary push is not a match.
+  (`refs/heads/*:refs/heads/*`), match every rule. A force push or deletion
+  whose branch the hook cannot read also matches every rule: a destination in
+  a variable or a substitution (`git push --force origin $BRANCH`), a bare
+  force push or a push to `HEAD` with no branch checked out (a detached
+  `HEAD`, or no repository; the built-in check blocks the bare force push
+  there, not the push to `HEAD`), and the checked-out branch after a command
+  that may change it, as the destructive-operation check reads it (above). A value
+  ending in `/*` covers every branch under the prefix; case is ignored. A
+  value is a branch name: the validator refuses a `refs/` prefix and names
+  longer than 255 characters. An ordinary push is not a match.
 - Kind `deploy_host`, an allow-list: a deploy or publish whose target no value
   of the rule covers fires the rule. `catpilot_guard/deploy_targets.py` reads
   the target, through the same splitting and wrappers, and through package
@@ -367,13 +506,223 @@ blocked on stale values, and each match still writes `would_deny`.
 
   A value `*.D` covers every name under `D`; any other value covers that host
   only. Each `deploy_host` rule is its own allow-list, so list every approved
-  host in one rule. Not covered: a deploy a script or CI job runs, a vendor not
-  listed here, a custom domain set in a project file (the service's own domain
-  is the target then), `ssh` sessions, `curl` uploads, container pushes and
-  cloud object copies.
+  host in one rule. Not covered: a deploy a script or CI job runs (the
+  pull-request check reads the workflows and scripts a pull request changes), a
+  vendor not listed here, a custom domain set in a project file (the service's
+  own domain is the target then), `ssh` sessions, `curl` uploads, container
+  pushes and cloud object copies.
+- Kind `package_registry`, an allow-list: a command that names a registry no
+  value of the rule covers fires the rule. `catpilot_guard/registry_targets.py`
+  reads it, through the same splitting and wrappers, the variable assignments
+  the split drops (`NAME=value` before a command, on its own or after `env`)
+  and the arguments of `export`, `declare`, `typeset`, `local` and `readonly`,
+  through package runners (`npx`, `bunx`, `pnpx`, `npm exec`, `pnpm dlx`,
+  `yarn dlx`, `npx -c '...'`), and through `python -m MODULE` (also
+  `-mMODULE` and `-Im MODULE`), `poetry run`, `uv run`, `uv tool run`, `uvx`,
+  `pipenv run` and `bundle exec`, past each runner's own options, whose
+  flags it knows (`uv run --no-project pip ...`, `uv run -- pip ...`; `uv run
+  --frozen python -i x` runs python with `-i`); a runner option it does not
+  know is read both ways, as a flag and as an option that takes the next word,
+  and the runner's own options are the ones some reading takes as its own. A
+  command is named without a Windows `.exe`, `.cmd` or `.bat`:
+  - `npm`, `pnpm`, `yarn`, `bun`, `npx`, `bunx` and `pnpx` with
+    `--registry URL` or `--registry=URL`, an abbreviation down to `--reg`
+    (npm takes a unique prefix), or npm's `--@scope:registry=URL`, with any
+    number of leading dashes (npm strips them: `-registry`, `---reg=URL`,
+    `-reg`, `-@acme:registry=URL`), anywhere in the arguments, whatever the
+    subcommand (an install, a publish, a login, a runner's package source);
+  - `npm config set` and `npm set` (and pnpm's, and `npm c set`) of
+    `registry` or `@scope:registry`, as `KEY URL` or `KEY=URL`, anywhere
+    after `config set` or `set`, wherever those are among the positional
+    arguments (`npm --logl silent config set ...`, `npm config set -L user
+    ...`); `yarn config set` of `registry`,
+    `npmRegistryServer`, `npmPublishRegistry`, or either under
+    `npmScopes.<scope>.`;
+  - `pip`, `pip3`, `pip3.N` and `python[3[.N]] -m pip` `install`, `download`,
+    `wheel` and `lock` with `-i`/`--index-url`, its hidden alias
+    `--pypi-url`, `--extra-index-url` or `-f`/`--find-links` (`OPT URL`,
+    `OPT=URL`, `-iURL`), any abbreviation of those long options (`--ind`,
+    `--ext`, `--fi`, `--pyp`: pip takes a unique prefix), and `i` or `f` at
+    the end of a cluster of short flags (`-Ui URL`); `pip config set` of a
+    `<section>.index-url`, `.pypi-url`, `.extra-index-url` or `.find-links`
+    key (any case, `_` for `-`), past pip's own options (`pip config
+    --timeout 30 set ...`), each URL of its value;
+  - `uv` `pip`, `add`, `remove`, `sync`, `lock`, `export`, `tree`, `venv`,
+    `build`, `version` and `tool` subcommands, and the own options of `uv run`,
+    `uv tool run` and `uvx`, with those options (exact names: uv takes no
+    abbreviations), `--default-index` and `--index` (`URL` or `NAME=URL`);
+    `uv publish --publish-url URL` and `--check-url URL`;
+  - `poetry source add NAME URL` (no URL is unknown, except for `pypi`) and
+    `poetry config repositories.<name> URL`; `twine --repository-url URL`
+    (down to `--repository-`); `gem install`/`fetch`/`update`
+    `-s`/`--source URL`, `gem sources -a`/`--add URL` and
+    `gem push`/`yank`/`owner --host URL` (long options down to two letters);
+    `go env -w GOPROXY=...`;
+  - `docker` and `podman` `push` and `pull` (also `image push`/`image pull`)
+    and `run` and `create` (also `container run`/`container create`, which
+    pull a missing image) of an image whose first path component has a dot
+    or a colon or is `localhost` (`ghcr.io/org/app:1`,
+    `registry.example.org:5000/app`, podman's `docker://` form), and `login`
+    with a server argument;
+  - the assignments `NPM_CONFIG_REGISTRY`, `PNPM_CONFIG_REGISTRY`,
+    `BUN_CONFIG_REGISTRY`, `YARN_REGISTRY`, `YARN_NPM_REGISTRY_SERVER` and
+    `YARN_NPM_PUBLISH_REGISTRY` (any case), `npm_config_@scope:registry`
+    (which only `env` can set), `PIP_INDEX_URL`, `PIP_PYPI_URL`,
+    `PIP_EXTRA_INDEX_URL`, `PIP_FIND_LINKS`, `UV_INDEX_URL`,
+    `UV_EXTRA_INDEX_URL`, `UV_DEFAULT_INDEX`, `UV_INDEX`, `UV_FIND_LINKS`,
+    `UV_PUBLISH_URL`, `UV_PUBLISH_CHECK_URL`, `POETRY_REPOSITORIES_<NAME>_URL`,
+    `TWINE_REPOSITORY_URL`, `RUBYGEMS_HOST`, and each entry of `GOPROXY`
+    (`direct` and `off` name none).
+
+  A command that names no registry is no target: `npm install`,
+  `pip install requests`, `docker pull ubuntu` and `twine upload dist/*` use
+  the configured or default registry, which the hook does not read. The
+  target is the URL's host, lowercase, without credentials (variables in them
+  included) or port, and its path, lowercase, with empty and `.` segments
+  dropped, `..` applied and no trailing slash; for an image, the registry
+  host and the repository path without tag or digest. The authority ends at
+  the first `/`, `\`, `?` or `#`. A tab, newline or carriage return in the
+  scheme or host is removed, as every URL parser that accepts it removes it;
+  one after the host leaves the host alone, since npm's and uv's parser
+  removes it (`.<TAB>.` is `..`) and pip's, twine's and poetry's (urllib3)
+  encodes it (`.<TAB>.` is a name). A value without a scheme is read as
+  `https://` where the option only takes a URL, and as a local path, which
+  names no registry, for find-links; local `file:` URLs (`file:///srv/w`,
+  `file://localhost/w`, `file://$PWD/w`) and paths starting with `/`, `./`,
+  `../` or `~` name none, but a `file:` URL that names a host or a share is
+  unknown. These are unknown, and no value covers
+  them: a variable in the host; a host that is not a dotted name
+  (`localhost:5000/app`, an IP address, including a last label such as
+  `0x7f` that a URL parser reads as a number); a backslash or any character a
+  URL authority cannot hold before the path
+  (`https://evil.example\@registry.npmjs.org/` connects to evil.example with
+  npm and pip, and Python's own URL parser says registry.npmjs.org); an
+  `http:` or `https:` value without `//` after the colon; a value starting
+  with two separators in any mix of `/` and `\` (`//host`, `\\host`,
+  `\/host`: a network-path reference, or a Windows UNC share for
+  find-links), and a `file:` URL that names a host other than `localhost` or
+  a share (`file://host/w`, `file:////host/w`); a value option last in the
+  command with nothing
+  after it, whose value `xargs` or stdin supplies (`xargs npm install
+  --registry`); a push, pull, run or create with no image; and a runner,
+  `docker run` or `create` with more than three options the reader does not
+  know before its command or image. A URL path segment that holds a
+  variable, a `\`, a `;`, a control character or a character outside ASCII
+  (FULLWIDTH FULL STOP and other lookalikes), a percent escape that decodes
+  to `/`, `\`, `;`, a control character, a character outside ASCII or
+  another `%` (`%252e`), or
+  a segment of only dots and spaces, decoded or not, other than `.` and `..`
+  themselves (`%2e%2e`, `...`, `..%20`, which some servers trim to `..`), may
+  reach any path on the host once read, so the target is the host alone,
+  which only a value with no path covers; any other escape is decoded
+  (`My%20Project`). In an image, which
+  cannot hold `..`, a variable ends the path there instead.
+
+  The command reader shared with the other checks reads a command
+  substitution in its word, so `docker run -v $(pwd):/app node:20 ...` runs
+  `node:20` (no registry), and reads the substitution's own command too. It
+  also reads the commands inside `if`, `for`, `while`, `until`, `case`,
+  `{ }`, subshells and function bodies, and drops comments only where bash
+  does, for the `package_registry` and `cloud_account` readers as for the
+  others.
+
+  A value `host` covers that host with any path. `host/path` covers that
+  host's targets whose path is that path or under it, by whole segments:
+  `pypi.example.org/simple` covers `/simple` and `/simple/x`, not `/simple2`
+  and not the bare host, so `docker login ghcr.io` needs `ghcr.io` itself
+  listed. `*.D` covers every name under `D`, not `D` itself, with the same
+  path rule. Paths compare ignoring case. Each `package_registry` rule is its
+  own allow-list. Not covered: a registry set in a file (`.npmrc`,
+  `.yarnrc.yml`, `pip.conf`, `pyproject.toml`, `uv.toml`, a requirements
+  file's `--index-url` line, Docker's `config.json`), whether the file exists
+  or a command writes it with `echo`, `printf` or `tee` (a heredoc line that
+  reads as an assignment, such as `PIP_INDEX_URL=...` alone on its line, is
+  read as one, so writing it that way can fire the rule); arguments `xargs`
+  or stdin supplies, other than an option left last without its value; a
+  configured repository given by name (`twine upload -r NAME`, `poetry
+  publish -r NAME`, `uv publish --index NAME`); a package given as a URL,
+  tarball or git remote (`uv run --with URL` too); Docker Hub; `docker build
+  --push`, `buildx`, `tag`, `service create` and compose; pipenv's own
+  options (`--pypi-mirror`, `pipenv install -i`); pipx, pdm, hatch and rye,
+  their options and the commands they run; Bundler's sources (`bundle add
+  --source URL`, `bundle config mirror.<url> URL`, a Gemfile's `source`);
+  options held in a variable (`npm install $FLAGS`); registries a script or
+  CI job uses internally; and cargo, maven, gradle, nuget, composer, conda,
+  helm, apt and brew.
+- Kind `cloud_account`, an allow-list: a command that names an account no
+  value of the rule covers fires the rule. `catpilot_guard/cloud_targets.py`
+  reads it, through the same splitting, wrappers, assignments and package
+  runners (`npx aws-cdk` is `cdk`), and through the same `python -m`
+  (`python -m awscli` is `aws`), `poetry run`, `uv run`, `uv tool run`,
+  `uvx`, `pipenv run` and `bundle exec` as the `package_registry` reader:
+  - every ARN in any argument of `aws`, `sam` and `cdk`, whatever option or
+    JSON document it sits in, in the `aws`, `aws-cn`, `aws-us-gov` and every
+    other `aws-*` partition, with a 12-digit account field (an empty field,
+    `aws` for an AWS-owned resource, and `*` name none); an ARN with a
+    variable anywhere in its partition (`arn:${PARTITION}:...`,
+    `arn:aws-${P}:...`) or in its account field
+    (`"arn:aws:iam::$(cat id):role/x"`) is unknown; `aws` `--account-id`,
+    `--aws-account-id` and `--source-account` (`-` names none) and
+    `--account-ids` (each id), and their abbreviations, which the AWS CLI takes
+    (down to `--acc`, `--aws` and `--source-ac`; down to `--a`, `--ac`, `--aw`
+    and `--sou`, another option may share them, so there every standalone
+    12-digit run in the first value is an account, a variable, a missing
+    value, a `file://` or `fileb://` value and a JSON document are unknown,
+    any other value names nothing, and later values count only as 12 digits,
+    or as unknown when they hold a variable after a list of ids; the exact
+    `--source`, which is `--source-account` only in acm-pca, reads only a
+    12-digit value);
+    `--role-arn` (down to
+    `--role-a`) holding a variable; `aws configure set
+    [profile.NAME.]sso_account_id ID`, and `role_arn` holding a variable; a
+    `cdk` environment `aws://ACCOUNT/REGION`;
+  - `gcloud` `--project` and `--billing-project`, `gcloud config set
+    project` (or `core/project`), and `gcloud [alpha|beta|preview] projects
+    SUBCOMMAND PROJECT_ID` for every subcommand but `list` and `search`;
+    `gsutil -u PROJECT` before the command and `gsutil mb`, `ls`, `hmac` and
+    `kms` `-p PROJECT`, every one of them (getopt keeps the last), long
+    options between them included; `bq
+    --project_id` (also `-project_id`);
+  - `az` `--subscription` (down to `--s`: a global argument of nearly every
+    command, so az takes any prefix as it or refuses it as ambiguous),
+    `--subscription-id` and `--subscriptions`, `az account set -s`, `-n` or
+    `--name`, and the `/subscriptions/<id>/` of a resource id or management
+    URL in any argument, also percent-decoded;
+  - the assignments `CLOUDSDK_CORE_PROJECT` and `GOOGLE_CLOUD_PROJECT`,
+    `AZURE_SUBSCRIPTION_ID` and `ARM_SUBSCRIPTION_ID`, and the ARN in
+    `AWS_ROLE_ARN`.
+
+  The target is `aws:<12 digits>`, `gcp:<project id>` or
+  `azure:<subscription GUID>`, lowercase. A command that names no account is
+  no target: `aws s3 ls`, `gcloud run deploy` and `az group list` act in the
+  account of the active profile or configuration, which the hook does not
+  read. A variable, a GCP project given by number or in a form a project id
+  cannot take, an Azure subscription given by name, an account option whose
+  value is not an account id, an account option last in the command with
+  nothing after it (`xargs gcloud run deploy --project`), and a runner with
+  more than three options the reader does not know before its command are
+  unknown, and no value covers them. Coverage is an exact match, ignoring case. Each
+  `cloud_account` rule is its own allow-list. Not covered: a profile or
+  configuration given by name (`--profile`, `AWS_PROFILE`, `gcloud
+  --configuration`, `gcloud config configurations activate`), the account of a
+  role a profile assumes, a `role_arn` or `sso_account_id` written into
+  `~/.aws/config` (or any file) with `printf`, `echo`, `tee` or a heredoc
+  rather than `aws configure set`, accounts inside terraform, pulumi or CDK
+  code and state, SDK calls in scripts, arguments `xargs` or stdin supplies
+  (other than an option left last without its value), a project inside a
+  service-account email, bucket name or BigQuery table reference, a 12-digit
+  id outside an ARN or the options above, `gcloud config set account` (a
+  person, not a project), gcloud and bq abbreviations (their parsers refuse
+  them), pipx, pdm, hatch and rye, and other clouds and tools (`oci`,
+  `doctl`, `eksctl`, `kubectl` contexts).
+
+  Neither kind has been run on a host. Start their rules in `monitor` and
+  read the `would_deny` counts before you block.
 - The reason names the rule ids and the approved alternative, never a listed
-  value, and never repeats the command. Evidence lines carry the rule id, the
-  mode that applied and the policy's hash, never a command or a value.
+  value, a host, a registry or an account, and never repeats the command.
+  Evidence lines carry the rule id, the mode that applied, the policy's hash
+  and, when an exception changed the decision, the exception id, never a
+  command or a value.
 - The policy must be a regular file, not a symlink, owned by the same user as
   the `catpilot_guard` package the hook runs from, and neither the file nor its
   directory may be writable by group or others. `install.sh` places both as
@@ -580,6 +929,71 @@ Two differences from the other tools:
 Not covered: Copilot in the cloud (policy hooks do not run there),
 PowerShell-specific forms of the destructive checks, and the session-start
 rules. Not run on a host.
+
+## Windows and PowerShell
+
+Built from [`docs/spec/WINDOWS.md`](../docs/spec/WINDOWS.md) increments 1 and 2.
+**Not verified on a Windows host:** the unit tests run on a `windows-latest`
+runner (`tests/windows_suite.py`), which checks the Python and runs no tool. The
+Windows installer (`install.ps1`, increment 3) and a host check (increment 4)
+are not built yet.
+
+- **The hooks run without a shell.** `--evidence-default` replaces the
+  `CATPILOT_EVIDENCE_LOG="$HOME/..."` prefix, so a command can be an interpreter
+  and an argument list (Claude Code's exec form, `command` plus `args`).
+  `install.sh` writes the option on every OS; on macOS and Linux the prefix stays
+  beside it for this release.
+- **Claude Code's `PowerShell` tool is matched.** The managed and example
+  settings use `Bash|PowerShell` for every shell-command matcher, on every OS.
+  The secret check reads a PowerShell command as text, as it reads bash.
+- **The company policy check reads the access list on Windows**
+  (`catpilot_guard/policy.py`): the policy file and its directory must be owned by
+  Administrators, SYSTEM or TrustedInstaller, no allow entry may give anyone else
+  a right to write, append, delete or change the access list or the owner (deny
+  entries are ignored), and neither may be a symbolic link or a junction. The
+  file is opened first and its handle compared with the path. Otherwise the
+  policy is refused as `wrong-owner`, and no company rule applies.
+- **The PowerShell reader** (`catpilot_guard/powershell.py`) splits on
+  PowerShell's quotes (single, double, typographic, here-strings), backtick
+  escapes and continuations, `;`, `|`, `&&`, `||`, `&`, comments,
+  redirections, commas and script blocks, subexpressions and parentheses (whose
+  commands it reads too). It unwraps `iex` with a literal string,
+  `pwsh`/`powershell` with `-Command`, `-c` or `-EncodedCommand` (decoded from
+  base64 UTF-16LE), `powershell.exe` with a script string, `cmd /c` and `/k`
+  (with cmd's rules), `Start-Process -ArgumentList`, `bash -c`, and an
+  assignment's right-hand side (`$out = git push ...`). Parameter names match
+  in any case and by unambiguous prefix (`-r`, `-Rec`, `-Recurse`), with an en
+  or em dash accepted. A variable, a subexpression or a string built at run
+  time is unknown, as a shell variable is in bash; an assignment to
+  `$env:NAME` reaches the registry and cloud readers as `NAME=value`.
+- **What the destructive check adds:** `Remove-Item` and its aliases (`rm`,
+  `del`, `erase`, `rd`, `rmdir`, `ri`) with `-Recurse`, and `rd /s` or `del /s`,
+  on a drive root (`C:\`, `C:/`, `\`, `C:\*`), `C:\Windows` or
+  `$env:SystemRoot`, `C:\Program Files` (and `(x86)`), `C:\ProgramData`,
+  `C:\Users`, a home directory (`~`, `$HOME`, `$env:USERPROFILE`,
+  `%USERPROFILE%`, `C:\Users\<name>`), its `.ssh`, `.aws`, `.azure`, `.kube`,
+  `.docker`, `.gnupg` or `$env:APPDATA\gcloud`, or a bare variable (`$x`,
+  `"$x\*"`; not the pipeline's `$_`); a `Get-ChildItem`, `Get-Item` or literal
+  path piped into a `Remove-Item` that has no path of its own is read with
+  that path. `-WhatIf` runs nothing and is allowed. Also `Format-Volume`,
+  `Clear-Disk`, `Remove-Partition`, `format <drive>:`, any `diskpart` run (it
+  reads its script from `/s` or piped input), `cipher /w`,
+  `vssadmin delete shadows` and `wmic shadowcopy delete`. The checks every shell
+  gets (protected-branch pushes, `kubectl`, `terraform`, the database wipes, the
+  cloud signatures) read PowerShell's words the same way.
+- **Codex and Copilot CLI on Windows.** Copilot reports its `powershell` tool
+  as `Bash`, and Codex's tool name for a Windows shell command is not
+  documented, so on Windows the destructive check reads a `Bash` event from
+  either both as bash and as PowerShell, and denies if either reading matches.
+  The company rules read it as bash there.
+- **Not read** (WINDOWS.md §4): splatting (`@args`), dynamic parameter names,
+  .NET calls such as `[IO.Directory]::Delete($p, $true)`, `Set-Item env:`, an
+  encoded command given as an expression or that does not decode, nesting deeper
+  than the reader follows, and scripts a command runs (`.ps1`, `.bat`). The
+  current-branch substitutions read in bash have no PowerShell equivalent.
+- **Errs strict:** `foreach ($d in ...) { Remove-Item $d -Recurse }` is
+  denied, as `rm -rf $d` is in bash; a pipeline from `Get-ChildItem` of a
+  dangerous directory is denied even with `-Filter`.
 
 ## Other hosts
 

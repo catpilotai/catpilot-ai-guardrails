@@ -1,19 +1,45 @@
 # Roadmap
 
-The core content baseline is shipped and maintained. This quarter's work is the safe-building wedge and honest verification, not more frameworks.
+Updated 2026-11-19. This page lists what is shipped, what we are building next, and what is parked until someone asks for it. "Shipped" means merged and tested in CI. Where something has not yet been run on a real host, identity provider or SIEM, the entry says so; [`CHANGELOG.md`](../CHANGELOG.md) has the detail, and the [verification status](DEPLOY_ORG.md#verification-status) table has dates and notes for each host check.
 
-| Item | Status |
+To ask for a parked item, comment on its issue. That is how parked work gets picked up.
+
+## Shipped
+
+| Area | What | Run on a real host? |
+|---|---|---|
+| Baseline content | `catpilot-security-core` (nine components) and `catpilot-safe-building`, with per-host targets | yes |
+| Hooks | Destructive-operation, credential and private-key checks on Claude Code, Codex and GitHub Copilot CLI; they block when they cannot run | Claude Code and Codex yes (2026-11-16/17); Copilot CLI not yet |
+| Company rules v2 | Schema, validator, `migrate`, topic contacts, and expiring exceptions | n/a (offline tools) |
+| Company enforcement | Company-rules hook for `protected_branch`, `deploy_host`, `package_registry` and `cloud_account`, in `monitor`, `ask` or `block`, plus a pull-request check | not yet |
+| Session-start rules | The company rules reach the model at every session start on Claude Code and Codex | yes |
+| Windows | The hooks run on Windows, with a PowerShell reader | not yet |
+| Install | One command per OS (`deploy/org/install.sh`, `install.ps1`), which proves and records the hooks' Python; `verify` and `uninstall` | macOS and Linux in CI; Windows not yet |
+| Reference MCP server | `get_guidance`, `check_plan`, `get_template`, `list_approved`; Claude.ai and ChatGPT connectors | yes (2026-09-28) |
+| Server sign-in | Opt-in OIDC mode (`--auth oidc`) for Claude.ai and ChatGPT | not yet, needs an identity provider |
+| Gateway export | Company rules as generic JSON (`validate_overlay.py export`) | experimental |
+| Evidence | Versioned evidence schema, OCSF and ECS export, an opt-in hash chain, and HTTPS forwarding | not yet against a real SIEM |
+| Project policy | [Stability](STABILITY.md), [support](../SUPPORT.md), governance, monthly stable releases | n/a |
+
+## Next
+
+| Item | Issue |
 |---|---|
-| `catpilot-security-core` | shipped, nine components; maintained; no new components this quarter |
-| `catpilot-safe-building` | shipped in `2026.09.13` |
-| Per-host targets and the safe-building web page source | shipped in `2026.09.13`; the live `catpilot.ai/safe-ai-building` page ships with the site pass |
-| README contract, tested-runtimes table, Claude Code hooks | shipped: the `Bash` credential hook in `2026.09.13`, the `Write`/`Edit` private-key hook in `2026.09.14` |
-| Organization-overlay schema, validator, private builds | shipped in `2026.09.13` |
-| Safe-building evaluation fixtures and with/without runner | shipped: two benchmark pairs published (`2026.09.15`, `2026.09.16-1`); the design is frozen until the skill, the overlay, or a host changes materially |
-| Reference MCP server (`get_guidance`, `check_plan`, `get_template`, `list_approved`) | shipped as a self-hosted reference in `mcp-server/` and as a hosted generic-defaults endpoint at `mcp.catpilot.ai`; lookups verified from Claude Code and Codex on 2026-09-14; tenant-scoped, authenticated serving is the platform's work |
-| ChatGPT and Claude.ai custom connectors | verified 2026-09-28 on Pro accounts against a Catpilot-hosted company endpoint that runs this server with a company overlay: ChatGPT as a developer-mode MCP app, which it called only in messages that mention it; Claude.ai as a custom connector, which it called without a mention. The public `mcp.catpilot.ai` was not added as a connector. On 2026-09-30, with `2026.09.28-1`, both named the overlay's contact for a pay-data request |
-| Framework extensions (`catpilot-<framework>-security`) | content kept in `frameworks/`; no bundle promised this quarter |
-| Agentic loop guidance for harnesses | reference text in `frameworks/agentic/` and the harness gate in `hooks/harness/`; packaging as a bundle deferred |
-| `catpilot-security-advanced` | deferred |
-| `tools/recommend.py` | deferred |
-| HIPAA and GDPR mappings | deferred |
+| Single-file build of the hooks, placed by the installers, for machines without a suitable Python | #97 |
+| Sign-in mode tested against a real identity provider | #94 |
+| First monthly stable release | #101 |
+
+## Parked until requested
+
+| Item | Why parked | Issue |
+|---|---|---|
+| Windows company rules in the installer (`-Overlay`), the Windows host check and PowerShell hardening | Waiting for a Windows customer | #156, #141–#143 |
+| Admin-settings guides for Lovable, Replit, Bolt and v0 | Each needs an admin account on that tool to check against | #154 |
+| Hook hardening: crafted shell spellings the parser misreads | Fixed when a real case shows up | #137, #144–#148 |
+| Evidence loaded into a real SIEM | Waiting for a customer's SIEM to test against | n/a |
+| Framework bundles (`catpilot-<framework>-security`) and agentic-loop packaging | Content is kept in `frameworks/`; no bundle is promised | n/a |
+| `catpilot-security-advanced`, `tools/recommend.py`, HIPAA and GDPR mappings | No current demand | n/a |
+
+## Open decisions
+
+#93, #95, #96, #98, #99 and #102 are labelled `question`.

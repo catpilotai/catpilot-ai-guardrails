@@ -79,8 +79,9 @@ Offline validation of an organization overlay: the schema in
 (version 2, chosen by `schema_version`), the expiry window, and a scan for
 anything that looks like a secret, a URL outside the allowlist, an email other
 than `owner`, an IP address, or an incident narrative. For version 2 it also
-checks ids, aliases and the `enforcement` section (`docs/spec/OVERLAY_V2.md`
-§6.3), and prints lint warnings that do not fail validation. Whether the listed
+checks ids, aliases and the `enforcement` section, its expiring exceptions
+included (`docs/spec/OVERLAY_V2.md` §3.1 and §6.3), and prints lint warnings
+that do not fail validation, such as an exception within 14 days of expiry. Whether the listed
 items are actually approved is the reviewer's call, not the validator's.
 
 ```bash
@@ -90,6 +91,24 @@ python tools/validate_overlay.py docs/spec/overlay.example.yaml --allow-host int
 python tools/validate_overlay.py salt /private/path/rules.yaml
 # print a version 1 file as version 2; --output FILE writes a new file instead
 python tools/validate_overlay.py migrate docs/spec/overlay.example.yaml
+```
+
+## pr_check.py
+
+The pull-request check: the compiled company policy (`validate_overlay.py
+compile`) applied to the files a pull request adds or changes that can deploy
+or push (workflows, composite actions, `package.json` scripts, `vercel.json`,
+`netlify.toml`, `fly.toml`, `wrangler.*`, `firebase.json`), with the
+company-rules hook's matching. `monitor` rules annotate and pass; `ask` and
+`block` fail (exit 1). Annotations name the rule, the file and the line, never
+a listed value, a command or a host. Run it in CI from a pinned checkout of
+this repository, never from the pull request's tree:
+`deploy/ci/catpilot-pr-check.yml` is the template, and `docs/DEPLOY_ORG.md`
+(Pull-request check) has the exact coverage and the threat model.
+
+```bash
+python tools/pr_check.py --policy /tmp/company-policy.json --repo checkout --base origin/main --format github
+python tools/pr_check.py --policy /tmp/company-policy.json --files package.json .github/workflows/deploy.yml
 ```
 
 ## validate_evals.py
@@ -173,6 +192,19 @@ disclosed and excluded from that secondary measure's denominator. The
 [benchmark design](../evals/BENCHMARK.md) covers live runs and interpretation; the [reference guide](../evals/reference-examples/README.md)
 includes the public no-model demo and legacy `--scanners-only` checks, which
 cannot qualify a new experiment.
+
+## evidence_export.py and evidence_verify.py
+
+```bash
+# the evidence log as OCSF 1.3.0 or ECS 8.11 JSON lines (docs/spec/EVIDENCE_MAPPINGS.md)
+python3 tools/evidence_export.py --format ocsf ~/.catpilot-guardrails/evidence.jsonl
+python3 tools/evidence_export.py --format ecs  ~/.catpilot-guardrails/evidence.jsonl
+# the opt-in hash chain (CATPILOT_EVIDENCE_CHAIN=1); --expect-head compares with a head kept elsewhere
+python3 tools/evidence_verify.py ~/.catpilot-guardrails/evidence.jsonl
+```
+
+The chain shows edits, deletions and reordering inside the file, not a rewrite of the whole file; see
+[`docs/spec/EVIDENCE.md`](../docs/spec/EVIDENCE.md) §8.
 
 ## Versioning
 

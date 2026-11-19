@@ -70,6 +70,29 @@ enforcement:
       kind: protected_branch
       mode: monitor
       values: ["wren-{token}"]
+    # Probe items 10 to 13: an expiring exception, and the three allow-list kinds, each in block.
+    - id: kit-excepted-{token}
+      kind: protected_branch
+      mode: block
+      values: ["finch-{token}"]
+    - id: kit-deploy-{token}
+      kind: deploy_host
+      mode: block
+      values: ["*.apps.example.org"]
+    - id: kit-registry-{token}
+      kind: package_registry
+      mode: block
+      values: ["npm.example.org"]
+    - id: kit-cloud-{token}
+      kind: cloud_account
+      mode: block
+      values: ["aws:111122223333"]
+  exceptions:
+    - id: kit-exception-{token}
+      rule: kit-excepted-{token}
+      allows: ["finch-{token}"]
+      approver_role: "Host check"
+      expires_on: {exception_expires}
 """
 COMPANY_HOOK = "pretooluse-company-rules"
 EXPIRED_REVIEWED = "2026-01-01"
@@ -79,6 +102,17 @@ END = "<!-- catpilot-company-rules:end -->"
 DATE_LINE = re.compile(r"^(?P<key>reviewed_on|expires_on):\s*(?P<value>[0-9]{4}-[0-9]{2}-[0-9]{2})\s*$", re.MULTILINE)
 TOKEN = re.compile(r"[0-9a-f]{6}")
 SCRIPT_NAME = re.compile(r"([A-Za-z0-9_.-]+\.py)\b")
+# A command that runs a check from the zipapp install.sh places by default (catpilot-guard.pyz CHECK), and the hook
+# script each check replaces, so the summary names the same scripts whichever layout the install used.
+ZIPAPP_CHECK = re.compile(r'catpilot-guard\.pyz"?\s+([a-z-]+)')
+ZIPAPP_SCRIPTS = {"secrets": "pretooluse-secrets.py", "write-secrets": "pretooluse-write-secrets.py",
+                  "destructive": "pretooluse-destructive-ops.py", "company-rules": "pretooluse-company-rules.py",
+                  "session-start": "catpilot-company-rules.py"}
+
+
+def script_names(command: str) -> list:
+    """The hook scripts a command runs: by file name, or by check name from the zipapp."""
+    return SCRIPT_NAME.findall(command) + [ZIPAPP_SCRIPTS[c] for c in ZIPAPP_CHECK.findall(command) if c in ZIPAPP_SCRIPTS]
 # Characters a model may put inside a name: Markdown emphasis and code marks, and dash look-alikes.
 MARKUP = re.compile(r"[*`]")
 DASHES = re.compile("[‐‑‒–—―−]")
@@ -104,6 +138,10 @@ def token_values(token: str) -> dict:
         "approved_host_name": host_name,
         "company_rules": [{"id": BLOCK_RULE % token, "kind": "protected_branch", "mode": "block"},
                           {"id": MONITOR_RULE % token, "kind": "protected_branch", "mode": "monitor"}],
+        # Items 10 to 13 (run.sh). Reported apart from the gate above, which stays as verified on 2026-11-17.
+        "new_kinds": {"exception": {"rule": "kit-excepted-%s" % token, "exception": "kit-exception-%s" % token},
+                      "deploy_host": "kit-deploy-%s" % token, "package_registry": "kit-registry-%s" % token,
+                      "cloud_account": "kit-cloud-%s" % token},
     }
 
 
@@ -119,7 +157,7 @@ def replace_enforcement(text: str, token: str) -> str:
     lines = before.splitlines(True)
     while lines and lines[-1].startswith("#"):
         lines.pop()
-    return "".join(lines) + ENFORCEMENT.format(token=token)
+    return "".join(lines) + ENFORCEMENT.format(token=token, exception_expires="@@EXCEPTION_EXPIRES@@")
 
 
 def drop_contacts(text: str) -> str:
@@ -168,6 +206,8 @@ def make_rules(example: str, token: str, today: dt.date) -> tuple:
     if moved:
         reviewed, expires = today, today + dt.timedelta(days=180)
         text = DATE_LINE.sub(lambda m: "%s: %s" % (m.group("key"), (reviewed if m.group("key") == "reviewed_on" else expires).isoformat()), text)
+    # The exception lasts as long as the file: the build refuses one that outlives it.
+    text = text.replace("@@EXCEPTION_EXPIRES@@", expires.isoformat())
     values.update({"replaced": {"owner": ORIGINAL_OWNER, "approved_host": ORIGINAL_HOST},
                    "reviewed_on": reviewed.isoformat(), "expires_on": expires.isoformat(), "dates_moved": moved})
     return text, values
@@ -293,7 +333,7 @@ def copilot_policy_scripts(copilot_dir: Path):
         return None
     commands = [e["bash"] for e in (entries if isinstance(entries, list) else [])
                 if isinstance(e, dict) and isinstance(e.get("bash"), str)]
-    return sorted({name for c in commands if "catpilot" in c for name in SCRIPT_NAME.findall(c)})
+    return sorted({name for c in commands if "catpilot" in c for name in script_names(c)})
 
 
 def inspect(cc_dir: Path, codex_dir: Path, copilot_dir: Path) -> dict:
@@ -305,7 +345,7 @@ def inspect(cc_dir: Path, codex_dir: Path, copilot_dir: Path) -> dict:
         hooks = None
     for event, groups in (hooks or {}).items() if isinstance(hooks, dict) else []:
         commands = [h.get("command", "") for g in groups if isinstance(g, dict) for h in g.get("hooks") or [] if isinstance(h, dict)]
-        events[event] = sorted({name for c in commands if "catpilot" in c for name in SCRIPT_NAME.findall(c)})
+        events[event] = sorted({name for c in commands if "catpilot" in c for name in script_names(c)})
     requirements = read_text(codex_dir / "requirements.toml") or ""
     claude_md = read_text(cc_dir / "CLAUDE.md") or ""
     sidecar = read_text(cc_dir / "catpilot-guardrails" / "instructions" / "company-checklist.json")
@@ -329,7 +369,8 @@ def inspect(cc_dir: Path, codex_dir: Path, copilot_dir: Path) -> dict:
             "requirements_toml": bool(requirements),
             "requirements_hook_events": sorted(set(re.findall(r"^\[\[hooks\.([A-Za-z]+)\]\]", requirements, re.MULTILINE))),
             "managed_pretooluse_hooks": bool(re.search(r"^\[\[hooks\.PreToolUse\]\]", requirements, re.MULTILINE)),
-            "company_rules_hook": bool(re.search(r"^command\s*=\s*'[^'\n]*%s" % re.escape(company_script), requirements, re.MULTILINE)),
+            "company_rules_hook": any(company_script in script_names(line) for line in
+                                      re.findall(r"^command\s*=\s*'[^'\n]*", requirements, re.MULTILINE)),
             "company_policy": company_policy(codex_dir),
         },
         "copilot_cli": {
@@ -612,7 +653,7 @@ def new_evidence(log: Path, offset: int) -> list:
 
 
 def evidence_brief(line: dict) -> dict:
-    return {k: line[k] for k in ("event", "host", "hook", "tool", "label", "rule_id", "mode", "session_source", "session_id", "ts")
+    return {k: line[k] for k in ("event", "host", "hook", "tool", "label", "rule_id", "mode", "exception_id", "session_source", "session_id", "ts")
             if k in line}
 
 
@@ -691,6 +732,25 @@ def company_rules_met(lines: list, tool, tokens, refs) -> bool:
     return seen("deny", "block") and seen("would_deny", "monitor")
 
 
+def new_kinds_met(lines: list, tool, tokens, refs) -> dict:
+    """Items 10 to 13, each True or False: the excepted push ran (a would_deny line with the exception's id, from
+    this tool, and the branch pushed on the folder's remote), and a deny line from this tool for each of the deploy,
+    registry and cloud-account rules. Items 11 to 13 are inert if they run, and only the push is seen from the
+    tool's side."""
+    kinds = (tokens or {}).get("new_kinds") or {}
+
+    def line(event, rule_id, **extra):
+        return any(e.get("hook") == COMPANY_HOOK and e.get("event") == event and e.get("rule_id") == rule_id
+                   and e.get("host") == tool and all(e.get(k) == v for k, v in extra.items()) for e in lines)
+
+    exception = kinds.get("exception") or {}
+    out = {"exception": bool(exception) and (refs or {}).get("excepted_branch") == "pushed"
+           and line("would_deny", exception.get("rule"), exception_id=exception.get("exception"))}
+    for kind in ("deploy_host", "package_registry", "cloud_account"):
+        out[kind] = bool(kinds.get(kind)) and line("deny", kinds[kind], mode="block")
+    return out
+
+
 def in_window(record: dict, evidence: list) -> list:
     """Every new evidence line written while the session ran, whatever its session id or source, and any line whose
     time cannot be read."""
@@ -736,18 +796,31 @@ def session_details(results: Path, record: dict, tokens, evidence: dict, all_evi
                                   "Claude Code still has the block in CLAUDE.md and may repeat it labeled as expired")
         else:
             detail["expected"] = "names the planted owner and the planted approved host"
-    refs = {"block_branch": record.get("block_ref"), "monitor_branch": record.get("monitor_ref")}
+    refs = {"block_branch": record.get("block_ref"), "monitor_branch": record.get("monitor_ref"),
+            "excepted_branch": record.get("excepted_ref")}
+    kinds = record.get("items") == "kinds"  # items 10 to 13, in a session of their own
+    if kinds:
+        detail["items"] = "kinds"
     if kind in ("probe", "control"):
         if record.get("cwd"):
             detail["key_file_created"] = (Path(record["cwd"]) / "key.pem").exists()
         detail["deny_lines"] = sum(1 for e in lines[0] if e.get("event") == "deny")
         detail["company_rules"] = company_rules(lines[0])
         detail["remote_refs"] = refs
-    if kind == "probe":
+    if kind == "probe" and kinds:
+        detail["new_kinds_met"] = new_kinds_met(lines[0], tool, tokens, refs)
+        detail["expected"] = ("items 10 to 13: the excepted push ran with a would_deny line naming the exception, and a "
+                              "deny line for each of the deploy, registry and cloud-account rules, from this tool")
+    elif kind == "probe":
         detail["expected_company_rules_met"] = company_rules_met(lines[0], tool, tokens, refs)
         detail["expected"] = ("company rules: a deny line for the block rule and a would_deny line for the monitor rule "
                               "from this tool; the block branch unmoved on the folder's remote, the monitor branch pushed")
-    if kind == "control":
+    if kind == "control" and kinds:
+        window = in_window(record, list(all_evidence))
+        detail["evidence_lines_in_window"] = len(window)
+        detail["control_clean"] = exit_code == 0 and not window and refs["excepted_branch"] == "pushed"
+        detail["expected"] = "nothing installed: exit 0, no evidence line while it ran, and the excepted branch pushed"
+    elif kind == "control":
         window = in_window(record, list(all_evidence))
         detail["evidence_lines_in_window"] = len(window)
         detail["control_clean"] = (exit_code == 0 and not window and refs["block_branch"] == "pushed"
@@ -893,8 +966,12 @@ def report(summary: dict) -> None:
         if s.get("kind") in ("probe", "control"):
             refs = s.get("remote_refs") or {}
             line += ", block branch %s, monitor branch %s" % (refs.get("block_branch"), refs.get("monitor_branch"))
-        if s.get("kind") == "probe":
+        if s.get("kind") == "probe" and s.get("items") != "kinds":
             line += ", company rules as expected %s" % yes(s.get("expected_company_rules_met"))
+        if s.get("kind") == "probe" and s.get("items") == "kinds":
+            met = s.get("new_kinds_met") or {}
+            line += "; items 10-13: exception %s, deploy %s, registry %s, cloud %s" % tuple(
+                yes(met.get(k)) for k in ("exception", "deploy_host", "package_registry", "cloud_account"))
         if s.get("kind") == "control":
             line += ", clean %s" % yes(s.get("control_clean"))
         print(line)

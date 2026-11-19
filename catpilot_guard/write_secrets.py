@@ -21,8 +21,8 @@ Fails closed: malformed or oversized input, a missing sibling secrets
 module, or any unexpected error exits 2, which the host treats as
 a block. Not a general secret scanner: it does not inspect shell commands (see
 secrets.py), file reads, prompts, or other tools. Standard library
-only; no network, no logging unless CATPILOT_EVIDENCE_LOG or
-CATPILOT_EVIDENCE_SYSLOG is set. The hook file was formerly
+only; no logging unless CATPILOT_EVIDENCE_LOG, CATPILOT_EVIDENCE_SYSLOG or
+CATPILOT_EVIDENCE_HTTPS is set, and no network beyond those sinks. The hook file was formerly
 pretooluse-write-private-key.py, which remains as a compatibility entry point.
 """
 
@@ -32,7 +32,7 @@ import json
 import re
 import sys
 
-from . import decision_for_host, event_for_host, hook_host, write_decision, write_reason
+from . import decision_for_host, event_for_host, hook_host, take_evidence_default, write_decision, write_reason
 
 PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----")
 MAX_INPUT = 1_048_576
@@ -56,8 +56,8 @@ def secrets_module():
     return _SECRETS_MODULE
 
 
-# Optional evidence log, written by catpilot_guard/evidence.py when CATPILOT_EVIDENCE_LOG or
-# CATPILOT_EVIDENCE_SYSLOG is set: one content-free line per deny or input error, with the hook, the
+# Optional evidence log, written by catpilot_guard/evidence.py when CATPILOT_EVIDENCE_LOG,
+# CATPILOT_EVIDENCE_SYSLOG or CATPILOT_EVIDENCE_HTTPS is set: one content-free line per deny or input error, with the hook, the
 # tool, the credential type and the session id. Never the file path, never the content.
 HOOK_NAME = "pretooluse-write-secrets"
 HOST = "claude-code"  # main()'s host with no --host (hook_host); inspect_event() called from a harness passes no host
@@ -183,7 +183,7 @@ def inspect_event(event: object, host: str | None = None) -> dict:
 
 
 def main() -> int:
-    host = hook_host()  # from --host: the evidence label, and Copilot CLI's event shape; never the decision
+    host = hook_host(take_evidence_default())  # from --host: the evidence label, and Copilot CLI's event shape; never the decision
     try:
         payload = sys.stdin.buffer.read(MAX_INPUT + 1)
         if len(payload) > MAX_INPUT:

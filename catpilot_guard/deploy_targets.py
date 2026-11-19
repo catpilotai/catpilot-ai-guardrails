@@ -34,8 +34,8 @@ What is recognized, exactly:
 Every scp or rsync upload to another machine counts, a backup to a dev box included, and a host without a dot cannot be
 listed in a rule, so a deploy_host rule fires on those too: start such rules in monitor. Not recognized: a deploy a
 script or CI job runs internally, a vendor this list does not name, a custom domain set in a project file (the service's
-own domain is the target then), `ssh` sessions, `curl` uploads, container pushes (a package_registry matter) and cloud
-object copies (a cloud_account matter).
+own domain is the target then), `ssh` sessions, `curl` uploads, container pushes (a package_registry matter, read by
+registry_targets.py) and cloud object copies (a cloud_account matter, read by cloud_targets.py when they name an account).
 
 Standard library only. Python 3.8+.
 """
@@ -292,9 +292,12 @@ def _git_push_heroku(args: list) -> Target | None:
     return None
 
 
-def deploy_targets(command: str, cwd: str | None = None, depth: int = 0, deadline: float | None = None) -> list:
+def deploy_targets(command: str, cwd: str | None = None, depth: int = 0, deadline: float | None = None,
+                   commands: list | None = None) -> list:
     """Every deploy or publish target the command names, each once, in the order first named. cwd, where the command
-    runs, tells a directory `vercel dist` deploys from a subcommand it does not know. Raises ReadTimeout (a
+    runs, tells a directory `vercel dist` deploys from a subcommand it does not know. commands is the command's simple
+    commands, when the caller has split it already (company_rules splits once for every kind, with
+    registry_targets.split_command, which reads it as destructive._simple_commands does). Raises ReadTimeout (a
     ValueError) past the reading deadline, as destructive._simple_commands does."""
     deadline = _deadline(deadline)
     targets: list = []
@@ -303,7 +306,7 @@ def deploy_targets(command: str, cwd: str | None = None, depth: int = 0, deadlin
         if target is not None and target not in targets:
             targets.append(target)
 
-    for argv in _simple_commands(command, 0, deadline):
+    for argv in (commands if commands is not None else _simple_commands(command, 0, deadline)):
         # bash keeps the carriage return of a CR-LF line ending in the line's last word, where it is no part of a
         # host: `scp f host.example.org:/srv` sent with CR-LF reaches host.example.org, as the other readings say.
         argv = [word.rstrip("\r") for word in argv]

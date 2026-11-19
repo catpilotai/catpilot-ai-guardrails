@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -38,6 +39,8 @@ SHA = "a" * 64
 # Values a rule may list. Planted so a test can show none of them leaves the hook or compile's printout.
 BRANCH_MARKER = "zq-marker-branch"
 HOST_MARKER = "zq-marker.apps.example.org"
+REGISTRY_MARKER = "zq-marker.registry.example.org/zq-path"
+ACCOUNT_MARKER = "gcp:zq-marker-project"
 
 
 def policy_dict(rules=None, expires="2099-01-01", **top) -> dict:
@@ -95,7 +98,7 @@ class PolicyFormatTests(unittest.TestCase):
             "a short hash": json.dumps(policy_dict(source_sha256="abc")).encode(),
             "an impossible date": json.dumps(policy_dict(expires="2027-13-45")).encode(),
             "no rules": json.dumps(policy_dict(rules=[])).encode(),
-            "an unknown kind": json.dumps(policy_dict(rules=[branch_rule(kind="cloud_account")])).encode(),
+            "an unknown kind": json.dumps(policy_dict(rules=[branch_rule(kind="dns_zone")])).encode(),
             "an unknown mode": json.dumps(policy_dict(rules=[branch_rule(mode="warn")])).encode(),
             "a bad id": json.dumps(policy_dict(rules=[branch_rule(rule_id="Bad_Id")])).encode(),
             "a repeated id": json.dumps(policy_dict(rules=[branch_rule(), branch_rule()])).encode(),
@@ -114,6 +117,15 @@ class PolicyFormatTests(unittest.TestCase):
         policy = parsed([branch_rule(), {"id": "deploy-hosts", "kind": "deploy_host", "mode": "block", "values": ["apps.example.org"]}])
         self.assertEqual([r.kind for r in policy.rules], ["protected_branch", "deploy_host"])
         self.assertIn("deploy_host", pol.ENFORCED_KINDS)
+
+    def test_package_registry_and_cloud_account_rules_are_carried_and_enforced(self):
+        policy = parsed([{"id": "registries", "kind": "package_registry", "mode": "monitor", "values": ["npm.example.org/x"]},
+                         {"id": "accounts", "kind": "cloud_account", "mode": "ask", "values": ["aws:111122223333"]}])
+        self.assertEqual([r.kind for r in policy.rules], ["package_registry", "cloud_account"])
+        for kind in ("package_registry", "cloud_account"):
+            self.assertIn(kind, pol.KINDS)
+            self.assertIn(kind, pol.ENFORCED_KINDS)
+            self.assertIn(kind, cr.WHAT)
 
     def test_branch_values_match_like_the_built_in_check(self):
         cases = [("refs/heads/deploy", "deploy", True),("main", "main", True), ("main", "MAIN", True), ("main", "mainline", False), ("main", "", False),
@@ -272,8 +284,22 @@ class DecisionTests(unittest.TestCase):
             self.assertEqual(effect(self.decide("git push -f", cwd=repo)), "deny")
             head.write_text("ref: refs/heads/feature/x\n")
             self.assertEqual(self.decide("git push -f", cwd=repo), {})
-            head.write_text("0123456789abcdef0123456789abcdef01234567\n")  # detached: the built-in check covers it
-            self.assertEqual(self.decide("git push -f", cwd=repo), {})
+            # Detached: the branch is unknown. The built-in check denies it, and every company rule now fires too.
+            head.write_text("0123456789abcdef0123456789abcdef01234567\n")
+            self.assertEqual(effect(self.decide("git push -f", cwd=repo)), "deny")
+            self.assertEqual(effect(self.decide("git push --force origin HEAD", cwd=repo)), "deny")
+
+    def test_a_branch_the_hook_cannot_read_fires_every_rule(self):
+        # A rule that lists none of these branches still fires: the variable could name any branch.
+        rules = [branch_rule(values=["zq-only-this-branch"])]
+        for command in ("git push --force origin $BRANCH", 'git push -f origin "${TARGET}"', "git push -f origin ${B:-main}",
+                        "git push origin --delete $OLD", "git push origin :$OLD", "git push origin +HEAD:$DEST",
+                        "git push --force origin `git branch --show-current`", 'bash -lc "git push -f origin \\$B"'):
+            with self.subTest(command=command):
+                self.assertEqual(effect(self.decide(command, rules)), "deny")
+        for command in ("git push origin $BRANCH", "git push --force $REMOTE feature/x", "git push -f origin ${SRC}:feature/x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.decide(command, rules), {})
 
     def test_monitor_decides_nothing_and_logs_would_deny(self):
         result = self.decide("git push --force origin main", [branch_rule(mode="monitor")])
@@ -357,6 +383,64 @@ class DecisionTests(unittest.TestCase):
         for event in ([], {"tool_name": "Bash"}, {"tool_name": "Bash", "tool_input": {"command": 3}}):
             with self.subTest(event=event), self.assertRaises(ValueError):
                 cr.decide(event, "claude-code", parsed())
+
+
+class BranchContextTests(unittest.TestCase):
+    """The company rules read the checked-out branch as the built-in check does: unknown after a command that may
+    change it, known after `git switch X` (review of #133). Run on a feature branch, so only that rule decides."""
+
+    def test_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").mkdir()
+            (Path(tmp) / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
+            policy = parsed([branch_rule(values=("main",))])
+            fired = lambda command: [r.id for r, excepted_by in cr.matched_rules(command, tmp, policy) if not excepted_by]
+            for command in ("cd ../m && git push -f", "git checkout main && git push -f origin HEAD", "git switch main && git push -f",
+                            "git switch other && git push -f", "bash -lc 'export GIT_DIR=../x/.git; git push -f'",
+                            'git() { :; }; git push -f origin "$(git branch --show-current)"', "env -C ../m git push -f"):
+                with self.subTest(command=command):
+                    self.assertEqual(fired(command), ["protected-branches"])
+            for command in ("git push -f", 'git push -f origin "$(git branch --show-current)"',
+                            'git commit -m "fix parse() bug" && git push --force-with-lease'):
+                with self.subTest(command=command):
+                    self.assertEqual(fired(command), [])
+            # A destination with an expansion fires only the rules it could match (review of #137).
+            hotfix = parsed([branch_rule(values=("hotfix/*",))])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules("git push -f origin hotfix/$V", tmp, hotfix) if not excepted_by], ["protected-branches"])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules("git push -f origin feature/$V", tmp, hotfix) if not excepted_by], [])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules('git push -f origin "$B"', tmp, hotfix) if not excepted_by], ["protected-branches"])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules("git push origin :refs/tags/$T", tmp, policy) if not excepted_by], [])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules('git push -f origin "$P/main"', tmp, policy) if not excepted_by], ["protected-branches"])
+            # A company value spelled refs/heads/ reads as the branch (review of 0b0f13f).
+            spelled = parsed([branch_rule(values=("refs/heads/main",))])
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules('git push -f origin "ma$X"', tmp, spelled) if not excepted_by], ["protected-branches"])
+            # A word past the limit before git's subcommand may hold `push` itself (review of b2474bd).
+            self.assertEqual(fired("git {push,-f,origin,feature:main,HEAD:refs/tmp/{1..64}}"), ["protected-branches"])
+            self.assertEqual(fired("git {status,log,HEAD:refs/tmp/{1..64}}"), ["protected-branches"])
+            # No checkout's branch is the workflow's (the pull-request check): unknown, so it fires.
+            self.assertEqual([r.id for r, excepted_by in cr.matched_rules("git push -f", tmp, policy, branch_known=False) if not excepted_by], ["protected-branches"])
+
+
+class StandardCommandTests(unittest.TestCase):
+    """verify runs a company-rules command only when it is exactly the one install.sh writes, for each tool."""
+
+    def test_each_tool_s_install_command_matches(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ssf_for_standard", ORG / "session_start_files.py")
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        for managed in ("/etc/claude-code", "/Library/Application Support/ClaudeCode", "/opt/a (x+y)[1]{2}|b^c*d?.e"):
+            root = Path(helper.tree(managed))
+            hook, policy = root / "hooks" / helper.COMPANY_HOOK, root / "policy" / helper.POLICY_NAME
+            for host, command in (("claude-code", helper.company_hook_command(managed, "claude-code")),
+                                  ("codex", helper.company_hook_command(managed, "codex")),
+                                  ("copilot-cli", helper.copilot_command(managed, helper.COMPANY_HOOK, enforce_policy=True))):
+                with self.subTest(managed=managed, host=host):
+                    self.assertTrue(helper.standard_company_command(command, hook, host, policy))
+                    self.assertTrue(helper.standard_company_command(command + " --ask", hook, host, policy))
+                    self.assertTrue(helper.standard_company_command(command.replace('" --host', '" --ask --host'), hook, host, policy))
+                    self.assertFalse(helper.standard_company_command(command + "; true", hook, host, policy))
+                    self.assertFalse(helper.standard_company_command(command + " --ask --ask", hook, host, policy))
 
 
 class ArgumentTests(unittest.TestCase):
@@ -477,6 +561,10 @@ class CompileTests(unittest.TestCase):
         text = EXAMPLE_V2.read_text(encoding="utf-8").replace(f'salt: "{vo.EXAMPLE_SALT}"', f'salt: "{TEST_SALT}"')
         text = text.replace('values: ["main", "release/*", "hotfix/*"]', 'values: ["main", "release/*", "%s/*"]' % BRANCH_MARKER)
         text = text.replace('values: ["apps.example.org", "*.apps.example.org"]', 'values: ["%s"]' % HOST_MARKER)
+        text = text.replace('values: ["npm.example.org", "pypi.example.org/simple"]', 'values: ["%s"]' % REGISTRY_MARKER)
+        text = text.replace('values: ["aws:111122223333", "azure:00000000-0000-0000-0000-000000000000", "gcp:example-org-apps"]',
+                            'values: ["%s"]' % ACCOUNT_MARKER)
+        assert REGISTRY_MARKER in text and ACCOUNT_MARKER in text
         self.rules = self.tmp / "rules.yaml"
         self.rules.write_text(text, encoding="utf-8")
         self.out = self.tmp / "policy.json"
@@ -502,8 +590,12 @@ class CompileTests(unittest.TestCase):
         self.assertEqual(policy.source_sha256, __import__("hashlib").sha256(self.rules.read_bytes()).hexdigest())
         self.assertEqual(policy.expires_on, dt.date(2027, 5, 17))
         self.assertEqual([(r.id, r.kind, r.mode) for r in policy.rules],
-                         [("protected-branches", "protected_branch", "block"), ("deploy-hosts", "deploy_host", "monitor")])
+                         [("protected-branches", "protected_branch", "block"), ("deploy-hosts", "deploy_host", "monitor"),
+                          ("package-registries", "package_registry", "monitor"), ("cloud-accounts", "cloud_account", "ask")])
         self.assertEqual(policy.rules[1].use_instead_text, "Internal App Platform (company sign-in)")
+        self.assertEqual(policy.rules[2].use_instead_text, "The internal package mirror")
+        self.assertEqual(policy.rules[3].use_instead_text, "The approved cloud subscription managed by IT")
+        self.assertEqual(policy.rules[2].values, (REGISTRY_MARKER,))
         self.assertEqual(stat.S_IMODE(os.stat(self.out).st_mode), 0o644)
 
     def test_compile_is_deterministic_and_copies_nothing_else(self):
@@ -519,7 +611,13 @@ class CompileTests(unittest.TestCase):
         code, out, err = self.compile()
         self.assertIn("protected-branches | protected_branch | block | deny | deny", out)
         self.assertIn("deploy-hosts | deploy_host | monitor | log would_deny only | log would_deny only", out)
-        for value in (BRANCH_MARKER, HOST_MARKER, "release/*", TEST_SALT):
+        self.assertIn("package-registries | package_registry | monitor | log would_deny only | log would_deny only", out)
+        self.assertIn("cloud-accounts | cloud_account | ask | deny; asks the person only if the hook command has --ask | "
+                      "deny (Codex cannot ask)", out)
+        self.assertNotIn("not enforced in this release", out)
+        self.assertIn("WARNING: enforcement.rules[3] (cloud-accounts): mode ask differs by host", err)
+        for value in (BRANCH_MARKER, HOST_MARKER, REGISTRY_MARKER, "zq-marker.registry", "zq-path", ACCOUNT_MARKER,
+                      "zq-marker-project", "release/*", TEST_SALT):
             self.assertNotIn(value, out + err)
 
     def test_ask_is_shown_as_deny_on_codex(self):
@@ -580,8 +678,17 @@ class CompileTests(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), "{}")
 
 
+def vo_prefix() -> str:
+    """The evidence prefix install.sh puts on each hook command."""
+    return 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl"'
+
+
 class DeployTests(unittest.TestCase):
     """install.sh --overlay with an enforcement section, verify.sh and uninstall.sh, as root would run them."""
+
+    # These tests check the package-tree layout, which install.sh keeps behind --package-tree for one release;
+    # tests/test_deploy_zipapp.py runs the layout-agnostic ones again with the zipapp, the default.
+    PACKAGE_TREE = "1"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -596,7 +703,8 @@ class DeployTests(unittest.TestCase):
         self.rules.write_text(text, encoding="utf-8")
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("CATPILOT_EVIDENCE")}
         self.env.update(CATPILOT_ALLOW_NONROOT="1", CATPILOT_CC_DIR=str(self.cc), CATPILOT_CODEX_DIR=str(self.codex),
-                        CATPILOT_COPILOT_DIR=str(self.tmp / "copilot"), PYTHON_BIN=sys.executable, HOME=str(self.home))
+                        CATPILOT_COPILOT_DIR=str(self.tmp / "copilot"), PYTHON_BIN=sys.executable, HOME=str(self.home),
+                        CATPILOT_PACKAGE_TREE=self.PACKAGE_TREE)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -614,15 +722,24 @@ class DeployTests(unittest.TestCase):
             self.assertEqual(pol.load(path, os.getuid()).rules[0].id, "protected-branches")
             self.assertTrue((managed / "catpilot-guardrails" / "hooks" / "pretooluse-company-rules.py").exists())
         settings = json.loads((self.cc / "managed-settings.json").read_text(encoding="utf-8"))
-        commands = [h["command"] for g in settings["hooks"]["PreToolUse"] if g["matcher"] == "Bash" for h in g["hooks"]]
+        commands = [h["command"] for g in settings["hooks"]["PreToolUse"] if g["matcher"] == "Bash|PowerShell" for h in g["hooks"]]
         self.assertTrue(any("pretooluse-company-rules.py" in c and "--policy" in c for c in commands))
         requirements = (self.codex / "requirements.toml").read_text(encoding="utf-8")
-        self.assertIn("pretooluse-company-rules.py\" --host codex --policy \"%s" % self.codex, requirements)
+        self.assertIn("pretooluse-company-rules.py\" --evidence-default --host codex --policy \"%s" % self.codex, requirements)
         verify = self.run_script("verify.sh")
         self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
         self.assertRegex(verify.stdout, r"denies\s+pretooluse-company-rules.py --host claude-code denies a force push")
         self.assertRegex(verify.stdout, r"wired\s+\S*requirements.toml runs pretooluse-company-rules.py, which denies")
-        self.assertNotIn("hotfix", verify.stdout)
+        # The example's package-registries rule is in monitor and its cloud-accounts rule in ask, which acts as block
+        # without --ask; verify probes both on each tool, without printing a probe command or a listed value.
+        self.assertRegex(verify.stdout, r"logs\s+pretooluse-company-rules.py --host claude-code logs, without blocking, a package "
+                                        r"install from a registry rule package-registries does not allow \(monitor\)")
+        self.assertRegex(verify.stdout, r"denies\s+pretooluse-company-rules.py --host codex denies a cloud command naming an "
+                                        r"account rule cloud-accounts does not allow \(ask\)")
+        self.assertRegex(verify.stdout, r"wired\s+\S*managed-settings.json runs pretooluse-company-rules.py, which denies a cloud command")
+        for text in ("hotfix", "npm.example.org", "pypi.example.org", "111122223333", "example-org-apps", "registry.npmjs.org",
+                     "000000000000", "assume-role"):
+            self.assertNotIn(text, verify.stdout)
         uninstall = self.run_script("uninstall.sh", "--server-url", URL)
         self.assertEqual(uninstall.returncode, 0, uninstall.stdout + uninstall.stderr)
         self.assertFalse((self.cc / "managed-settings.json").exists())
@@ -637,6 +754,204 @@ class DeployTests(unittest.TestCase):
         verify = self.run_script("verify.sh")
         self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
         self.assertIn("denies a force push to a branch rule trial-branches protects (monitor)", verify.stdout)
+
+    def test_verify_fails_a_hook_that_decides_nothing_without_reading_the_rule(self):
+        # A probe that expects no decision (a monitor rule, or one an exception covers) also needs the would_deny line,
+        # since a hook that reads no rule decides nothing too (review of #134).
+        text = self.rules.read_text(encoding="utf-8").replace(
+            "  rules:\n", '  rules:\n    - {id: trial-branches, kind: protected_branch, mode: monitor, values: ["trial-zq/*"]}\n', 1)
+        self.rules.write_text(text, encoding="utf-8")
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        verify = self.run_script("verify.sh")
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+        self.assertIn("logs, without blocking, a force push to a branch rule trial-branches protects (monitor)", verify.stdout)
+        for managed in (self.cc, self.codex):
+            (managed / "catpilot-guardrails" / "hooks" / "pretooluse-company-rules.py").write_text("print('{}')\n")
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("its evidence has no would_deny line for trial-branches from this policy", verify.stdout)
+
+    def test_verify_needs_the_exception_id_on_an_excepted_probe(self):
+        until = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+        text = self.rules.read_text(encoding="utf-8").replace(
+            "  exceptions:\n",
+            '  exceptions:\n    - {id: exception-all-branches, rule: protected-branches, allows: ["main", "release/*", "hotfix/*"], '
+            'approver_role: "Release manager", expires_on: %s}\n' % until, 1)
+        self.rules.write_text(text, encoding="utf-8")
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        verify = self.run_script("verify.sh")
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+        self.assertIn("allowed by an active exception: the rule decides nothing", verify.stdout)
+        self.assertRegex(verify.stdout, r"wired\s+\S*managed-settings.json runs pretooluse-company-rules.py, which logs")
+        for managed in (self.cc, self.codex):
+            (managed / "catpilot-guardrails" / "hooks" / "pretooluse-company-rules.py").write_text("print('{}')\n")
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("its evidence has no would_deny line for protected-branches with the exception's id from this policy", verify.stdout)
+        # A hook that logs the rule but ignores the exception (no exception_id) fails too (review of #134).
+        stub = (
+            "import json, os, sys\n"
+            "args = sys.argv[1:]\n"
+            "host = args[args.index('--host') + 1]\n"
+            "sha = json.load(open(args[args.index('--policy') + 1]))['source_sha256']\n"
+            "line = {'event': 'would_deny', 'hook': 'pretooluse-company-rules', 'rule_id': 'protected-branches', 'host': host,\n"
+            "        'mode': 'block', 'policy_sha256': sha}\n"
+            "log = os.environ.get('CATPILOT_EVIDENCE_LOG')\n"
+            "if log:\n"
+            "    os.makedirs(os.path.dirname(log), exist_ok=True)\n"
+            "    open(log, 'a').write(json.dumps(line) + '\\n')\n"
+            "sys.stdin.read()\n"
+            "print('{}')\n")
+        for managed in (self.cc, self.codex):
+            (managed / "catpilot-guardrails" / "hooks" / "pretooluse-company-rules.py").write_text(stub)
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("with the exception's id", verify.stdout)
+
+    def test_verify_fails_a_registered_command_that_reads_no_rule(self):
+        # Review of #134: the registered command, not only the hook run directly, must show it read the rule. Here it
+        # has no evidence prefix and a --policy it cannot load, so on an all-monitor policy it decides nothing.
+        text = self.rules.read_text(encoding="utf-8").replace("      mode: block\n", "      mode: monitor\n", 1)
+        self.rules.write_text(text, encoding="utf-8")
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        self.assertEqual(self.run_script("verify.sh").returncode, 0)
+        path = self.cc / "managed-settings.json"
+        settings = json.loads(path.read_text(encoding="utf-8"))
+        for group in settings["hooks"]["PreToolUse"]:
+            for hook in group["hooks"]:
+                if "pretooluse-company-rules.py" in hook["command"]:
+                    command = hook["command"].replace(vo_prefix(), "").strip()
+                    hook["command"] = re.sub(r'--policy "[^"]*"', '--policy "/nonexistent/company-policy.json"', command)
+        path.write_text(json.dumps(settings), encoding="utf-8")
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertRegex(verify.stdout, r"evidence has no would_deny line for|expected it to|verify does not run it")
+
+    def test_verify_fails_registered_commands_that_cannot_prove_they_read_the_rule(self):
+        # Review of #134: a no-op that mentions the hook, the wrong --host, and a command writing evidence where verify
+        # cannot read it all decide nothing on an all-monitor policy; none may pass.
+        text = self.rules.read_text(encoding="utf-8").replace("      mode: block\n", "      mode: monitor\n", 1)
+        self.rules.write_text(text, encoding="utf-8")
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        path = self.cc / "managed-settings.json"
+        original = path.read_text(encoding="utf-8")
+        for label, rewrite in {
+            "a no-op": lambda c: "echo '{}' # pretooluse-company-rules.py",
+            "syntax glued to the evidence value": lambda c: c.replace(vo_prefix(), "CATPILOT_EVIDENCE_SYSLOG=1;exit;"),
+            "a keyword after the assignment": lambda c: c.replace(vo_prefix(), vo_prefix() + " [[ -n x ]] &&"),
+            "an expansion that aborts": lambda c: c.replace(vo_prefix(), 'CATPILOT_EVIDENCE_LOG="${CATPILOT_LOG_DIR:?}/e.jsonl"'),
+            "the wrong host": lambda c: c.replace("--host claude-code", "--host codex") if "--host claude-code" in c else c + " --host codex",
+        }.items():
+            with self.subTest(case=label):
+                settings = json.loads(original)
+                for group in settings["hooks"]["PreToolUse"]:
+                    for hook in group["hooks"]:
+                        if "pretooluse-company-rules.py" in hook["command"]:
+                            hook["command"] = rewrite(hook["command"])
+                path.write_text(json.dumps(settings), encoding="utf-8")
+                verify = self.run_script("verify.sh")
+                self.assertNotEqual(verify.returncode, 0, verify.stdout)
+                self.assertRegex(verify.stdout, r"evidence has no would_deny line for|expected it to|verify does not run it")
+        # Verify runs each command exactly as registered (review of #134): evidence sent anywhere but the standard
+        # prefix's path cannot prove the rule was read, and fails with that reason; nothing is skipped.
+        for prefix in ('CATPILOT_EVIDENCE_LOG="$HOME/Library/Logs/catpilot/evidence.jsonl"', "CATPILOT_EVIDENCE_SYSLOG=1", ""):
+            with self.subTest(prefix=prefix):
+                settings = json.loads(original)
+                for group in settings["hooks"]["PreToolUse"]:
+                    for hook in group["hooks"]:
+                        if "pretooluse-company-rules.py" in hook["command"]:
+                            hook["command"] = hook["command"].replace(vo_prefix(), prefix).strip()
+                path.write_text(json.dumps(settings), encoding="utf-8")
+                verify = self.run_script("verify.sh")
+                self.assertNotEqual(verify.returncode, 0, verify.stdout)
+                self.assertRegex(verify.stdout, r"or send its evidence somewhere verify cannot read|verify does not run it")
+                lines = [l for l in verify.stdout.splitlines() if "managed-settings.json" in l and "pretooluse-company-rules.py" in l]
+                self.assertFalse(any(l.startswith("skipped") for l in lines), lines)
+        # Verify never sends a probe line to a real sink (review of #134): a syslog or outside-$HOME command is not run.
+        import socket
+        listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(listener.close)
+        listener.bind(("127.0.0.1", 0))
+        listener.settimeout(0.5)
+        port = listener.getsockname()[1]
+        outside = self.tmp / "outside" / "evidence.jsonl"
+        for prefix in ("CATPILOT_EVIDENCE_SYSLOG=127.0.0.1:%d" % port, vo_prefix() + " CATPILOT_EVIDENCE_SYSLOG=127.0.0.1:%d" % port,
+                       "CATPILOT_EVIDENCE_LOG=%s" % outside):
+            with self.subTest(sink=prefix):
+                settings = json.loads(original)
+                for group in settings["hooks"]["PreToolUse"]:
+                    for hook in group["hooks"]:
+                        if "pretooluse-company-rules.py" in hook["command"]:
+                            hook["command"] = hook["command"].replace(vo_prefix(), prefix)
+                path.write_text(json.dumps(settings), encoding="utf-8")
+                verify = self.run_script("verify.sh")
+                self.assertNotEqual(verify.returncode, 0)
+                self.assertIn("verify does not run it", verify.stdout)
+                with self.assertRaises(socket.timeout):
+                    listener.recvfrom(65536)
+                self.assertFalse(outside.exists())
+        # Only the command install.sh writes is run (review of #134): another spelling, a wrapper or an env file is not,
+        # and fails; the same command with --ask is run, and passes.
+        for label, rewrite in {
+            "another spelling of the prefix": lambda c: c.replace(vo_prefix(), 'CATPILOT_EVIDENCE_LOG="$HOME"/.catpilot-guardrails/evidence.jsonl'),
+            "a wrapper": lambda c: "bash -c " + shlex.quote(c),
+            "an env file": lambda c: "set -a; . /etc/catpilot.env; set +a; " + c,
+            "HOME moved": lambda c: "HOME=/tmp/elsewhere; " + c,
+            # The match is anchored at both ends and pins the interpreter, the hook and one --ask (final review).
+            "a command after it": lambda c: c + "; true",
+            "a command joined after it": lambda c: c + " && true",
+            "another hook path": lambda c: c.replace("/hooks/pretooluse-company-rules.py", "/hooks/../hooks/pretooluse-company-rules.py"),
+            "another interpreter": lambda c: re.sub(r'(evidence\.jsonl") ("[^"]+"|python3) ', r'\1 python3.99 ', c),
+            "two --ask": lambda c: c + " --ask --ask",
+        }.items():
+            with self.subTest(case=label):
+                settings = json.loads(original)
+                for group in settings["hooks"]["PreToolUse"]:
+                    for hook in group["hooks"]:
+                        if "pretooluse-company-rules.py" in hook["command"]:
+                            hook["command"] = rewrite(hook["command"])
+                path.write_text(json.dumps(settings), encoding="utf-8")
+                verify = self.run_script("verify.sh")
+                self.assertNotEqual(verify.returncode, 0)
+                self.assertIn("with a command other than the one install.sh writes", verify.stdout)
+        settings = json.loads(original)
+        for group in settings["hooks"]["PreToolUse"]:
+            for hook in group["hooks"]:
+                if "pretooluse-company-rules.py" in hook["command"]:
+                    hook["command"] += " --ask"
+        path.write_text(json.dumps(settings), encoding="utf-8")
+        verify = self.run_script("verify.sh")
+        self.assertEqual(verify.returncode, 0, verify.stdout)
+        path.write_text(original, encoding="utf-8")
+        self.assertEqual(self.run_script("verify.sh").returncode, 0)
+
+    def test_verify_fails_a_hook_that_decides_without_reading_the_rule(self):
+        # On the example's block rule the probe decides (deny), and the proof line is still needed (review of #134).
+        self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)
+        self.assertEqual(self.run_script("verify.sh").returncode, 0)
+        hooks = self.cc / "catpilot-guardrails" / "hooks"
+        original = (hooks / "pretooluse-company-rules.py").read_text()
+        # Another hook under the company hook's name: it denies a force push to main, but reads no company rule.
+        (hooks / "pretooluse-company-rules.py").write_text((hooks / "pretooluse-destructive-ops.py").read_text())
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        # Both runs, on the deciding probe: the hook run directly, and the registered command.
+        self.assertRegex(verify.stdout, r"pretooluse-company-rules.py --host claude-code gave the expected decision on a force push"
+                                        r"[^\n]*no rule line for protected-branches")
+        self.assertRegex(verify.stdout, r"which gave the expected decision on a force push[^\n]*no rule line for protected-branches")
+        (hooks / "pretooluse-company-rules.py").write_text(original)
+        # A stale copy of the policy: the hook decides, but from another policy.
+        policy = self.cc / "catpilot-guardrails" / "policy" / "company-policy.json"
+        stale = policy.with_name("company-policy-stale.json")
+        data = json.loads(policy.read_text(encoding="utf-8"))
+        data["source_sha256"] = "f" * 64
+        stale.write_text(json.dumps(data), encoding="utf-8")
+        os.chmod(stale, 0o644)
+        path = self.cc / "managed-settings.json"
+        path.write_text(path.read_text(encoding="utf-8").replace("company-policy.json", "company-policy-stale.json"), encoding="utf-8")
+        verify = self.run_script("verify.sh")
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("with a command other than the one install.sh writes", verify.stdout)
 
     def test_verify_fails_a_registered_hook_without_a_policy(self):
         self.assertEqual(self.run_script("install.sh", "--server-url", URL, "--overlay", str(self.rules)).returncode, 0)

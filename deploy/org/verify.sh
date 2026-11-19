@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Checks of what deploy/org/install.sh placed, run as a normal user. It checks that the files are present
-# (the hooks and the catpilot_guard package they import from beside them), that the Python interpreter the
-# hook commands use can start, that each installed hook denies a harmless probe (AWS's documentation-only
+# (the zipapp, catpilot-guard.pyz, with the SHA-256 install.sh recorded beside it and owned by root, or after
+# install.sh --package-tree the hooks and the catpilot_guard package they import from beside them), that the Python
+# interpreter the hook commands name (the absolute path install.sh recorded, or python3 from PATH for an earlier install) runs
+# Python 3.8 or later, that each installed hook denies a harmless probe (AWS's documentation-only
 # example key, a force push to main) and lets an ordinary command through, and that managed-settings.json
 # actually runs each hook on the tools it covers. For Codex it checks the hook copies under
 # /etc/codex/catpilot-guardrails/hooks/, runs each on harmless probes in Codex's event shape (Bash, apply_patch),
@@ -9,8 +11,10 @@
 # rules at session start: the block and its sidecar on each tool and that their SHA-256 hashes match, the
 # marked section of the managed CLAUDE.md, the expiry date, the session-start script run directly for each
 # tool, and the SessionStart hook that managed-settings.json and /etc/codex/requirements.toml register, run
-# the way the tool would. It writes only to a temporary directory it removes on exit, sends nothing anywhere,
-# and writes no evidence line.
+# the way the tool would. It works in a temporary directory it removes on exit, where the probes' evidence lines
+# go, as long as the registered commands are install.sh's own: a built-in hook's command changed to another
+# evidence path, a wrapper or an env file writes its probe lines where those send them (one naming syslog is
+# skipped); a company-rules command that is not exactly install.sh's is not run.
 #
 # It runs the hooks directly, not through Claude Code, so it proves nothing about what a session does:
 # Claude Code's own PATH can differ from this shell's, and only a session shows the host applying a deny.
@@ -24,9 +28,19 @@ esac
 CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
 CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
 COPILOT_DIR="${CATPILOT_COPILOT_DIR:-/etc/github-copilot}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-RULES_FILES="$(cd "$(dirname "$0")" && pwd)/session_start_files.py"
+# A trailing slash would keep the paths written into managed files from matching the ones checked and rewritten.
+no_trailing_slash() { local d="$1"; while [ "${d%/}" != "$d" ]; do d="${d%/}"; done; printf '%s' "${d:-/}"; }
+CC_DIR="$(no_trailing_slash "$CC_DIR")"; CODEX_DIR="$(no_trailing_slash "$CODEX_DIR")"
+COPILOT_DIR="$(no_trailing_slash "$COPILOT_DIR")"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=interpreter.sh
+. "$HERE/interpreter.sh" || { echo "interpreter.sh is not beside verify.sh: run verify.sh from a checkout" >&2; exit 2; }
+# The interpreter install.sh recorded in the hook commands; PYTHON_BIN overrides it; python3 for an earlier install.
+RECORDED_PYTHON="$(recorded_interpreter "$CC_DIR/managed-settings.json" "$CODEX_DIR/requirements.toml" "$COPILOT_DIR/policy.d/catpilot-guardrails.json")"
+PYTHON_BIN="${PYTHON_BIN:-${RECORDED_PYTHON:-python3}}"
+RULES_FILES="$HERE/session_start_files.py"
 HOOK_DIR="$CC_DIR/catpilot-guardrails/hooks"
+ZIPAPP="$HOOK_DIR/catpilot-guard.pyz"
 TIMEOUT_SECONDS=10  # the timeout managed-settings.json gives each hook
 NO_START="Claude Code (with onFailure block) then blocks every command and write the hooks cover, and Codex can let them run unchecked."
 ok=0; missing=0; failed=0; python_ok=0
@@ -42,41 +56,32 @@ json_ok() {
   "$PYTHON_BIN" -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" 2>/dev/null && echo "valid    $1 parses as JSON" || { echo "INVALID  $1 does not parse as JSON"; missing=$((missing+1)); }
 }
 
-# run_limited SECONDS STDIN_FILE STDOUT_FILE COMMAND...: the command's exit status, or 124 when it ran too long.
-# Plain bash, because macOS has no timeout(1).
-run_limited() {
-  local seconds="$1" input="$2" output="$3" pid ticks=0
-  shift 3
-  "$@" < "$input" > "$output" 2>/dev/null &
-  pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$ticks" -ge $((seconds * 10)) ]; then
-      kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 124
-    fi
-    sleep 0.1; ticks=$((ticks + 1))
+# count_report: echo report lines from session_start_files.py and count them like check() and fail() do.
+count_report() {
+  local line
+  while IFS= read -r line; do
+    echo "$line"
+    case "$line" in
+      "present  "*) ok=$((ok+1)) ;;
+      MISSING*|INVALID*) missing=$((missing+1)) ;;
+      FAIL*) failed=$((failed+1)) ;;
+    esac
   done
-  wait "$pid"
 }
 
 check_python() {
-  local resolved status version
-  resolved="$(command -v "$PYTHON_BIN" 2>/dev/null || true)"
-  if [ -z "$resolved" ]; then
-    fail "$PYTHON_BIN is not on this PATH. $NO_START"; return
+  if [ -n "$RECORDED_PYTHON" ]; then
+    echo "recorded $RECORDED_PYTHON (the interpreter the hook commands name)"
+    [ "$PYTHON_BIN" = "$RECORDED_PYTHON" ] || echo "note     PYTHON_BIN=$PYTHON_BIN is checked here instead of the recorded interpreter"
+  else
+    echo "note     the hook commands name python3 from each session's PATH (an install before the interpreter was recorded);"
+    echo "         run install.sh again, which proves an interpreter and records its absolute path"
   fi
-  if [ "$(uname -s)" = "Darwin" ] && [ "$resolved" = "/usr/bin/python3" ] && ! xcode-select -p >/dev/null 2>&1; then
-    fail "$PYTHON_BIN is the macOS Command Line Tools stub ($resolved) and the tools are not installed, so it opens an install prompt instead of running. $NO_START"; return
+  if prove_interpreter "$PYTHON_BIN"; then
+    echo "runs     $PYTHON_BIN, Python $PROVEN_VERSION ($PROVEN_PYTHON)"; python_ok=1
+  else
+    fail "$PROVEN_ERROR. $NO_START"
   fi
-  run_limited "$TIMEOUT_SECONDS" /dev/null "$WORK/version" "$resolved" -c \
-    'import sys; print("%d.%d" % sys.version_info[:2]); sys.exit(0 if sys.version_info >= (3, 8) else 3)'
-  status=$?
-  version="$(head -n 1 "$WORK/version" 2>/dev/null || true)"
-  case "$status" in
-    0) echo "runs     $PYTHON_BIN, Python $version ($resolved)"; python_ok=1 ;;
-    3) fail "$PYTHON_BIN is Python $version ($resolved); the hooks need 3.8 or later. $NO_START" ;;
-    124) fail "$PYTHON_BIN ($resolved) did not start within ${TIMEOUT_SECONDS}s. $NO_START" ;;
-    *) fail "$PYTHON_BIN ($resolved) exited $status instead of starting. $NO_START" ;;
-  esac
 }
 
 # judge NAME WHAT EXPECT STATUS: report the output of the last run in $WORK/out.
@@ -95,11 +100,13 @@ judge() {
   fi
 }
 
-# probe HOOK_FILE WHAT EVENT_FILE EXPECT: run one installed hook directly with the checked interpreter.
+# probe HOOK_FILE WHAT EVENT_FILE EXPECT [CHECK]: run one installed hook directly with the checked interpreter; with
+# CHECK, HOOK_FILE names the check and it runs from the zipapp.
 probe() {
-  local name status
+  local name status target=("$1")
   name="$(basename "$1")"
-  run_limited "$TIMEOUT_SECONDS" "$3" "$WORK/out" env -u CATPILOT_EVIDENCE_LOG -u CATPILOT_EVIDENCE_SYSLOG "$PYTHON_BIN" "$1"
+  [ $# -ge 5 ] && target=("$ZIPAPP" "$5")
+  run_limited "$TIMEOUT_SECONDS" "$3" "$WORK/out" env -u CATPILOT_EVIDENCE_LOG -u CATPILOT_EVIDENCE_SYSLOG "$PYTHON_BIN" "${target[@]}"
   status=$?
   if judge "$name" "$2" "$4" "$status"; then
     if [ "$4" = deny ]; then echo "denies   $name: $2"; else echo "passes   $name: $2"; fi
@@ -124,6 +131,14 @@ HOOKS = (("pretooluse-secrets.py", "secrets", ("Bash",)),
          ("pretooluse-destructive-ops.py", "destructive", ("Bash",)),
          ("pretooluse-write-secrets.py", "write", WRITE_TOOLS),
          ("pretooluse-write-private-key.py", "write", WRITE_TOOLS))
+# The check each hook file runs in the zipapp (install.sh without --package-tree).
+CHECKS = {"pretooluse-secrets.py": "secrets", "pretooluse-destructive-ops.py": "destructive",
+          "pretooluse-write-secrets.py": "write-secrets"}
+def runs(command, filename):
+    if filename in command:
+        return True
+    check = CHECKS.get(filename)
+    return check is not None and re.search(r"catpilot-guard\.pyz\"?\s+%s(?=[\s\"\x27]|$)" % re.escape(check), command) is not None
 def covers(matcher, tool):
     if matcher in (None, "", "*"):
         return True
@@ -142,7 +157,7 @@ for group in groups if isinstance(groups, list) else []:
         if not isinstance(command, str):
             continue
         for filename, kind, tools in HOOKS:
-            if filename in command:
+            if runs(command, filename):
                 uncovered = ",".join(t for t in tools if not covers(group.get("matcher"), t))
                 on_failure = entry.get("onFailure") if isinstance(entry.get("onFailure"), str) else ""
                 sys.stdout.write("%s\037%s\037%s\037%s\037%s\0" % (kind, filename, uncovered, on_failure, command))
@@ -188,18 +203,38 @@ echo
 echo "Claude Code (managed dir: $CC_DIR)"
 check "$CC_DIR/managed-settings.json"; [ -e "$CC_DIR/managed-settings.json" ] && json_ok "$CC_DIR/managed-settings.json"
 [ -e "$CC_DIR/managed-mcp.json" ] && { echo "present  $CC_DIR/managed-mcp.json (fixed server set: only its servers load in CLI sessions)"; json_ok "$CC_DIR/managed-mcp.json"; } || echo "absent   $CC_DIR/managed-mcp.json (optional; the server may come from managedMcpServers or a repository .mcp.json)"
-check "$HOOK_DIR/pretooluse-secrets.py"
-check "$HOOK_DIR/pretooluse-write-secrets.py"
-check "$HOOK_DIR/pretooluse-write-private-key.py"  # compatibility entry point for older settings
-check "$HOOK_DIR/pretooluse-destructive-ops.py"
-# The package the hooks import from beside them; a hook that cannot load it exits 2, which blocks everything it covers.
-for m in __init__ secrets write_secrets destructive evidence session_start; do check "$HOOK_DIR/catpilot_guard/$m.py"; done
+if [ -e "$ZIPAPP" ]; then
+  # The zipapp: its SHA-256 against the one install.sh recorded, its owner and mode, the modules in it.
+  if [ "$python_ok" -ne 1 ]; then
+    check "$ZIPAPP"; check "$ZIPAPP.sha256"; fail "the zipapp's SHA-256 was not checked (no working interpreter)"
+  elif [ ! -f "$RULES_FILES" ]; then
+    check "$ZIPAPP"; fail "$RULES_FILES, which checks the zipapp, is not beside verify.sh: run verify.sh from a checkout"
+  else
+    count_report < <("$PYTHON_BIN" "$RULES_FILES" verify-zipapp --hooks-dir "$HOOK_DIR" 2>&1 \
+                       || echo "FAIL     the zipapp checks stopped with an error (above)")
+  fi
+else
+  check "$HOOK_DIR/pretooluse-secrets.py"
+  check "$HOOK_DIR/pretooluse-write-secrets.py"
+  check "$HOOK_DIR/pretooluse-write-private-key.py"  # compatibility entry point for older settings
+  check "$HOOK_DIR/pretooluse-destructive-ops.py"
+  # The package the hooks import from beside them; a hook that cannot load it exits 2, which blocks everything it covers.
+  for m in __init__ secrets write_secrets destructive evidence session_start; do check "$HOOK_DIR/catpilot_guard/$m.py"; done
+fi
 for s in "$CC_DIR"/.claude/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
 echo
 
 echo "Hooks, run directly on harmless probes"
 if [ "$python_ok" -ne 1 ]; then
   echo "skipped  no working interpreter (see the FAIL line above)"
+elif [ -e "$ZIPAPP" ]; then
+  # The checks keep the names of the hook files they replace, so the lines read the same in either layout.
+  probe pretooluse-secrets.py "a command carrying AWS's documentation example key" "$WORK/event-credential" deny secrets
+  probe pretooluse-secrets.py "ls" "$WORK/event-ls" pass secrets
+  probe pretooluse-destructive-ops.py "git push --force origin main" "$WORK/event-force-push" deny destructive
+  probe pretooluse-destructive-ops.py "ls" "$WORK/event-ls" pass destructive
+  probe pretooluse-write-secrets.py "a file write carrying AWS's documentation example key" "$WORK/event-write" deny write-secrets
+  [ -e "$CC_DIR/managed-settings.json" ] && check_wiring
 else
   [ -e "$HOOK_DIR/pretooluse-secrets.py" ] && {
     probe "$HOOK_DIR/pretooluse-secrets.py" "a command carrying AWS's documentation example key" "$WORK/event-credential" deny
@@ -216,24 +251,12 @@ else
 fi
 echo
 
-# count_report: echo report lines from session_start_files.py and count them like check() and fail() do.
-count_report() {
-  local line
-  while IFS= read -r line; do
-    echo "$line"
-    case "$line" in
-      "present  "*) ok=$((ok+1)) ;;
-      MISSING*|INVALID*) missing=$((missing+1)) ;;
-      FAIL*) failed=$((failed+1)) ;;
-    esac
-  done
-}
-
 echo "Codex CLI (managed dir: $CODEX_DIR)"
 check "$CODEX_DIR/managed_config.toml"
 for s in "$CODEX_DIR"/skills/catpilot-*/SKILL.md; do [ -e "$s" ] && echo "present  $s"; done
 # The PreToolUse hooks requirements.toml declares, run directly and through a shell the way Codex would, with HOME
-# at the temporary directory and no evidence variable, so no evidence line is written anywhere real.
+# at the temporary directory and no evidence variable, so install.sh's own commands write their probes' evidence
+# there; a command changed to send it elsewhere (another path, a wrapper, an env file) writes it there.
 if [ ! -f "$RULES_FILES" ]; then
   fail "$RULES_FILES, which checks the Codex hooks, is not beside verify.sh: run verify.sh from a checkout"
 elif [ "$python_ok" -ne 1 ]; then
@@ -261,7 +284,7 @@ echo
 
 # Company rules at session start (install.sh --overlay). The checks and the runs are in session_start_files.py:
 # each run gets a SessionStart event on stdin, HOME pointed at the temporary directory and no evidence variable,
-# so no evidence line is written anywhere real.
+# so install.sh's own commands write their evidence there (a changed command writes it where it sends it).
 echo "Company rules at session start (advice, not enforcement)"
 if [ ! -f "$RULES_FILES" ]; then
   if [ -e "$CC_DIR/catpilot-guardrails/instructions/company-checklist.json" ] || [ -e "$CODEX_DIR/catpilot-guardrails/instructions/company-checklist.json" ]; then
@@ -278,8 +301,8 @@ fi
 echo
 
 # Company enforcement rules (install.sh --overlay with an enforcement section): the compiled policy and the
-# company-rules hook on each tool, run directly and as the managed file registers it, with HOME at the temporary
-# directory, so no evidence line is written anywhere real.
+# company-rules hook on each tool, run directly and as the managed file registers it (only when it is install.sh's
+# own command), with HOME at the temporary directory, where the probes' evidence lines go.
 echo "Company enforcement rules (the company-rules hook)"
 if [ ! -e "$CC_DIR/catpilot-guardrails/policy/company-policy.json" ] && [ ! -e "$CODEX_DIR/catpilot-guardrails/policy/company-policy.json" ] \
    && [ ! -e "$COPILOT_DIR/catpilot-guardrails/policy/company-policy.json" ] \

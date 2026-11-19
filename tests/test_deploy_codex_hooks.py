@@ -55,6 +55,10 @@ def parse_toml(text: str) -> dict:
 
 
 class CodexManagedHookTests(unittest.TestCase):
+    # These tests check the package-tree layout, which install.sh keeps behind --package-tree for one release;
+    # tests/test_deploy_zipapp.py runs the layout-agnostic ones again with the zipapp, the default.
+    PACKAGE_TREE = "1"
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
@@ -64,7 +68,8 @@ class CodexManagedHookTests(unittest.TestCase):
         self.home.mkdir()
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("CATPILOT_EVIDENCE")}
         self.env.update({"CATPILOT_ALLOW_NONROOT": "1", "CATPILOT_CC_DIR": str(self.cc), "CATPILOT_CODEX_DIR": str(self.codex),
-                         "CATPILOT_COPILOT_DIR": str(self.tmp / "copilot"), "PYTHON_BIN": sys.executable, "HOME": str(self.home)})
+                         "CATPILOT_COPILOT_DIR": str(self.tmp / "copilot"), "PYTHON_BIN": sys.executable, "HOME": str(self.home),
+                         "CATPILOT_PACKAGE_TREE": self.PACKAGE_TREE})
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -86,7 +91,7 @@ class CodexManagedHookTests(unittest.TestCase):
         return self.codex / "requirements.toml"
 
     def command(self, name: str) -> str:
-        return f'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "{self.hooks / name}" --host codex'
+        return f'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" "{sys.executable}" "{self.hooks / name}" --evidence-default --host codex'
 
     def snapshot(self) -> dict:
         files = {}
@@ -112,7 +117,8 @@ class CodexManagedHookTests(unittest.TestCase):
         self.assertEqual(list(self.hooks.rglob("__pycache__")), [])
 
         text = self.requirements.read_text(encoding="utf-8")
-        self.assertEqual(text, helper.requirements_toml(str(self.codex), rules=False) + "\n")
+        with helper.interpreter(sys.executable):
+            self.assertEqual(text, helper.requirements_toml(str(self.codex), rules=False) + "\n")
         self.assertEqual(self.requirements.stat().st_mode & 0o777, 0o644)
         data = parse_toml(text)
         self.assertEqual(data["features"], {"hooks": True})
@@ -175,7 +181,7 @@ class CodexManagedHookTests(unittest.TestCase):
         env = dict(self.env, PYTHON_BIN="/usr/bin/false")
         proc = self.run_script("install.sh", "--server-url", URL, "--skills", "", env=env)
         self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
-        self.assertIn("did not run as Python 3.8 or later", proc.stderr)
+        self.assertIn("Not installed: /usr/bin/false exited 1 instead of running Python", proc.stderr)
         self.assertEqual(self.snapshot(), {})
 
     # --- verify --------------------------------------------------------------------------------------------------
@@ -262,7 +268,7 @@ class CodexManagedHookTests(unittest.TestCase):
     def test_a_command_without_the_host_argument_is_noted(self):
         self.install()
         text = self.requirements.read_text(encoding="utf-8")
-        self.requirements.write_text(text.replace('pretooluse-secrets.py" --host codex', 'pretooluse-secrets.py"'), encoding="utf-8")
+        self.requirements.write_text(text.replace('pretooluse-secrets.py" --evidence-default --host codex', 'pretooluse-secrets.py" --evidence-default'), encoding="utf-8")
         verify = self.run_script("verify.sh")
         self.assertEqual(verify.returncode, 0, verify.stdout)
         self.assertIn("note     requirements.toml runs pretooluse-secrets.py without --host codex, so its evidence lines say claude-code", verify.stdout)
@@ -342,9 +348,15 @@ class CodexManagedHookTests(unittest.TestCase):
 
     def test_the_hook_table_matches_the_files_install_copies(self):
         install = (ORG / "install.sh").read_text(encoding="utf-8")
+        # install_hooks copies each file it is given from hooks/claude-code/ (with --package-tree); the Codex call
+        # names every hook the table declares.
+        self.assertIn('cp "$REPO/hooks/claude-code/$name" "$dir/"', install)
+        codex_call = install[install.index('install_hooks "$CODEX_DIR/catpilot-guardrails/hooks"'):]
+        codex_call = codex_call[:codex_call.index("\n", codex_call.index("\\\n") + 2)]
         for name in helper.CODEX_HOOK_FILES:
-            self.assertIn(f'"$REPO/hooks/claude-code/{name}"', install)
+            self.assertIn(name, codex_call)
             self.assertTrue((ROOT / "hooks" / "claude-code" / name).is_file())
+            self.assertIn(name, helper.ZIPAPP_CHECKS)  # and the zipapp, the default, has a check for it
         self.assertEqual(set(helper.CODEX_HOOK_FILES), set(HOOK_FILES))
 
 

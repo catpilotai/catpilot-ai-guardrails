@@ -31,4 +31,38 @@ jobs:
         run: python -m unittest discover -s tests -p test_workflows.py -v
 
       - name: Unit tests (hooks, harness gates, tools, MCP server, deploy scripts, manifests)
+        # The runner's Python under /opt/hostedtoolcache is writable by everyone, which install.sh refuses for a real
+        # install; the tests that drive install.sh accept it here. The test of that refusal unsets this.
+        env:
+          CATPILOT_ALLOW_UNPROTECTED_PYTHON: "1"
         run: python -m unittest discover -s tests
+
+      - name: The hooks zipapp builds byte for byte the same, twice and on a second Python (issue #97, option 2)
+        run: |
+          python tools/build_zipapp.py --out "$RUNNER_TEMP/a/catpilot-guard.pyz"
+          /usr/bin/python3 tools/build_zipapp.py --out "$RUNNER_TEMP/b/catpilot-guard.pyz"
+          cmp "$RUNNER_TEMP/a/catpilot-guard.pyz" "$RUNNER_TEMP/b/catpilot-guard.pyz"
+
+  windows:
+    # docs/spec/WINDOWS.md §3.1 and §3.3: the hooks' Python and the install scripts on a Windows runner. tests/windows_suite.py lists the
+    # test modules that apply on Windows; the rest of the suite drives bash, sudo-style installs or POSIX permissions
+    # and runs in the job above. No Claude Code, Codex or Copilot CLI runs here: this is not a host verification.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.8 is the oldest Python the hooks support; 3.12 stands in for the pinned embeddable interpreter.
+        python-version: ["3.8", "3.12"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Hook unit tests that apply on Windows, and install.ps1, verify.ps1 and uninstall.ps1 (standard library only)
+        # test_windows_install runs the PowerShell scripts on this runner (elevated) into temporary directories: with
+        # -PythonPath on both Pythons, and on 3.12 also with the pinned embeddable interpreter install.ps1 downloads.
+        env:
+          CATPILOT_TEST_EMBEDDED_PYTHON: ${{ matrix.python-version == '3.12' && '1' || '0' }}
+        run: python tests/windows_suite.py

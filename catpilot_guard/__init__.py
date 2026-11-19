@@ -99,6 +99,36 @@ def decision_for_host(result: dict, host: str | None) -> dict:
     return result
 
 
+EVIDENCE_DEFAULT_FLAG = "--evidence-default"
+EVIDENCE_ENV = "CATPILOT_EVIDENCE_LOG"
+# Where --evidence-default sends evidence: under the home directory of whoever runs the hook. os.path.expanduser
+# reads HOME on macOS and Linux and USERPROFILE on Windows, so a hook command needs no shell to name it
+# (docs/spec/WINDOWS.md §3.1).
+EVIDENCE_DEFAULT_PATH = os.path.join("~", ".catpilot-guardrails", "evidence.jsonl")
+
+
+def take_evidence_default(argv: list | None = None) -> list:
+    """The hook's arguments without one --evidence-default, applying it. Never raises.
+
+    With the flag, and CATPILOT_EVIDENCE_LOG unset or empty, evidence goes to ~/.catpilot-guardrails/evidence.jsonl,
+    the file the managed commands' `CATPILOT_EVIDENCE_LOG="$HOME/..."` prefix names, without a shell to expand it. A
+    variable already set wins. A home that does not expand to an absolute path sets nothing, so evidence never lands
+    in the session's working directory. The flag changes where evidence is written, never a decision.
+    """
+    try:
+        args = sys.argv[1:] if argv is None else list(argv)
+        if EVIDENCE_DEFAULT_FLAG not in args:
+            return args
+        args.remove(EVIDENCE_DEFAULT_FLAG)
+        if not os.environ.get(EVIDENCE_ENV, "").strip():
+            path = os.path.expanduser(EVIDENCE_DEFAULT_PATH)
+            if os.path.isabs(path):
+                os.environ[EVIDENCE_ENV] = path
+        return args
+    except Exception:
+        return list(sys.argv[1:] if argv is None else argv)
+
+
 def hook_host(argv: list | None = None) -> str | None:
     """The tool a PreToolUse check runs on, from `--host claude-code|codex|copilot-cli`.
 
