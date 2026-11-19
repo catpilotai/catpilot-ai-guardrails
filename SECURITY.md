@@ -4,7 +4,9 @@ If you believe you've found a security issue, please report it privately. 🙏
 
 ## Reporting
 
-**Email:** hi@catpilot.ai
+**Preferred: GitHub private vulnerability reporting.** Open [a private advisory](https://github.com/catpilotai/catpilot-ai-guardrails/security/advisories/new) (the repository's Security tab, "Report a vulnerability"). Only the maintainers see it.
+
+**Or email:** hi@catpilot.ai
 
 **What to include:**
 - Reproduction steps
