@@ -1,6 +1,13 @@
 # Dot-sourced by install.ps1, verify.ps1 and uninstall.ps1 (docs/spec/WINDOWS.md section 3.3): the managed paths, the
 # administrator check and the interpreter check. Windows PowerShell 5.1 or PowerShell 7.
 
+# Windows PowerShell started from PowerShell 7 inherits a PSModulePath that names PowerShell 7's modules first, and
+# then cannot load its own (Get-Acl, Get-FileHash, ...). Start from the machine's value, with this edition's modules.
+if ($PSVersionTable.PSEdition -ne 'Core') {
+  $env:PSModulePath = (@((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'),
+      [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')) | Where-Object { $_ }) -join ';'
+}
+
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $WindowsFiles = Join-Path $PSScriptRoot 'windows_files.py'
 # The managed locations each tool reads (WINDOWS.md section 2). The CATPILOT_* variables point them elsewhere for tests.

@@ -238,6 +238,20 @@ def check_acl(report: Report, path: Path) -> None:
                     "run install.ps1 again" % path)
 
 
+INHERITED_ACE = 0x10
+
+
+def explicit_sids(path: str) -> int:
+    """Print the SID of each explicit (not inherited) allow entry on PATH, one per line, for install.ps1."""
+    sys.path.insert(0, str(REPO))
+    from catpilot_guard import policy
+    _, aces = policy._windows_security(name=path)
+    for ace_type, flags, _, sid in aces or []:
+        if sid and not flags & INHERITED_ACE and ace_type not in policy.ACCESS_DENIED_ACE_TYPES:
+            print(sid)
+    return 0
+
+
 def split_windows(command: str) -> list:
     return [a if a else b for a, b in re.findall(r'"([^"]*)"|(\S+)', command)]
 
@@ -343,6 +357,8 @@ def verify(args) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="action")
+    p = sub.add_parser("explicit-sids")
+    p.add_argument("path")
     for action in ("place", "remove", "verify"):
         p = sub.add_parser(action)
         p.add_argument("--cc-dir", required=True)
@@ -355,6 +371,8 @@ def main(argv=None) -> int:
             p.add_argument("--server-url", required=True)
     args = parser.parse_args(argv)
     try:
+        if args.action == "explicit-sids":
+            return explicit_sids(args.path)
         if args.action == "place":
             return place(args)
         if args.action == "remove":

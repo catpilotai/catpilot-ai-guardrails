@@ -48,6 +48,14 @@ $PinnedSha256 = @{
 if ($ServerUrl -notmatch '^https?://[^"\\\s]+$') { Stop-WithError "-ServerUrl must be an http(s) URL (your own server)." }
 Assert-Administrator
 
+# .NET rather than Get-FileHash, Invoke-WebRequest and Expand-Archive: their modules may not load in Windows
+# PowerShell started from PowerShell 7 (see windows-common.ps1), and these calls need no module.
+function Get-Sha256([string]$Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  try { $bytes = [Security.Cryptography.SHA256]::Create().ComputeHash($stream) } finally { $stream.Dispose() }
+  return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
 function Install-EmbeddedPython {
   $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
   if (-not $PinnedSha256.ContainsKey($arch)) { Stop-WithError "Not installed: no pinned interpreter for $arch. Pass -PythonPath with Python 3.8 or later." }
@@ -66,12 +74,12 @@ function Install-EmbeddedPython {
       $zip = Join-Path $stage 'python.zip'
       $url = "https://www.python.org/ftp/python/$PinnedVersion/python-$PinnedVersion-embed-$($arch.ToLower()).zip"
       [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-      $ProgressPreference = 'SilentlyContinue'
-      Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+      (New-Object Net.WebClient).DownloadFile($url, $zip)
     }
-    $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
+    $got = Get-Sha256 $zip
     if ($got -ne $sha) { Stop-WithError "Not installed: $zip has SHA-256 $got, not the pinned $sha for Python $PinnedVersion ($arch)." }
-    Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $stage 'python')
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::ExtractToDirectory($zip, (Join-Path $stage 'python'))
     if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dir) | Out-Null
     Copy-Item -LiteralPath (Join-Path $stage 'python') -Destination $dir -Recurse
@@ -104,10 +112,9 @@ function Set-ManagedAcl([string]$Path) {
   & icacls $Path /setowner "*$admins" /T /C /Q | Out-Null
   & icacls $Path /inheritance:r /grant:r "*${admins}:${inherit}F" "*${system}:${inherit}F" "*${users}:${inherit}RX" /C /Q | Out-Null
   if ($LASTEXITCODE -ne 0) { Stop-WithError "icacls could not set the access list of $Path." }
-  foreach ($rule in @((Get-Acl -LiteralPath $Path).Access)) {
-    if ($rule.IsInherited) { continue }
-    $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-    if (@($admins, $system, $users) -notcontains $sid) { & icacls $Path /remove:g "*$sid" /C /Q | Out-Null }
+  # Explicit entries for anyone else (the creating account, say) survive /inheritance:r; windows_files.py lists them.
+  foreach ($sid in @(& $Python $WindowsFiles explicit-sids $Path)) {
+    if ($sid -and (@($admins, $system, $users) -notcontains $sid)) { & icacls $Path /remove:g "*$sid" /C /Q | Out-Null }
   }
   if ($isDir -and @(Get-ChildItem -LiteralPath $Path -Force).Count -gt 0) {
     & icacls (Join-Path $Path '*') /reset /T /C /Q | Out-Null
