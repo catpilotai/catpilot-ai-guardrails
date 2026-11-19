@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -729,14 +730,18 @@ class DestructiveHookTests(unittest.TestCase):
 
         from catpilot_guard.destructive import find_destructive_op
 
-        from catpilot_guard.destructive import within_time_limit
+        from catpilot_guard.destructive import MAX_COMMAND_CHARS_WITHOUT_TIMER, ReadTimeout, within_time_limit
 
         for command in ("env " + "a=c " * 50000 + "rm -rf ~", "sudo " * 40000 + "rm -rf ~", "a=c " * 50000 + "rm -rf ~",
                         "xargs " * 33000 + "git push origin --delete", ">x " * 40000 + "rm -rf ~",
                         "! " * 60000 + "rm -rf ~"):
             with self.subTest(command=command[:20]):
                 started = time.monotonic()
-                self.assertIsNotNone(within_time_limit(find_destructive_op, command, "/nonexistent"))
+                if hasattr(signal, "setitimer") or len(command) <= MAX_COMMAND_CHARS_WITHOUT_TIMER:
+                    self.assertIsNotNone(within_time_limit(find_destructive_op, command, "/nonexistent"))
+                else:  # Windows: no timer, so a command this long is refused (check_command_size), which also blocks
+                    with self.assertRaises(ReadTimeout):
+                        within_time_limit(find_destructive_op, command, "/nonexistent")
                 self.assertLess(time.monotonic() - started, 4.0)
         # The exfiltration signature reads one pipeline segment at a time (the regex it replaced was cubic here).
         started = time.monotonic()
@@ -804,26 +809,30 @@ class DestructiveHookTests(unittest.TestCase):
         from catpilot_guard import destructive
 
         # SIGALRM stops any code, a regex included, and the hook exits 2 with a message that does not say retry.
+        # Windows has no SIGALRM: there the size check below is what bounds the hook.
+        timer = hasattr(signal, "setitimer")
         with mock.patch.object(destructive, "HOOK_TIME_LIMIT_SECONDS", 0.2):
-            with self.assertRaises(destructive.ReadTimeout):
-                destructive.within_time_limit(time.sleep, 2)
+            if timer:
+                with self.assertRaises(destructive.ReadTimeout):
+                    destructive.within_time_limit(time.sleep, 2)
 
-            def slow_decide(event, host=None):
-                time.sleep(2)
+                def slow_decide(event, host=None):
+                    time.sleep(2)
 
-            stdin = io.TextIOWrapper(io.BytesIO(event("ls").encode()))
-            stderr = io.StringIO()
-            with mock.patch.object(destructive, "decide", slow_decide), mock.patch("sys.stdin", stdin), \
-                    mock.patch("sys.stderr", stderr), mock.patch.object(sys, "argv", ["hook"]), \
-                    mock.patch.object(destructive, "record_evidence", lambda *a, **k: None):
-                self.assertEqual(destructive.main(), 2)
-            self.assertIn("could not finish reading this command in time", stderr.getvalue())
-            self.assertNotIn("retry", stderr.getvalue())
+                stdin = io.TextIOWrapper(io.BytesIO(event("ls").encode()))
+                stderr = io.StringIO()
+                with mock.patch.object(destructive, "decide", slow_decide), mock.patch("sys.stdin", stdin), \
+                        mock.patch("sys.stderr", stderr), mock.patch.object(sys, "argv", ["hook"]), \
+                        mock.patch.object(destructive, "record_evidence", lambda *a, **k: None):
+                    self.assertEqual(destructive.main(), 2)
+                self.assertIn("could not finish reading this command in time", stderr.getvalue())
+                self.assertNotIn("retry", stderr.getvalue())
         # Without the timer, a command too long to bound is refused; with it, it is read (short words: no timing).
         long_command = "ls " + "x " * (destructive.MAX_COMMAND_CHARS_WITHOUT_TIMER // 2)
         with self.assertRaises(destructive.ReadTimeout):
             destructive.find_destructive_op(long_command, "/nonexistent")
-        self.assertIsNone(destructive.within_time_limit(destructive.find_destructive_op, long_command, "/nonexistent"))
+        if timer:
+            self.assertIsNone(destructive.within_time_limit(destructive.find_destructive_op, long_command, "/nonexistent"))
         # Review of 0d2a0ed: the timer's ReadTimeout is a ValueError, and must not be read as an unbalanced quote.
         with mock.patch.object(destructive.shlex, "shlex", side_effect=destructive.ReadTimeout("alarm")):
             with self.assertRaises(destructive.ReadTimeout):

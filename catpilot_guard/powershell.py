@@ -554,7 +554,7 @@ def _expand(argv: list, depth: int, assignments: list | None, cmd: bool = False,
     """The simple commands one argv runs: itself, or what it unwraps to. Raises ReadTimeout past the deadline."""
     if not argv:
         return
-    if deadline is not None and time.monotonic() > deadline:
+    if deadline is not None and time.monotonic() >= deadline:
         raise ReadTimeout("the command took too long to read")
     first = argv[0]
     statement = ASSIGNMENT_STATEMENT.match(first) if first.startswith("$") else None
@@ -708,7 +708,7 @@ def _feed_removals(pipeline: list) -> list:
 
 def _flatten(text: str, depth: int, assignments: list | None, nesting: int = 0, deadline: float | None = None):
     nested: list = []
-    if deadline is not None and time.monotonic() > deadline:
+    if deadline is not None and time.monotonic() >= deadline:
         raise ReadTimeout("the command took too long to read")
     for pipeline in _raw_pipelines(text, nested):
         for argv in _feed_removals(pipeline):

@@ -1026,7 +1026,7 @@ def _simple_commands(command: str, depth: int = 0, deadline: float | None = None
         variants = [(True, False)]  # bash 3.2's reading first; others where they can differ (_scan)
         for bash, dq_comment in variants:
             started = time.monotonic()
-            if started + slowest > deadline:
+            if started + slowest >= deadline:
                 raise ReadTimeout("the command took too long to read")
             prepared, posix_differs, dq_hash = _scan(text, bash, dq_comment)
             if len(variants) == 1:
@@ -1092,7 +1092,7 @@ def _wrapper_commands(name: str, rest: list, xargs: tuple | None = None, deadlin
         rest, replace = todo.pop(0)
         ended = False  # the options ended at `--`
         while rest:
-            if deadline is not None and time.monotonic() > deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise ReadTimeout("the command took too long to read")
             arg = rest[-1]
             if arg == "--":
@@ -1196,7 +1196,7 @@ def _strip_wrappers(argv: list[str], deadline: float | None = None, assignments:
             raise ValueError("too many ways to read the command's wrappers")
         rest, xargs = todo.pop(0)
         while rest:
-            if deadline is not None and time.monotonic() > deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise ReadTimeout("the command took too long to read")
             first = rest[-1]
             # An empty command name ('' or "") runs nothing, and one that only expands ($(cmd), $VAR) may expand to
@@ -2076,7 +2076,7 @@ def _points_git_elsewhere(command: str, deadline: float | None = None, readings:
         at_start, assigning, previous, env_options = True, False, "", False
         wrapper, skip, positionals = None, 0, 0
         for i, token in enumerate(tokens):
-            if not i % 4096 and time.monotonic() > deadline:
+            if not i % 4096 and time.monotonic() >= deadline:
                 raise ReadTimeout("the command took too long to read")
             if token in SEPARATORS or set(token) <= set(";&|()\n"):
                 if previous and not previous.endswith(("$", "=")) and previous not in SEPARATORS and not set(previous) <= set(";&|()\n"):
