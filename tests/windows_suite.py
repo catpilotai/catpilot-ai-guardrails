@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-MODULES_3_8 = ("test_powershell", "test_windows", "test_evidence_collection")
+MODULES_3_8 = ("test_powershell", "test_windows", "test_windows_install", "test_evidence_collection")
 MODULES = MODULES_3_8 + (
     "test_hook",
     "test_write_hook",

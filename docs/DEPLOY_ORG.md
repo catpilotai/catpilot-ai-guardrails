@@ -16,6 +16,63 @@ Central deployment puts the same files on every machine from a source the user c
 
 The overlay is the piece that carries your company's facts, and it is the piece to author first: approved hosting, approved services, data classes, the identity rule, review triggers, and who to ask, with a reviewer date and an expiry date ([`docs/spec/OVERLAY.md`](spec/OVERLAY.md)). Run the reference server yourself with `CATPILOT_OVERLAY_FILE` pointing at it, behind your own gateway ([`mcp-server/README.md`](../mcp-server/README.md), [`deploy/README.md`](../deploy/README.md)). The public endpoint at `mcp.catpilot.ai` serves generic defaults only and never a company overlay, so every example below uses `https://mcp.example.com/mcp` as a placeholder for your server.
 
+## One command per machine
+
+From a checkout of the release you are deploying, as an administrator, one command per operating system. Each is
+idempotent: run it again to update the hooks; an unchanged managed file is reported `current`, and one you have
+edited is left alone with the content printed for a merge.
+
+| | Install | Verify (as a normal user) | Remove |
+| --- | --- | --- | --- |
+| macOS, Linux | `sudo PYTHON_BIN=/path/to/python3 deploy/org/install.sh --server-url https://mcp.example.com/mcp` | `deploy/org/verify.sh` | `sudo deploy/org/uninstall.sh --server-url https://mcp.example.com/mcp` |
+| Windows (elevated PowerShell) | `powershell -ExecutionPolicy Bypass -File deploy\org\install.ps1 -ServerUrl https://mcp.example.com/mcp` | `powershell -ExecutionPolicy Bypass -File deploy\org\verify.ps1` | `powershell -ExecutionPolicy Bypass -File deploy\org\uninstall.ps1 -ServerUrl https://mcp.example.com/mcp` |
+
+**The interpreter is proved, then recorded** (decision in issue #97, option 1). The hooks are Python, and a hook that
+cannot start does not run: Claude Code, with `"onFailure": "block"` (2.1.295 or later), then blocks every command and
+write the hooks cover, and Codex or Copilot CLI may let them run unchecked. So before writing anything, `install.sh`
+runs `PYTHON_BIN` (default `python3`, which under `sudo` is root's) with a version check, and refuses to install
+unless it runs Python 3.8 or later: it names the macOS Command Line Tools stub (`/usr/bin/python3` without the tools,
+which opens an install prompt instead of running), an interpreter that is too old, missing, or does not start within
+ten seconds. Under `sudo` it also runs the check as the account that ran `sudo`, so a per-user interpreter is refused.
+Whoever can change the interpreter runs code in every person's hooks, so it also refuses one that anyone but root can
+change: the interpreter as named and the file it resolves to, and every directory above each, must be owned by root
+and writable by no other user or group (gid 0 aside). That refuses a Homebrew Python under a user-owned `/opt/homebrew`
+and a virtual environment in a home directory, whether `sudo`, Jamf or another MDM runs the install;
+`--allow-unprotected-python` (or `CATPILOT_ALLOW_UNPROTECTED_PYTHON=1`) installs anyway, with a warning, for an admin who accepts that.
+It then writes the interpreter's absolute path into every hook command, on every tool, so a session's `PATH`, a
+version manager's shim or a repository's `.python-version` no longer decides which Python runs. `verify.sh` reads the
+recorded interpreter back from the managed files and proves it runs the same way; on files from an earlier install,
+whose commands name `python3`, it says so and checks `python3` from its own `PATH`. `uninstall.sh` recognizes both,
+and `install.sh` replaces a managed file that is exactly what an earlier install with the same options wrote, naming either interpreter,
+so re-installing with another interpreter updates the hook commands.
+
+On Windows, `install.ps1` by default places Python's official embeddable distribution, version 3.12.10, checked
+against its pinned SHA-256 (AMD64 and ARM64), under `C:\Program Files\ClaudeCode\catpilot-guardrails\python\`
+(`CATPILOT_PYTHON_ZIP` names a copy fetched beforehand, for a machine without internet; it is checked the same way).
+`-PythonPath C:\...\python.exe` uses an interpreter IT already deploys instead; it must be absolute, not the
+Microsoft Store alias and not under `C:\Users`, and run Python 3.8 or later, or nothing is installed. It must also be
+one only Administrators, SYSTEM or TrustedInstaller can change: before it is run, every file and directory under its
+directory is checked for that owner and for no write, delete or permission right held by anyone else, and no parent
+may let anyone else delete or replace it; after it runs, every directory and archive on its `sys.path` outside that
+directory is checked the same way. An interpreter Chocolatey or conda left writable by Authenticated Users is refused.
+Each `catpilot-guardrails` directory is created and locked before anything is written into it, and its `hooks\` is
+emptied of anything install.ps1 does not place (in `%ProgramData%`, other accounts may create directories first); the
+pinned interpreter's archive is downloaded, or copied from `CATPILOT_PYTHON_ZIP`, into a staging directory inside the
+locked tree before it is hashed and unpacked. Each hook runs in exec form on Claude Code (`command` the interpreter,
+`args` the hook), as `command_windows` on Codex (in `%ProgramData%\OpenAI\Codex\requirements.toml`, with
+`windows_managed_dir`; Codex runs that line through the session's shell, which on Windows is PowerShell,
+`powershell -NoProfile -Command <line>`, so the line starts with the `&` call operator; on a machine with no
+PowerShell, Codex falls back to `cmd.exe`, where the line does not run and Codex may let the tool run: not verified on a
+host, and `verify.ps1` runs the line through PowerShell as Codex does), and as `exec` with `args` on
+Copilot CLI (`C:\ProgramData\GitHub\Copilot\policy.d\catpilot-guardrails.json`). Each `catpilot-guardrails`
+directory, the interpreter included, and each managed file it writes, gets an explicit access list: owner
+Administrators, full control to Administrators and SYSTEM, read and execute to Users. `verify.ps1` proves the recorded
+interpreter runs, runs each registered command on the same probes as `verify.sh` plus a PowerShell `Remove-Item` of
+`C:\Windows` and a PowerShell credential, and reads the access lists back. Not on Windows yet: `-Overlay` (company
+rules), the Codex managed defaults (per user on Windows, so set the server there through MDM or a repository
+`.mcp.json`), `-PrintRegistry` for Intune and Group Policy, and Codex skills. The scripts run on a `windows-latest`
+CI runner (`tests/test_windows_install.py`); no tool has run on a Windows host ([status](#verification-status)).
+
 ## The files
 
 Everything an administrator places is under [`deploy/org/`](../deploy/org/):
@@ -27,8 +84,11 @@ Everything an administrator places is under [`deploy/org/`](../deploy/org/):
 | `codex/managed_config.toml` | The server as a managed default for Codex CLI |
 | `/etc/codex/requirements.toml` (generated) | The three hooks as managed Codex `PreToolUse` hooks, with `--host codex`, and `[features].hooks = true`; with `--overlay`, also the session-start hook. Written by `install.sh` from `session_start_files.py`, only when there is none |
 | `install.sh` | Places all of it on one macOS or Linux machine as root, with your server URL substituted: the hooks and the `catpilot_guard` package they run go to `<managed dir>/catpilot-guardrails/hooks/` (the package as `hooks/catpilot_guard/`, its `.py` files only, never `__pycache__` or `.pyc`); refuses to overwrite a managed file that already exists and prints what to merge instead; `--managed-mcp-json` also writes the fixed-set `managed-mcp.json`; `--overlay` also places the company rules at session start on both tools (below) |
-| `verify.sh` | Checks as a normal user: the files are present, including each module of the `catpilot_guard` package beside the hooks; the `python3` the hook commands use starts and is 3.8 or later; each installed hook, run directly, denies a harmless probe and lets `ls` through; `managed-settings.json` runs each hook on the tools it covers; after `--overlay`, the company rules at session start (below); and the evidence log's last line. Writes its probes' evidence lines only to a temporary directory, as long as the registered commands keep install.sh's evidence prefix (a built-in hook command changed to another path writes them there; a company-rules command that is not install.sh's is not run); exits non-zero on any failure |
+| `verify.sh` | Checks as a normal user: the files are present, including each module of the `catpilot_guard` package beside the hooks; the interpreter the hook commands name (recorded by `install.sh`) runs Python 3.8 or later; each installed hook, run directly, denies a harmless probe and lets `ls` through; `managed-settings.json` runs each hook on the tools it covers; after `--overlay`, the company rules at session start (below); and the evidence log's last line. Writes its probes' evidence lines only to a temporary directory, as long as the registered commands keep install.sh's evidence prefix (a built-in hook command changed to another path writes them there; a company-rules command that is not install.sh's is not run); exits non-zero on any failure |
 | `uninstall.sh` | Removes exactly what `install.sh` placed, including the `catpilot_guard` package beside the hooks and, after `--overlay`, the session-start files and the marked section of the managed `CLAUDE.md`; leaves a managed file alone if it was edited since |
+| `interpreter.sh` | Sourced by the three scripts: proves an interpreter runs Python 3.8 or later and reads back the one the managed files record |
+| `install.ps1`, `verify.ps1`, `uninstall.ps1`, `windows-common.ps1` | The same on Windows (Windows PowerShell 5.1 or PowerShell 7), [above](#one-command-per-machine) |
+| `windows_files.py` | The standard-library helper the PowerShell scripts call: writes the Windows managed files (only when absent), removes them only when unchanged, and runs `verify.ps1`'s probes and access-list readback |
 | `session_start_files.py` | The standard-library helper the three scripts share for the generated pieces: it adds the `SessionStart` hook to the parsed settings JSON, writes `requirements.toml`, places and removes the marked `CLAUDE.md` section, and runs `verify.sh`'s Codex hook and session-start checks |
 
 The skills come from [`skills/`](../skills/) in a checkout of the release you are deploying; the install script copies them. Pin the release: the files are deterministic per release and the [`CHANGELOG.md`](../CHANGELOG.md) says what changed.
@@ -61,7 +121,7 @@ sudo deploy/org/install.sh --server-url https://mcp.example.com/mcp
 
 **Confirm it on one machine before the fleet.** As a normal user on that machine:
 
-1. `deploy/org/verify.sh` prints what is present, checks that `python3` starts (the managed hooks set `"onFailure": "block"`, so Claude Code 2.1.295 or later blocks a call whose hook cannot start or times out, while Codex can let it run; it names the macOS Command Line Tools stub when that is what `python3` resolves to), runs each installed hook on harmless probes (AWS's documentation example key, `git push --force origin main`, `ls`), and runs each hook command in `managed-settings.json` the same way, so a hooks block that was never merged shows up as a failure. It exits non-zero on any failure. It runs the hooks directly, not through Claude Code, whose own `PATH` can differ from your shell's, so the session steps below are still the proof.
+1. `deploy/org/verify.sh` prints what is present, checks that the recorded interpreter starts (the managed hooks set `"onFailure": "block"`, so Claude Code 2.1.295 or later blocks a call whose hook cannot start or times out, while Codex can let it run; it names the macOS Command Line Tools stub when that is what it resolves to), runs each installed hook on harmless probes (AWS's documentation example key, `git push --force origin main`, `ls`), and runs each hook command in `managed-settings.json` the same way, so a hooks block that was never merged shows up as a failure. It exits non-zero on any failure. It runs the hooks directly, not through Claude Code, whose own `PATH` can differ from your shell's, so the session steps below are still the proof.
 2. Start Claude Code and run `/status`. The `Setting sources` line must list `Enterprise managed settings (file)`; with an MDM profile it says `(plist)` or `(HKLM)`. If the line is missing, the file is not where Claude Code looks, or it failed to parse; `claude doctor` lists dropped entries. If it says `(remote)` and a `Skipped sources` line lists `Enterprise managed settings (file)`, the hooks are not running: see [below](#when-your-organization-also-uses-claudeai-managed-settings).
 3. `claude mcp list` shows `catpilot-guardrails`.
 4. Ask for a command that contains AWS's documentation-only example key: `export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE && echo ok`. It is denied with a reason that names the credential type and does not echo the value. Ask for the same command with `$AWS_ACCESS_KEY_ID`; it runs. On a Claude Code version before 2.1.295, which the hooks' `onFailure` key needs, this denial also shows that the hooks still load: Catpilot has not checked how those versions treat the key.
@@ -203,11 +263,11 @@ command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" pyt
 timeout = 10
 ```
 
-With `--overlay` the session-start hook follows (next section). Writing the file needs Python 3.8 or later as `PYTHON_BIN` (by default `python3`, which under `sudo` is the system one); `install.sh` stops before changing anything when it cannot run. The hooks themselves run `python3` from each person's `PATH`, not `PYTHON_BIN`; `verify.sh` checks that one.
+With `--overlay` the session-start hook follows (next section). The commands above show the form an earlier install wrote; `install.sh` now names the interpreter it proved (`PYTHON_BIN`) by absolute path in place of `python3` ([above](#one-command-per-machine)), and stops before changing anything when it cannot run.
 
 **`[features].hooks = true`.** Codex's documentation says to pin it in `requirements.toml` to keep managed hooks on for someone who turned hooks off in their own `config.toml`. Without it, a person could switch these checks off. It does not switch off anyone's own hooks. `verify.sh` notes a `requirements.toml` that does not pin it and fails one that sets it to `false`. On Python before 3.11, which has no `tomllib` (the macOS Command Line Tools `python3` is 3.9), it reads only a `[features]` table, so it fails a file that sets `features` as a dotted key or an inline table and asks for a newer `PYTHON_BIN`.
 
-**What a denial looks like, and what a failure does.** Codex reads the same deny decision as Claude Code. A hook that cannot read its input or load its package exits 2, which blocks. Codex's documentation also says a `PreToolUse` error, timeout or malformed response can let the tool run, so a hook that never starts protects nothing. `verify.sh` checks the `python3` on its own `PATH`, from a temporary directory. It cannot see one that fails only in some projects: Codex runs hooks in the session's working directory, and where a version manager's shim (pyenv, asdf, mise) comes first on `PATH`, a repository whose `.python-version` names a version that is not installed makes `python3` exit with an error there, and the tool runs. The Claude Code hook commands have the same exposure. On machines with such shims, edit the commands to an absolute interpreter path that every user can run.
+**What a denial looks like, and what a failure does.** Codex reads the same deny decision as Claude Code. A hook that cannot read its input or load its package exits 2, which blocks. Codex's documentation also says a `PreToolUse` error, timeout or malformed response can let the tool run, so a hook that never starts protects nothing. `verify.sh` checks the `python3` on its own `PATH`, from a temporary directory. It cannot see one that fails only in some projects: Codex runs hooks in the session's working directory, and where a version manager's shim (pyenv, asdf, mise) comes first on `PATH`, a repository whose `.python-version` names a version that is not installed makes `python3` exit with an error there, and the tool runs. The Claude Code hook commands had the same exposure. `install.sh` now records an absolute interpreter path in every command, which closes it; on files from an earlier install, reinstall, or edit the commands to an absolute interpreter path that every user can run.
 
 **`verify.sh`** runs each hook directly on harmless probes in Codex's event shape (AWS's documentation key in a command, a force push to `main`, a patch adding that key, and `ls` and a harmless patch that must pass), then runs each command `requirements.toml` declares through a shell, with `HOME` at a temporary directory, so install.sh's own commands write their probes' evidence there (a command changed to send it elsewhere writes it there). Each declared command must deny its probe and let the harmless one through, so a registration that denies everything fails too. It fails a hook that is missing or does not behave, or that sits under a matcher that misses its tool (for file edits, a matcher naming `apply_patch`, `Edit` or `Write` counts, as Codex's documentation says), and notes a command without `--host codex`.
 
@@ -488,7 +548,8 @@ What a pilot report reads from it: denials per hook per day (the hooks were in f
 | GitHub Copilot CLI, policy hooks in `/etc/github-copilot/policy.d/` (`install.sh`), the company-rules hook included | verified on Copilot CLI 1.0.113 on macOS through the host check (one full run at `d605495`, then two Copilot-only reruns at `4cf50c1` with the corrected kit): Copilot loaded the policy file and reported `Denied by preToolUse hook:` with the hook's reason for two force pushes to `main`, an `rm -rf` of a home-directory path, a `terraform` auto-approve apply, AWS's documentation key in a command, a synthetic key block written with `apply_patch`, and the force push a company `block` rule covers (remote branch unmoved); it let the push a `monitor` rule covers through with a `would_deny` line, and the branch moved; with no hooks installed both pushes ran (control). At `4cf50c1` the probe and the control passed in different runs, because the model declined some items in the other session each time. Evidence lines labeled `copilot-cli` ([note](../evals/reports/2026.11.17-host-check-company-rules.md)) | 2026-11-17 (reruns 2026-11-18 UTC) | The maintainer ran the host check; Catpilot recorded |
 | Pull-request check (`tools/pr_check.py`, the `deploy/ci/catpilot-pr-check.yml` template) | not yet run in a repository's CI; tested offline in temporary git repositories (`tests/test_pr_check.py`) | | |
 | Evidence log, hooks and server | unit and stdio contract tests in `tests/` | 2026-09-20 | Catpilot |
-| Windows: the hooks, the PowerShell reader and the policy access-list check ([`docs/spec/WINDOWS.md`](spec/WINDOWS.md) increments 1 and 2) | not verified on a host. Unit tests run on a `windows-latest` CI runner (`tests/windows_suite.py`, Python 3.8 and 3.12), including policy files whose owner and access list `icacls` sets; no Claude Code, Codex or Copilot CLI session has run on Windows. There is no Windows installer yet (increment 3) | | |
+| Windows: the hooks, the PowerShell reader and the policy access-list check ([`docs/spec/WINDOWS.md`](spec/WINDOWS.md) increments 1 and 2) | not verified on a host. Unit tests run on a `windows-latest` CI runner (`tests/windows_suite.py`, Python 3.8 and 3.12), including policy files whose owner and access list `icacls` sets; no Claude Code, Codex or Copilot CLI session has run on Windows | | |
+| Windows: `install.ps1`, `verify.ps1`, `uninstall.ps1` (increment 3) | not verified on a host. On the `windows-latest` CI runner (elevated), `tests/test_windows_install.py` installs into temporary directories with `-PythonPath` (Python 3.8 and 3.12) and with the pinned embeddable interpreter, runs `verify.ps1`, installs again (nothing changes) and uninstalls; it runs no tool | | |
 
 A row moves to "verified" when a person has run the steps on a real machine and recorded the transcript or screenshot under `evals/reports/`, the same standard as the tested-runtimes table.
 

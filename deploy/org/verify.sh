@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Checks of what deploy/org/install.sh placed, run as a normal user. It checks that the files are present
 # (the hooks and the catpilot_guard package they import from beside them), that the Python interpreter the
-# hook commands use can start, that each installed hook denies a harmless probe (AWS's documentation-only
+# hook commands name (the absolute path install.sh recorded, or python3 from PATH for an earlier install) runs
+# Python 3.8 or later, that each installed hook denies a harmless probe (AWS's documentation-only
 # example key, a force push to main) and lets an ordinary command through, and that managed-settings.json
 # actually runs each hook on the tools it covers. For Codex it checks the hook copies under
 # /etc/codex/catpilot-guardrails/hooks/, runs each on harmless probes in Codex's event shape (Bash, apply_patch),
@@ -26,8 +27,13 @@ esac
 CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
 CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
 COPILOT_DIR="${CATPILOT_COPILOT_DIR:-/etc/github-copilot}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-RULES_FILES="$(cd "$(dirname "$0")" && pwd)/session_start_files.py"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=interpreter.sh
+. "$HERE/interpreter.sh" || { echo "interpreter.sh is not beside verify.sh: run verify.sh from a checkout" >&2; exit 2; }
+# The interpreter install.sh recorded in the hook commands; PYTHON_BIN overrides it; python3 for an earlier install.
+RECORDED_PYTHON="$(recorded_interpreter "$CC_DIR/managed-settings.json" "$CODEX_DIR/requirements.toml" "$COPILOT_DIR/policy.d/catpilot-guardrails.json")"
+PYTHON_BIN="${PYTHON_BIN:-${RECORDED_PYTHON:-python3}}"
+RULES_FILES="$HERE/session_start_files.py"
 HOOK_DIR="$CC_DIR/catpilot-guardrails/hooks"
 TIMEOUT_SECONDS=10  # the timeout managed-settings.json gives each hook
 NO_START="Claude Code (with onFailure block) then blocks every command and write the hooks cover, and Codex can let them run unchecked."
@@ -44,41 +50,19 @@ json_ok() {
   "$PYTHON_BIN" -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" 2>/dev/null && echo "valid    $1 parses as JSON" || { echo "INVALID  $1 does not parse as JSON"; missing=$((missing+1)); }
 }
 
-# run_limited SECONDS STDIN_FILE STDOUT_FILE COMMAND...: the command's exit status, or 124 when it ran too long.
-# Plain bash, because macOS has no timeout(1).
-run_limited() {
-  local seconds="$1" input="$2" output="$3" pid ticks=0
-  shift 3
-  "$@" < "$input" > "$output" 2>/dev/null &
-  pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$ticks" -ge $((seconds * 10)) ]; then
-      kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 124
-    fi
-    sleep 0.1; ticks=$((ticks + 1))
-  done
-  wait "$pid"
-}
-
 check_python() {
-  local resolved status version
-  resolved="$(command -v "$PYTHON_BIN" 2>/dev/null || true)"
-  if [ -z "$resolved" ]; then
-    fail "$PYTHON_BIN is not on this PATH. $NO_START"; return
+  if [ -n "$RECORDED_PYTHON" ]; then
+    echo "recorded $RECORDED_PYTHON (the interpreter the hook commands name)"
+    [ "$PYTHON_BIN" = "$RECORDED_PYTHON" ] || echo "note     PYTHON_BIN=$PYTHON_BIN is checked here instead of the recorded interpreter"
+  else
+    echo "note     the hook commands name python3 from each session's PATH (an install before the interpreter was recorded);"
+    echo "         run install.sh again, which proves an interpreter and records its absolute path"
   fi
-  if [ "$(uname -s)" = "Darwin" ] && [ "$resolved" = "/usr/bin/python3" ] && ! xcode-select -p >/dev/null 2>&1; then
-    fail "$PYTHON_BIN is the macOS Command Line Tools stub ($resolved) and the tools are not installed, so it opens an install prompt instead of running. $NO_START"; return
+  if prove_interpreter "$PYTHON_BIN"; then
+    echo "runs     $PYTHON_BIN, Python $PROVEN_VERSION ($PROVEN_PYTHON)"; python_ok=1
+  else
+    fail "$PROVEN_ERROR. $NO_START"
   fi
-  run_limited "$TIMEOUT_SECONDS" /dev/null "$WORK/version" "$resolved" -c \
-    'import sys; print("%d.%d" % sys.version_info[:2]); sys.exit(0 if sys.version_info >= (3, 8) else 3)'
-  status=$?
-  version="$(head -n 1 "$WORK/version" 2>/dev/null || true)"
-  case "$status" in
-    0) echo "runs     $PYTHON_BIN, Python $version ($resolved)"; python_ok=1 ;;
-    3) fail "$PYTHON_BIN is Python $version ($resolved); the hooks need 3.8 or later. $NO_START" ;;
-    124) fail "$PYTHON_BIN ($resolved) did not start within ${TIMEOUT_SECONDS}s. $NO_START" ;;
-    *) fail "$PYTHON_BIN ($resolved) exited $status instead of starting. $NO_START" ;;
-  esac
 }
 
 # judge NAME WHAT EXPECT STATUS: report the output of the last run in $WORK/out.
