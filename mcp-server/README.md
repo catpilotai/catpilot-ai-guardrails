@@ -184,9 +184,16 @@ python -m pip install --only-binary=:all: --require-hashes -r requirements-dev.t
 # stdio, for Claude Code, Codex, Cursor
 python mcp-server/server.py
 
-# streamable HTTP, bound to localhost; put your own gateway in front before exposing it
+# streamable HTTP, bound to localhost
 python mcp-server/server.py --transport streamable-http --host 127.0.0.1 --port 8765
 ```
+
+On any address other than loopback, the server refuses to start with a rules
+file (`CATPILOT_OVERLAY_FILE`) and no authentication. Turn on sign-in with
+`--auth oidc` (below), or pass `--behind-auth-gateway`
+(`CATPILOT_BEHIND_AUTH_GATEWAY=1`) when a gateway in front already
+authenticates every request. Generic defaults with no rules file, stdio, and
+localhost are not affected.
 
 Configuration is by environment variable only. A tool argument can never
 choose the policy file.
@@ -199,6 +206,45 @@ choose the policy file.
 
 Host configuration snippets are in `host-configs/`: a `.mcp.json` for Claude
 Code and a `config.toml` fragment for Codex. Replace the absolute paths.
+
+### Sign-in for Claude.ai and ChatGPT (`--auth oidc`)
+
+Claude.ai and ChatGPT reach a server only as a remote connector over HTTPS. With
+`--auth oidc` the server checks the bearer token your own identity provider
+issued, and a group claim in the token picks the rules file. It is a resource
+server only: it never issues tokens, runs a login page, or registers clients.
+Design, threat model, and failure responses: [`docs/spec/SERVER_AUTH.md`](../docs/spec/SERVER_AUTH.md).
+**Implemented and tested with locally generated keys; not yet verified with
+Claude.ai or ChatGPT on a host.**
+
+```bash
+export CATPILOT_OIDC_ISSUER=https://login.example.com/        # exactly as in the token's iss
+export CATPILOT_RESOURCE_URL=https://guardrails.example.com/mcp
+export CATPILOT_GROUP_RULES_FILE=/etc/catpilot/groups.json    # {"pilot-eng": "/etc/catpilot/rules/eng.yaml"}
+python mcp-server/server.py --transport streamable-http --host 0.0.0.0 --port 8765 \
+  --allowed-host guardrails.example.com --auth oidc
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `CATPILOT_OIDC_ISSUER` | Required. The issuer, exactly as in `iss`. Its JWKS is found by OpenID Connect discovery at startup; a failed discovery stops the server. |
+| `CATPILOT_RESOURCE_URL` | Required. The public `https://` URL of `/mcp`, advertised at `/.well-known/oauth-protected-resource/mcp`. |
+| `CATPILOT_GROUP_RULES_FILE` | Required. JSON object mapping group values, as they appear in the token, to absolute overlay paths. A token must name exactly one rules file. `CATPILOT_OVERLAY_FILE` must be unset. |
+| `CATPILOT_OIDC_AUDIENCE` | The `aud` a token must carry. Defaults to the resource URL; set it when your provider uses its own identifier (Entra ID: `api://<app id>`). Never a client id. |
+| `CATPILOT_OIDC_JWKS_URL` | Skips discovery. `https://` only. |
+| `CATPILOT_OIDC_GROUP_CLAIM` | Default `groups`. |
+| `CATPILOT_OIDC_ALGORITHMS` | Default `RS256,ES256`. Asymmetric algorithms only; `none` and HMAC are refused. |
+| `CATPILOT_OIDC_LEEWAY` | Clock skew in seconds, default 60, at most 300. |
+| `CATPILOT_OIDC_REQUIRED_SCOPES` | Optional, comma-separated. |
+
+Every refusal (no token, bad signature, wrong issuer or audience, expired, no
+configured group, JWKS unreachable) is a 401 with `WWW-Authenticate: Bearer
+... resource_metadata="..."` before any tool runs, and the server logs one line
+with the reason class, never the token. Keys rotate without a restart: an
+unknown key id refetches the JWKS, with at most one fetch attempt per 30
+seconds whether or not the identity provider answers. Run it behind
+HTTPS. Restrict who can get a token for the application at your identity
+provider.
 
 ### Serving several organizations
 
@@ -228,10 +274,12 @@ A hosted instance is live at `https://mcp.catpilot.ai/mcp` (streamable HTTP). It
 
 ## What it is not
 
-- **Not authentication or tenant isolation.** Whoever can reach the process
-  gets the overlay's values. The file, its directory, and the process
-  configuration must be owned by the policy administrator. The tenant-scoped,
-  authenticated version of this server is Catpilot Plus.
+- **Not tenant isolation, and not authenticated unless you turn it on.**
+  Without `--auth oidc`, whoever can reach the process gets the overlay's
+  values; the startup guard only stops that from happening by accident on a
+  non-loopback address. The rules files, their directory, the group map, and the
+  process configuration must be owned by the policy administrator. The
+  multi-tenant hosted version of this server is Catpilot Plus.
 - **Not enforcement.** A lookup the model never made protects nothing. A
   refusal in a conversation is not a blocked action.
 - **Not telemetry.** No logging by default, no outbound calls.
