@@ -201,7 +201,7 @@ PRs welcome: propose a rule, fix a false positive, review a control mapping, add
 
 ## Roadmap
 
-What is shipped, what is deferred, and what this quarter is for: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+What is shipped, what is next, and what is parked until requested: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Project policies
 
