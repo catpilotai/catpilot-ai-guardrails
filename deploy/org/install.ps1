@@ -186,11 +186,12 @@ foreach ($name in ($Skills -split ',' | ForEach-Object { $_.Trim() } | Where-Obj
   Write-Output "skill   $target"
 }
 
+# (--previous-python=VALUE in one word: Windows PowerShell drops an empty argument to a program.)
 # 2. The managed files, written by windows_files.py with the proved interpreter: only when absent, or when they are
 # what an earlier install wrote naming another interpreter.
 $previous = Get-RecordedInterpreter
 if (-not $previous) { $previous = '' }
-$placed = & $Python $WindowsFiles place --python $Python --previous-python $previous --server-url $ServerUrl --cc-dir $CcDir --codex-dir $CodexDir --copilot-dir $CopilotDir
+$placed = & $Python $WindowsFiles place --python $Python "--previous-python=$previous" --server-url $ServerUrl --cc-dir $CcDir --codex-dir $CodexDir --copilot-dir $CopilotDir
 if ($LASTEXITCODE -ne 0) { Stop-WithError "windows_files.py place exited $LASTEXITCODE." }
 $placed | Write-Output
 

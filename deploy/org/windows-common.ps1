@@ -87,16 +87,17 @@ function Test-Interpreter([string]$Path) {
 # TrustedInstaller (an owner outside them, or an allow entry with a right in MASK for anyone else), or $null.
 function Get-UntrustedReason([string]$Path, [long]$Mask, [bool]$CheckOwner) {
   try { $acl = Get-Acl -LiteralPath $Path } catch { return "$Path (its access list cannot be read)" }
-  if ($CheckOwner) {
-    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if ($TrustedSids -notcontains $owner) { return "$Path (owner $owner)" }
-  }
+  $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  if ($CheckOwner -and $TrustedSids -notcontains $owner) { return "$Path (owner $owner)" }
+  # OWNER RIGHTS (S-1-3-4) names whoever owns the object: trusted exactly when that owner is.
+  $trusted = $TrustedSids
+  if ($TrustedSids -contains $owner) { $trusted = $TrustedSids + 'S-1-3-4' }
   foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
     if ($rule.AccessControlType -ne 'Allow') { continue }
     if ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) { continue }
     if (([long]$rule.FileSystemRights -band $Mask) -eq 0) { continue }
     $sid = $rule.IdentityReference.Value
-    if ($TrustedSids -notcontains $sid) { return "$Path ($sid may change it)" }
+    if ($trusted -notcontains $sid) { return "$Path ($sid may change it)" }
   }
   return $null
 }

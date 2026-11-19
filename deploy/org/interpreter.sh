@@ -85,10 +85,11 @@ resolve_path() {
 # unprotected_entry PATH: the first of PATH and its parent directories that someone other than root can change: not
 # owned by root, or writable by its group (unless the group is root's, gid 0) or by everyone. A symlink's own mode
 # does not matter (its directory decides who can replace it). Running as a non-root user (CATPILOT_ALLOW_NONROOT,
-# tests only), that user also counts as root. Prints "PATH (reason)", or nothing.
+# tests only), that user and its groups also count as root's. Prints "PATH (reason)", or nothing.
 unprotected_entry() {
-  local p="$1" listing perms uid gid me
+  local p="$1" listing perms uid gid me groups=" 0 "
   me="$(id -u)"
+  [ "$me" = 0 ] || groups=" 0 $(id -G) "
   while :; do
     listing="$(ls -ldn -- "$p" 2>/dev/null)" || { printf '%s (cannot be read)\n' "$p"; return 0; }
     perms="${listing%% *}"
@@ -98,7 +99,7 @@ unprotected_entry() {
       l*) ;;
       *)
         if [ "$uid" != 0 ] && [ "$uid" != "$me" ]; then printf '%s (owned by uid %s)\n' "$p" "$uid"; return 0; fi
-        if [ "${perms:5:1}" = w ] && [ "$gid" != 0 ]; then printf '%s (writable by group %s)\n' "$p" "$gid"; return 0; fi
+        if [ "${perms:5:1}" = w ] && [ "${groups#* $gid }" = "$groups" ]; then printf '%s (writable by group %s)\n' "$p" "$gid"; return 0; fi
         if [ "${perms:8:1}" = w ]; then printf '%s (writable by everyone)\n' "$p"; return 0; fi
         ;;
     esac
