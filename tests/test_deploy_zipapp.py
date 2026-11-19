@@ -148,12 +148,29 @@ class ZipappPathTests(unittest.TestCase):
                                       capture_output=True, text=True, timeout=30, env=env, cwd=str(self.tmp))
                 self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
                 self.assertEqual(proc.stdout, "")
+
                 self.assertIn("nothing was allowed", proc.stderr)
                 self.assertNotIn(MARKER, proc.stderr)
         start = subprocess.run([sys.executable, str(broken), "session-start", "--host", "codex"], input="{}",
                                capture_output=True, text=True, timeout=30, env=env, cwd=str(self.tmp))
         self.assertEqual(start.returncode, 0, start.stderr)  # SessionStart cannot block: it says the rules are unknown
         self.assertIn("could not be loaded", json.loads(start.stdout)["systemMessage"])
+
+    def test_a_check_that_cannot_load_blocks_with_stderr_closed(self):
+        # A host that starts the hook with no stderr: the message cannot be written, the exit code must still be 2.
+        broken = self.tmp / "broken.pyz"
+        with zipfile.ZipFile(self.archive) as source, zipfile.ZipFile(broken, "w") as target:
+            for info in source.infolist():
+                if info.filename != "catpilot_guard/destructive.py":
+                    target.writestr(info, source.read(info))
+        env = {k: v for k, v in os.environ.items() if not k.startswith("CATPILOT_EVIDENCE")}
+        for args in (["destructive"], ["no-such-check"]):
+            with self.subTest(args=args):
+                proc = subprocess.run(["bash", "-c", '"$0" "$@" 2>&-', sys.executable, str(broken), *args],
+                                      input=bash_event("echo %s" % MARKER, str(self.tmp)), capture_output=True,
+                                      text=True, timeout=30, env=env, cwd=str(self.tmp))
+                self.assertEqual(proc.returncode, 2, proc.stdout)
+                self.assertEqual(proc.stdout, "")
 
 
 class ZipappEnv:
@@ -445,6 +462,21 @@ class ZipappDeployTests(ZipappEnv, unittest.TestCase):
         self.assertTrue(settings.exists())
         self.assertTrue((cc_hooks / "pretooluse-secrets.py").is_file())  # still run by the kept file
         self.assertFalse((self.codex / "catpilot-guardrails").exists())
+
+    def test_a_managed_directory_given_with_a_trailing_slash_still_runs_the_zipapp(self):
+        self.env["CATPILOT_CC_DIR"] = str(self.cc) + "//"
+        self.env["CATPILOT_CODEX_DIR"] = str(self.codex) + "/"
+        self.install()
+        settings = (self.cc / "managed-settings.json").read_text(encoding="utf-8")
+        self.assertNotRegex(settings, r"pretooluse-[a-z-]+\.py")
+        self.assertIn(f"{self.cc}/catpilot-guardrails/hooks/{ZIPAPP}", settings)
+        self.assertNotIn("//catpilot-guardrails", settings)
+        verify = self.run_script("verify.sh")
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+        self.assertNotIn("FAIL", verify.stdout)
+        uninstall = self.run_script("uninstall.sh", "--server-url", URL)
+        self.assertEqual(uninstall.returncode, 0, uninstall.stdout + uninstall.stderr)
+        self.assertFalse((self.cc / "catpilot-guardrails").exists())
 
     def test_a_failed_build_installs_nothing(self):
         checkout = self.tmp / "checkout"

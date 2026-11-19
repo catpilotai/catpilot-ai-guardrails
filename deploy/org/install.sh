@@ -97,6 +97,10 @@ esac
 CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
 CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
 COPILOT_DIR="${CATPILOT_COPILOT_DIR:-/etc/github-copilot}"
+# A trailing slash would keep the paths written into managed files from matching the ones checked and rewritten.
+no_trailing_slash() { local d="$1"; while [ "${d%/}" != "$d" ]; do d="${d%/}"; done; printf '%s' "${d:-/}"; }
+CC_DIR="$(no_trailing_slash "$CC_DIR")"; CODEX_DIR="$(no_trailing_slash "$CODEX_DIR")"
+COPILOT_DIR="$(no_trailing_slash "$COPILOT_DIR")"
 RULES_FILES="$REPO/deploy/org/session_start_files.py"
 
 PRIVATE_TMP=""

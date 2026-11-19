@@ -67,11 +67,23 @@ def rules_unavailable():
     return 0
 
 
+def refuse(message):
+    """Fail closed even when stderr is closed or broken: the exit code, 2, is what blocks."""
+    try:
+        sys.stderr.write(message)
+        sys.stderr.flush()
+    except Exception:
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+        except Exception:
+            pass
+    return 2
+
+
 def run():
     sys.dont_write_bytecode = True
     if len(sys.argv) < 2 or sys.argv[1] not in CHECKS:
-        sys.stderr.write("usage: catpilot-guard.pyz {%s} [options]; nothing was allowed\\n" % ",".join(sorted(CHECKS)))
-        return 2
+        return refuse("usage: catpilot-guard.pyz {%s} [options]; nothing was allowed\\n" % ",".join(sorted(CHECKS)))
     name = sys.argv.pop(1)
     try:
         module = importlib.import_module(CHECKS[name])
@@ -83,8 +95,7 @@ def run():
     except Exception as exc:  # fail closed: a check that cannot load blocks
         if name == "session-start":
             return rules_unavailable()
-        sys.stderr.write("Catpilot %s check unavailable (%s), so nothing was allowed.\\n" % (name, exc.__class__.__name__))
-        return 2
+        return refuse("Catpilot %s check unavailable (%s), so nothing was allowed.\\n" % (name, exc.__class__.__name__))
     if name == "session-start":
         return module.main(sys.argv[1:], default_dir=default_dir)
     return module.main()

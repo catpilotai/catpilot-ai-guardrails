@@ -28,6 +28,10 @@ esac
 CC_DIR="${CATPILOT_CC_DIR:-$DEFAULT_CC_DIR}"
 CODEX_DIR="${CATPILOT_CODEX_DIR:-/etc/codex}"
 COPILOT_DIR="${CATPILOT_COPILOT_DIR:-/etc/github-copilot}"
+# A trailing slash would keep the paths written into managed files from matching the ones checked and rewritten.
+no_trailing_slash() { local d="$1"; while [ "${d%/}" != "$d" ]; do d="${d%/}"; done; printf '%s' "${d:-/}"; }
+CC_DIR="$(no_trailing_slash "$CC_DIR")"; CODEX_DIR="$(no_trailing_slash "$CODEX_DIR")"
+COPILOT_DIR="$(no_trailing_slash "$COPILOT_DIR")"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=interpreter.sh
 . "$HERE/interpreter.sh" || { echo "interpreter.sh is not beside verify.sh: run verify.sh from a checkout" >&2; exit 2; }
