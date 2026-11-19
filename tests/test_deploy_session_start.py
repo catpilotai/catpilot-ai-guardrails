@@ -80,6 +80,12 @@ def parse_toml(text: str) -> dict:
 
 
 class SessionStartDeployTests(unittest.TestCase):
+    @staticmethod
+    def expected(function, *args, **kwargs):
+        """What install.sh writes: the helper's output with the interpreter it records (PYTHON_BIN)."""
+        with helper.interpreter(sys.executable):
+            return function(*args, **kwargs)
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
@@ -140,11 +146,13 @@ class SessionStartDeployTests(unittest.TestCase):
 
     def command(self, managed_dir: Path, host: str) -> str:
         script = managed_dir / "catpilot-guardrails" / "hooks" / "catpilot-company-rules.py"
-        return f'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "{script}" --evidence-default --host {host}'
+        return f'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" "{sys.executable}" "{script}" --evidence-default --host {host}'
 
     def base_settings(self) -> str:
         text = (ORG / "claude-code" / "managed-settings.json").read_text(encoding="utf-8")
-        return text.replace("https://mcp.example.com/mcp", URL).replace("/Library/Application Support/ClaudeCode", str(self.cc))
+        text = text.replace("https://mcp.example.com/mcp", URL).replace("/Library/Application Support/ClaudeCode", str(self.cc))
+        # install.sh records the interpreter it proved (PYTHON_BIN) in place of the template's python3.
+        return text.replace(' python3 \\"', ' \\"%s\\" \\"' % sys.executable)
 
     def set_dates(self, reviewed: dt.date, expires: dt.date) -> None:
         for managed_dir in (self.cc, self.codex):
@@ -189,7 +197,7 @@ class SessionStartDeployTests(unittest.TestCase):
         self.assertNotIn("SessionStart", (self.cc / "managed-settings.json").read_text(encoding="utf-8"))
         # Codex gets its PreToolUse hooks (tests/test_deploy_codex_hooks.py) and no session-start hook or rules.
         self.assertEqual((self.codex / "requirements.toml").read_text(encoding="utf-8"),
-                         helper.requirements_toml(str(self.codex), rules=False) + "\n")
+                         self.expected(helper.requirements_toml, str(self.codex), rules=False) + "\n")
         self.assertNotIn("SessionStart", (self.codex / "requirements.toml").read_text(encoding="utf-8"))
         self.assertFalse((self.codex / "catpilot-guardrails" / "hooks" / "catpilot-company-rules.py").exists())
         self.assertFalse(self.instructions(self.codex).exists())
@@ -229,7 +237,7 @@ class SessionStartDeployTests(unittest.TestCase):
         # The same evidence prefix as the PreToolUse hooks.
         for group in settings["hooks"]["PreToolUse"]:
             for handler in group["hooks"]:
-                self.assertTrue(handler["command"].startswith(helper.EVIDENCE_PREFIX + " python3 "), handler["command"])
+                self.assertTrue(handler["command"].startswith(helper.EVIDENCE_PREFIX + ' "%s" ' % sys.executable), handler["command"])
 
         # Each tool has its own copy: the script, the package it imports, and the rules.
         for managed_dir in (self.cc, self.codex):
@@ -248,7 +256,7 @@ class SessionStartDeployTests(unittest.TestCase):
         # Codex: requirements.toml declares the managed session-start hook beside the PreToolUse hooks, keeps hooks
         # on, and switches nothing else on or off.
         text = (self.codex / "requirements.toml").read_text(encoding="utf-8")
-        self.assertEqual(text, helper.requirements_toml(str(self.codex)) + "\n")
+        self.assertEqual(text, self.expected(helper.requirements_toml, str(self.codex)) + "\n")
         requirements = parse_toml(text)
         self.assertEqual(set(requirements), {"features", "hooks"})
         self.assertEqual(requirements["features"], {"hooks": True})

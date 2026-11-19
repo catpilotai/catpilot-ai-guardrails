@@ -86,7 +86,7 @@ class CodexManagedHookTests(unittest.TestCase):
         return self.codex / "requirements.toml"
 
     def command(self, name: str) -> str:
-        return f'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "{self.hooks / name}" --evidence-default --host codex'
+        return f'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" "{sys.executable}" "{self.hooks / name}" --evidence-default --host codex'
 
     def snapshot(self) -> dict:
         files = {}
@@ -112,7 +112,8 @@ class CodexManagedHookTests(unittest.TestCase):
         self.assertEqual(list(self.hooks.rglob("__pycache__")), [])
 
         text = self.requirements.read_text(encoding="utf-8")
-        self.assertEqual(text, helper.requirements_toml(str(self.codex), rules=False) + "\n")
+        with helper.interpreter(sys.executable):
+            self.assertEqual(text, helper.requirements_toml(str(self.codex), rules=False) + "\n")
         self.assertEqual(self.requirements.stat().st_mode & 0o777, 0o644)
         data = parse_toml(text)
         self.assertEqual(data["features"], {"hooks": True})
@@ -175,7 +176,7 @@ class CodexManagedHookTests(unittest.TestCase):
         env = dict(self.env, PYTHON_BIN="/usr/bin/false")
         proc = self.run_script("install.sh", "--server-url", URL, "--skills", "", env=env)
         self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
-        self.assertIn("did not run as Python 3.8 or later", proc.stderr)
+        self.assertIn("Not installed: /usr/bin/false exited 1 instead of running Python", proc.stderr)
         self.assertEqual(self.snapshot(), {})
 
     # --- verify --------------------------------------------------------------------------------------------------

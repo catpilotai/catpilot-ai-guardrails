@@ -847,7 +847,7 @@ class DeployTests(unittest.TestCase):
             "a command after it": lambda c: c + "; true",
             "a command joined after it": lambda c: c + " && true",
             "another hook path": lambda c: c.replace("/hooks/pretooluse-company-rules.py", "/hooks/../hooks/pretooluse-company-rules.py"),
-            "another interpreter": lambda c: c.replace(" python3 ", " python3.99 "),
+            "another interpreter": lambda c: re.sub(r'(evidence\.jsonl") ("[^"]+"|python3) ', r'\1 python3.99 ', c),
             "two --ask": lambda c: c + " --ask --ask",
         }.items():
             with self.subTest(case=label):

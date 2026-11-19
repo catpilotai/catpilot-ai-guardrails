@@ -140,12 +140,15 @@ class DeployOrgScriptTests(unittest.TestCase):
             fake = fake_bin / "python3"
             fake.write_text("#!/bin/sh\nexit 127\n", encoding="utf-8")
             fake.chmod(0o755)
+            # The interpreter install.sh recorded stops starting (an upgrade removed it, say).
+            settings = Path(tmp) / "claude-code" / "managed-settings.json"
+            settings.write_text(settings.read_text(encoding="utf-8").replace(sys.executable, str(fake)), encoding="utf-8")
             env.pop("PYTHON_BIN")
-            env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
 
             verify = self._verify(env)
             self.assertNotEqual(verify.returncode, 0, verify.stdout)
-            fail_lines = [line for line in verify.stdout.splitlines() if line.startswith("FAIL") and "python3" in line]
+            self.assertIn(f"recorded {fake}", verify.stdout)
+            fail_lines = [line for line in verify.stdout.splitlines() if line.startswith("FAIL") and str(fake) in line]
             self.assertTrue(fail_lines, verify.stdout)
             self.assertIn("blocks every command and write the hooks cover", fail_lines[0])
             self.assertIn("unchecked", fail_lines[0])
@@ -353,6 +356,85 @@ class DeployOrgScriptTests(unittest.TestCase):
                 self.assertIn(f"FAIL     {hook_name} exited 2", verify.stdout)
                 self.assertNotIn(f"denies   {hook_name}:", verify.stdout)  # the Claude Code copy
             self.assertIn("load the catpilot_guard package", verify.stdout)
+
+
+class InterpreterTests(unittest.TestCase):
+    """Issue #97, option 1: install.sh proves the interpreter runs Python 3.8+, refuses otherwise, and records its
+    absolute path in every hook command; verify.sh checks the recorded one; uninstall.sh still recognizes its files."""
+
+    URL = "https://mcp.internal.example.org/mcp"
+    _env = DeployOrgScriptTests._env
+    _install = DeployOrgScriptTests._install
+    _verify = DeployOrgScriptTests._verify
+
+    def _files(self, tmp: str) -> list:
+        return [Path(tmp) / "claude-code" / "managed-settings.json", Path(tmp) / "codex" / "requirements.toml",
+                Path(tmp) / "copilot" / "policy.d" / "catpilot-guardrails.json"]
+
+    def _fake(self, tmp: str, body: str) -> Path:
+        fake = Path(tmp) / "fake-python"
+        fake.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+        fake.chmod(0o755)
+        return fake
+
+    def test_install_records_the_absolute_interpreter_in_every_hook_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._env(Path(tmp) / "claude-code", Path(tmp) / "codex")
+            proc = subprocess.run(["bash", str(INSTALL_SH), "--server-url", self.URL], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn(f"python  {sys.executable} (Python ", proc.stdout)
+            for path in self._files(tmp):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn(" python3 ", text.replace("\\", ""), path)
+                self.assertIn(sys.executable, text, path)
+            settings = json.loads(self._files(tmp)[0].read_text(encoding="utf-8"))
+            for group in settings["hooks"]["PreToolUse"]:
+                for hook in group["hooks"]:
+                    self.assertIn(f' "{sys.executable}" "', hook["command"])
+                    self.assertEqual(hook["onFailure"], "block")
+
+            # Running it again changes nothing and says so.
+            before = [p.read_bytes() for p in self._files(tmp)]
+            again = subprocess.run(["bash", str(INSTALL_SH), "--server-url", self.URL], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            for path in self._files(tmp):
+                self.assertIn(f"current {path}", again.stdout)
+            self.assertNotIn("not overwritten", again.stdout)
+            self.assertEqual([p.read_bytes() for p in self._files(tmp)], before)
+
+            verify = self._verify(dict(env, PYTHON_BIN=""))
+            self.assertEqual(verify.returncode, 0, verify.stdout)
+            self.assertIn(f"recorded {sys.executable}", verify.stdout)
+
+    def test_install_refuses_an_interpreter_that_does_not_run_python_3_8_and_writes_nothing(self):
+        for label, candidate, said in (
+            ("too old", "echo 3.7.9; exit 3", "is Python 3.7.9; the hooks need 3.8 or later"),
+            ("a stub that fails", "echo 'xcrun: error: invalid active developer path' >&2; exit 1", "exited 1 instead of running Python"),
+            ("not on PATH", None, "is not on this PATH"),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                env = self._env(Path(tmp) / "claude-code", Path(tmp) / "codex")
+                env["PYTHON_BIN"] = "catpilot-no-such-python" if candidate is None else str(self._fake(tmp, candidate))
+                proc = subprocess.run(["bash", str(INSTALL_SH), "--server-url", self.URL], env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+                self.assertIn("Not installed: ", proc.stderr)
+                self.assertIn(said, proc.stderr)
+                for name in ("claude-code", "codex", "copilot"):
+                    self.assertFalse((Path(tmp) / name).exists(), name)
+
+    def test_uninstall_recognizes_files_from_an_install_that_named_python3(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._env(Path(tmp) / "claude-code", Path(tmp) / "codex")
+            self._install(env)
+            for path in self._files(tmp):
+                path.write_text(path.read_text(encoding="utf-8").replace(f'\\"{sys.executable}\\"', "python3")
+                                .replace(f'"{sys.executable}"', "python3"), encoding="utf-8")
+            verify = self._verify(env)
+            self.assertIn("name python3 from each session's PATH", verify.stdout)
+            uninstall = subprocess.run(["bash", str(UNINSTALL_SH), "--server-url", self.URL], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
+            for path in self._files(tmp):
+                self.assertFalse(path.exists(), uninstall.stdout)
 
 
 if __name__ == "__main__":

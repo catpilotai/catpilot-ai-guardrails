@@ -48,6 +48,7 @@ read with tomllib where there is one and otherwise with a reader for the few sha
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -96,6 +97,50 @@ POLICY_NAME = "company-policy.json"
 # A managed directory is written into a double-quoted shell word and a TOML literal string, so it may hold none
 # of the characters either would read specially.
 UNSAFE_PATH = re.compile("[\"'\\\\$`\x00-\x1f\x7f]")
+# The interpreter the hook commands name (issue #97, option 1). install.sh passes --python with the absolute path it
+# proved runs Python 3.8 or later, so a session does not depend on its own PATH or on the macOS Command Line Tools
+# stub. Without --python, the commands name python3 from PATH, as installs before this release did, and verify still
+# accepts such a command.
+DEFAULT_INTERPRETER = "python3"
+_INTERPRETER = DEFAULT_INTERPRETER
+# How a registered command may name the interpreter: python3 from PATH, or a double-quoted absolute path.
+INTERPRETER_PATTERN = r'(?:python3|"/[^"\\$`\x00-\x1f\x7f]+")'
+
+
+def set_interpreter(value: str) -> None:
+    """Name VALUE, an absolute path without the characters a double-quoted shell word or a TOML literal string reads
+    specially, in every command this module writes from now on."""
+    global _INTERPRETER
+    if not value.startswith("/") or UNSAFE_PATH.search(value):
+        raise UsageError(
+            "interpreter %r must be an absolute path without quotes, backslashes, $, ` or control characters" % value
+        )
+    _INTERPRETER = value
+
+
+@contextlib.contextmanager
+def interpreter(value: str):
+    """Name VALUE in the commands written inside the block (tests compare install.sh's files with these)."""
+    global _INTERPRETER
+    before = _INTERPRETER
+    set_interpreter(value)
+    try:
+        yield
+    finally:
+        _INTERPRETER = before
+
+
+def interpreter_word() -> str:
+    """The interpreter as it appears in a hook command: python3, or the absolute path in double quotes."""
+    return _INTERPRETER if _INTERPRETER == DEFAULT_INTERPRETER else '"%s"' % _INTERPRETER
+
+
+def with_interpreter(command: str) -> str:
+    """A command from deploy/org/claude-code/managed-settings.json, which names python3, with the chosen interpreter."""
+    legacy = EVIDENCE_PREFIX + " " + DEFAULT_INTERPRETER + " "
+    if command.startswith(legacy):
+        return EVIDENCE_PREFIX + " " + interpreter_word() + " " + command[len(legacy):]
+    return command
 # The texts catpilot_guard/session_start.py prints; verify reads its output against them.
 UNAVAILABLE = "Company rules could not be loaded and are unknown. Ask your IT or security owner."
 POLICY_HASH_LINE = re.compile(r"^Overlay SHA-256: ([0-9a-f]{64})$", re.MULTILINE)
@@ -141,7 +186,7 @@ def tree(managed_dir: str) -> str:
 
 def hook_command(managed_dir: str, host: str) -> str:
     script = "%s/hooks/%s" % (tree(checked_dir(managed_dir)), SCRIPT)
-    return '%s python3 "%s" --evidence-default --host %s' % (EVIDENCE_PREFIX, script, host)
+    return '%s %s "%s" --evidence-default --host %s' % (EVIDENCE_PREFIX, interpreter_word(), script, host)
 
 
 def policy_path(managed_dir: str) -> str:
@@ -150,12 +195,12 @@ def policy_path(managed_dir: str) -> str:
 
 def company_hook_command(managed_dir: str, host: str) -> str:
     script = "%s/hooks/%s" % (tree(checked_dir(managed_dir)), COMPANY_HOOK)
-    return '%s python3 "%s" --evidence-default --host %s --policy "%s"' % (EVIDENCE_PREFIX, script, host, policy_path(managed_dir))
+    return '%s %s "%s" --evidence-default --host %s --policy "%s"' % (EVIDENCE_PREFIX, interpreter_word(), script, host, policy_path(managed_dir))
 
 
 def copilot_command(copilot_dir: str, filename: str, enforce_policy: bool = False) -> str:
     script = "%s/hooks/%s" % (tree(checked_dir(copilot_dir)), filename)
-    command = '%s python3 "%s" --evidence-default --host %s' % (EVIDENCE_PREFIX, script, COPILOT)
+    command = '%s %s "%s" --evidence-default --host %s' % (EVIDENCE_PREFIX, interpreter_word(), script, COPILOT)
     if enforce_policy:
         command += ' --policy "%s"' % policy_path(copilot_dir)
     return command
@@ -183,12 +228,17 @@ def session_start_group(cc_dir: str) -> dict:
     }
 
 
-def settings_with_session_start(base: str, cc_dir: str, enforce: bool = False) -> str:
+def settings_with_session_start(base: str, cc_dir: str, enforce: bool = False, rules: bool = True) -> str:
     """managed-settings.json with the SessionStart group appended to hooks, in the template's own layout, and with
     enforce, a PreToolUse group on Bash that runs the company-rules hook with the compiled policy."""
     data = json.loads(base)
     if not isinstance(data, dict) or not isinstance(data.setdefault("hooks", {}), dict):
         raise UsageError("managed-settings.json must be a JSON object whose hooks key is an object")
+    for groups in data["hooks"].values():
+        for group in groups if isinstance(groups, list) else []:
+            for entry in (group.get("hooks") or []) if isinstance(group, dict) else []:
+                if isinstance(entry, dict) and isinstance(entry.get("command"), str):
+                    entry["command"] = with_interpreter(entry["command"])
     if enforce:
         pretooluse = data["hooks"].setdefault("PreToolUse", [])
         if not isinstance(pretooluse, list):
@@ -199,6 +249,8 @@ def settings_with_session_start(base: str, cc_dir: str, enforce: bool = False) -
             "hooks": [{"type": "command", "command": company_hook_command(cc_dir, CLAUDE_CODE), "timeout": TIMEOUT_SECONDS,
                        "onFailure": "block"}],
         })
+    if not rules:
+        return json.dumps(data, indent=2)
     groups = data["hooks"].setdefault("SessionStart", [])
     if not isinstance(groups, list):
         raise UsageError("hooks.SessionStart in managed-settings.json must be a list")
@@ -208,7 +260,7 @@ def settings_with_session_start(base: str, cc_dir: str, enforce: bool = False) -
 
 def codex_pretooluse_command(codex_dir: str, filename: str) -> str:
     script = "%s/hooks/%s" % (tree(checked_dir(codex_dir)), filename)
-    return '%s python3 "%s" --evidence-default --host %s' % (EVIDENCE_PREFIX, script, CODEX)
+    return '%s %s "%s" --evidence-default --host %s' % (EVIDENCE_PREFIX, interpreter_word(), script, CODEX)
 
 
 def requirements_toml(codex_dir: str, rules: bool = True, enforce: bool = False) -> str:
@@ -1055,12 +1107,12 @@ def logged_rule(entries: list, rule_id: str, excepted: bool, expected: str, host
 
 def standard_company_command(command: str, hook: Path, host: str, policy_file: Path) -> bool:
     """Whether a registered company-rules command is exactly the one install.sh writes for this tool (the standard
-    evidence prefix, python3, this hook, --host, this policy), with --evidence-default allowed right after the hook (an
+    evidence prefix, python3 or a quoted absolute interpreter, this hook, --host, this policy), with --evidence-default allowed right after the hook (an
     install before it wrote none), and one --ask allowed after the hook, after --host or at the end. verify
     runs only such a command: any other (a wrapper, an env file, another evidence sink, another policy or host) could
     send its probe lines somewhere real or behave differently than verify can see, so it is not run."""
     ask = r"(?: --ask)?"
-    pattern = (re.escape(EVIDENCE_PREFIX) + r' python3 "' + re.escape(str(hook)) + r'"(?: ' + re.escape(EVIDENCE_DEFAULT) + r')?'
+    pattern = (re.escape(EVIDENCE_PREFIX) + ' ' + INTERPRETER_PATTERN + r' "' + re.escape(str(hook)) + r'"(?: ' + re.escape(EVIDENCE_DEFAULT) + r')?'
                + ask + r' --host ' + re.escape(host)
                + ask + r' --policy "' + re.escape(str(policy_file)) + r'"' + ask)
     return re.fullmatch(pattern, command.strip(" \t\n")) is not None and _split(command).count("--ask") <= 1
@@ -1403,7 +1455,7 @@ def verify_company_rules(cc_dir: Path, codex_dir: Path, home: Path, timeout: int
             # it. Any other command (a wrapper, an env file, another evidence sink, policy or host) could send probe
             # lines somewhere real or behave in ways verify cannot see: it is not run, and fails.
             if not standard_company_command(command, hook, host, policy_file):
-                report.line("FAIL", "%s runs %s with a command other than the one install.sh writes (%s python3 \"%s\" "
+                report.line("FAIL", "%s runs %s with a command other than the one install.sh writes (%s <interpreter> \"%s\" "
                             "--host %s --policy \"%s\", optionally with --ask); verify does not run it, so it cannot "
                             "prove the hook reads the rules: reinstall, or confirm this setup in a session" % (
                                 managed_file, COMPANY_HOOK, EVIDENCE_PREFIX, hook, host, policy_file))
@@ -1557,9 +1609,11 @@ def _split(command: str) -> list:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--python", help="the absolute interpreter path the hook commands name (default: python3)")
     sub = parser.add_subparsers(dest="action")
     p = sub.add_parser("settings")
     p.add_argument("--cc-dir", required=True)
+    p.add_argument("--no-rules", action="store_true", help="without the session-start hook (no --overlay)")
     p.add_argument("--enforce", action="store_true", help="also the company-rules hook (a compiled policy)")
     p = sub.add_parser("requirements")
     p.add_argument("--codex-dir", required=True)
@@ -1594,8 +1648,12 @@ def main(argv=None) -> int:
     p.add_argument("--timeout", type=int, default=TIMEOUT_SECONDS)
     args = parser.parse_args(argv)
     try:
+        if args.python is not None:
+            set_interpreter(args.python)
         if args.action == "settings":
-            print(settings_with_session_start(sys.stdin.read(), args.cc_dir, enforce=args.enforce))
+            if args.no_rules and args.enforce:
+                raise UsageError("--enforce comes with the company rules: it cannot be combined with --no-rules")
+            print(settings_with_session_start(sys.stdin.read(), args.cc_dir, enforce=args.enforce, rules=not args.no_rules))
         elif args.action == "requirements":
             if args.no_rules and args.enforce:
                 raise UsageError("--enforce comes with the company rules: it cannot be combined with --no-rules")

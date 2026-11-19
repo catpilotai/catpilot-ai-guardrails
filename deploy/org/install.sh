@@ -46,8 +46,12 @@
 #                printed above). It enforces the company's own rules in monitor, ask or block; ask acts as block on
 #                Codex. The session-start rules are not placed for Copilot CLI.
 #                With no --overlay, nothing about session-start rules or company enforcement is placed or registered.
+# The interpreter: before anything is written, PYTHON_BIN (default python3) is run with a version check and must
+# be Python 3.8 or later, not the macOS Command Line Tools stub; otherwise nothing is installed. Its absolute path is
+# recorded in every hook command, so the hooks do not depend on a session's PATH (issue #97, option 1). Run it again
+# to update: hooks and package are replaced, an unchanged managed file is reported current, a changed one is printed.
 # It does not touch user settings, does not restart anything, and does not send anything anywhere.
-# Windows paths differ and are not handled here; see docs/DEPLOY_ORG.md.
+# On Windows, use deploy/org/install.ps1; see docs/DEPLOY_ORG.md.
 set -euo pipefail
 
 SERVER_URL=""
@@ -71,6 +75,8 @@ if [ "${CATPILOT_ALLOW_NONROOT:-0}" != "1" ]; then
 fi
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+# shellcheck source=interpreter.sh
+. "$REPO/deploy/org/interpreter.sh"
 case "$(uname -s)" in
   Darwin) DEFAULT_CC_DIR="/Library/Application Support/ClaudeCode" ;;
   Linux) DEFAULT_CC_DIR="/etc/claude-code" ;;
@@ -84,7 +90,23 @@ RULES_FILES="$REPO/deploy/org/session_start_files.py"
 PRIVATE_TMP=""
 HOSTS_DIR=""
 POLICY_FILE=""
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+# The interpreter every hook command names, proved to run Python 3.8+ before anything is written (interpreter.sh).
+if ! prove_interpreter "${PYTHON_BIN:-python3}"; then
+  echo "Not installed: $PROVEN_ERROR." >&2
+  echo "The hooks run with the interpreter install.sh records; one that cannot start blocks every command (Claude Code)" >&2
+  echo "or lets them run unchecked (other hosts). Install Python 3.8 or later and name it, for example:" >&2
+  echo "  sudo PYTHON_BIN=/opt/homebrew/bin/python3 $0 --server-url ..." >&2
+  exit 2
+fi
+# Run as root through sudo: the interpreter must also run for the person who ran sudo (a per-user Python would not).
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && command -v sudo >/dev/null 2>&1; then
+  if ! sudo -u "$SUDO_USER" -- "$PROVEN_PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
+    echo "Not installed: $PROVEN_PYTHON runs as root but not as $SUDO_USER; the hooks run as each person. Name an interpreter every account can run." >&2
+    exit 2
+  fi
+fi
+PYTHON_BIN="$PROVEN_PYTHON"
+echo "python  $PYTHON_BIN (Python $PROVEN_VERSION), recorded in every hook command"
 cleanup() { [ -n "$PRIVATE_TMP" ] && rm -rf "$PRIVATE_TMP" || true; }
 trap cleanup EXIT
 
@@ -105,24 +127,37 @@ fi
 # the install before it changes anything on the machine.
 SETTINGS_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" -e "s#/Library/Application Support/ClaudeCode#$CC_DIR#g" "$REPO/deploy/org/claude-code/managed-settings.json")"
 CODEX_TOML="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/codex/managed_config.toml")"
-"$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1 || {
-  echo "$PYTHON_BIN did not run as Python 3.8 or later; it writes /etc/codex/requirements.toml. (The hooks run python3 from each person's PATH; verify.sh checks that one.)" >&2
-  echo "Set PYTHON_BIN to one, for example: sudo PYTHON_BIN=/opt/homebrew/bin/python3 $0 ..." >&2
-  exit 2
-}
+# Every hook command names the proved interpreter by absolute path. The settings are parsed and written out as JSON,
+# never spliced into the text; with --overlay, the SessionStart hook, and with a compiled policy the company-rules
+# hook, are added the same way.
+PY_ARGS=(--python "$PYTHON_BIN")
 if [ -n "$HOSTS_DIR" ]; then
-  # The SessionStart hook, and with a compiled policy the company-rules hook, are added to the parsed settings and
-  # written out as JSON, never spliced into the text.
   ENFORCE=()
   [ -n "$POLICY_FILE" ] && ENFORCE=(--enforce)
-  SETTINGS_JSON="$(printf '%s\n' "$SETTINGS_JSON" | "$PYTHON_BIN" "$RULES_FILES" settings --cc-dir "$CC_DIR" ${ENFORCE[@]+"${ENFORCE[@]}"})"
-  REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR" ${ENFORCE[@]+"${ENFORCE[@]}"})"
+  SETTINGS_JSON="$(printf '%s\n' "$SETTINGS_JSON" | "$PYTHON_BIN" "$RULES_FILES" "${PY_ARGS[@]}" settings --cc-dir "$CC_DIR" ${ENFORCE[@]+"${ENFORCE[@]}"})"
+  REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" "${PY_ARGS[@]}" requirements --codex-dir "$CODEX_DIR" ${ENFORCE[@]+"${ENFORCE[@]}"})"
 else
-  REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" requirements --codex-dir "$CODEX_DIR" --no-rules)"
+  SETTINGS_JSON="$(printf '%s\n' "$SETTINGS_JSON" | "$PYTHON_BIN" "$RULES_FILES" "${PY_ARGS[@]}" settings --cc-dir "$CC_DIR" --no-rules)"
+  REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" "${PY_ARGS[@]}" requirements --codex-dir "$CODEX_DIR" --no-rules)"
 fi
 COPILOT_ENFORCE=()
 [ -n "$POLICY_FILE" ] && COPILOT_ENFORCE=(--enforce)
-COPILOT_POLICY_JSON="$("$PYTHON_BIN" "$RULES_FILES" copilot-policy --copilot-dir "$COPILOT_DIR" ${COPILOT_ENFORCE[@]+"${COPILOT_ENFORCE[@]}"})"
+COPILOT_POLICY_JSON="$("$PYTHON_BIN" "$RULES_FILES" "${PY_ARGS[@]}" copilot-policy --copilot-dir "$COPILOT_DIR" ${COPILOT_ENFORCE[@]+"${COPILOT_ENFORCE[@]}"})"
+
+# place_managed FILE CONTENT VERB: write FILE when absent; an identical file is current (a re-run changes nothing);
+# any other is left alone and the content printed for a merge.
+place_managed() {
+  local file="$1" content="$2" verb="$3"
+  if [ -e "$file" ] || [ -L "$file" ]; then
+    if [ -f "$file" ] && [ ! -L "$file" ] && [ "$(cat "$file")" = "$content" ]; then
+      echo "current $file"
+    else
+      echo "exists  $file (not overwritten); $verb:"; echo "$content"
+    fi
+  else
+    printf '%s\n' "$content" > "$file"; chmod 644 "$file"; echo "policy  $file"
+  fi
+}
 
 # install_package HOOKS_DIR: the catpilot_guard package the hook scripts import from beside them. Its .py files
 # only, so no __pycache__ or .pyc from the checkout comes along, replacing any earlier copy, so a module a newer
@@ -207,29 +242,17 @@ elif [ -e "$CC_DIR/catpilot-guardrails/instructions/company-checklist.json" ] ||
   echo "        install with --overlay to update them, or run uninstall.sh to remove them"
 fi
 
-if [ -e "$CC_DIR/managed-settings.json" ]; then
-  echo "exists  $CC_DIR/managed-settings.json (not overwritten); merge these keys into it:"; echo "$SETTINGS_JSON"
-else
-  printf '%s\n' "$SETTINGS_JSON" > "$CC_DIR/managed-settings.json"; chmod 644 "$CC_DIR/managed-settings.json"; echo "policy  $CC_DIR/managed-settings.json"
-fi
+place_managed "$CC_DIR/managed-settings.json" "$SETTINGS_JSON" "merge these keys into it"
 install_skill "$CC_DIR/.claude/skills"
 if [ "$MANAGED_MCP_JSON" -eq 1 ]; then
   MCP_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/claude-code/managed-mcp.json")"
-  if [ -e "$CC_DIR/managed-mcp.json" ]; then
-    echo "exists  $CC_DIR/managed-mcp.json (not overwritten); merge this into it:"; echo "$MCP_JSON"
-  else
-    printf '%s\n' "$MCP_JSON" > "$CC_DIR/managed-mcp.json"; chmod 644 "$CC_DIR/managed-mcp.json"; echo "policy  $CC_DIR/managed-mcp.json"
-  fi
+  place_managed "$CC_DIR/managed-mcp.json" "$MCP_JSON" "merge this into it"
 fi
 
 # Codex CLI: managed defaults, skills, the PreToolUse hooks and the requirements.toml that declares them; with
 # --overlay, also the session-start script and the rules it reads
 mkdir -p "$CODEX_DIR"
-if [ -e "$CODEX_DIR/managed_config.toml" ]; then
-  echo "exists  $CODEX_DIR/managed_config.toml (not overwritten); merge this into it:"; echo "$CODEX_TOML"
-else
-  printf '%s\n' "$CODEX_TOML" > "$CODEX_DIR/managed_config.toml"; chmod 644 "$CODEX_DIR/managed_config.toml"; echo "policy  $CODEX_DIR/managed_config.toml"
-fi
+place_managed "$CODEX_DIR/managed_config.toml" "$CODEX_TOML" "merge this into it"
 install_skill "$CODEX_DIR/skills"
 # A copy of its own, so each tool reads only from its own managed directory. The hooks and their package go in
 # hooks/, the managed_dir that requirements.toml names; Codex loads managed hooks only when that directory exists.
@@ -244,11 +267,7 @@ chmod 755 "$CODEX_DIR/catpilot-guardrails" "$CODEX_DIR/catpilot-guardrails/hooks
 chmod 644 "$CODEX_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $CODEX_DIR/catpilot-guardrails/hooks/"
 install_package "$CODEX_DIR/catpilot-guardrails/hooks"
 if [ -n "$HOSTS_DIR" ]; then install_rules "$CODEX_DIR"; install_policy "$CODEX_DIR"; fi
-if [ -e "$CODEX_DIR/requirements.toml" ] || [ -L "$CODEX_DIR/requirements.toml" ]; then
-  echo "exists  $CODEX_DIR/requirements.toml (not overwritten); merge this into it, keeping one [features] and one [hooks] table:"; echo "$REQUIREMENTS_TOML"
-else
-  printf '%s\n' "$REQUIREMENTS_TOML" > "$CODEX_DIR/requirements.toml"; chmod 644 "$CODEX_DIR/requirements.toml"; echo "policy  $CODEX_DIR/requirements.toml"
-fi
+place_managed "$CODEX_DIR/requirements.toml" "$REQUIREMENTS_TOML" "merge this into it, keeping one [features] and one [hooks] table"
 
 # Copilot CLI: the same three checks, and with a compiled policy the company-rules hook, as policy hooks. Copilot
 # loads a policy file only when root owns it and no one else can write it; it reads them before user and project
@@ -266,12 +285,7 @@ if [ -n "$HOSTS_DIR" ]; then install_policy "$COPILOT_DIR"; fi
 # policy.d is created, mode 755, only when it does not exist: an existing directory, which may hold the
 # organization's own policy files, keeps its owner and mode.
 if [ ! -d "$COPILOT_DIR/policy.d" ]; then mkdir -p "$COPILOT_DIR/policy.d"; chmod 755 "$COPILOT_DIR/policy.d"; fi
-if [ -e "$COPILOT_DIR/policy.d/catpilot-guardrails.json" ] || [ -L "$COPILOT_DIR/policy.d/catpilot-guardrails.json" ]; then
-  echo "exists  $COPILOT_DIR/policy.d/catpilot-guardrails.json (not overwritten); replace it with:"; echo "$COPILOT_POLICY_JSON"
-else
-  printf '%s\n' "$COPILOT_POLICY_JSON" > "$COPILOT_DIR/policy.d/catpilot-guardrails.json"
-  chmod 644 "$COPILOT_DIR/policy.d/catpilot-guardrails.json"; echo "policy  $COPILOT_DIR/policy.d/catpilot-guardrails.json"
-fi
+place_managed "$COPILOT_DIR/policy.d/catpilot-guardrails.json" "$COPILOT_POLICY_JSON" "replace it with"
 
 echo
 echo "Done. Verify on this machine as a normal user: deploy/org/verify.sh, then the checks in docs/DEPLOY_ORG.md."

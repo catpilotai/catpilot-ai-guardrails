@@ -333,3 +333,25 @@ Built together, increment 1's CI job first (decision 2). Not verified on a host.
   and the embedded interpreter belong to `install.ps1` (increment 3); the hooks
   run in that form today (tested), with any Python 3.8 or later. The host check
   is increment 4.
+
+## 7. What was built (increment 3)
+
+Not verified on a host. `deploy/org/install.ps1`, `verify.ps1` and `uninstall.ps1`
+(with `windows-common.ps1`) are thin PowerShell over `deploy/org/windows_files.py`,
+as §3.3 proposes. Built as described there, with these specifics:
+
+- **The interpreter** (decision 1): python.org's embeddable 3.12.10, AMD64 or ARM64,
+  checked against a pinned SHA-256 before it is unpacked; `-PythonPath` otherwise.
+  Either must run Python 3.8 or later before anything else is written, as on macOS
+  and Linux (issue #97, option 1). `-PythonPath` refuses the Store alias and
+  anything under `C:\Users`.
+- **Access lists:** `icacls /inheritance:r` with Administrators and SYSTEM full
+  control and Users read and execute, every other explicit entry removed, children
+  reset to inherit only, owner Administrators; `verify.ps1` reads them back with
+  the same rule as `policy.read_checked`.
+- **CI:** `tests/test_windows_install.py` runs the three scripts on the
+  `windows-latest` runner, with `-PythonPath` and with the pinned interpreter.
+- **Not yet:** `-Overlay` (company rules and enforcement), `-PrintRegistry`, Codex
+  skills and managed defaults (per user on Windows), and the PowerShell deletion
+  probe through Codex and Copilot CLI, whose Windows tool names are still unknown
+  (§3.1).
