@@ -241,7 +241,8 @@ Every refusal (no token, bad signature, wrong issuer or audience, expired, no
 configured group, JWKS unreachable) is a 401 with `WWW-Authenticate: Bearer
 ... resource_metadata="..."` before any tool runs, and the server logs one line
 with the reason class, never the token. Keys rotate without a restart: an
-unknown key id refetches the JWKS, at most once per 30 seconds. Run it behind
+unknown key id refetches the JWKS, with at most one fetch attempt per 30
+seconds whether or not the identity provider answers. Run it behind
 HTTPS. Restrict who can get a token for the application at your identity
 provider.
 

@@ -7,7 +7,7 @@
 
 The server is an OAuth 2.0 **resource server only**. It validates bearer tokens (JWTs) that the company's own identity provider issued, and it uses a group claim in the token to choose which rules file answers the call. It never issues tokens, never runs a login page, never registers clients, and never stores a credential. Claude.ai and ChatGPT obtain the token from the company's identity provider, which is the authorization server; this server only checks it.
 
-The MCP SDK supplies the HTTP plumbing: `TokenVerifier`, the bearer middleware, the 401 response with `WWW-Authenticate`, and the protected-resource metadata route (RFC 9728). The SDK does not verify JWTs, so verification uses PyJWT (`jwt.decode`, `PyJWKClient`), which `mcp` already depends on and `requirements-dev.txt` already pins with hashes, together with `cryptography`. No new package is added; PyJWT becomes a direct, named dependency.
+The MCP SDK supplies the HTTP plumbing: `TokenVerifier`, the bearer middleware, the 401 response with `WWW-Authenticate`, and the protected-resource metadata route (RFC 9728). The SDK does not verify JWTs, so verification uses PyJWT (`jwt.decode`, `jwt.PyJWK`) with a small key cache of our own (§4), which `mcp` already depends on and `requirements-dev.txt` already pins with hashes, together with `cryptography`. No new package is added; PyJWT becomes a direct, named dependency.
 
 ## 2. Threat model
 
@@ -18,8 +18,8 @@ The MCP SDK supplies the HTTP plumbing: `TokenVerifier`, the bearer middleware, 
 | A token from a different identity provider, or a look-alike issuer | `iss` must equal the configured issuer exactly; keys come only from that issuer's JWKS. |
 | A forged or altered token | Signature checked against the issuer's published keys. Only asymmetric algorithms are accepted; `none` and every HMAC algorithm are refused at configuration time and at verification, so a public key can never be used as an HMAC secret. |
 | A replayed old token | `exp` is required and checked with bounded leeway (§5). A token stolen while still valid is accepted until it expires: keep token lifetimes short at the identity provider. |
-| A signed-in employee outside the pilot reads a group's rules | The group claim must name exactly one configured group (§7); otherwise no rules are served. |
-| An attacker floods the server with unknown key ids to make it hammer the identity provider | `PyJWKClient` caches the key set and forces at most one refetch per cooldown (30 s) for an unknown `kid`. |
+| A signed-in employee outside the pilot reads a group's rules | The group claim must select exactly one rules file (§7): at least one configured group, and every configured group it names mapping to the same file. Otherwise no rules are served. |
+| An attacker floods the server with unknown key ids, to make it hammer the identity provider or to stall valid requests behind slow fetches | At most one JWKS fetch *attempt* starts per 30 s, counted from the attempt whether it succeeds or fails. Within that window an unknown `kid` is refused at once with no network call. The fetch runs outside the cache lock, so requests with a known `kid` never wait for it. |
 | A verification error is mistaken for "no rules configured" and generic defaults are served as if authorized | Fail closed: every verification error is a 401 before any tool runs. The tool-level rules provider also refuses (raises) when no verified, mapped token is on the request, so rules are never read without one. |
 
 Out of scope: the identity provider's own security, token theft from the client, TLS termination (run behind HTTPS; the server speaks plain HTTP to its proxy), denial of service in general, and tenant isolation.
@@ -36,7 +36,13 @@ Out of scope: the identity provider's own security, token theft from the client,
 
 At startup, unless `CATPILOT_OIDC_JWKS_URL` is set, the server fetches `<issuer>/.well-known/openid-configuration`, requires its `issuer` to equal the configured issuer (OpenID Connect Discovery §4.3), and takes `jwks_uri` from it. The JWKS URL must be HTTPS. A failed discovery stops the server from starting; it does not start unauthenticated.
 
-Keys are fetched lazily by `PyJWKClient`: the key set is cached for 5 minutes, and a token whose `kid` is not in the cache forces one refetch (no more than once per 30 s). An identity provider that publishes the next key before signing with it (the normal practice) rotates with no restart. A key removed from the JWKS stops verifying within the cache lifetime. A token without a `kid`, or whose `kid` is unknown after the refetch, is refused. A JWKS fetch failure refuses the token (401); it never falls back to accepting it.
+Keys are fetched lazily into a cache (`JWKSCache` in `auth.py`), keyed by `kid`:
+
+- The key set is fresh for 5 minutes. A request that finds the cache expired, or a `kid` not in it, may start a fetch, but only if no fetch *attempt* has started in the last 30 s. The attempt time is recorded before the network call, so the bound holds while the identity provider is slow or down: at most one fetch (10 s timeout) per 30 s, whatever the traffic.
+- The fetch runs outside the lock. Concurrent requests do not queue behind it: a known `kid` is answered from the cache, an unknown one is refused (401) immediately.
+- If a fetch fails, a token whose `kid` is already cached is verified with the cached (stale) key, so an identity-provider outage does not lock out signed-in users; an unknown `kid` is refused. One consequence: while the provider is unreachable, a key it has removed keeps verifying until a fetch succeeds.
+- Rotation: an identity provider that publishes the next key before signing with it (the normal practice) rotates with no restart; a token with the new `kid` triggers a fetch, subject to the 30 s attempt bound. A key removed from the JWKS stops verifying at the first successful refresh after the cache expires.
+- A token without a `kid`, or whose `kid` is unknown after a refresh, is refused. Only keys with `use` absent or `sig` are loaded; an unusable key is skipped.
 
 ## 5. Clock skew
 
@@ -69,7 +75,7 @@ A valid token whose user is in no configured group, or in two groups that map to
  "pilot-finance":     "/etc/catpilot/rules/finance.yaml"}
 ```
 
-Keys are group values exactly as they appear in the token (names on Okta, object ids on Entra ID); values are absolute paths to overlays. `CATPILOT_OIDC_GROUP_CLAIM` names the claim (default `groups`; a string or a list of strings). The verifier accepts the token only when the claim's values that appear in the map all point at the same file. The tools get their rules through `create_server(policy_provider=...)`: the provider reads the verified token from the HTTP request (`ctx.request_context.request.user`), resolves the file again, and loads it with `policy.load_policy` on every call, so expiry and revocation take effect at once, as with `CATPILOT_OVERLAY_FILE`. `CATPILOT_OVERLAY_FILE` must not be set in auth mode; the server refuses to start if it is, so nobody believes it applies.
+Keys are group values exactly as they appear in the token (names on Okta, object ids on Entra ID); values are absolute paths to overlays. `CATPILOT_OIDC_GROUP_CLAIM` names the claim (default `groups`; a string or a list of strings). The verifier accepts the token only when at least one of the claim's values appears in the map and all that do point at the same file; values not in the map are ignored. The tools get their rules through `create_server(policy_provider=...)`: the provider reads the verified token from the HTTP request (`ctx.request_context.request.user`), resolves the file again, and loads it with `policy.load_policy` on every call, so expiry and revocation take effect at once, as with `CATPILOT_OVERLAY_FILE`. `CATPILOT_OVERLAY_FILE` must not be set in auth mode; the server refuses to start if it is, so nobody believes it applies.
 
 ## 8. Startup guard
 

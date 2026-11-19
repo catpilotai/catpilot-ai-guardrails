@@ -148,16 +148,83 @@ def _fetch_json(url: str) -> dict[str, Any]:
 KeyResolver = Callable[[str], Any]
 
 
-def jwks_key_resolver(jwks_url: str) -> KeyResolver:
-    """Keys from the issuer's JWKS: cached 5 minutes; an unknown `kid` forces one refetch per 30 s cooldown."""
-    client = jwt.PyJWKClient(jwks_url, cache_jwk_set=True, lifespan=300, timeout=10, cooldown_duration=30)
+class JWKSCache:
+    """The issuer's signing keys by `kid`, with fetch *attempts* rate-limited (SERVER_AUTH.md §4).
 
-    def resolve(token: str) -> Any:
-        if not jwt.get_unverified_header(token).get("kid"):
+    The attempt time is recorded before the network call, success or failure, so at most one fetch starts
+    per `cooldown` seconds however many unknown key ids arrive and whether or not the identity provider
+    answers. The fetch runs outside the lock: other requests never wait for it. Within the cooldown, a known
+    `kid` is served from the cache (stale if the last refresh failed) and an unknown one is refused at once.
+    """
+
+    def __init__(self, jwks_url: str, fetch: Callable[[str], dict[str, Any]] | None = None, *,
+                 lifespan: float = 300, cooldown: float = 30, clock: Callable[[], float] | None = None):
+        import threading
+        import time
+
+        self.jwks_url = jwks_url
+        self.fetch = fetch or _fetch_jwks
+        self.lifespan = lifespan
+        self.cooldown = cooldown
+        self.clock = clock or time.monotonic
+        self._lock = threading.Lock()
+        self._keys: dict[str, Any] = {}
+        self._fetched_at: float | None = None
+        self._last_attempt: float | None = None
+
+    def __call__(self, token: str) -> Any:
+        kid = jwt.get_unverified_header(token).get("kid")
+        if not isinstance(kid, str) or not kid:
             raise jwt.InvalidTokenError("token has no kid")
-        return client.get_signing_key_from_jwt(token).key
+        with self._lock:
+            now = self.clock()
+            fresh = self._fetched_at is not None and now - self._fetched_at < self.lifespan
+            if kid in self._keys and fresh:
+                return self._keys[kid]
+            may_fetch = self._last_attempt is None or now - self._last_attempt >= self.cooldown
+            if not may_fetch:
+                if kid in self._keys:
+                    return self._keys[kid]
+                raise jwt.PyJWKClientError("unknown kid; JWKS refetch is cooling down")
+            self._last_attempt = now
+        try:
+            keys = self._parse(self.fetch(self.jwks_url))
+        except Exception as exc:
+            with self._lock:
+                if kid in self._keys:  # stale but known: the identity provider being down is not a reason to refuse
+                    return self._keys[kid]
+            raise jwt.PyJWKClientError(f"JWKS fetch failed ({exc.__class__.__name__})") from None
+        with self._lock:
+            self._keys, self._fetched_at = keys, self.clock()
+            if kid in keys:
+                return keys[kid]
+        raise jwt.PyJWKClientError("unknown kid")
 
-    return resolve
+    @staticmethod
+    def _parse(data: dict[str, Any]) -> dict[str, Any]:
+        keys = {}
+        for item in data.get("keys", []) if isinstance(data, dict) else []:
+            if not isinstance(item, dict) or not isinstance(item.get("kid"), str) or item.get("use", "sig") != "sig":
+                continue
+            try:
+                keys[item["kid"]] = jwt.PyJWK(item).key
+            except Exception:
+                continue  # an unusable key is skipped, never trusted
+        if not keys:
+            raise ValueError("JWKS has no usable signing keys")
+        return keys
+
+
+def _fetch_jwks(url: str) -> dict[str, Any]:
+    if not url.startswith("https://"):
+        raise AuthConfigError("the JWKS URL must be https://")
+    with urllib.request.urlopen(url, timeout=10) as resp:  # noqa: S310 - https only, checked above
+        return json.load(resp)
+
+
+def jwks_key_resolver(jwks_url: str) -> KeyResolver:
+    """Keys from the issuer's JWKS: cached 5 minutes; at most one fetch attempt per 30 s (see JWKSCache)."""
+    return JWKSCache(jwks_url)
 
 
 class OIDCTokenVerifier:

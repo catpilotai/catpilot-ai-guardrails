@@ -134,6 +134,58 @@ class OIDCAuthTests(unittest.TestCase):
         with self.assertLogs("catpilot_guardrails_mcp.auth", "WARNING"):
             self.assertIsNone(verifier.verify(self.token()))
 
+    def jwks(self, *keys):
+        out = []
+        for kid, key in keys:
+            jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key()))
+            out.append({**jwk, "kid": kid, "use": "sig"})
+        return {"keys": out}
+
+    def test_jwks_fetch_attempts_are_rate_limited_while_the_idp_is_down(self):
+        now = [1000.0]
+        calls = []
+        up = [True]
+
+        def fetch(url):
+            calls.append(url)
+            if not up[0]:
+                raise OSError("JWKS endpoint down")
+            return self.jwks(("k1", self.key))
+
+        cache = self.auth.JWKSCache("https://idp.example.test/jwks", fetch, clock=lambda: now[0])
+        verifier = self.auth.OIDCTokenVerifier(self.config, cache)
+        self.assertIsNotNone(verifier.verify(self.token()))  # first fetch
+        self.assertEqual(len(calls), 1)
+        up[0] = False
+        now[0] += 31
+        forged = jwt.encode({"iss": ISSUER, "aud": RESOURCE, "sub": "u", "exp": int(time.time()) + 300},
+                            self.other_key, algorithm="RS256", headers={"kid": "attacker-1"})
+        with self.assertLogs("catpilot_guardrails_mcp.auth", "WARNING"):
+            self.assertIsNone(verifier.verify(forged))  # one failed attempt
+            self.assertEqual(len(calls), 2)
+            for i in range(20):  # within the cooldown: refused without a network call
+                self.assertIsNone(verifier.verify(forged.replace("attacker-1", f"attacker-{i}")))
+        self.assertEqual(len(calls), 2)
+        self.assertIsNotNone(verifier.verify(self.token()))  # the known kid still verifies, off the network
+        self.assertEqual(len(calls), 2)
+        now[0] += 400  # cache expired and the IdP still down: one attempt, then the stale known key
+        self.assertIsNotNone(verifier.verify(self.token()))
+        self.assertEqual(len(calls), 3)
+        self.assertIsNotNone(verifier.verify(self.token()))
+        self.assertEqual(len(calls), 3)
+
+    def test_jwks_rotation_picks_up_a_new_key(self):
+        now = [1000.0]
+        published = [("k1", self.key)]
+        cache = self.auth.JWKSCache("https://idp.example.test/jwks", lambda url: self.jwks(*published), clock=lambda: now[0])
+        verifier = self.auth.OIDCTokenVerifier(self.config, cache)
+        self.assertIsNotNone(verifier.verify(self.token()))
+        published.append(("k2", self.other_key))
+        rotated = jwt.encode({"iss": ISSUER, "aud": RESOURCE, "sub": "u", "exp": int(time.time()) + 300, "groups": ["pilot-eng"]},
+                             self.other_key, algorithm="RS256", headers={"kid": "k2"})
+        now[0] += 31
+        self.assertIsNotNone(verifier.verify(rotated))
+
     # -- configuration --------------------------------------------------------------------------------
 
     def test_unsafe_configuration_is_refused(self):
