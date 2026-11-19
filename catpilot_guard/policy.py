@@ -127,9 +127,27 @@ class Policy:
         return tuple(exception for exception in self.exceptions if exception.rule == rule_id and exception.applies(today))
 
 
+def package_location() -> Path:
+    """What this module runs from: the catpilot_guard directory of a package tree, or, run from a zipapp
+    (catpilot-guard.pyz, tools/build_zipapp.py), the archive file itself. Inside a zip, __file__ is a path through the
+    archive (.../catpilot-guard.pyz/catpilot_guard/policy.py) that names no directory on disk, so the zip importer's
+    archive, else the nearest existing file above __file__, is what was installed and what its owner protects."""
+    archive = getattr(globals().get("__loader__"), "archive", None)
+    if isinstance(archive, str) and archive:
+        return Path(archive).resolve()
+    here = Path(__file__).resolve()
+    if here.parent.is_dir():
+        return here.parent
+    for candidate in here.parents:
+        if candidate.is_file():
+            return candidate
+    return here.parent  # os.stat then fails, and read_checked refuses the policy
+
+
 def package_owner() -> int:
-    """The owner of the catpilot_guard directory this module runs from: root for an install.sh install."""
-    return os.stat(Path(__file__).resolve().parent).st_uid
+    """The owner of what this module runs from (package_location): root for an install.sh install, whether it placed
+    the zipapp or the package tree."""
+    return os.stat(package_location()).st_uid
 
 
 def _writable_by_others(mode: int) -> bool:
