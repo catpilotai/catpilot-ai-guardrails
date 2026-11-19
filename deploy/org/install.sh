@@ -59,6 +59,7 @@ SKILLS="safe-building,security-core"
 MANAGED_MCP_JSON=0
 OVERLAY_FILE=""
 ALLOW_HOSTS=()
+ALLOW_UNPROTECTED_PYTHON=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --server-url) SERVER_URL="$2"; shift 2 ;;
@@ -66,6 +67,7 @@ while [ $# -gt 0 ]; do
     --managed-mcp-json) MANAGED_MCP_JSON=1; shift ;;
     --overlay) OVERLAY_FILE="$2"; shift 2 ;;
     --allow-host) ALLOW_HOSTS+=("--allow-host" "$2"); shift 2 ;;
+    --allow-unprotected-python) ALLOW_UNPROTECTED_PYTHON=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -105,6 +107,20 @@ if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] &
     exit 2
   fi
 fi
+# Whoever can change the interpreter, or a directory above it, runs code in every person's hooks: a Homebrew Python
+# under /opt/homebrew owned by one person, a virtual environment in a home directory. Refused unless root alone can
+# change it, run as root by sudo, Jamf or any MDM alike; --allow-unprotected-python is for an admin who has decided
+# otherwise.
+if ! protected_interpreter "$PROVEN_PYTHON"; then
+  if [ "$ALLOW_UNPROTECTED_PYTHON" -eq 1 ]; then
+    echo "warning $PROVEN_ERROR (--allow-unprotected-python)" >&2
+  else
+    echo "Not installed: $PROVEN_ERROR." >&2
+    echo "Name an interpreter only root can change (for example a python.org or distribution package), or pass" >&2
+    echo "--allow-unprotected-python if you accept that its owner can change what every person's hooks run." >&2
+    exit 2
+  fi
+fi
 PYTHON_BIN="$PROVEN_PYTHON"
 echo "python  $PYTHON_BIN (Python $PROVEN_VERSION), recorded in every hook command"
 cleanup() { [ -n "$PRIVATE_TMP" ] && rm -rf "$PRIVATE_TMP" || true; }
@@ -126,6 +142,10 @@ fi
 # The managed files are generated before anything is written, so a value that cannot be written safely stops
 # the install before it changes anything on the machine.
 SETTINGS_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" -e "s#/Library/Application Support/ClaudeCode#$CC_DIR#g" "$REPO/deploy/org/claude-code/managed-settings.json")"
+# What an earlier install wrote, in any variant and naming the interpreter it recorded (or python3): ours, so a
+# re-install with another interpreter or other options replaces it (place_managed) instead of printing a merge.
+RECORDED_PYTHON="$(recorded_interpreter "$CC_DIR/managed-settings.json" "$CODEX_DIR/requirements.toml" "$COPILOT_DIR/policy.d/catpilot-guardrails.json")"
+managed_candidates "$SETTINGS_JSON"
 CODEX_TOML="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/codex/managed_config.toml")"
 # Every hook command names the proved interpreter by absolute path. The settings are parsed and written out as JSON,
 # never spliced into the text; with --overlay, the SessionStart hook, and with a compiled policy the company-rules
@@ -144,16 +164,26 @@ COPILOT_ENFORCE=()
 [ -n "$POLICY_FILE" ] && COPILOT_ENFORCE=(--enforce)
 COPILOT_POLICY_JSON="$("$PYTHON_BIN" "$RULES_FILES" "${PY_ARGS[@]}" copilot-policy --copilot-dir "$COPILOT_DIR" ${COPILOT_ENFORCE[@]+"${COPILOT_ENFORCE[@]}"})"
 
-# place_managed FILE CONTENT VERB: write FILE when absent; an identical file is current (a re-run changes nothing);
-# any other is left alone and the content printed for a merge.
+# place_managed FILE CONTENT VERB [OURS...]: write FILE when absent; an identical file is current (a re-run changes
+# nothing); one that is exactly what an earlier install wrote (OURS) is replaced; any other is left alone and the
+# content printed for a merge.
 place_managed() {
-  local file="$1" content="$2" verb="$3"
+  local file="$1" content="$2" verb="$3" existing ours
+  shift 3
   if [ -e "$file" ] || [ -L "$file" ]; then
-    if [ -f "$file" ] && [ ! -L "$file" ] && [ "$(cat "$file")" = "$content" ]; then
-      echo "current $file"
-    else
-      echo "exists  $file (not overwritten); $verb:"; echo "$content"
+    existing=""
+    [ -f "$file" ] && [ ! -L "$file" ] && existing="$(cat "$file")"
+    if [ -n "$existing" ] && [ "$existing" = "$content" ]; then
+      echo "current $file"; return
     fi
+    if [ -n "$existing" ]; then
+      for ours in "$@"; do
+        if [ -n "$ours" ] && [ "$existing" = "$ours" ]; then
+          printf '%s\n' "$content" > "$file"; chmod 644 "$file"; echo "updated $file (an earlier install's; now this one's)"; return
+        fi
+      done
+    fi
+    echo "exists  $file (not overwritten); $verb:"; echo "$content"
   else
     printf '%s\n' "$content" > "$file"; chmod 644 "$file"; echo "policy  $file"
   fi
@@ -242,7 +272,7 @@ elif [ -e "$CC_DIR/catpilot-guardrails/instructions/company-checklist.json" ] ||
   echo "        install with --overlay to update them, or run uninstall.sh to remove them"
 fi
 
-place_managed "$CC_DIR/managed-settings.json" "$SETTINGS_JSON" "merge these keys into it"
+place_managed "$CC_DIR/managed-settings.json" "$SETTINGS_JSON" "merge these keys into it" "${SETTINGS_CANDIDATES[@]}"
 install_skill "$CC_DIR/.claude/skills"
 if [ "$MANAGED_MCP_JSON" -eq 1 ]; then
   MCP_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/claude-code/managed-mcp.json")"
@@ -267,7 +297,7 @@ chmod 755 "$CODEX_DIR/catpilot-guardrails" "$CODEX_DIR/catpilot-guardrails/hooks
 chmod 644 "$CODEX_DIR/catpilot-guardrails/hooks/"*.py; echo "hooks   $CODEX_DIR/catpilot-guardrails/hooks/"
 install_package "$CODEX_DIR/catpilot-guardrails/hooks"
 if [ -n "$HOSTS_DIR" ]; then install_rules "$CODEX_DIR"; install_policy "$CODEX_DIR"; fi
-place_managed "$CODEX_DIR/requirements.toml" "$REQUIREMENTS_TOML" "merge this into it, keeping one [features] and one [hooks] table"
+place_managed "$CODEX_DIR/requirements.toml" "$REQUIREMENTS_TOML" "merge this into it, keeping one [features] and one [hooks] table" ${REQUIREMENTS_CANDIDATES[@]+"${REQUIREMENTS_CANDIDATES[@]}"}
 
 # Copilot CLI: the same three checks, and with a compiled policy the company-rules hook, as policy hooks. Copilot
 # loads a policy file only when root owns it and no one else can write it; it reads them before user and project
@@ -285,7 +315,7 @@ if [ -n "$HOSTS_DIR" ]; then install_policy "$COPILOT_DIR"; fi
 # policy.d is created, mode 755, only when it does not exist: an existing directory, which may hold the
 # organization's own policy files, keeps its owner and mode.
 if [ ! -d "$COPILOT_DIR/policy.d" ]; then mkdir -p "$COPILOT_DIR/policy.d"; chmod 755 "$COPILOT_DIR/policy.d"; fi
-place_managed "$COPILOT_DIR/policy.d/catpilot-guardrails.json" "$COPILOT_POLICY_JSON" "replace it with"
+place_managed "$COPILOT_DIR/policy.d/catpilot-guardrails.json" "$COPILOT_POLICY_JSON" "replace it with" ${COPILOT_CANDIDATES[@]+"${COPILOT_CANDIDATES[@]}"}
 
 echo
 echo "Done. Verify on this machine as a normal user: deploy/org/verify.sh, then the checks in docs/DEPLOY_ORG.md."

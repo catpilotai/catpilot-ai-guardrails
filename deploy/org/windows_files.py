@@ -74,8 +74,16 @@ def cc_settings(cc_dir: str, python: str, server_url: str) -> str:
     return json.dumps(data, indent=2)
 
 
+# How Codex runs command_windows (openai/codex, read 2026-11-19): codex-rs/hooks/src/engine/command_runner.rs runs the
+# line through the session's shell, which on Windows is PowerShell (shell_detect.rs default_user_shell: get_shell
+# (PowerShell), with cmd.exe only as the last fallback), as `<powershell> -NoProfile -Command <line>`
+# (core/src/shell.rs derive_exec_args). In PowerShell a quoted path is a string, not a command, so the line starts
+# with the call operator. Under the cmd.exe fallback this line does not run, and Codex may then let the tool run.
+CODEX_SHELL = ("powershell.exe", "-NoProfile", "-Command")
+
+
 def command_line(python: str, script: str, host: str) -> str:
-    return '"%s" "%s" %s --host %s' % (checked(python, "interpreter"), script, ssf.EVIDENCE_DEFAULT, host)
+    return '& "%s" "%s" %s --host %s' % (checked(python, "interpreter"), script, ssf.EVIDENCE_DEFAULT, host)
 
 
 def codex_requirements(codex_dir: str, python: str) -> str:
@@ -84,7 +92,7 @@ def codex_requirements(codex_dir: str, python: str) -> str:
         "# Catpilot Guardrails, written by deploy/org/install.ps1: managed Codex hooks on Windows.",
         "# PreToolUse: the credential and destructive-operation checks on Bash and the credential check on file edits",
         "# (apply_patch). Each command names the interpreter by absolute path; command_windows is what Codex runs on",
-        "# Windows, and command carries the same line.",
+        "# Windows, through the session's PowerShell (hence the & call operator), and command carries the same line.",
         "", "[features]", "hooks = true", "", "[hooks]", "windows_managed_dir = '%s'" % managed,
     ]
     for matcher, _, names in ssf.CODEX_PRETOOLUSE:
@@ -106,21 +114,29 @@ def copilot_policy(copilot_dir: str, python: str) -> str:
     return json.dumps({"version": 1, "hooks": {"PreToolUse": entries}}, indent=2)
 
 
-def managed_files(args) -> list:
-    """(path, content) for each managed file install.ps1 writes."""
+def managed_files(args, python: str = None) -> list:
+    """(path, content) for each managed file install.ps1 writes, naming PYTHON (default: args.python)."""
+    python = python or args.python
     return [
-        (Path(checked(args.cc_dir)) / SETTINGS_NAME, cc_settings(args.cc_dir, args.python, args.server_url)),
-        (Path(checked(args.codex_dir)) / REQUIREMENTS_NAME, codex_requirements(args.codex_dir, args.python)),
-        (Path(checked(args.copilot_dir)) / COPILOT_POLICY, copilot_policy(args.copilot_dir, args.python)),
+        (Path(checked(args.cc_dir)) / SETTINGS_NAME, cc_settings(args.cc_dir, python, args.server_url)),
+        (Path(checked(args.codex_dir)) / REQUIREMENTS_NAME, codex_requirements(args.codex_dir, python)),
+        (Path(checked(args.copilot_dir)) / COPILOT_POLICY, copilot_policy(args.copilot_dir, python)),
     ]
 
 
 def place(args) -> int:
-    for path, content in managed_files(args):
+    previous = []
+    if args.previous_python and args.previous_python != args.python:
+        previous = [content for _, content in managed_files(args, python=args.previous_python)]
+    for index, (path, content) in enumerate(managed_files(args)):
         data = (content + "\n").encode("utf-8")
         if path.exists() or path.is_symlink():
-            if path.is_file() and path.read_bytes() == data:
+            if path.is_file() and not path.is_symlink() and path.read_bytes() == data:
                 print("current %s" % path)
+            elif previous and path.is_file() and not path.is_symlink() and path.read_bytes() == (previous[index] + "\n").encode("utf-8"):
+                # What install.ps1 wrote with the interpreter it named before: ours, so it is replaced.
+                path.write_bytes(data)
+                print("updated %s (now names %s)" % (path, args.python))
             else:
                 print("exists  %s (not overwritten); merge this into it:" % path)
                 print(content)
@@ -238,20 +254,6 @@ def check_acl(report: Report, path: Path) -> None:
                     "run install.ps1 again" % path)
 
 
-INHERITED_ACE = 0x10
-
-
-def explicit_sids(path: str) -> int:
-    """Print the SID of each explicit (not inherited) allow entry on PATH, one per line, for install.ps1."""
-    sys.path.insert(0, str(REPO))
-    from catpilot_guard import policy
-    _, aces = policy._windows_security(name=path)
-    for ace_type, flags, _, sid in aces or []:
-        if sid and not flags & INHERITED_ACE and ace_type not in policy.ACCESS_DENIED_ACE_TYPES:
-            print(sid)
-    return 0
-
-
 def split_windows(command: str) -> list:
     return [a if a else b for a, b in re.findall(r'"([^"]*)"|(\S+)', command)]
 
@@ -315,13 +317,19 @@ def verify(args) -> int:
                 for entry in group.get("hooks") or []:
                     line = entry.get("command_windows") or entry.get("command") or ""
                     words = split_windows(line)
+                    if words[:1] == ["&"]:
+                        words = words[1:]
                     name = next((Path(w.replace("\\", "/")).name for w in words if w.endswith(".py")), None)
                     if name not in ssf.CODEX_PROBES or not words:
                         continue
                     if not check_interpreter(report, words[0], seen, home, timeout):
                         continue
+                    # On Windows, the line goes through PowerShell exactly as Codex runs it (CODEX_SHELL above).
+                    argv = list(CODEX_SHELL) + [line] if os.name == "nt" else words
+                    if os.name != "nt":
+                        report.line("note", "not Windows: %s run directly, not through PowerShell as Codex runs it" % name)
                     for (tool, command, what), expected in zip(ssf.CODEX_PROBES[name], ("deny", "none")):
-                        got = ssf.decision(run(words, ssf.codex_event(tool, command, home), home, timeout))
+                        got = ssf.decision(run(argv, ssf.codex_event(tool, command, home), home, timeout))
                         judge(report, "requirements.toml %s" % name, what, expected, got)
             check_acl(report, Path(args.codex_dir) / "catpilot-guardrails")
         print()
@@ -357,8 +365,6 @@ def verify(args) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="action")
-    p = sub.add_parser("explicit-sids")
-    p.add_argument("path")
     for action in ("place", "remove", "verify"):
         p = sub.add_parser(action)
         p.add_argument("--cc-dir", required=True)
@@ -369,10 +375,9 @@ def main(argv=None) -> int:
         else:
             p.add_argument("--python", required=True)
             p.add_argument("--server-url", required=True)
+            p.add_argument("--previous-python", default="", help="the interpreter an earlier install named (place)")
     args = parser.parse_args(argv)
     try:
-        if args.action == "explicit-sids":
-            return explicit_sids(args.path)
         if args.action == "place":
             return place(args)
         if args.action == "remove":

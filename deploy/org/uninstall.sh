@@ -70,18 +70,7 @@ SETTINGS_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" -e "s#/Libr
 SETTINGS_CANDIDATES=("$SETTINGS_JSON")
 REQUIREMENTS_CANDIDATES=()
 COPILOT_CANDIDATES=()
-if [ "$PYTHON_OK" -eq 1 ]; then
-  for interp in python3 ${RECORDED_PYTHON:+"$RECORDED_PYTHON"}; do
-    PY_ARGS=()
-    [ "$interp" = python3 ] || PY_ARGS=(--python "$interp")
-    gen() { "$PYTHON_BIN" "$RULES_FILES" ${PY_ARGS[@]+"${PY_ARGS[@]}"} "$@" 2>/dev/null || true; }
-    COPILOT_CANDIDATES+=("$(gen copilot-policy --copilot-dir "$COPILOT_DIR")" "$(gen copilot-policy --copilot-dir "$COPILOT_DIR" --enforce)")
-    for variant in --no-rules "" --enforce; do
-      SETTINGS_CANDIDATES+=("$(printf '%s\n' "$SETTINGS_JSON" | gen settings --cc-dir "$CC_DIR" ${variant:+"$variant"})")
-      REQUIREMENTS_CANDIDATES+=("$(gen requirements --codex-dir "$CODEX_DIR" ${variant:+"$variant"})")
-    done
-  done
-fi
+[ "$PYTHON_OK" -eq 1 ] && managed_candidates "$SETTINGS_JSON"
 remove_if_ours "$CC_DIR/managed-settings.json" \
   "remove the catpilot keys by hand: the hooks entries that run catpilot-guardrails/hooks/, SessionStart and the company-rules hook included, and managedMcpServers.catpilot-guardrails" \
   "${SETTINGS_CANDIDATES[@]}"

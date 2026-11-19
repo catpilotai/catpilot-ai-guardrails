@@ -55,9 +55,9 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(len(commands), 3)
         for command in commands:
             words = wf.split_windows(command)
-            self.assertEqual(words[0], PY)
-            self.assertTrue(words[1].startswith(CODEX + "\\catpilot-guardrails\\hooks\\"))
-            self.assertEqual(words[2:], ["--evidence-default", "--host", "codex"])
+            self.assertEqual(words[:2], ["&", PY])  # the call operator: Codex runs the line in PowerShell
+            self.assertTrue(words[2].startswith(CODEX + "\\catpilot-guardrails\\hooks\\"))
+            self.assertEqual(words[3:], ["--evidence-default", "--host", "codex"])
 
     def test_copilot_policy_uses_exec_and_args(self):
         entries = json.loads(wf.copilot_policy(COPILOT, PY))["hooks"]["PreToolUse"]
@@ -103,7 +103,7 @@ class VerifyProbeTests(unittest.TestCase):
             lines += ["[[hooks.PreToolUse]]", 'matcher = "%s"' % matcher]
             for name in names:
                 lines += ["[[hooks.PreToolUse.hooks]]", 'type = "command"',
-                          "command_windows = '\"%s\" \"%s\" --evidence-default --host codex'" % (sys.executable, hooks / name)]
+                          "command_windows = '& \"%s\" \"%s\" --evidence-default --host codex'" % (sys.executable, hooks / name)]
         self.codex.mkdir()
         (self.codex / "requirements.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -144,9 +144,26 @@ class VerifyProbeTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "install.ps1, verify.ps1 and uninstall.ps1 run on Windows (the windows-latest CI job)")
 class PowerShellScriptTests(unittest.TestCase):
+    """Everything under a directory in C:\\Program Files locked the way install.ps1 locks its own: install.ps1 refuses
+    an interpreter that any account but Administrators, SYSTEM or TrustedInstaller can change, its parents included.
+    The interpreter given with -PythonPath is a copy of this Python, locked the same way."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = Path(tempfile.mkdtemp(prefix="catpilot-test-", dir=os.environ.get("ProgramFiles", "C:\\Program Files")))
+        lock(cls.root)
+        cls.python_home = cls.root / "python"
+        shutil.copytree(sys.base_prefix, str(cls.python_home))
+        lock(cls.python_home)
+        cls.python = str(cls.python_home / Path(sys.executable).name)
+
+    @classmethod
+    def tearDownClass(cls):
+        subprocess.run(["icacls", str(cls.root), "/reset", "/T", "/C", "/Q"], capture_output=True)
+        shutil.rmtree(cls.root, ignore_errors=True)
+
     def setUp(self):
-        # Not under C:\Users: install.ps1 refuses an interpreter there, and the pinned one goes under CATPILOT_CC_DIR.
-        self.tmp = Path(tempfile.mkdtemp(prefix="catpilot-ps-", dir=os.environ.get("RUNNER_TEMP")))
+        self.tmp = Path(tempfile.mkdtemp(prefix="case-", dir=str(self.root)))
         self.addCleanup(self.cleanup)
         self.env = dict(os.environ, CATPILOT_CC_DIR=str(self.tmp / "ClaudeCode"), CATPILOT_CODEX_DIR=str(self.tmp / "Codex"),
                         CATPILOT_COPILOT_DIR=str(self.tmp / "Copilot"))
@@ -194,18 +211,72 @@ class PowerShellScriptTests(unittest.TestCase):
         return python
 
     def test_with_python_path(self):
-        self.assertEqual(self.round_trip("-PythonPath", sys.executable), sys.executable)
+        self.assertEqual(self.round_trip("-PythonPath", self.python), self.python)
 
     @unittest.skipUnless(os.environ.get("CATPILOT_TEST_EMBEDDED_PYTHON") == "1", "downloads the pinned interpreter")
     def test_with_the_pinned_embeddable_interpreter(self):
         python = self.round_trip()
         self.assertEqual(python, str(self.tmp / "ClaudeCode" / "catpilot-guardrails" / "python" / "python.exe"))
 
+    def test_a_reinstall_with_another_interpreter_replaces_the_managed_files(self):
+        self.assert_ok(self.ps("install.ps1", "-ServerUrl", URL, "-PythonPath", self.python))
+        other = self.tmp / "python-b"
+        shutil.copytree(str(self.python_home), str(other))
+        lock(other)
+        python_b = str(other / Path(sys.executable).name)
+        again = self.ps("install.ps1", "-ServerUrl", URL, "-PythonPath", python_b)
+        self.assert_ok(again)
+        self.assertIn("updated ", again.stdout)
+        settings = json.loads((self.tmp / "ClaudeCode" / "managed-settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], python_b)
+        self.assertIn(python_b, (self.tmp / "Codex" / "requirements.toml").read_text(encoding="utf-8"))
+
+    def test_a_file_seeded_in_the_hooks_directory_is_removed(self):
+        hooks = self.tmp / "Codex" / "catpilot-guardrails" / "hooks"
+        hooks.mkdir(parents=True)
+        (hooks / "json.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+        install = self.ps("install.ps1", "-ServerUrl", URL, "-PythonPath", self.python)
+        self.assert_ok(install)
+        self.assertFalse((hooks / "json.py").exists(), install.stdout)
+        self.assertIn("removed %s" % (hooks / "json.py"), install.stdout)
+        self.assertTrue((hooks / "pretooluse-secrets.py").exists())
+
+    def test_refuses_an_interpreter_other_accounts_can_change(self):
+        writable = self.tmp / "python-writable"
+        shutil.copytree(str(self.python_home), str(writable))
+        lock(writable)
+        subprocess.run(["icacls", str(writable / "Lib"), "/grant", "*S-1-5-32-545:(OI)(CI)M", "/C", "/Q"], check=True, capture_output=True)
+        proc = self.ps("install.ps1", "-ServerUrl", URL, "-PythonPath", str(writable / Path(sys.executable).name))
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("can change what the interpreter runs", proc.stderr)
+        self.assertIn("S-1-5-32-545", proc.stderr)
+        self.assertFalse((self.tmp / "ClaudeCode").exists())
+
     def test_refuses_an_interpreter_that_does_not_run_python(self):
-        proc = self.ps("install.ps1", "-ServerUrl", URL, "-PythonPath", "C:\\Windows\\System32\\whoami.exe")
+        fake = self.tmp / "fake"
+        fake.mkdir()
+        shutil.copy(os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "whoami.exe"), str(fake / "python.exe"))
+        lock(fake)
+        proc = self.ps("install.ps1", "-ServerUrl", URL, "-PythonPath", str(fake / "python.exe"))
         self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
         self.assertIn("Not installed:", proc.stderr)
         self.assertFalse((self.tmp / "ClaudeCode").exists())
+
+
+def lock(path: Path) -> None:
+    """What install.ps1 does to its own directories: owner Administrators; Administrators and SYSTEM full control,
+    Users read and execute; no inherited or other explicit entries; children inherit only that."""
+    def icacls(*args):
+        subprocess.run(["icacls", str(path)] + list(args), check=True, capture_output=True)
+    icacls("/setowner", "*S-1-5-32-544", "/T", "/C", "/Q")
+    icacls("/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX", "/C", "/Q")
+    out = subprocess.run(["icacls", str(path)], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        # An explicit entry for the creating account survives /grant:r: remove any account but the three.
+        name = line.replace(str(path), "").strip().split(":")[0]
+        if name and "\\" in name and not name.upper().startswith(("BUILTIN\\", "NT AUTHORITY\\")):
+            subprocess.run(["icacls", str(path), "/remove", name, "/C", "/Q"], capture_output=True)
+    subprocess.run(["icacls", str(path / "*"), "/reset", "/T", "/C", "/Q"], capture_output=True)
 
 
 if __name__ == "__main__":

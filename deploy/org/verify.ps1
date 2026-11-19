@@ -23,7 +23,7 @@ if (-not $Recorded) {
   exit 1
 }
 $Python = if ($PythonPath) { $PythonPath } else { $Recorded }
-$version = Test-Interpreter $Python
+$version = if (Test-TrustedInterpreter $Python) { $script:InterpreterVersion } else { $null }
 if (-not $version) {
   Write-Output "FAIL     $script:InterpreterError. Claude Code (onFailure block) then blocks every command and write the hooks cover."
   exit 1

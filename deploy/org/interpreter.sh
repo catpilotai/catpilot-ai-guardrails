@@ -70,3 +70,73 @@ recorded_interpreter() {
   done
   return 0
 }
+
+# resolve_path PATH: PATH with every symlink followed, absolute (realpath(1) is not on every macOS).
+resolve_path() {
+  local p="$1" target n=0
+  while [ -L "$p" ] && [ "$n" -lt 40 ]; do
+    target="$(readlink "$p")"
+    case "$target" in /*) p="$target" ;; *) p="$(dirname "$p")/$target" ;; esac
+    n=$((n + 1))
+  done
+  printf '%s/%s\n' "$(cd -P "$(dirname "$p")" 2>/dev/null && pwd)" "$(basename "$p")"
+}
+
+# unprotected_entry PATH: the first of PATH and its parent directories that someone other than root can change: not
+# owned by root, or writable by its group (unless the group is root's, gid 0) or by everyone. A symlink's own mode
+# does not matter (its directory decides who can replace it). Running as a non-root user (CATPILOT_ALLOW_NONROOT,
+# tests only), that user also counts as root. Prints "PATH (reason)", or nothing.
+unprotected_entry() {
+  local p="$1" listing perms uid gid me
+  me="$(id -u)"
+  while :; do
+    listing="$(ls -ldn -- "$p" 2>/dev/null)" || { printf '%s (cannot be read)\n' "$p"; return 0; }
+    perms="${listing%% *}"
+    uid="$(printf '%s\n' "$listing" | awk '{print $3}')"
+    gid="$(printf '%s\n' "$listing" | awk '{print $4}')"
+    case "$perms" in
+      l*) ;;
+      *)
+        if [ "$uid" != 0 ] && [ "$uid" != "$me" ]; then printf '%s (owned by uid %s)\n' "$p" "$uid"; return 0; fi
+        if [ "${perms:5:1}" = w ] && [ "$gid" != 0 ]; then printf '%s (writable by group %s)\n' "$p" "$gid"; return 0; fi
+        if [ "${perms:8:1}" = w ]; then printf '%s (writable by everyone)\n' "$p"; return 0; fi
+        ;;
+    esac
+    [ "$p" = / ] && return 0
+    p="$(dirname "$p")"
+  done
+}
+
+# protected_interpreter PATH: true when neither PATH (as the hook commands name it) nor the file it resolves to, nor
+# any directory above either, can be changed by anyone but root; otherwise PROVEN_ERROR says which one.
+protected_interpreter() {
+  local found
+  found="$(unprotected_entry "$1")"
+  [ -n "$found" ] || found="$(unprotected_entry "$(resolve_path "$1")")"
+  if [ -n "$found" ]; then
+    PROVEN_ERROR="$found can be changed by an account other than root, and every person's hooks would run what it holds"
+    return 1
+  fi
+  return 0
+}
+
+# managed_candidates SETTINGS_TEMPLATE: every managed file install.sh may have written, in SETTINGS_CANDIDATES,
+# REQUIREMENTS_CANDIDATES and COPILOT_CANDIDATES: each variant (with and without the company rules and their
+# enforcement), naming python3 (an earlier install) or RECORDED_PYTHON. Needs PYTHON_BIN, RULES_FILES, CC_DIR,
+# CODEX_DIR and COPILOT_DIR. uninstall.sh removes such a file; install.sh replaces it.
+managed_candidates() {
+  local template="$1" interp variant
+  SETTINGS_CANDIDATES=("$template")
+  REQUIREMENTS_CANDIDATES=()
+  COPILOT_CANDIDATES=()
+  for interp in python3 ${RECORDED_PYTHON:+"$RECORDED_PYTHON"}; do
+    CANDIDATE_PY_ARGS=()
+    [ "$interp" = python3 ] || CANDIDATE_PY_ARGS=(--python "$interp")
+    COPILOT_CANDIDATES+=("$(candidate copilot-policy --copilot-dir "$COPILOT_DIR")" "$(candidate copilot-policy --copilot-dir "$COPILOT_DIR" --enforce)")
+    for variant in --no-rules "" --enforce; do
+      SETTINGS_CANDIDATES+=("$(printf '%s\n' "$template" | candidate settings --cc-dir "$CC_DIR" ${variant:+"$variant"})")
+      REQUIREMENTS_CANDIDATES+=("$(candidate requirements --codex-dir "$CODEX_DIR" ${variant:+"$variant"})")
+    done
+  done
+}
+candidate() { "$PYTHON_BIN" "$RULES_FILES" ${CANDIDATE_PY_ARGS[@]+"${CANDIDATE_PY_ARGS[@]}"} "$@" 2>/dev/null || true; }

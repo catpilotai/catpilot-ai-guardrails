@@ -422,6 +422,44 @@ class InterpreterTests(unittest.TestCase):
                 for name in ("claude-code", "codex", "copilot"):
                     self.assertFalse((Path(tmp) / name).exists(), name)
 
+    def _link(self, tmp: str, name: str, mode: int) -> Path:
+        """A symlink to this Python in its own directory with MODE."""
+        directory = Path(tmp) / name
+        directory.mkdir()
+        link = directory / "python3"
+        link.symlink_to(sys.executable)
+        directory.chmod(mode)
+        return link
+
+    def test_install_refuses_an_interpreter_another_account_can_replace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._env(Path(tmp) / "claude-code", Path(tmp) / "codex")
+            env["PYTHON_BIN"] = str(self._link(tmp, "shared-bin", 0o755 | 0o002))
+            proc = subprocess.run(["bash", str(INSTALL_SH), "--server-url", self.URL], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn("(writable by everyone) can be changed by an account other than root", proc.stderr)
+            self.assertFalse((Path(tmp) / "claude-code").exists())
+
+            allowed = subprocess.run(["bash", str(INSTALL_SH), "--server-url", self.URL, "--allow-unprotected-python"],
+                                     env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            self.assertIn("warning ", allowed.stderr)
+
+    def test_a_reinstall_with_another_interpreter_replaces_the_managed_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._env(Path(tmp) / "claude-code", Path(tmp) / "codex")
+            self._install(env)
+            other = str(self._link(tmp, "other-bin", 0o755))
+            proc = subprocess.run(["bash", str(INSTALL_SH), "--server-url", self.URL], env=dict(env, PYTHON_BIN=other),
+                                  capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn("not overwritten", proc.stdout)
+            for path in self._files(tmp):
+                self.assertIn(f"updated {path}", proc.stdout)
+                text = path.read_text(encoding="utf-8")
+                self.assertIn(other, text)
+                self.assertNotIn(f'"{sys.executable}"', text.replace("\\", ""))
+
     def test_uninstall_recognizes_files_from_an_install_that_named_python3(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = self._env(Path(tmp) / "claude-code", Path(tmp) / "codex")

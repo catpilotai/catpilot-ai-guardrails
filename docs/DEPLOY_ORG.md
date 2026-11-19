@@ -34,18 +34,36 @@ runs `PYTHON_BIN` (default `python3`, which under `sudo` is root's) with a versi
 unless it runs Python 3.8 or later: it names the macOS Command Line Tools stub (`/usr/bin/python3` without the tools,
 which opens an install prompt instead of running), an interpreter that is too old, missing, or does not start within
 ten seconds. Under `sudo` it also runs the check as the account that ran `sudo`, so a per-user interpreter is refused.
+Whoever can change the interpreter runs code in every person's hooks, so it also refuses one that anyone but root can
+change: the interpreter as named and the file it resolves to, and every directory above each, must be owned by root
+and writable by no other user or group (gid 0 aside). That refuses a Homebrew Python under a user-owned `/opt/homebrew`
+and a virtual environment in a home directory, whether `sudo`, Jamf or another MDM runs the install;
+`--allow-unprotected-python` installs anyway, with a warning, for an admin who accepts that.
 It then writes the interpreter's absolute path into every hook command, on every tool, so a session's `PATH`, a
 version manager's shim or a repository's `.python-version` no longer decides which Python runs. `verify.sh` reads the
 recorded interpreter back from the managed files and proves it runs the same way; on files from an earlier install,
-whose commands name `python3`, it says so and checks `python3` from its own `PATH`. `uninstall.sh` recognizes both.
+whose commands name `python3`, it says so and checks `python3` from its own `PATH`. `uninstall.sh` recognizes both,
+and `install.sh` replaces a managed file that is exactly what an earlier install wrote (any variant, either interpreter),
+so re-installing with another interpreter updates the hook commands.
 
 On Windows, `install.ps1` by default places Python's official embeddable distribution, version 3.12.10, checked
 against its pinned SHA-256 (AMD64 and ARM64), under `C:\Program Files\ClaudeCode\catpilot-guardrails\python\`
 (`CATPILOT_PYTHON_ZIP` names a copy fetched beforehand, for a machine without internet; it is checked the same way).
 `-PythonPath C:\...\python.exe` uses an interpreter IT already deploys instead; it must be absolute, not the
-Microsoft Store alias and not under `C:\Users`, and run Python 3.8 or later, or nothing is installed. Each hook runs
-without a shell: in exec form on Claude Code (`command` the interpreter, `args` the hook), as `command_windows` on
-Codex (in `%ProgramData%\OpenAI\Codex\requirements.toml`, with `windows_managed_dir`), and as `exec` with `args` on
+Microsoft Store alias and not under `C:\Users`, and run Python 3.8 or later, or nothing is installed. It must also be
+one only Administrators, SYSTEM or TrustedInstaller can change: before it is run, every file and directory under its
+directory is checked for that owner and for no write, delete or permission right held by anyone else, and no parent
+may let anyone else delete or replace it; after it runs, every directory and archive on its `sys.path` outside that
+directory is checked the same way. An interpreter Chocolatey or conda left writable by Authenticated Users is refused.
+Each `catpilot-guardrails` directory is created and locked before anything is written into it, and its `hooks\` is
+emptied of anything install.ps1 does not place (in `%ProgramData%`, other accounts may create directories first); the
+pinned interpreter's archive is downloaded, or copied from `CATPILOT_PYTHON_ZIP`, into a staging directory inside the
+locked tree before it is hashed and unpacked. Each hook runs in exec form on Claude Code (`command` the interpreter,
+`args` the hook), as `command_windows` on Codex (in `%ProgramData%\OpenAI\Codex\requirements.toml`, with
+`windows_managed_dir`; Codex runs that line through the session's shell, which on Windows is PowerShell,
+`powershell -NoProfile -Command <line>`, so the line starts with the `&` call operator; on a machine with no
+PowerShell, Codex falls back to `cmd.exe`, where the line does not run and Codex may let the tool run: not verified on a
+host, and `verify.ps1` runs the line through PowerShell as Codex does), and as `exec` with `args` on
 Copilot CLI (`C:\ProgramData\GitHub\Copilot\policy.d\catpilot-guardrails.json`). Each `catpilot-guardrails`
 directory, the interpreter included, and each managed file it writes, gets an explicit access list: owner
 Administrators, full control to Administrators and SYSTEM, read and execute to Users. `verify.ps1` proves the recorded
