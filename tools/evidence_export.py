@@ -180,6 +180,10 @@ def to_ocsf(line: dict, raw: str) -> dict:
     out["severity"] = SEVERITY[severity_id]
     if actor:
         out["actor"] = actor
+        # In Detection Finding and Application Lifecycle, actor belongs to the host profile (OCSF 1.3.0); in API
+        # Activity it is a base attribute and needs no profile.
+        if out["class_uid"] in (2004, 6002):
+            out["metadata"].setdefault("profiles", []).append("host")
     return out
 
 

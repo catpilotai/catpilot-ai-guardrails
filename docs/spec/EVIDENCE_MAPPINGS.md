@@ -43,8 +43,11 @@ OCSF `device` or ECS `host.*`, which name the machine; your collector adds those
 | `rules_delivered`, `rules_expired`, `policy_error` | **Application Lifecycle** (6002, category Application Activity, 6) | These are the state of a component, the company rules: loaded for a session, past their date, or not loadable. Application Lifecycle is the class for an application starting, stopping or failing to, and needs only `app`. |
 | `lookup` | **API Activity** (6003, category Application Activity, 6), activity Read | The server answered an MCP tool call: a read through an API. OCSF requires `actor` and `src_endpoint`; the server does not record its caller, by design ([`EVIDENCE.md`](./EVIDENCE.md) §4), so both say `unknown` (`actor.app_name: "unknown"`, `src_endpoint.name: "unknown"`) rather than invent one. |
 
-Profiles applied: `security_control` on Detection Finding. The `cloud`, `osint` and `host` profiles are not
-applied: nothing in a line feeds them.
+Profiles applied: `security_control` on Detection Finding. `host` on Detection Finding and Application Lifecycle
+when the output has `actor` (the line has `host` or `session_id`), because in those classes `actor` belongs to the
+host profile; in API Activity `actor` is a base attribute. `device`, which the host profile recommends, is left
+out: an evidence line never names the machine. The `cloud` and `osint` profiles are not applied: nothing in a line
+feeds them.
 
 ### 2.2 Every class
 

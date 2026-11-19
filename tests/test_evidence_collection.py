@@ -251,18 +251,32 @@ class Collector:
         self.server.server_close()
 
 
+HOOK = ROOT / "hooks" / "claude-code" / "pretooluse-company-rules.py"
+PROXY_VARS = ("http_proxy", "https_proxy", "all_proxy", "no_proxy")
+
+
+def received_lines(server: Collector) -> list:
+    """Every forwarded line, in order, across the collector's requests."""
+    return [json.loads(raw) for _, _, body in server.received for raw in body.decode("utf-8").splitlines()]
+
+
 class ForwardingTests(unittest.TestCase):
+    def setUp(self):
+        del evidence._PENDING[:]
+        self.addCleanup(evidence._PENDING.clear)
+
     def collector(self, **kwargs) -> Collector:
         server = Collector(**kwargs)
         self.addCleanup(server.close)
         return server
 
     def env(self, url: str, **extra):
-        values = {evidence.HTTPS_ENV: url}
-        values.update(extra)
-        return mock.patch.dict(os.environ, clean_env(**values), clear=True)
+        env = {k: v for k, v in clean_env().items() if k.lower() not in PROXY_VARS}
+        env[evidence.HTTPS_ENV] = url
+        env.update(extra)
+        return mock.patch.dict(os.environ, env, clear=True)
 
-    def test_block_and_would_block_events_are_sent_as_schema_lines(self):
+    def test_lines_are_queued_and_sent_in_one_request_after_the_run(self):
         server = self.collector()
         with self.env(server.url):
             deny(0)
@@ -271,19 +285,24 @@ class ForwardingTests(unittest.TestCase):
             evidence.record("input_error", evidence.HOOK_SOURCE, {"hook": "pretooluse-secrets"})
             evidence.record("rules_delivered", evidence.SESSION_START_SOURCE, {"host": "codex"})
             evidence.record("lookup", evidence.SERVER_SOURCE, {"tool": "get_guidance", "error": None})
-        events = [json.loads(body)["event"] for _, _, body in server.received]
-        self.assertEqual(events, ["deny", "would_deny", "ask", "input_error"])
-        path, headers, body = server.received[0]
+            self.assertEqual(server.received, [], "nothing goes out while the hook is deciding")
+            evidence.flush_forward()
+        self.assertEqual(len(server.received), 1)
+        self.assertEqual([line["event"] for line in received_lines(server)], ["deny", "would_deny", "ask", "input_error"])
+        path, headers, _ = server.received[0]
         self.assertEqual(path, "/ingest")
-        self.assertEqual(headers["Content-Type"], "application/json")
-        line = json.loads(body)
-        self.assertTrue(set(line) <= set(SCHEMA["properties"]))
+        self.assertEqual(headers["Content-Type"], "application/x-ndjson")
+        for line in received_lines(server):
+            self.assertTrue(set(line) <= set(SCHEMA["properties"]))
         self.assertNotIn("Authorization", headers)
+        evidence.flush_forward()
+        self.assertEqual(len(server.received), 1, "a flush sends each line once")
 
     def test_fields_outside_the_schema_are_never_sent(self):
         server = self.collector()
         with self.env(server.url):
             evidence.record("deny", evidence.HOOK_SOURCE, {"hook": "pretooluse-secrets", "command": "CANARY-not-a-field"})
+            evidence.flush_forward()
         self.assertEqual(len(server.received), 1)
         self.assertNotIn(b"CANARY", server.received[0][2])
 
@@ -297,32 +316,94 @@ class ForwardingTests(unittest.TestCase):
             with mock.patch.object(sys, "stdin", stdin), mock.patch.object(sys, "argv", ["pretooluse-secrets"]), \
                     contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
                 secrets.main()
+            evidence.flush_forward()
         self.assertIn('"deny"', out.getvalue())  # the decision stands
-        self.assertEqual(len(server.received), 1)
-        self.assertEqual(json.loads(server.received[0][2])["event"], "deny")
+        self.assertEqual([line["event"] for line in received_lines(server)], ["deny"])
         body = server.received[0][2]
         self.assertNotIn(canary.encode(), body)
         self.assertNotIn(key.encode(), body)
         self.assertNotIn(b"echo", body)
 
+    @unittest.skipUnless(os.name == "posix", "the policy is placed with POSIX permissions")
+    def test_many_matched_rules_and_a_hanging_collector_keep_the_hook_fast(self):
+        # Twelve block rules match one force push, so the company-rules hook writes twelve deny lines. The collector
+        # takes the request and does not answer in time. The decision must reach stdout before any network wait, and
+        # the whole run must stay well under the host's 10 second hook timeout.
+        server = self.collector(delay=30)
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "policy"
+            directory.mkdir()
+            os.chmod(directory, 0o755)
+            policy = directory / "company-policy.json"
+            rules = [{"id": f"protect-main-{n}", "kind": "protected_branch", "mode": "block", "values": ["main"]} for n in range(12)]
+            policy.write_text(json.dumps({"format": "catpilot-company-policy", "format_version": 1, "source_sha256": "e" * 64,
+                                          "expires_on": "2099-01-01", "rules": rules}), encoding="utf-8")
+            os.chmod(policy, 0o644)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("CATPILOT_EVIDENCE") and k.lower() not in PROXY_VARS}
+            env.update({evidence.EVIDENCE_ENV: str(Path(tmp) / "evidence.jsonl"), evidence.HTTPS_ENV: server.url,
+                        evidence.HTTPS_TIMEOUT_ENV: "60"})
+            event = {"session_id": "s-1", "hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": tmp,
+                     "tool_input": {"command": "git push --force origin main"}}
+            started = time.monotonic()
+            proc = subprocess.Popen([sys.executable, str(HOOK), "--policy", str(policy)], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+            proc.stdin.write(json.dumps(event).encode("utf-8"))
+            proc.stdin.close()
+            first = os.read(proc.stdout.fileno(), 65536)
+            decided = time.monotonic() - started
+            rest = proc.stdout.read()
+            proc.wait(timeout=30)
+            total = time.monotonic() - started
+            proc.stdout.close()
+        decision = json.loads(first + rest)
+        self.assertEqual(decision["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(proc.returncode, 0)
+        self.assertLess(total, evidence.FORWARD_TIMEOUT_MAX + 3.0)
+        self.assertLess(decided + 1.0, total, "the decision was out before the forward's wait")
+        self.assertEqual(len(server.received), 1, "one request for all the lines")
+        self.assertEqual(len(received_lines(server)), 12)
+
     def test_a_collector_that_hangs_costs_at_most_the_timeout(self):
         server = self.collector(delay=5)
         with self.env(server.url, **{evidence.HTTPS_TIMEOUT_ENV: "0.3"}):
+            for n in range(10):
+                deny(n)
             started = time.monotonic()
-            deny(0)
+            evidence.flush_forward()
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 1.5)
+        self.assertEqual(len(server.received), 1)
 
     def test_an_unreachable_endpoint_changes_nothing(self):
         with self.env("https://192.0.2.1:9/ingest", **{evidence.HTTPS_TIMEOUT_ENV: "0.2"}):
-            started = time.monotonic()
             deny(0)  # does not raise
+            started = time.monotonic()
+            evidence.flush_forward()
             self.assertLess(time.monotonic() - started, 1.5)
 
     def test_the_timeout_is_bounded(self):
         for value, want in (("", 1.0), ("0.25", 0.25), ("60", evidence.FORWARD_TIMEOUT_MAX), ("-1", 1.0), ("nan", 1.0), ("x", 1.0)):
             with self.subTest(value=value), mock.patch.dict(os.environ, {evidence.HTTPS_TIMEOUT_ENV: value}):
                 self.assertEqual(evidence.forward_timeout(), want)
+        self.assertLessEqual(evidence.FORWARD_TIMEOUT_MAX, 2.0)
+
+    def test_lock_waits_share_one_budget(self):
+        if evidence.fcntl is None:
+            self.skipTest("no fcntl locks")
+        import fcntl
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "evidence.jsonl"
+            log.write_text("", encoding="utf-8")
+            with open(log, "rb") as holder, mock.patch.object(evidence, "_lock_waited", 0.0), \
+                    mock.patch.dict(os.environ, clean_env(**{evidence.EVIDENCE_ENV: str(log)}), clear=True):
+                fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+                started = time.monotonic()
+                for n in range(8):
+                    deny(n)
+                elapsed = time.monotonic() - started
+            written = len(log.read_text(encoding="utf-8").splitlines())
+        self.assertLess(elapsed, evidence.LOCK_BUDGET_SECONDS + 0.5)
+        self.assertEqual(written, 8, "every line is still written, without the lock")
 
     def test_only_https_or_loopback_http_is_used(self):
         for spec, ok in (("https://collector.example/ingest", True), ("http://127.0.0.1:8080/x", True), ("http://localhost/x", True),
@@ -331,10 +412,25 @@ class ForwardingTests(unittest.TestCase):
             with self.subTest(spec=spec):
                 self.assertEqual(evidence.forward_target(spec) is not None, ok)
 
+    def test_loopback_http_never_goes_through_a_proxy(self):
+        server = self.collector()
+        proxy = self.collector()
+        proxy_url = proxy.url.rsplit("/", 1)[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            token = Path(tmp) / "token"
+            token.write_text("secret-ingest-token", encoding="utf-8")
+            os.chmod(token, 0o600)
+            with self.env(server.url, **{evidence.HTTPS_TOKEN_FILE_ENV: str(token), "HTTP_PROXY": proxy_url, "http_proxy": proxy_url}):
+                deny(0)
+                evidence.flush_forward()
+        self.assertEqual(proxy.received, [])
+        self.assertEqual(len(server.received), 1)
+
     def test_redirects_are_not_followed(self):
         server = self.collector(status=302)
         with self.env(server.url):
             deny(0)
+            evidence.flush_forward()
         self.assertEqual(len(server.received), 1)
 
     def test_bearer_token_from_a_file(self):
@@ -342,16 +438,30 @@ class ForwardingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             good = Path(tmp) / "token"
             good.write_text("ingest-only-token\n", encoding="utf-8")
+            os.chmod(good, 0o600)
             bad = Path(tmp) / "bad"
             bad.write_text("two words\nInjected: header\n", encoding="utf-8")
-            with self.env(server.url, **{evidence.HTTPS_TOKEN_FILE_ENV: str(good)}):
-                deny(0)
-            with self.env(server.url, **{evidence.HTTPS_TOKEN_FILE_ENV: str(bad)}):
-                deny(1)
-            with self.env(server.url, **{evidence.HTTPS_TOKEN_FILE_ENV: str(Path(tmp) / "missing")}):
-                deny(2)
+            for path in (good, bad, Path(tmp) / "missing"):
+                with self.env(server.url, **{evidence.HTTPS_TOKEN_FILE_ENV: str(path)}):
+                    deny(0)
+                    evidence.flush_forward()
         self.assertEqual(len(server.received), 1, "an unusable token file sends nothing")
         self.assertEqual(server.received[0][1]["Authorization"], "Bearer ingest-only-token")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permissions")
+    def test_a_shared_token_file_warns_without_content(self):
+        server = self.collector()
+        with tempfile.TemporaryDirectory() as tmp:
+            shared = Path(tmp) / "token"
+            shared.write_text("shared-token-value", encoding="utf-8")
+            os.chmod(shared, 0o644)
+            err = io.StringIO()
+            with self.env(server.url, **{evidence.HTTPS_TOKEN_FILE_ENV: str(shared)}), contextlib.redirect_stderr(err):
+                deny(0)
+                evidence.flush_forward()
+        self.assertIn("readable by other accounts", err.getvalue())
+        self.assertNotIn("shared-token-value", err.getvalue())
+        self.assertNotIn(tmp, err.getvalue())
 
 
 if __name__ == "__main__":
