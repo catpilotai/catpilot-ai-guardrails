@@ -119,8 +119,8 @@ LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.do
 MIN_CREDENTIAL_LENGTH = 6
 
 
-# Optional evidence log, written by catpilot_guard/evidence.py when CATPILOT_EVIDENCE_LOG or
-# CATPILOT_EVIDENCE_SYSLOG is set: one content-free line per deny or input error, with the hook, the
+# Optional evidence log, written by catpilot_guard/evidence.py when CATPILOT_EVIDENCE_LOG,
+# CATPILOT_EVIDENCE_SYSLOG or CATPILOT_EVIDENCE_HTTPS is set: one content-free line per deny or input error, with the hook, the
 # tool, the credential type and the session id. Never the command, never the matched text.
 HOOK_NAME = "pretooluse-secrets"
 HOST = "claude-code"  # main()'s host with no --host (hook_host); decide() called from a harness passes no host

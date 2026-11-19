@@ -54,6 +54,8 @@ tools/
   eval.py                   # safe-building with/without runner
   bench.py, bench/          # benchmark runner: conditions, scanners, functional checks, reports
   evidence_summary.py       # pilot readout from the content-free evidence log
+  evidence_export.py        # the evidence log as OCSF or ECS JSON lines
+  evidence_verify.py        # checks the evidence log's opt-in hash chain
   sbom.py                   # SPDX SBOM of the pinned dependencies, for signed releases
 docs/spec/                  # format, packaging, overlay and evidence specs; V2 postmortem
 frameworks/                 # long-form framework guides, kept as reference and not packaged as skills
