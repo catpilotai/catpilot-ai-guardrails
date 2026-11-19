@@ -18,8 +18,12 @@ Configuration is environment only, never tool arguments:
     CATPILOT_TEMPLATE_HOSTS comma-separated hosts allowed in overlay templates (optional)
 
 What this is: advice a host can ask for at the moment it matters. What it
-is not: authentication, tenant isolation, monitoring, or enforcement. Bind
-it to localhost and put it behind your own gateway if you expose it. An
+is not: tenant isolation, monitoring, or enforcement. Bind it to localhost,
+or expose it only with `--auth oidc` (it then checks tokens from your own
+identity provider and a group claim picks the rules file; see
+docs/spec/SERVER_AUTH.md) or behind a gateway that authenticates
+(`--behind-auth-gateway`). It refuses to serve a rules file on a
+non-loopback address with neither. An
 answer with `unknown_policy: true` means no current approved company values
 were available; generic defaults are never the company's policy.
 
@@ -120,6 +124,8 @@ def create_server(
     policy_provider: PolicyProvider | None = None,
     evidence: EvidenceSink | None = None,
     instructions: str | None = None,
+    auth: Any = None,
+    token_verifier: Any = None,
 ) -> MCPServer:
     """The four tools on a new server.
 
@@ -127,10 +133,12 @@ def create_server(
     optional evidence file. A host serving several organizations passes `policy_provider`, which
     picks the overlay for each call from its context, and its own `evidence` sink. `instructions`
     replaces the server instructions; a host that adds to them should start from `INSTRUCTIONS`.
+    `auth` (the SDK's `AuthSettings`) and `token_verifier` turn on bearer-token checking over HTTP; see
+    `catpilot_guardrails_mcp.auth` and docs/spec/SERVER_AUTH.md.
     """
     rules = policy_provider or _policy
     record = evidence or _evidence
-    server = MCPServer("catpilot-guardrails", version=GUIDANCE["release"], instructions=instructions or INSTRUCTIONS)
+    server = MCPServer("catpilot-guardrails", version=GUIDANCE["release"], instructions=instructions or INSTRUCTIONS, auth=auth, token_verifier=token_verifier)
 
     @server.tool(annotations=READ_ONLY, structured_output=True)
     def get_guidance(topic: str, ctx: Context) -> dict[str, Any]:
@@ -275,10 +283,14 @@ def build_http_app(*, host: str = "127.0.0.1", stateless: bool = False, allowed_
         security = TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=list(allowed_hosts), allowed_origins=[f"https://{h.split(':')[0]}" for h in allowed_hosts])
     elif not dns_rebinding_protection:
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-    app = (mcp_server or server).streamable_http_app(streamable_http_path="/mcp", json_response=stateless, stateless_http=stateless, transport_security=security, host=host)
+    mcp_server = mcp_server or server
+    auth_on = mcp_server.settings.auth is not None
+    app = mcp_server.streamable_http_app(streamable_http_path="/mcp", json_response=stateless, stateless_http=stateless, transport_security=security, host=host)
 
     async def health(request):
-        return JSONResponse({"status": "ok", "server": "catpilot-guardrails", "release": GUIDANCE["release"], "policy_status": _policy().status, "stateless": stateless})
+        # With auth on, the rules depend on the caller's group; the unauthenticated health check names none.
+        status = "per-group" if auth_on else _policy().status
+        return JSONResponse({"status": "ok", "server": "catpilot-guardrails", "release": GUIDANCE["release"], "policy_status": status, "auth": "oidc" if auth_on else "none", "stateless": stateless})
 
     async def root(request):
         return JSONResponse({"server": "catpilot-guardrails", "release": GUIDANCE["release"], "mcp_endpoint": "/mcp", "health": "/health", "tools": ["get_guidance", "check_plan", "get_template", "list_approved"], "data_statement": DATA_STATEMENT})
@@ -309,6 +321,27 @@ class _NoStore:
         await self.app(scope, receive, send_no_store)
 
 
+def build_oidc_server(fail: Callable[[str], Any], env: dict[str, str] | None = None, key_resolver: Any = None) -> MCPServer:
+    """The four tools behind OIDC bearer-token checking, configured from the environment; `fail` on any config error."""
+    from catpilot_guardrails_mcp import auth
+
+    try:
+        config = auth.load_config(env)
+        if key_resolver is None:
+            key_resolver = auth.jwks_key_resolver(config.jwks_url or auth.discover_jwks_url(config.issuer))
+    except auth.AuthConfigError as exc:
+        fail(f"auth configuration: {exc}")
+        raise
+    except Exception as exc:  # discovery failed: never start unauthenticated
+        fail(f"auth configuration: OIDC discovery failed ({exc.__class__.__name__})")
+        raise
+    return create_server(
+        policy_provider=auth.group_policy_provider(config),
+        auth=auth.auth_settings(config),
+        token_verifier=auth.OIDCTokenVerifier(config, key_resolver),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
@@ -317,16 +350,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stateless", action="store_true", help="streamable-http without sessions, JSON responses; required behind a load balancer with several replicas")
     parser.add_argument("--allowed-host", action="append", default=None, help="Host header values to accept (repeatable); also CATPILOT_MCP_ALLOWED_HOSTS, comma-separated. Required when binding beyond localhost.")
     parser.add_argument("--no-dns-rebinding-protection", action="store_true", help="accept any Host header; only behind a gateway that already validates hosts")
+    parser.add_argument("--auth", choices=["none", "oidc"], default=os.environ.get("CATPILOT_AUTH") or "none", help="oidc: check bearer tokens from your identity provider and pick the rules file by group claim (docs/spec/SERVER_AUTH.md); also CATPILOT_AUTH")
+    parser.add_argument("--behind-auth-gateway", action="store_true", default=os.environ.get("CATPILOT_BEHIND_AUTH_GATEWAY") == "1", help="auth off because a gateway in front authenticates every request; lets a rules file be served beyond localhost; also CATPILOT_BEHIND_AUTH_GATEWAY=1")
     args = parser.parse_args(argv)
+    if args.auth not in ("none", "oidc"):
+        parser.error("--auth (CATPILOT_AUTH) must be none or oidc")
     if args.transport == "stdio":
+        if args.auth != "none":
+            parser.error("--auth applies to streamable-http only; stdio has no network caller to authenticate")
         server.run(transport="stdio")
         return 0
+    from catpilot_guardrails_mcp.auth import is_loopback
+
     allowed = args.allowed_host or [h.strip() for h in os.environ.get("CATPILOT_MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
-    if args.host not in ("127.0.0.1", "localhost", "::1") and not allowed and not args.no_dns_rebinding_protection:
+    if not is_loopback(args.host) and not allowed and not args.no_dns_rebinding_protection:
         parser.error("binding beyond localhost requires --allowed-host (or CATPILOT_MCP_ALLOWED_HOSTS), or --no-dns-rebinding-protection behind a gateway that validates hosts")
+    # The startup guard (SERVER_AUTH.md §8): company rules never go to an unauthenticated network caller.
+    if args.auth == "none" and not is_loopback(args.host) and os.environ.get("CATPILOT_OVERLAY_FILE") and not args.behind_auth_gateway:
+        parser.error("refusing to serve CATPILOT_OVERLAY_FILE on a non-loopback address without authentication: use --auth oidc, or --behind-auth-gateway when a gateway in front authenticates every request")
+    mcp_server = None
+    if args.auth == "oidc":
+        mcp_server = build_oidc_server(parser.error)
     import uvicorn
 
-    app = build_http_app(host=args.host, stateless=args.stateless, allowed_hosts=allowed, dns_rebinding_protection=not args.no_dns_rebinding_protection)
+    app = build_http_app(host=args.host, stateless=args.stateless, allowed_hosts=allowed, dns_rebinding_protection=not args.no_dns_rebinding_protection, mcp_server=mcp_server)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
     return 0
 

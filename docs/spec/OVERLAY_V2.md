@@ -153,6 +153,8 @@ Windows "root-owned" is read from the access list: owned by Administrators,
 SYSTEM or TrustedInstaller, and writable by no one else
 ([`WINDOWS.md`](./WINDOWS.md) §3.1).
 
+**Allow/deny list export (experimental).** `python tools/validate_overlay.py export FILE --out export.json` writes the same rules as generic JSON for a gateway or policy engine ([`policy-export.schema.json`](./policy-export.schema.json), format version 2; decided in issue #100; a specific engine comes later, from what a design partner runs). `rules` has one object per rule: `rule_id`, `kind`, `list` (`allow` for `deploy_host`, `package_registry` and `cloud_account`; `deny` for `protected_branch`), resolved `mode`, sorted `values`, and that rule's own active exceptions (`exception_id`, `allows`, `expires_on`). Rules are never merged: as in the hook (`catpilot_guard/company_rules.py`, `matched_rules`), each rule is evaluated alone, so a target is outside policy if any rule of its kind does not list it (in its values or its own exceptions' allows), not if no rule lists it. A consumer must stop honoring an exception at its `expires_on`; expired exceptions and those with `where` are not written. Output is sorted and byte-stable, with no timestamp, salt, source hash, owner, approver role or `use_instead` text, and is written mode 600 because it lists the enforcement values: keep it as private as the rules file. MCP server names are not exported: the rules file has no rule kind for them yet. The format may change in any release.
+
 A deny reason would read, for example: "Catpilot company rule `deploy-hosts`:
 this deploy targets a host the company has not approved. Use instead: Internal
 App Platform (company sign-in). If this exact command is intentional, run it
