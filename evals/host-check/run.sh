@@ -31,7 +31,7 @@
 #
 # Overrides, for tests and unusual machines: PYTHON_BIN (Python 3.11 to 3.14 with PyYAML; default python3),
 # CLAUDE_BIN, CODEX_BIN, COPILOT_BIN and SUDO_BIN (default claude, codex, copilot and sudo), CATPILOT_CC_DIR,
-# CATPILOT_CODEX_DIR, CATPILOT_COPILOT_DIR and CATPILOT_ALLOW_NONROOT (passed on to install.sh, verify.sh and
+# CATPILOT_CODEX_DIR, CATPILOT_COPILOT_DIR, CATPILOT_ALLOW_NONROOT and CATPILOT_ALLOW_UNPROTECTED_PYTHON (passed on to install.sh, verify.sh and
 # uninstall.sh), and HOST_CHECK_SESSION_TIMEOUT (seconds per session, default 900).
 set -uo pipefail
 
@@ -580,7 +580,7 @@ copilot_probe() {  # NAME KIND RULES
 # The root environment for install.sh and uninstall.sh: sudo resets the environment, so the overrides are named.
 # PYTHONDONTWRITEBYTECODE keeps the build, run as root, from writing root-owned __pycache__ into the checkout.
 ROOT_ENV=("PYTHON_BIN=$PY_PATH" "PYTHONDONTWRITEBYTECODE=1")
-for v in CATPILOT_CC_DIR CATPILOT_CODEX_DIR CATPILOT_COPILOT_DIR CATPILOT_ALLOW_NONROOT; do
+for v in CATPILOT_CC_DIR CATPILOT_CODEX_DIR CATPILOT_COPILOT_DIR CATPILOT_ALLOW_NONROOT CATPILOT_ALLOW_UNPROTECTED_PYTHON; do
   if printenv "$v" > /dev/null 2>&1; then ROOT_ENV+=("$v=$(printenv "$v")"); fi
 done
 

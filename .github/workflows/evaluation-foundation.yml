@@ -50,6 +50,10 @@ jobs:
           python tools/validate_evals.py
           python tools/eval.py
       - name: Run the offline test suite
+        # The runner's Python is world-writable, which install.sh refuses for a real install; the tests that drive
+        # install.sh accept it here. The test of that refusal unsets this.
+        env:
+          CATPILOT_ALLOW_UNPROTECTED_PYTHON: "1"
         run: python -m unittest discover -s tests -v
       - name: Install the pinned functional verifier image
         run: docker pull python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534

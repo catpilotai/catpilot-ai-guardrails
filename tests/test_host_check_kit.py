@@ -356,6 +356,9 @@ class HostCheckKitTests(unittest.TestCase):
             "HOME": str(self.home),
             "TMPDIR": str(self.tmp / "tmp"),
             "CATPILOT_ALLOW_NONROOT": "1",
+            # CI's Python is world-writable; baseline.yml and evaluation-foundation.yml accept it for test installs.
+            **({"CATPILOT_ALLOW_UNPROTECTED_PYTHON": os.environ["CATPILOT_ALLOW_UNPROTECTED_PYTHON"]}
+               if "CATPILOT_ALLOW_UNPROTECTED_PYTHON" in os.environ else {}),
             "CATPILOT_CC_DIR": str(self.cc),
             "CATPILOT_CODEX_DIR": str(self.codex),
             "CATPILOT_COPILOT_DIR": str(self.copilot),
