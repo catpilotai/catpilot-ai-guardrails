@@ -13,8 +13,9 @@ It takes two to four weeks, five to twenty people (include people who are not en
 | --- | --- | --- | --- |
 | **Hosted (Catpilot Plus)** | Claude.ai, ChatGPT, Claude Code, Codex | Catpilot, per company, behind a company connector link | Runs in production at `guardrails.catpilot.ai`; the host results are in the [tested-runtimes table](REFERENCE.md#tested-runtimes) |
 | **Self-hosted (this repository)** | Claude Code, Codex | You, on each machine, over stdio (nothing listens on the network) | The [15-minute quickstart](../README.md#company-rules-in-15-minutes), run end to end on 2026-10-28 |
+| **Self-hosted, signed in (this repository)** | Claude.ai, ChatGPT | You, one server over HTTPS, checking tokens from your identity provider (`--auth oidc`) | Implemented and tested with locally generated keys; **not yet verified with Claude.ai or ChatGPT on a host** |
 
-Claude.ai and ChatGPT reach a server only as a remote connector over HTTPS. Self-hosting that means putting [`mcp-server/`](../mcp-server/README.md) behind your own authenticated gateway, which Catpilot has not verified. For a pilot that includes those two tools, use the hosted route.
+Claude.ai and ChatGPT reach a server only as a remote connector over HTTPS. The reference server now has an opt-in sign-in mode for that: it checks tokens from your own identity provider and a group claim picks the rules file ([`mcp-server/` README](../mcp-server/README.md#sign-in-for-claudeai-and-chatgpt---auth-oidc), [design note](spec/SERVER_AUTH.md)). Nobody has yet connected Claude.ai or ChatGPT to it on a real host, so whether either completes sign-in against your provider is unknown. For a pilot that needs those two tools working on day one, use the hosted route; if you try the signed-in route, plan time to verify it first.
 
 ## Week 0: set up (about a day)
 

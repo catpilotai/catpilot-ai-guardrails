@@ -13,9 +13,12 @@
 | [`PACKAGING.md`](./PACKAGING.md) | Three tiers, bundler mechanics, deterministic output, distribution via `npx skills add`. |
 | [`V2_DIAGNOSTIC.md`](./V2_DIAGNOSTIC.md) | One-page postmortem on why v2.x of this repo got zero external traction, and what the rewrite changes. |
 | [`OVERLAY.md`](./OVERLAY.md) | Organization overlay: the open schema for company-specific values, the validator, private builds, and the seam with Catpilot Plus. JSON Schema at [`overlay.schema.json`](./overlay.schema.json); synthetic example at [`overlay.example.yaml`](./overlay.example.yaml). |
+| [`SERVER_AUTH.md`](./SERVER_AUTH.md) | Implemented (issue #94), not verified on a host: the reference server's opt-in OIDC resource-server mode for Claude.ai and ChatGPT (threat model, audience binding, discovery and key rotation, clock skew, 401 responses, group claim to rules file) and the startup guard. |
 | [`OVERLAY_V2.md`](./OVERLAY_V2.md) | Approved (2026-11-17, issue #92), with the decisions in its §7: version 2 of the overlay (stable rule ids, a machine-only `enforcement` section, modes, `migrate`, topic contacts). The file format, validation, `migrate` and topic contacts are implemented; `enforcement` is validated only, since no hook or check reads it yet. JSON Schema at [`overlay.v2.schema.json`](./overlay.v2.schema.json); synthetic example at [`overlay.v2.example.yaml`](./overlay.v2.example.yaml). |
 | [`WINDOWS.md`](./WINDOWS.md) | Decided (2026-11-18); increments 1 and 2 built, not verified on a Windows host: what breaks on native Windows (POSIX hook commands, Claude Code's PowerShell tool, PowerShell commands the readers cannot parse, the policy ownership check), where each tool reads managed configuration there, and four increments with how each is verified. |
 | [`EVIDENCE.md`](./EVIDENCE.md) | Evidence events, schema version 1: the content-free line the hooks and the reference server write, its fields, the closed list of events, and how lines are written. JSON Schema at [`evidence-event.schema.json`](./evidence-event.schema.json). |
+| [`EVIDENCE_MAPPINGS.md`](./EVIDENCE_MAPPINGS.md) | Every evidence event mapped field by field to OCSF 1.3.0 and ECS 8.11, with the class chosen for each and why. Converter: `tools/evidence_export.py`. |
+| [`policy-export.schema.json`](./policy-export.schema.json) | Experimental: the generic allow/deny list `validate_overlay.py export` writes from the company rules (OVERLAY_V2.md §2.2). |
 | [`README.md`](./README.md) | This file. |
 
 ## How the format and packaging fit together

@@ -193,6 +193,19 @@ disclosed and excluded from that secondary measure's denominator. The
 includes the public no-model demo and legacy `--scanners-only` checks, which
 cannot qualify a new experiment.
 
+## evidence_export.py and evidence_verify.py
+
+```bash
+# the evidence log as OCSF 1.3.0 or ECS 8.11 JSON lines (docs/spec/EVIDENCE_MAPPINGS.md)
+python3 tools/evidence_export.py --format ocsf ~/.catpilot-guardrails/evidence.jsonl
+python3 tools/evidence_export.py --format ecs  ~/.catpilot-guardrails/evidence.jsonl
+# the opt-in hash chain (CATPILOT_EVIDENCE_CHAIN=1); --expect-head compares with a head kept elsewhere
+python3 tools/evidence_verify.py ~/.catpilot-guardrails/evidence.jsonl
+```
+
+The chain shows edits, deletions and reordering inside the file, not a rewrite of the whole file; see
+[`docs/spec/EVIDENCE.md`](../docs/spec/EVIDENCE.md) §8.
+
 ## Versioning
 
 - **Bundles use CalVer** (`YYYY.MM.DD` or `YYYY.MM`). Set in each tier's `bundle.toml`. The bundler refuses to build a bundle whose version isn't CalVer or isn't a real date.
