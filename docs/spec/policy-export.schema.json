@@ -1,59 +1,37 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/catpilotai/catpilot-ai-guardrails/docs/spec/policy-export.schema.json",
-  "title": "Catpilot allow/deny list export, version 1 (experimental)",
-  "description": "A generic allow/deny list of a company's enforcement rules, written by `tools/validate_overlay.py export` for a gateway or policy engine to load. EXPERIMENTAL: the format may change in any release, with a note in the changelog. allow lists are approved values (anything unlisted is outside policy); deny lists are protected values. Each entry carries the rule id and the resolved mode (monitor, ask, block). An active exception appears with its exception_id and expires_on, and a consumer must stop honoring it at that date; an expired exception is not written. The file holds the company's enforcement values, so treat it like the rules file. It never carries the salt, the source hash, an owner, an approver role or any model-facing text. MCP server names are not exported: the rules file has no rule kind for them yet.",
+  "title": "Catpilot allow/deny list export, version 2 (experimental)",
+  "description": "The company's enforcement rules as generic JSON for a gateway or policy engine, written by `tools/validate_overlay.py export` (mode 600). EXPERIMENTAL: the format may change in any release, with a note in the changelog. Rules are listed one object each and must be evaluated one by one, never merged into a union, as the hook does (catpilot_guard/company_rules.py matched_rules). For a rule with list 'allow' (kinds deploy_host, package_registry, cloud_account) a target is outside policy if ANY rule of that kind does not list it in its values or in the allows of one of its own active exceptions. For a rule with list 'deny' (kind protected_branch) a target is covered if it matches a value and no active exception of that same rule allows it. A consumer must stop honoring an exception at its expires_on; an expired exception is not written, and one scoped with `where` is left out. Each rule has the resolved mode (monitor, ask, block). The file holds the company's enforcement values, so treat it like the rules file. It never carries the salt, the source hash, an owner, an approver role or any model-facing text. MCP server names are not exported: the rules file has no rule kind for them yet.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["format", "format_version", "experimental", "expires_on", "allow", "deny"],
+  "required": ["format", "format_version", "experimental", "expires_on", "rules"],
   "properties": {
     "format": {"const": "catpilot-allowlist-export"},
-    "format_version": {"const": 1},
+    "format_version": {"const": 2},
     "experimental": {"const": true},
     "expires_on": {"$ref": "#/$defs/date", "description": "The rules file's expiry. After it the rules are stale and should be treated as monitor-only."},
-    "allow": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "deploy_hosts": {"$ref": "#/$defs/entries"},
-        "package_registries": {"$ref": "#/$defs/entries"},
-        "cloud_accounts": {"$ref": "#/$defs/entries"}
-      }
-    },
-    "deny": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "protected_branches": {"$ref": "#/$defs/entries"}
-      }
-    }
-  },
-  "$defs": {
-    "mode": {"enum": ["monitor", "ask", "block"]},
-    "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
-    "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
-    "entries": {
+    "rules": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["value", "rule_id", "mode"],
+        "required": ["rule_id", "kind", "list", "mode", "values"],
         "properties": {
-          "value": {"type": "string", "minLength": 1},
           "rule_id": {"$ref": "#/$defs/id"},
-          "mode": {"$ref": "#/$defs/mode"},
-          "exception_id": {"$ref": "#/$defs/id"},
-          "expires_on": {"$ref": "#/$defs/date"},
-          "except": {
-            "description": "Protected-branch entries only: branches an active exception stops protecting.",
+          "kind": {"enum": ["deploy_host", "package_registry", "cloud_account", "protected_branch"]},
+          "list": {"enum": ["allow", "deny"]},
+          "mode": {"enum": ["monitor", "ask", "block"]},
+          "values": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "exceptions": {
             "type": "array",
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["value", "exception_id", "expires_on"],
+              "required": ["exception_id", "allows", "expires_on"],
               "properties": {
-                "value": {"type": "string", "minLength": 1},
                 "exception_id": {"$ref": "#/$defs/id"},
+                "allows": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 "expires_on": {"$ref": "#/$defs/date"}
               }
             }
@@ -61,5 +39,9 @@
         }
       }
     }
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}
   }
 }

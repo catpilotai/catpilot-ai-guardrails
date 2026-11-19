@@ -1415,7 +1415,7 @@ def effective_modes(policy: dict, today: dt.date | None = None) -> list[str]:
     return lines
 
 
-def write_policy(path: Path, text: str) -> None:
+def write_policy(path: Path, text: str, mode: int = 0o644) -> None:
     """Write the policy beside its destination and move it into place, mode 644. A symlink is refused."""
     if path.is_symlink():
         raise OverlayError(f"{path}: symlinks are not allowed")
@@ -1424,7 +1424,7 @@ def write_policy(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
-        os.chmod(temporary, 0o644)
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
     except BaseException:
         try:
@@ -1480,63 +1480,48 @@ def compile_main(argv: list[str]) -> int:
 # ----------------------------------------------------------------- export (issue #100, experimental)
 
 EXPORT_FORMAT = "catpilot-allowlist-export"
-EXPORT_FORMAT_VERSION = 1
-# Allow-list kinds export under `allow`; a protect-list kind under `deny` (OVERLAY_V2.md §2.2).
-EXPORT_SECTIONS = {
-    "deploy_host": ("allow", "deploy_hosts"),
-    "package_registry": ("allow", "package_registries"),
-    "cloud_account": ("allow", "cloud_accounts"),
-    "protected_branch": ("deny", "protected_branches"),
-}
+EXPORT_FORMAT_VERSION = 2
+# Allow-list kinds are `allow` lists; a protect-list kind is a `deny` list (OVERLAY_V2.md §2.2).
+EXPORT_LISTS = {"deploy_host": "allow", "package_registry": "allow", "cloud_account": "allow", "protected_branch": "deny"}
 
 
 def export_policy(overlay: dict, today: dt.date | None = None) -> dict | None:
-    """A generic allow/deny list of the company rules for a gateway or policy engine; None without enforcement rules.
+    """A generic list of the company rules for a gateway or policy engine; None without enforcement rules.
 
-    Each entry has a value, its rule_id and resolved mode. Active exceptions without `where` appear as extra allowed
-    values with `exception_id` and `expires_on` (allow lists) or as `except` on protected-branch entries; an expired
-    one is dropped, and one with `where` is left out (only the pull-request check reads it). No timestamp, salt,
-    source hash, owner, approver_role or use_instead text: the same file and date give identical output.
+    One object per rule, as the hook evaluates them: a target is outside policy if ANY rule of its kind does not list
+    it (an allow rule), or inside a rule's values and not excepted (a deny rule). Rules are never merged. Each carries
+    its id, kind, resolved mode, sorted values and that rule's active exceptions without `where` (id, allows, expiry);
+    an expired exception is dropped and one with `where` is left out (only the pull-request check reads it). No
+    timestamp, salt, source hash, owner, approver_role or use_instead text: the same file and date give identical output.
     """
     enforcement = overlay.get("enforcement")
     if not enforcement:
         return None
     today = today or dt.date.today()
-    rules = {r["id"]: r for r in enforcement["rules"]}
-    sections: dict = {"allow": {}, "deny": {}}
+    out = []
     for rule in enforcement["rules"]:
-        group, key = EXPORT_SECTIONS[rule["kind"]]
-        mode = rule.get("mode", enforcement["default_mode"])
-        entries = sections[group].setdefault(key, [])
-        for value in rule["values"]:
-            entries.append({"value": value, "rule_id": rule["id"], "mode": mode})
-    for exc in enforcement.get("exceptions", []):
-        if "where" in exc or exc["expires_on"] < today:
-            continue
-        rule = rules[exc["rule"]]
-        group, key = EXPORT_SECTIONS[rule["kind"]]
-        mode = rule.get("mode", enforcement["default_mode"])
-        meta = {"exception_id": exc["id"], "expires_on": exc["expires_on"].isoformat()}
-        if group == "allow":
-            for value in exc["allows"]:
-                sections[group][key].append({"value": value, "rule_id": rule["id"], "mode": mode, **meta})
-        else:
-            for entry in sections[group][key]:
-                if entry["rule_id"] == rule["id"]:
-                    entry.setdefault("except", []).extend({"value": v, **meta} for v in exc["allows"])
-    for group in sections.values():
-        for key, entries in group.items():
-            entries.sort(key=lambda e: (e["value"], e["rule_id"], e.get("exception_id", "")))
-            for entry in entries:
-                if "except" in entry:
-                    entry["except"].sort(key=lambda e: (e["value"], e["exception_id"]))
+        entry = {
+            "rule_id": rule["id"],
+            "kind": rule["kind"],
+            "list": EXPORT_LISTS[rule["kind"]],
+            "mode": rule.get("mode", enforcement["default_mode"]),
+            "values": sorted(rule["values"]),
+        }
+        exceptions = [
+            {"exception_id": e["id"], "allows": sorted(e["allows"]), "expires_on": e["expires_on"].isoformat()}
+            for e in enforcement.get("exceptions", [])
+            if e["rule"] == rule["id"] and "where" not in e and e["expires_on"] >= today
+        ]
+        if exceptions:
+            entry["exceptions"] = sorted(exceptions, key=lambda e: e["exception_id"])
+        out.append(entry)
+    out.sort(key=lambda e: e["rule_id"])
     return {
         "format": EXPORT_FORMAT,
         "format_version": EXPORT_FORMAT_VERSION,
         "experimental": True,
         "expires_on": overlay["expires_on"].isoformat(),
-        "allow": sections["allow"],
-        "deny": sections["deny"],
+        "rules": out,
     }
 
 
@@ -1563,11 +1548,11 @@ def export_main(argv: list[str]) -> int:
         if document is None:
             print("no enforcement rules in this file: nothing to export, and nothing was written", file=sys.stderr)
             return 0
-        write_policy(args.out, policy_text(document))
+        write_policy(args.out, policy_text(document), 0o600)
     except (OSError, OverlayError, ValueError) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 1
-    print(f"exported (experimental) to {args.out}; it lists the company's enforcement values, so keep it private.", file=sys.stderr)
+    print(f"exported (experimental) to {args.out}; it lists the company's enforcement values, so it is written mode 600; keep it private.", file=sys.stderr)
     return 0
 
 

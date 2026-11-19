@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import json
+import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -47,29 +49,47 @@ class ExportTests(unittest.TestCase):
     def export(self, today=TODAY, overlay=None):
         return vo.export_policy(overlay or self.overlay, today)
 
-    def test_shape_and_modes(self):
+    def rules(self, doc=None):
+        return {r["rule_id"]: r for r in (doc or self.export())["rules"]}
+
+    def test_one_object_per_rule_with_modes(self):
         doc = self.export()
-        self.assertEqual((doc["format"], doc["format_version"], doc["experimental"]), ("catpilot-allowlist-export", 1, True))
+        self.assertEqual((doc["format"], doc["format_version"], doc["experimental"]), ("catpilot-allowlist-export", 2, True))
         self.assertEqual(doc["expires_on"], "2027-05-17")
-        self.assertEqual(set(doc["allow"]), {"deploy_hosts", "package_registries", "cloud_accounts"})
-        self.assertEqual(list(doc["deny"]), ["protected_branches"])
-        branches = {e["value"]: e for e in doc["deny"]["protected_branches"]}
-        self.assertEqual(branches["main"], {"value": "main", "rule_id": "protected-branches", "mode": "block"})
-        self.assertEqual({e["mode"] for e in doc["allow"]["cloud_accounts"]}, {"ask"})
-        self.assertEqual({e["mode"] for e in doc["allow"]["deploy_hosts"]} - {"monitor"}, set())
+        rules = self.rules(doc)
+        self.assertEqual(set(rules), {"protected-branches", "deploy-hosts", "package-registries", "cloud-accounts"})
+        self.assertEqual(rules["protected-branches"]["list"], "deny")
+        self.assertEqual(rules["protected-branches"]["mode"], "block")
+        self.assertEqual(rules["cloud-accounts"]["mode"], "ask")
+        self.assertEqual(rules["deploy-hosts"]["list"], "allow")
+        self.assertEqual(rules["deploy-hosts"]["mode"], "monitor")
 
-    def test_active_exception_has_its_expiry_and_expired_one_is_dropped(self):
-        hosts = [e for e in self.export()["allow"]["deploy_hosts"] if "exception_id" in e]
-        self.assertEqual(hosts, [{"value": "preview.analytics.example.org", "rule_id": "deploy-hosts", "mode": "monitor",
-                                  "exception_id": "exception-analytics-preview", "expires_on": "2027-02-01"}])
-        later = self.export(today=dt.date(2027, 2, 2))
-        self.assertFalse([e for e in later["allow"]["deploy_hosts"] if "exception_id" in e])
-
-    def test_protected_branch_exception_becomes_except(self):
+    def test_rules_of_one_kind_are_not_merged(self):
         overlay = copy.deepcopy(self.overlay)
+        overlay["enforcement"]["rules"].append(
+            {"id": "deploy-hosts-eu", "kind": "deploy_host", "values": ["eu.example.org"]})
+        rules = self.rules(self.export(overlay=overlay))
+        self.assertEqual(rules["deploy-hosts-eu"]["values"], ["eu.example.org"])
+        self.assertNotIn("eu.example.org", rules["deploy-hosts"]["values"])
+        self.assertNotIn("apps.example.org", rules["deploy-hosts-eu"]["values"])
+
+    def test_exception_attaches_only_to_its_own_rule(self):
+        overlay = copy.deepcopy(self.overlay)
+        overlay["enforcement"]["rules"].append(
+            {"id": "release-branches", "kind": "protected_branch", "values": ["release/*"]})
         overlay["enforcement"]["exceptions"].append(exception())
-        entries = self.export(overlay=overlay)["deny"]["protected_branches"]
-        self.assertTrue(all(e["except"] == [{"value": "hotfix/urgent", "exception_id": "exception-hotfix", "expires_on": "2027-01-01"}] for e in entries))
+        rules = self.rules(self.export(overlay=overlay))
+        self.assertEqual(rules["protected-branches"]["exceptions"],
+                         [{"exception_id": "exception-hotfix", "allows": ["hotfix/urgent"], "expires_on": "2027-01-01"}])
+        self.assertNotIn("exceptions", rules["release-branches"])
+        self.assertNotIn("exceptions", rules["cloud-accounts"])
+        self.assertEqual(rules["deploy-hosts"]["exceptions"][0]["exception_id"], "exception-analytics-preview")
+
+    def test_expired_exception_is_dropped(self):
+        later = self.export(today=dt.date(2027, 2, 2))
+        self.assertNotIn("exceptions", self.rules(later)["deploy-hosts"])
+        on_the_day = self.export(today=dt.date(2027, 2, 1))
+        self.assertIn("exceptions", self.rules(on_the_day)["deploy-hosts"])
 
     def test_where_scoped_exception_is_left_out(self):
         overlay = copy.deepcopy(self.overlay)
@@ -90,8 +110,8 @@ class ExportTests(unittest.TestCase):
         for rule in reordered["enforcement"]["rules"]:
             rule["values"].reverse()
         self.assertEqual(first, vo.policy_text(self.export(overlay=reordered)))
-        values = [e["value"] for e in self.export()["allow"]["deploy_hosts"]]
-        self.assertEqual(values, sorted(values))
+        ids = [r["rule_id"] for r in self.export()["rules"]]
+        self.assertEqual(ids, sorted(ids))
 
     def test_no_enforcement_exports_nothing(self):
         overlay = copy.deepcopy(self.overlay)
@@ -119,6 +139,8 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(vo.main(["export", str(src), "--out", str(out), "--today", "2026-11-18"]), 0)
             doc = json.loads(out.read_text(encoding="utf-8"))
             self.assertTrue(doc["experimental"])
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o600)
             self.assertEqual(vo.main(["export", str(src), "--out", str(out), "--today", "nonsense"]), 1)
 
 
