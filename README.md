@@ -203,10 +203,14 @@ PRs welcome: propose a rule, fix a false positive, review a control mapping, add
 
 What is shipped, what is deferred, and what this quarter is for: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
+## Project policies
+
+[Stability tiers](docs/STABILITY.md) (what is stable, beta or experimental, and the two-release notice before removals), [support](SUPPORT.md), [governance](GOVERNANCE.md), [maintainers](MAINTAINERS.md) and the [release notes template](docs/RELEASE_NOTES_TEMPLATE.md). Releases are monthly, with patches as needed.
+
 ## License
 
 MIT. See [LICENSE](./LICENSE).
 
 ## Security
 
-Found something dangerous? See [SECURITY.md](./SECURITY.md). For specific vulnerabilities, email **hi@catpilot.ai**.
+Found something dangerous? See [SECURITY.md](./SECURITY.md). For specific vulnerabilities, use [GitHub private vulnerability reporting](https://github.com/catpilotai/catpilot-ai-guardrails/security/advisories/new) or email **hi@catpilot.ai**.
