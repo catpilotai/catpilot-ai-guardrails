@@ -59,7 +59,7 @@ SKILLS="safe-building,security-core"
 MANAGED_MCP_JSON=0
 OVERLAY_FILE=""
 ALLOW_HOSTS=()
-ALLOW_UNPROTECTED_PYTHON=0
+ALLOW_UNPROTECTED_PYTHON="${CATPILOT_ALLOW_UNPROTECTED_PYTHON:-0}"  # the same as --allow-unprotected-python
 while [ $# -gt 0 ]; do
   case "$1" in
     --server-url) SERVER_URL="$2"; shift 2 ;;

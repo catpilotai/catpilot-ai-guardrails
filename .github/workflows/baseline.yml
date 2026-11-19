@@ -31,6 +31,10 @@ jobs:
         run: python -m unittest discover -s tests -p test_workflows.py -v
 
       - name: Unit tests (hooks, harness gates, tools, MCP server, deploy scripts, manifests)
+        # The runner's Python under /opt/hostedtoolcache is writable by everyone, which install.sh refuses for a real
+        # install; the tests that drive install.sh accept it here. The test of that refusal unsets this.
+        env:
+          CATPILOT_ALLOW_UNPROTECTED_PYTHON: "1"
         run: python -m unittest discover -s tests
 
       - name: The hooks zipapp builds byte for byte the same, twice and on a second Python (issue #97, option 2)

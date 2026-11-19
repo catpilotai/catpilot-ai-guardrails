@@ -435,6 +435,7 @@ class InterpreterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = self._env(Path(tmp) / "claude-code", Path(tmp) / "codex")
             env["PYTHON_BIN"] = str(self._link(tmp, "shared-bin", 0o755 | 0o002))
+            env.pop("CATPILOT_ALLOW_UNPROTECTED_PYTHON", None)  # CI sets it for its own Python (baseline.yml)
             proc = subprocess.run(["bash", str(INSTALL_SH), "--server-url", self.URL], env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
             self.assertIn("(writable by everyone) can be changed by an account other than root", proc.stderr)

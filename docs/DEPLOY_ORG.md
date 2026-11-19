@@ -38,7 +38,7 @@ Whoever can change the interpreter runs code in every person's hooks, so it also
 change: the interpreter as named and the file it resolves to, and every directory above each, must be owned by root
 and writable by no other user or group (gid 0 aside). That refuses a Homebrew Python under a user-owned `/opt/homebrew`
 and a virtual environment in a home directory, whether `sudo`, Jamf or another MDM runs the install;
-`--allow-unprotected-python` installs anyway, with a warning, for an admin who accepts that.
+`--allow-unprotected-python` (or `CATPILOT_ALLOW_UNPROTECTED_PYTHON=1`) installs anyway, with a warning, for an admin who accepts that.
 It then writes the interpreter's absolute path into every hook command, on every tool, so a session's `PATH`, a
 version manager's shim or a repository's `.python-version` no longer decides which Python runs. `verify.sh` reads the
 recorded interpreter back from the managed files and proves it runs the same way; on files from an earlier install,
