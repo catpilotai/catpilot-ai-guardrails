@@ -142,27 +142,46 @@ fi
 # The managed files are generated before anything is written, so a value that cannot be written safely stops
 # the install before it changes anything on the machine.
 SETTINGS_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" -e "s#/Library/Application Support/ClaudeCode#$CC_DIR#g" "$REPO/deploy/org/claude-code/managed-settings.json")"
-# What an earlier install wrote, in any variant and naming the interpreter it recorded (or python3): ours, so a
-# re-install with another interpreter or other options replaces it (place_managed) instead of printing a merge.
-RECORDED_PYTHON="$(recorded_interpreter "$CC_DIR/managed-settings.json" "$CODEX_DIR/requirements.toml" "$COPILOT_DIR/policy.d/catpilot-guardrails.json")"
-managed_candidates "$SETTINGS_JSON"
 CODEX_TOML="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/codex/managed_config.toml")"
 # Every hook command names the proved interpreter by absolute path. The settings are parsed and written out as JSON,
 # never spliced into the text; with --overlay, the SessionStart hook, and with a compiled policy the company-rules
 # hook, are added the same way.
-PY_ARGS=(--python "$PYTHON_BIN")
+TEMPLATE_JSON="$SETTINGS_JSON"
+VARIANT=(--no-rules)
+COPILOT_VARIANT=()
 if [ -n "$HOSTS_DIR" ]; then
-  ENFORCE=()
-  [ -n "$POLICY_FILE" ] && ENFORCE=(--enforce)
-  SETTINGS_JSON="$(printf '%s\n' "$SETTINGS_JSON" | "$PYTHON_BIN" "$RULES_FILES" "${PY_ARGS[@]}" settings --cc-dir "$CC_DIR" ${ENFORCE[@]+"${ENFORCE[@]}"})"
-  REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" "${PY_ARGS[@]}" requirements --codex-dir "$CODEX_DIR" ${ENFORCE[@]+"${ENFORCE[@]}"})"
-else
-  SETTINGS_JSON="$(printf '%s\n' "$SETTINGS_JSON" | "$PYTHON_BIN" "$RULES_FILES" "${PY_ARGS[@]}" settings --cc-dir "$CC_DIR" --no-rules)"
-  REQUIREMENTS_TOML="$("$PYTHON_BIN" "$RULES_FILES" "${PY_ARGS[@]}" requirements --codex-dir "$CODEX_DIR" --no-rules)"
+  VARIANT=()
+  [ -n "$POLICY_FILE" ] && VARIANT=(--enforce)
 fi
-COPILOT_ENFORCE=()
-[ -n "$POLICY_FILE" ] && COPILOT_ENFORCE=(--enforce)
-COPILOT_POLICY_JSON="$("$PYTHON_BIN" "$RULES_FILES" "${PY_ARGS[@]}" copilot-policy --copilot-dir "$COPILOT_DIR" ${COPILOT_ENFORCE[@]+"${COPILOT_ENFORCE[@]}"})"
+[ -n "$POLICY_FILE" ] && COPILOT_VARIANT=(--enforce)
+# generate INTERPRETER: the three generated files of this variant naming INTERPRETER (python3: the earlier form),
+# in GENERATED_SETTINGS, GENERATED_REQUIREMENTS and GENERATED_COPILOT.
+generate() {
+  local args=(--python "$1")
+  [ "$1" = python3 ] && args=()
+  GENERATED_SETTINGS="$(printf '%s\n' "$TEMPLATE_JSON" | "$PYTHON_BIN" "$RULES_FILES" ${args[@]+"${args[@]}"} settings --cc-dir "$CC_DIR" ${VARIANT[@]+"${VARIANT[@]}"})" || return 1
+  GENERATED_REQUIREMENTS="$("$PYTHON_BIN" "$RULES_FILES" ${args[@]+"${args[@]}"} requirements --codex-dir "$CODEX_DIR" ${VARIANT[@]+"${VARIANT[@]}"})" || return 1
+  GENERATED_COPILOT="$("$PYTHON_BIN" "$RULES_FILES" ${args[@]+"${args[@]}"} copilot-policy --copilot-dir "$COPILOT_DIR" ${COPILOT_VARIANT[@]+"${COPILOT_VARIANT[@]}"})" || return 1
+}
+generate "$PYTHON_BIN" || exit 2
+SETTINGS_JSON="$GENERATED_SETTINGS"
+REQUIREMENTS_TOML="$GENERATED_REQUIREMENTS"
+COPILOT_POLICY_JSON="$GENERATED_COPILOT"
+# What an earlier install wrote for the same options, naming the interpreter it recorded or python3: ours, so a
+# re-install with another interpreter replaces it (place_managed) instead of printing a merge. A file written with other
+# options (with or without --overlay, say) is not replaced: the options decide what it should hold, as before.
+RECORDED_PYTHON="$(recorded_interpreter "$CC_DIR/managed-settings.json" "$CODEX_DIR/requirements.toml" "$COPILOT_DIR/policy.d/catpilot-guardrails.json")"
+SETTINGS_CANDIDATES=()
+REQUIREMENTS_CANDIDATES=()
+COPILOT_CANDIDATES=()
+[ "${VARIANT[*]-}" = --no-rules ] && SETTINGS_CANDIDATES+=("$TEMPLATE_JSON")
+for interp in python3 ${RECORDED_PYTHON:+"$RECORDED_PYTHON"}; do
+  if generate "$interp" 2>/dev/null; then
+    SETTINGS_CANDIDATES+=("$GENERATED_SETTINGS")
+    REQUIREMENTS_CANDIDATES+=("$GENERATED_REQUIREMENTS")
+    COPILOT_CANDIDATES+=("$GENERATED_COPILOT")
+  fi
+done
 
 # place_managed FILE CONTENT VERB [OURS...]: write FILE when absent; an identical file is current (a re-run changes
 # nothing); one that is exactly what an earlier install wrote (OURS) is replaced; any other is left alone and the
@@ -272,7 +291,7 @@ elif [ -e "$CC_DIR/catpilot-guardrails/instructions/company-checklist.json" ] ||
   echo "        install with --overlay to update them, or run uninstall.sh to remove them"
 fi
 
-place_managed "$CC_DIR/managed-settings.json" "$SETTINGS_JSON" "merge these keys into it" "${SETTINGS_CANDIDATES[@]}"
+place_managed "$CC_DIR/managed-settings.json" "$SETTINGS_JSON" "merge these keys into it" ${SETTINGS_CANDIDATES[@]+"${SETTINGS_CANDIDATES[@]}"}
 install_skill "$CC_DIR/.claude/skills"
 if [ "$MANAGED_MCP_JSON" -eq 1 ]; then
   MCP_JSON="$(sed -e "s#https://mcp.example.com/mcp#$SERVER_URL#" "$REPO/deploy/org/claude-code/managed-mcp.json")"

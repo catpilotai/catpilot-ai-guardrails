@@ -43,7 +43,7 @@ It then writes the interpreter's absolute path into every hook command, on every
 version manager's shim or a repository's `.python-version` no longer decides which Python runs. `verify.sh` reads the
 recorded interpreter back from the managed files and proves it runs the same way; on files from an earlier install,
 whose commands name `python3`, it says so and checks `python3` from its own `PATH`. `uninstall.sh` recognizes both,
-and `install.sh` replaces a managed file that is exactly what an earlier install wrote (any variant, either interpreter),
+and `install.sh` replaces a managed file that is exactly what an earlier install with the same options wrote, naming either interpreter,
 so re-installing with another interpreter updates the hook commands.
 
 On Windows, `install.ps1` by default places Python's official embeddable distribution, version 3.12.10, checked
