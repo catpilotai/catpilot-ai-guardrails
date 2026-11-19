@@ -140,7 +140,7 @@ class SessionStartDeployTests(unittest.TestCase):
 
     def command(self, managed_dir: Path, host: str) -> str:
         script = managed_dir / "catpilot-guardrails" / "hooks" / "catpilot-company-rules.py"
-        return f'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "{script}" --host {host}'
+        return f'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "{script}" --evidence-default --host {host}'
 
     def base_settings(self) -> str:
         text = (ORG / "claude-code" / "managed-settings.json").read_text(encoding="utf-8")

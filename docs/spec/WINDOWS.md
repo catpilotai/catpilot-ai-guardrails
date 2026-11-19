@@ -1,7 +1,9 @@
 # Windows: design note
 
-**Status:** Proposed on 2026-11-17, for the maintainer's approval. Nothing in
-this note is built. Nothing in it has run on a Windows machine. Each vendor
+**Status:** Proposed on 2026-11-17; the maintainer's decisions are in §5.
+Increments 1 and 2 are built (§6). Increments 3 and 4 are not. Nothing in this
+note has run on a Windows host: the unit tests run on a `windows-latest` CI
+runner, which checks the Python and runs no tool. Each vendor
 fact below cites the vendor page it comes from. Facts marked **to check** are
 not documented and need a Windows host.
 
@@ -297,3 +299,37 @@ prefix kept on macOS and Linux for one release; 4, the full list in §3.2.
    prefix kept on macOS and Linux for one release.
 4. **Scope of increment 2's destructive list:** the targets and commands in
    §3.2, or a shorter list for a first version.
+
+## 6. What was built (increments 1 and 2)
+
+Built together, increment 1's CI job first (decision 2). Not verified on a host.
+
+- **§3.1.** `--evidence-default` in every hook (`catpilot_guard/__init__.py`
+  `take_evidence_default`); `install.sh` writes it after the hook's path on
+  every OS, with the prefix kept beside it on macOS and Linux for this release,
+  and `verify.sh` accepts a company-rules command with or without it (decision
+  3). Every Claude Code shell matcher is `Bash|PowerShell`, and the secret,
+  destructive and company-rules checks take the `PowerShell` tool (evidence
+  `tool` `PowerShell`). `policy.read_checked` reads the owner and DACL on
+  Windows as above; the access list of the file is read from its open handle
+  (`GetSecurityInfo`), its directory's by name, and inherit-only entries are
+  skipped because they do not apply to the object itself. The `windows-latest`
+  job runs `tests/windows_suite.py` on Python 3.8 and 3.12, including files
+  whose owner and access list `icacls` sets, and the hooks in exec form.
+- **§3.2.** `catpilot_guard/powershell.py`, with the full list (decision 4).
+  Additions beyond the text above: a `Get-ChildItem`, `Get-Item` or literal
+  path piped into a `Remove-Item` with no path of its own is read with that
+  path; `-WhatIf` is allowed; `C:\ProgramData` and `C:\Users` count as system
+  directories; any `diskpart` run is denied (its script comes from `/s` or from
+  piped input); `wmic shadowcopy delete` joins `vssadmin delete shadows`; the
+  whole-command signatures (cloud, `terraform`, `dd`, ...) also run on each
+  unwrapped command, so an encoded one is read. A bare variable is dangerous, as
+  in bash, except the pipeline's `$_` and `$PSItem`.
+- **Copilot CLI and Codex** (the two **to check** items in §3.1): the payloads
+  do not say which shell ran, so on Windows the destructive check reads a `Bash`
+  event from either host both as bash and as PowerShell, and denies if either
+  reading matches. The company rules read it as bash there.
+- **Deferred:** the exec-form, `command_windows` and `exec` entries themselves
+  and the embedded interpreter belong to `install.ps1` (increment 3); the hooks
+  run in that form today (tested), with any Python 3.8 or later. The host check
+  is increment 4.

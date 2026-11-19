@@ -6,7 +6,8 @@ claude-code|codex|copilot-cli` says which tool runs it. deploy/org/install.sh re
 given has an `enforcement` section (docs/spec/OVERLAY_V2.md §2.2).
 
 Scope, stated exactly:
-  - Runs only for the Bash tool, which Claude Code and Codex both name Bash; on Copilot CLI, bash, powershell and
+  - Runs for the Bash tool, which Claude Code and Codex both name Bash, and Claude Code's PowerShell tool, whose
+    command is read with PowerShell's rules (catpilot_guard/powershell.py); on Copilot CLI, bash, powershell and
     write_bash (input sent to a running shell), read through catpilot_guard/copilot.py.
   - Kind protected_branch: fires on a `git push` that force-pushes to (--force, -f, --force-with-lease,
     --force-if-includes, or a +refspec) or deletes (--delete, -d, or `:branch`) a branch one of the rule's values
@@ -81,11 +82,14 @@ import json
 import os
 import sys
 
-from . import COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, event_for_host, write_decision, write_reason
+from . import (COPILOT_CLI, DEFAULT_HOOK_HOST, HOOK_HOSTS, decision_for_host, event_for_host, take_evidence_default,
+               write_decision, write_reason)
 from . import policy as policy_module
 from .cloud_targets import account_covered, cloud_targets
 from .deploy_targets import deploy_targets, host_covered
-from .destructive import BraceBudget, BranchPattern, commands_with_branch_context, git_push_rewrites, pattern_may_match
+from . import powershell
+from .destructive import (POWERSHELL, SHELL_TOOLS, BraceBudget, BranchPattern, commands_with_branch_context, git_push_rewrites,
+                          pattern_may_match)
 from .registry_targets import registry_covered, registry_targets, split_command
 
 MAX_INPUT_BYTES = 1_048_576
@@ -154,24 +158,28 @@ def _pattern_hits(rule, pattern) -> bool:
     return pattern_may_match(pattern, [v for v in values if not v.endswith("/*")], [v[:-1] for v in values if v.endswith("/*")])
 
 
-def matched_rules(command: str, cwd: object, policy: policy_module.Policy, today=None, branch_known: bool = True) -> list:
+def matched_rules(command: str, cwd: object, policy: policy_module.Policy, today=None, branch_known: bool = True,
+                  shell: str = "bash") -> list:
     """(rule, exception ids) for each of the policy's rules this command matches, in policy order. The ids are empty
     when the rule fires. Otherwise active exceptions covered everything the rule matched, so it does not fire, and the
     ids name them, in policy order: for each match, the first exception that covers it. branch_known False: no
     checkout's branch is the one the command runs on (the pull-request check), so HEAD, a bare push and a
-    current-branch substitution are unknown."""
+    current-branch substitution are unknown. shell "powershell" reads the command with PowerShell's rules
+    (catpilot_guard/powershell.py): the same argv lists, from PowerShell's quoting and operators."""
     working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
     kinds = {rule.kind for rule in policy.rules}
     pushes = []
     if "protected_branch" in kinds:
         budget = BraceBudget()  # one for the whole command (destructive.BRACE_SCAN_LIMIT)
-        for argv, branch_cwd in commands_with_branch_context(command, working_dir if branch_known else None):
+        reader = powershell.commands_with_branch_context if shell == POWERSHELL else commands_with_branch_context
+        for argv, branch_cwd in reader(command, working_dir if branch_known else None):
             if argv[0] == "git":
                 push = git_push_rewrites(argv[1:], branch_cwd, budget)
                 if push is not None:
                     pushes.append(push)
     # One split of the command for the deploy, registry and account readers: a long command is split once, not per kind.
-    split = split_command(command) if kinds & {"deploy_host", "package_registry", "cloud_account"} else ([], [])
+    splitter = powershell.split_command if shell == POWERSHELL else split_command
+    split = splitter(command) if kinds & {"deploy_host", "package_registry", "cloud_account"} else ([], [])
     targets = deploy_targets(command, working_dir, commands=split[0]) if "deploy_host" in kinds else []
     registries = registry_targets(command, working_dir, split=split) if "package_registry" in kinds else []
     accounts = cloud_targets(command, working_dir, split=split) if "cloud_account" in kinds else []
@@ -262,7 +270,8 @@ def reason_for(effect: str, deciding: list) -> str:
 def decide(event: dict, host: str | None, policy: policy_module.Policy | None, today=None, ask_enabled: bool = False) -> dict:
     if not isinstance(event, dict):
         raise ValueError("hook event must be an object")
-    if event.get("tool_name") != "Bash":
+    tool = event.get("tool_name")
+    if tool not in SHELL_TOOLS:
         return {}
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -273,7 +282,7 @@ def decide(event: dict, host: str | None, policy: policy_module.Policy | None, t
     if policy is None or not command:
         return {}
     today = today or dt.date.today()  # one date for the exceptions and the file's expiry, even across midnight
-    matched = matched_rules(command, event.get("cwd"), policy, today)
+    matched = matched_rules(command, event.get("cwd"), policy, today, shell=POWERSHELL if tool == "PowerShell" else "bash")
     if not matched:
         return {}
     expired = policy.expired(today)
@@ -290,11 +299,11 @@ def decide(event: dict, host: str | None, policy: policy_module.Policy | None, t
             # Exceptions covered all of the rule's matches: one would_deny line per exception that covered a match,
             # with the rule's own mode (OVERLAY_V2.md §3.1).
             for exception_id in excepted_by:
-                record_evidence("would_deny", event, host, tool="Bash", rule_id=rule.id, mode=mode, exception_id=exception_id,
+                record_evidence("would_deny", event, host, tool=tool, rule_id=rule.id, mode=mode, exception_id=exception_id,
                                 policy_sha256=policy.source_sha256)
             continue
         line = "would_deny" if effect is None else final
-        record_evidence(line, event, host, tool="Bash", rule_id=rule.id, mode=mode, policy_sha256=policy.source_sha256)
+        record_evidence(line, event, host, tool=tool, rule_id=rule.id, mode=mode, policy_sha256=policy.source_sha256)
     if final is None:
         return {}
     deciding = [rule for rule, _, effect, _ in effects if effect == final]
@@ -322,7 +331,7 @@ def load_policy(event: dict, host: str | None, path: str | None, ok: bool):
 
 
 def main() -> int:
-    host, path, ok, ask_enabled = parse_args(sys.argv[1:])
+    host, path, ok, ask_enabled = parse_args(take_evidence_default(sys.argv[1:]))
     try:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:
@@ -330,7 +339,7 @@ def main() -> int:
         event = event_for_host(json.loads(payload), host)
         if not isinstance(event, dict):
             raise ValueError("hook event must be an object")
-        policy = load_policy(event, host, path, ok) if event.get("tool_name") == "Bash" else None
+        policy = load_policy(event, host, path, ok) if event.get("tool_name") in SHELL_TOOLS else None
         result = decide(event, host, policy, ask_enabled=ask_enabled)
     except Exception:
         # Any failure to read the event blocks: an ordinary non-zero exit would let the host run the command.

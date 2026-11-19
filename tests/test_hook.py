@@ -175,7 +175,7 @@ class HookTests(unittest.TestCase):
     def test_settings_example_targets_bash_only(self):
         settings = json.loads((ROOT / "hooks" / "claude-code" / "settings.example.json").read_text())
         entry = settings["hooks"]["PreToolUse"][0]
-        self.assertEqual(entry["matcher"], "Bash")
+        self.assertEqual(entry["matcher"], "Bash|PowerShell")  # docs/spec/WINDOWS.md §3.1: the PowerShell tool too
         self.assertIn("pretooluse-secrets.py", entry["hooks"][0]["command"])
 
 

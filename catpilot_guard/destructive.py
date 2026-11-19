@@ -4,7 +4,12 @@ hooks/claude-code/pretooluse-destructive-ops.py runs this module's main(); hooks
 calls decide(). It needs no other check module; it imports catpilot_guard/evidence.py only to write evidence.
 
 Scope, stated exactly:
-  - Runs only for the Bash tool (the matcher in settings selects it).
+  - Runs for the Bash and PowerShell tools (the matcher in settings selects them). A PowerShell command, and a
+    `pwsh -Command`, `powershell -c` or `cmd /c` script inside a bash command, is read with PowerShell's or cmd's
+    rules (catpilot_guard/powershell.py), and also checked for recursive Remove-Item, rd /s or del /s of a drive
+    root, a system directory, home, a credential directory or a bare variable, and for Format-Volume, Clear-Disk,
+    Remove-Partition, format <drive>:, diskpart, cipher /w and vssadmin delete shadows. On Windows, a Bash event
+    from Codex or Copilot CLI, which may carry a PowerShell command, is read both ways.
   - Splits the proposed command into simple commands the way a shell would
     (pipes, ;, &&, ||, subshells, and each line of a multi-line command), looks through sudo/env/time-style wrappers
     (also timeout, gtimeout, stdbuf, ionice, setsid, unbuffer) and a shell's
@@ -75,7 +80,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from . import decision_for_host, event_for_host, hook_host, write_decision, write_reason
+from . import decision_for_host, event_for_host, hook_host, take_evidence_default, write_decision, write_reason
 
 MAX_INPUT_BYTES = 1_048_576
 
@@ -338,6 +343,20 @@ def _unwrap(argv: list[str], depth: int, assignments: list[str] | None = None):
         if script is not None:
             yield from _simple_commands(script, depth + 1, assignments)
             return
+    if depth < 3:
+        # `pwsh -Command "..."`, `powershell -c ...`, `powershell.exe -EncodedCommand ...` and `cmd /c ...`: the script
+        # is read with PowerShell's or cmd's rules (catpilot_guard/powershell.py, docs/spec/WINDOWS.md §3.2).
+        from . import powershell
+
+        shell = powershell._command_name(name)
+        if shell in powershell.POWERSHELLS or shell == "cmd":
+            script = powershell.powershell_script(shell, argv[1:]) if shell != "cmd" else powershell.cmd_script(argv[1:])
+            if script is not None:
+                if shell == "cmd":
+                    yield from powershell._cmd_commands(script, depth + 1, assignments)
+                else:
+                    yield from powershell.simple_commands(script, depth + 1, assignments)
+                return
     yield [name] + argv[1:]
 
 
@@ -1321,16 +1340,25 @@ def _db_finding(name: str, args: list[str], command: str, depth: int = 0) -> tup
     return None
 
 
-def find_destructive_op(command: str, cwd: str | None = None) -> tuple[str, str] | None:
-    """Return (label, remediation) for the first destructive command found, or None."""
+POWERSHELL = "powershell"  # find_destructive_op's shell for Claude Code's PowerShell tool
+SHELL_TOOLS = ("Bash", "PowerShell")  # the tools whose tool_input.command the checks read
+
+
+def find_destructive_op(command: str, cwd: str | None = None, shell: str = "bash") -> tuple[str, str] | None:
+    """Return (label, remediation) for the first destructive command found, or None. shell "powershell" reads the
+    command with PowerShell's rules (catpilot_guard/powershell.py); a PowerShell or cmd script inside a bash command
+    is read with them either way."""
     if not command:
         return None
     for label, pattern, remediation in DESTRUCTIVE_PATTERNS:
         if pattern.search(command):
             return label, remediation
+    from . import powershell
+
     working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
     budget = BraceBudget()  # one for the whole command, so many crafted words cannot outlast the hook's timeout
-    for argv, branch_cwd in commands_with_branch_context(command, working_dir):
+    reader = powershell.commands_with_branch_context if shell == POWERSHELL else commands_with_branch_context
+    for argv, branch_cwd in reader(command, working_dir):
         name, args = argv[0], argv[1:]
         if name == "rm" and _rm_finding(args):
             return RM_LABEL, RM_NOTE
@@ -1341,6 +1369,15 @@ def find_destructive_op(command: str, cwd: str | None = None) -> tuple[str, str]
         db_hit = _db_finding(name, args, command)
         if db_hit is not None:
             return db_hit
+        windows = powershell.windows_finding(argv)
+        if windows is not None:
+            return windows
+        # The whole-command signatures again on each simple command as its words were read: a command the line
+        # carries encoded or inside a script string (`pwsh -EncodedCommand ...`) is not in the line's own text.
+        joined = " ".join(argv)
+        for label, pattern, remediation in DESTRUCTIVE_PATTERNS:
+            if pattern.search(joined):
+                return label, remediation
     return None
 
 
@@ -1362,10 +1399,17 @@ def record_evidence(event: str, hook_event: object = None, host: str | None = No
         pass
 
 
-def decide(event: dict, host: str | None = None) -> dict:
+# Hosts whose shell tool reports Bash for PowerShell too: Copilot CLI names its powershell tool Bash, and Codex's tool
+# name for a Windows shell command is not documented (docs/spec/WINDOWS.md §3.1, to check). On Windows a command from
+# them is read both ways, and either reading can deny it.
+BOTH_WAYS_HOSTS = ("codex", "copilot-cli")
+
+
+def decide(event: dict, host: str | None = None, windows: bool | None = None) -> dict:
     if not isinstance(event, dict):
         raise ValueError("hook event must be an object")
-    if event.get("tool_name") != "Bash":
+    tool = event.get("tool_name")
+    if tool not in SHELL_TOOLS:
         return {}
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -1373,11 +1417,13 @@ def decide(event: dict, host: str | None = None) -> dict:
     command = tool_input.get("command", "")
     if not isinstance(command, str):
         raise ValueError("command must be a string")
-    found = find_destructive_op(command, event.get("cwd"))
+    found = find_destructive_op(command, event.get("cwd"), POWERSHELL if tool == "PowerShell" else "bash")
+    if found is None and tool == "Bash" and host in BOTH_WAYS_HOSTS and (os.name == "nt" if windows is None else windows):
+        found = find_destructive_op(command, event.get("cwd"), POWERSHELL)
     if found is None:
         return {}
     label, remediation = found
-    record_evidence("deny", event, host, tool="Bash", label=label)
+    record_evidence("deny", event, host, tool=tool, label=label)
     reason = (
         f"Catpilot destructive-operation check: this command matches a high-blast-radius pattern ({label}). "
         f"{remediation} If this exact command is intentional, run it yourself in your own terminal."
@@ -1392,7 +1438,7 @@ def decide(event: dict, host: str | None = None) -> dict:
 
 
 def main() -> int:
-    host = hook_host()  # from --host: the evidence label, and Copilot CLI's event shape; never the decision
+    host = hook_host(take_evidence_default())  # from --host: the evidence label, and Copilot CLI's event shape; never the decision
     try:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:

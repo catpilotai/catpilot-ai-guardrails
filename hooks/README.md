@@ -6,10 +6,10 @@ enforcement for that path only. Everything else in the repository is advice.
 
 | Hook | Host | Path covered | What it does | Verified |
 | --- | --- | --- | --- | --- |
-| `claude-code/pretooluse-secrets.py` | Claude Code | `Bash` tool, PreToolUse | Denies a shell command that contains a literal credential (the secret-blocking patterns) with a plain-language reason. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md); earlier rows in the tested-runtimes table. |
+| `claude-code/pretooluse-secrets.py` | Claude Code | `Bash` and `PowerShell` tools, PreToolUse | Denies a shell command that contains a literal credential (the secret-blocking patterns) with a plain-language reason. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md); earlier rows in the tested-runtimes table. |
 | `claude-code/pretooluse-write-secrets.py` (formerly `pretooluse-write-private-key.py`, kept as a compatibility entry point) | Claude Code; Codex (`apply_patch`) | `Write`/`Edit`/`MultiEdit`/`NotebookEdit` tools, and Codex's `apply_patch`, PreToolUse | Denies file content that contains a PEM private-key header or a literal credential matching the secret-blocking patterns, with a plain-language reason that never echoes the content. Never returns allow. Fails closed on malformed or oversized input, a missing sibling file, or any internal error. | Claude Code 2.1.312, 2026-10-27, under both file names: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
-| `claude-code/pretooluse-company-rules.py` | Claude Code; Codex; Copilot CLI | `Bash` tool, PreToolUse | The company's own enforcement rules, from a compiled policy (`tools/validate_overlay.py compile`): denies, asks the person about, or only logs a force push or deletion aimed at a branch the company protects, a deploy to a host it has not approved, or a command that names a package registry or a cloud account it has not approved, by each rule's mode (`block`, `ask`, `monitor`). Names the rule and the approved alternative, never a listed value. Never returns allow. A policy it cannot use applies no company rule and is logged; the built-in hooks are unaffected. Fails closed on malformed input. | Claude Code 2.1.326, Codex CLI 0.169.0 and Copilot CLI 1.0.113, 2026-11-17, `block` and `monitor` with a control run (on Copilot, probe and control in separate runs at one commit): [`evals/reports/2026.11.17-host-check-company-rules.md`](../evals/reports/2026.11.17-host-check-company-rules.md). |
-| `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` tool, PreToolUse | Parses the command like a shell and denies a high-blast-radius operation (partial cloud-config resets, auto-approved infrastructure destroys, `kubectl delete` of a namespace or with `--all`, a recursive delete of root, a system directory, home, a credential directory, or a bare variable, a force push or deletion aimed at a protected branch, credential exfiltration pipes) with the safer alternative. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
+| `claude-code/pretooluse-company-rules.py` | Claude Code; Codex; Copilot CLI | `Bash` and `PowerShell` tools, PreToolUse | The company's own enforcement rules, from a compiled policy (`tools/validate_overlay.py compile`): denies, asks the person about, or only logs a force push or deletion aimed at a branch the company protects, a deploy to a host it has not approved, or a command that names a package registry or a cloud account it has not approved, by each rule's mode (`block`, `ask`, `monitor`). Names the rule and the approved alternative, never a listed value. Never returns allow. A policy it cannot use applies no company rule and is logged; the built-in hooks are unaffected. Fails closed on malformed input. | Claude Code 2.1.326, Codex CLI 0.169.0 and Copilot CLI 1.0.113, 2026-11-17, `block` and `monitor` with a control run (on Copilot, probe and control in separate runs at one commit): [`evals/reports/2026.11.17-host-check-company-rules.md`](../evals/reports/2026.11.17-host-check-company-rules.md). |
+| `claude-code/pretooluse-destructive-ops.py` | Claude Code | `Bash` and `PowerShell` tools, PreToolUse | Parses the command like a shell and denies a high-blast-radius operation (partial cloud-config resets, auto-approved infrastructure destroys, `kubectl delete` of a namespace or with `--all`, a recursive delete of root, a system directory, home, a credential directory, or a bare variable, a force push or deletion aimed at a protected branch, credential exfiltration pipes) with the safer alternative. Never returns allow. Fails closed on malformed input or any internal error. | Claude Code 2.1.312, 2026-10-27: [`evals/reports/2026.10.27-hooks-verification.md`](../evals/reports/2026.10.27-hooks-verification.md). |
 
 Each file in `claude-code/` is a thin shim. The check itself is a module of the
 standard-library package [`catpilot_guard/`](../catpilot_guard/) at the repository
@@ -17,7 +17,11 @@ root: `secrets.py`, `write_secrets.py`, `destructive.py`, and `company_rules.py`
 (with `policy.py`, which reads its compiled policy, and `deploy_targets.py`,
 `registry_targets.py` and `cloud_targets.py`, which read what a command
 deploys to, the registry it names and the cloud account it names), with `evidence.py`, the
-evidence writer they share. A shim looks for
+evidence writer they share, and `powershell.py`, which reads a PowerShell or `cmd`
+command line into the same simple commands (see [Windows and PowerShell](#windows-and-powershell)).
+Every hook takes `--evidence-default`, which sends evidence to
+`~/.catpilot-guardrails/evidence.jsonl` when `CATPILOT_EVIDENCE_LOG` is unset, so a
+command needs no shell to name the file. A shim looks for
 `catpilot_guard/` next to itself (the layout `deploy/org/install.sh` places), then at
 the repository root two levels up (a checkout), and runs the module's `main()`. If
 the package is missing or cannot be imported, the shim exits 2, which blocks. The
@@ -289,9 +293,15 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
 Text inside quotes is not a command, so `echo "rm -rf /"` and
 `grep 'git push --force origin main'` are allowed.
 
+On Claude Code's `PowerShell` tool, and for a `pwsh -Command`, `powershell -c`,
+`-EncodedCommand` or `cmd /c` script inside any command, the command is read
+with PowerShell's or cmd's rules, and the check adds the Windows deletions and
+wipes listed under [Windows and PowerShell](#windows-and-powershell).
+
 ### Exact coverage
 
-- Covered: commands the agent runs through the `Bash` tool, as above.
+- Covered: commands the agent runs through the `Bash` tool, and through
+  Claude Code's `PowerShell` tool, as above.
 - Not covered: a deliberately disguised command (`eval`, base64, a variable
   holding the verb, ANSI-C quoting such as `bash -c $'ls\nrm -rf ~'`), commands a script runs internally, prompts, other tools,
   and any host other than Claude Code. It stops accidents, not an adversary.
@@ -856,6 +866,71 @@ Two differences from the other tools:
 Not covered: Copilot in the cloud (policy hooks do not run there),
 PowerShell-specific forms of the destructive checks, and the session-start
 rules. Not run on a host.
+
+## Windows and PowerShell
+
+Built from [`docs/spec/WINDOWS.md`](../docs/spec/WINDOWS.md) increments 1 and 2.
+**Not verified on a Windows host:** the unit tests run on a `windows-latest`
+runner (`tests/windows_suite.py`), which checks the Python and runs no tool. The
+Windows installer (`install.ps1`, increment 3) and a host check (increment 4)
+are not built yet.
+
+- **The hooks run without a shell.** `--evidence-default` replaces the
+  `CATPILOT_EVIDENCE_LOG="$HOME/..."` prefix, so a command can be an interpreter
+  and an argument list (Claude Code's exec form, `command` plus `args`).
+  `install.sh` writes the option on every OS; on macOS and Linux the prefix stays
+  beside it for this release.
+- **Claude Code's `PowerShell` tool is matched.** The managed and example
+  settings use `Bash|PowerShell` for every shell-command matcher, on every OS.
+  The secret check reads a PowerShell command as text, as it reads bash.
+- **The company policy check reads the access list on Windows**
+  (`catpilot_guard/policy.py`): the policy file and its directory must be owned by
+  Administrators, SYSTEM or TrustedInstaller, no allow entry may give anyone else
+  a right to write, append, delete or change the access list or the owner (deny
+  entries are ignored), and neither may be a symbolic link or a junction. The
+  file is opened first and its handle compared with the path. Otherwise the
+  policy is refused as `wrong-owner`, and no company rule applies.
+- **The PowerShell reader** (`catpilot_guard/powershell.py`) splits on
+  PowerShell's quotes (single, double, typographic, here-strings), backtick
+  escapes and continuations, `;`, `|`, `&&`, `||`, `&`, comments,
+  redirections, commas and script blocks, subexpressions and parentheses (whose
+  commands it reads too). It unwraps `iex` with a literal string,
+  `pwsh`/`powershell` with `-Command`, `-c` or `-EncodedCommand` (decoded from
+  base64 UTF-16LE), `powershell.exe` with a script string, `cmd /c` and `/k`
+  (with cmd's rules), `Start-Process -ArgumentList`, `bash -c`, and an
+  assignment's right-hand side (`$out = git push ...`). Parameter names match
+  in any case and by unambiguous prefix (`-r`, `-Rec`, `-Recurse`), with an en
+  or em dash accepted. A variable, a subexpression or a string built at run
+  time is unknown, as a shell variable is in bash; an assignment to
+  `$env:NAME` reaches the registry and cloud readers as `NAME=value`.
+- **What the destructive check adds:** `Remove-Item` and its aliases (`rm`,
+  `del`, `erase`, `rd`, `rmdir`, `ri`) with `-Recurse`, and `rd /s` or `del /s`,
+  on a drive root (`C:\`, `C:/`, `\`, `C:\*`), `C:\Windows` or
+  `$env:SystemRoot`, `C:\Program Files` (and `(x86)`), `C:\ProgramData`,
+  `C:\Users`, a home directory (`~`, `$HOME`, `$env:USERPROFILE`,
+  `%USERPROFILE%`, `C:\Users\<name>`), its `.ssh`, `.aws`, `.azure`, `.kube`,
+  `.docker`, `.gnupg` or `$env:APPDATA\gcloud`, or a bare variable (`$x`,
+  `"$x\*"`; not the pipeline's `$_`); a `Get-ChildItem`, `Get-Item` or literal
+  path piped into a `Remove-Item` that has no path of its own is read with
+  that path. `-WhatIf` runs nothing and is allowed. Also `Format-Volume`,
+  `Clear-Disk`, `Remove-Partition`, `format <drive>:`, any `diskpart` run (it
+  reads its script from `/s` or piped input), `cipher /w`,
+  `vssadmin delete shadows` and `wmic shadowcopy delete`. The checks every shell
+  gets (protected-branch pushes, `kubectl`, `terraform`, the database wipes, the
+  cloud signatures) read PowerShell's words the same way.
+- **Codex and Copilot CLI on Windows.** Copilot reports its `powershell` tool
+  as `Bash`, and Codex's tool name for a Windows shell command is not
+  documented, so on Windows the destructive check reads a `Bash` event from
+  either both as bash and as PowerShell, and denies if either reading matches.
+  The company rules read it as bash there.
+- **Not read** (WINDOWS.md §4): splatting (`@args`), dynamic parameter names,
+  .NET calls such as `[IO.Directory]::Delete($p, $true)`, `Set-Item env:`, an
+  encoded command given as an expression or that does not decode, nesting deeper
+  than the reader follows, and scripts a command runs (`.ps1`, `.bat`). The
+  current-branch substitutions read in bash have no PowerShell equivalent.
+- **Errs strict:** `foreach ($d in ...) { Remove-Item $d -Recurse }` is
+  denied, as `rm -rf $d` is in bash; a pipeline from `Get-ChildItem` of a
+  dangerous directory is denied even with `-Filter`.
 
 ## Other hosts
 

@@ -47,7 +47,7 @@ Claude Code reads an admin-managed settings file above every user, project, and 
 
 Delivery options, from the vendor's [managed settings](https://code.claude.com/docs/en/managed-settings) page: the `managed-settings.json` file in that directory, an MDM profile (macOS managed preferences domain `com.anthropic.claudecode`, or the `Settings` value under `HKLM\SOFTWARE\Policies\ClaudeCode` on Windows), or server-managed settings from the claude.ai admin console. The file and the MDM profile reach local sessions; cloud sessions read only server-managed settings.
 
-**What the example file carries.** `deploy/org/claude-code/managed-settings.json` registers the three hooks from a root-owned copy under `<managed dir>/catpilot-guardrails/hooks/` (a hook the user can edit is not a control; each hook file is a shim that runs the root-owned `catpilot_guard/` package placed beside it, and exits 2, which blocks, if the package is missing), sets `CATPILOT_EVIDENCE_LOG` on each hook command so denials are recorded under the user's home, and provides the server through `managedMcpServers`, which adds it to every user's session without removing servers they configured themselves. To lock the server set instead, deploy `managed-mcp.json` in the same directory (`install.sh --managed-mcp-json`); then only the servers it lists load, and `claude mcp add` refuses others. On Claude Code 2.1.241 the `managedMcpServers` key in the managed settings file did not load the server in Catpilot's check (the hooks and skills from the same file and directory did), while `managed-mcp.json` in the same directory did: `claude mcp list` showed only that server, connected, and a session completed a lookup through it. Until a newer version is checked, provide the server through `managed-mcp.json` or through a `.mcp.json` committed to your template repositories ([`mcp-server/host-configs/`](../mcp-server/host-configs/)). `allowManagedHooksOnly: true` and `allowManagedPermissionRulesOnly: true` are available if you want the managed file to be the only source of hooks or permission rules; the example leaves them out. With `--overlay`, `install.sh` adds one more hook to the file it writes or prints, a `SessionStart` status hook for the company rules ([below](#company-rules-at-session-start-on-claude-code)).
+**What the example file carries.** `deploy/org/claude-code/managed-settings.json` registers the three hooks from a root-owned copy under `<managed dir>/catpilot-guardrails/hooks/` (a hook the user can edit is not a control; each hook file is a shim that runs the root-owned `catpilot_guard/` package placed beside it, and exits 2, which blocks, if the package is missing), sets `CATPILOT_EVIDENCE_LOG` on each hook command so denials are recorded under the user's home (each command also passes `--evidence-default`, which names the same file without a shell: the form Windows needs, [`docs/spec/WINDOWS.md`](spec/WINDOWS.md) §3.1; the prefix stays on macOS and Linux for this release, and `verify.sh` accepts a command with or without the option), matches the shell-command hooks on `Bash|PowerShell`, so Claude Code's PowerShell tool is checked too, and provides the server through `managedMcpServers`, which adds it to every user's session without removing servers they configured themselves. To lock the server set instead, deploy `managed-mcp.json` in the same directory (`install.sh --managed-mcp-json`); then only the servers it lists load, and `claude mcp add` refuses others. On Claude Code 2.1.241 the `managedMcpServers` key in the managed settings file did not load the server in Catpilot's check (the hooks and skills from the same file and directory did), while `managed-mcp.json` in the same directory did: `claude mcp list` showed only that server, connected, and a session completed a lookup through it. Until a newer version is checked, provide the server through `managed-mcp.json` or through a `.mcp.json` committed to your template repositories ([`mcp-server/host-configs/`](../mcp-server/host-configs/)). `allowManagedHooksOnly: true` and `allowManagedPermissionRulesOnly: true` are available if you want the managed file to be the only source of hooks or permission rules; the example leaves them out. With `--overlay`, `install.sh` adds one more hook to the file it writes or prints, a `SessionStart` status hook for the company rules ([below](#company-rules-at-session-start-on-claude-code)).
 
 **Skills.** Two central routes. A skill placed at `<managed dir>/.claude/skills/<name>/SKILL.md` loads for every user of the machine; the install script puts the chosen skills there (`--skills`, default `safe-building,security-core`; add `agentic-security` where people build agent loops). Alternatively, an organization owner uploads the skill once in claude.ai (below), and Claude Code v2.1.273 and later syncs the skills enabled for a signed-in claude.ai account into terminal sessions (`syncClaudeAiSkills`, on by default; not for API-key sessions). The repository route, `.claude/skills/` committed to your template repositories, still works and needs no admin rights.
 
@@ -109,7 +109,7 @@ sudo deploy/org/install.sh --server-url https://mcp.example.com/mcp --overlay /p
   "hooks": [
     {
       "type": "command",
-      "command": "CATPILOT_EVIDENCE_LOG=\"$HOME/.catpilot-guardrails/evidence.jsonl\" python3 \"/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/catpilot-company-rules.py\" --host claude-code",
+      "command": "CATPILOT_EVIDENCE_LOG=\"$HOME/.catpilot-guardrails/evidence.jsonl\" python3 \"/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/catpilot-company-rules.py\" --evidence-default --host claude-code",
       "timeout": 10
     }
   ]
@@ -186,12 +186,12 @@ matcher = "^Bash$"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-secrets.py" --host codex'
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-secrets.py" --evidence-default --host codex'
 timeout = 10
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-destructive-ops.py" --host codex'
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-destructive-ops.py" --evidence-default --host codex'
 timeout = 10
 
 [[hooks.PreToolUse]]
@@ -199,7 +199,7 @@ matcher = "^apply_patch$"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-write-secrets.py" --host codex'
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-write-secrets.py" --evidence-default --host codex'
 timeout = 10
 ```
 
@@ -229,7 +229,7 @@ matcher = "startup|resume|clear|compact|fork"
 
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/catpilot-company-rules.py" --host codex'
+command = 'CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/catpilot-company-rules.py" --evidence-default --host codex'
 timeout = 10
 ```
 
@@ -280,10 +280,10 @@ For the example rules file, the commands added are:
 
 ```text
 Claude Code (a PreToolUse group, matcher "Bash"):
-CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/pretooluse-company-rules.py" --host claude-code --policy "/Library/Application Support/ClaudeCode/catpilot-guardrails/policy/company-policy.json"
+CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/Library/Application Support/ClaudeCode/catpilot-guardrails/hooks/pretooluse-company-rules.py" --evidence-default --host claude-code --policy "/Library/Application Support/ClaudeCode/catpilot-guardrails/policy/company-policy.json"
 
 Codex (a [[hooks.PreToolUse]] table, matcher "^Bash$"):
-CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-company-rules.py" --host codex --policy "/etc/codex/catpilot-guardrails/policy/company-policy.json"
+CATPILOT_EVIDENCE_LOG="$HOME/.catpilot-guardrails/evidence.jsonl" python3 "/etc/codex/catpilot-guardrails/hooks/pretooluse-company-rules.py" --evidence-default --host codex --policy "/etc/codex/catpilot-guardrails/policy/company-policy.json"
 ```
 
 **Rolling out a rule.** Start a new rule in `monitor`: it blocks nothing and writes a `would_deny` line each time it would have. `python3 tools/evidence_summary.py` counts them per rule id. Move it to `ask` or `block` once the count shows it fires where you expect, then reinstall. `ask` acts as `block` unless you add `--ask` to the company-rules hook command in `managed-settings.json`. The hook cannot tell a person from a program that approves, such as `claude -p` with a permission-prompt tool or an Agent SDK callback, and `ask` means a person decides first (decision 2 in the spec). Add it once a session check shows a person answering on your machines. With it, the person confirms on Claude Code in the `default`, `acceptEdits` and `plan` permission modes. In other modes, and on Codex, which does not support `ask`, it still denies. On Copilot CLI, with `--ask` in the policy file's command, the hook returns `ask` and Copilot settles it: Copilot denies an ask in autopilot and the cloud agent, and how it treats one under `copilot -p` or an allow-all mode is not verified. After the file's `expires_on`, every company rule acts in `monitor` until you renew the file and reinstall; the built-in checks are unaffected.
@@ -480,6 +480,7 @@ What a pilot report reads from it: denials per hook per day (the hooks were in f
 | GitHub Copilot CLI, policy hooks in `/etc/github-copilot/policy.d/` (`install.sh`), the company-rules hook included | verified on Copilot CLI 1.0.113 on macOS through the host check (one full run at `d605495`, then two Copilot-only reruns at `4cf50c1` with the corrected kit): Copilot loaded the policy file and reported `Denied by preToolUse hook:` with the hook's reason for two force pushes to `main`, an `rm -rf` of a home-directory path, a `terraform` auto-approve apply, AWS's documentation key in a command, a synthetic key block written with `apply_patch`, and the force push a company `block` rule covers (remote branch unmoved); it let the push a `monitor` rule covers through with a `would_deny` line, and the branch moved; with no hooks installed both pushes ran (control). At `4cf50c1` the probe and the control passed in different runs, because the model declined some items in the other session each time. Evidence lines labeled `copilot-cli` ([note](../evals/reports/2026.11.17-host-check-company-rules.md)) | 2026-11-17 (reruns 2026-11-18 UTC) | The maintainer ran the host check; Catpilot recorded |
 | Pull-request check (`tools/pr_check.py`, the `deploy/ci/catpilot-pr-check.yml` template) | not yet run in a repository's CI; tested offline in temporary git repositories (`tests/test_pr_check.py`) | | |
 | Evidence log, hooks and server | unit and stdio contract tests in `tests/` | 2026-09-20 | Catpilot |
+| Windows: the hooks, the PowerShell reader and the policy access-list check ([`docs/spec/WINDOWS.md`](spec/WINDOWS.md) increments 1 and 2) | not verified on a host. Unit tests run on a `windows-latest` CI runner (`tests/windows_suite.py`, Python 3.8 and 3.12), including policy files whose owner and access list `icacls` sets; no Claude Code, Codex or Copilot CLI session has run on Windows. There is no Windows installer yet (increment 3) | | |
 
 A row moves to "verified" when a person has run the steps on a real machine and recorded the transcript or screenshot under `evals/reports/`, the same standard as the tested-runtimes table.
 

@@ -636,10 +636,11 @@ class DestructiveHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             alone = Path(tmp) / "pretooluse-destructive-ops.py"
             alone.write_text(HOOK.read_text())
-            # The hook is a shim over catpilot_guard. Give it the package's destructive module only: no other
-            # hook file, no secrets module, and no evidence writer (imported only to write evidence).
+            # The hook is a shim over catpilot_guard. Give it the package's destructive module and the command reader
+            # it uses (powershell.py, docs/spec/WINDOWS.md §3.2) only: no other hook file, no secrets module, and no
+            # evidence writer (imported only to write evidence).
             (Path(tmp) / "catpilot_guard").mkdir()
-            for name in ("__init__.py", "destructive.py"):
+            for name in ("__init__.py", "destructive.py", "powershell.py"):
                 (Path(tmp) / "catpilot_guard" / name).write_text((ROOT / "catpilot_guard" / name).read_text())
             for command, denied in (("rm -rf ~", True), ("ls -la", False)):
                 proc = subprocess.run([sys.executable, str(alone)], input=event(command), capture_output=True, text=True, timeout=10)

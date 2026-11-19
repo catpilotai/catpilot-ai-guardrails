@@ -361,7 +361,7 @@ class PackageSourceTests(unittest.TestCase):
         proc = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", code, str(ROOT), *modules], capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(sorted(modules), ["cloud_targets", "company_rules", "copilot", "deploy_targets", "destructive", "evidence", "policy",
-                                           "registry_targets", "secrets", "session_start", "write_secrets"])
+                                           "powershell", "registry_targets", "secrets", "session_start", "write_secrets"])
 
     def test_package_and_shims_parse_as_python_3_8(self):
         for path in self._sources() + [HOOK_DIR / shim for shim in SHIMS]:

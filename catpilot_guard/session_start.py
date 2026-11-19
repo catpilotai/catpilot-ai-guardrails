@@ -43,7 +43,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import write_decision, write_reason
+from . import take_evidence_default, write_decision, write_reason
 
 CLAUDE_CODE = "claude-code"
 CODEX = "codex"
@@ -281,7 +281,7 @@ def main(argv: list | None = None, default_dir: Path | None = None, today: dt.da
     argv defaults to sys.argv[1:]. default_dir is the directory used without --dir; the entry script
     passes the deployed layout's instructions/ directory. today is for tests; the hook uses the local date.
     """
-    argv = sys.argv[1:] if argv is None else list(argv)
+    argv = take_evidence_default(sys.argv[1:] if argv is None else list(argv))
     if any(arg in ("-h", "--help") for arg in argv):
         try:
             sys.stdout.write(USAGE)

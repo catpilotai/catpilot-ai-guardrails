@@ -21,7 +21,10 @@ Where it may come from (§2.2, §6.1 invariant 6): only an absolute path on the 
 the project, the home directory or an environment variable. The file must be a regular file, not a symlink, with
 the same owner as the catpilot_guard package the hook runs from, and neither it nor its directory may be
 writable by group or others. install.sh places both as root, so a person, and an agent acting as them, can
-change neither. Anything else is a PolicyError with a fixed label, and the hook applies no company rule: the
+change neither. On Windows, where st_uid is always 0 and st_mode shows only the read-only attribute, the same rule is
+read from the owner and the access list (docs/spec/WINDOWS.md §3.1): the file and its directory must be owned by
+Administrators, SYSTEM or TrustedInstaller, no allow entry may give anyone else a right to write, append, delete or
+change the access list or the owner, and neither may be a reparse point (a symbolic link or a junction). Anything else is a PolicyError with a fixed label, and the hook applies no company rule: the
 built-in checks, which run as their own hooks, are unchanged (invariant 5: never less careful than no file).
 
 Nothing here prints or returns a value from the policy in an error. Standard library only. Python 3.8+.
@@ -139,9 +142,12 @@ def read_checked(path: Path, owner: int | None = None) -> bytes:
     The final path component is opened without following a symlink, and the checks run on the open descriptor,
     so the file cannot be swapped between the check and the read. Its directory must also have the expected owner
     and be writable by no one else. Raises PolicyError for anything anyone but the package's owner could have changed.
+    On Windows the owner and access list are read instead (read_checked_windows); `owner` does not apply there.
     """
     if not path.is_absolute():
         raise PolicyError("bad-arguments")
+    if os.name == "nt":
+        return read_checked_windows(path)
     try:
         expected = package_owner() if owner is None else owner
         parent = os.stat(path.parent)
@@ -164,6 +170,159 @@ def read_checked(path: Path, owner: int | None = None) -> bytes:
         if not stat.S_ISREG(info.st_mode):  # a directory, a device, a FIFO
             raise PolicyError("wrong-owner")
         if info.st_uid != expected or _writable_by_others(info.st_mode):
+            raise PolicyError("wrong-owner")
+        chunks, size = [], 0
+        while size <= MAX_POLICY_BYTES:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        return b"".join(chunks)
+    except OSError:
+        raise PolicyError("unreadable") from None
+    finally:
+        os.close(fd)
+
+
+# --- Windows: the owner and the access list, read with ctypes (docs/spec/WINDOWS.md §3.1) -------------------------------
+# Who may own the policy and its directory, and the only principals an allow entry may give a write right to.
+TRUSTED_SIDS = frozenset((
+    "S-1-5-32-544",  # BUILTIN\Administrators
+    "S-1-5-18",  # NT AUTHORITY\SYSTEM
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",  # NT SERVICE\TrustedInstaller
+))
+# Rights that change the file, its directory's entries, its access list or its owner: FILE_WRITE_DATA (ADD_FILE),
+# FILE_APPEND_DATA (ADD_SUBDIRECTORY), FILE_WRITE_EA, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES, DELETE, WRITE_DAC,
+# WRITE_OWNER, GENERIC_ALL and GENERIC_WRITE.
+WRITE_RIGHTS = 0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x10000000 | 0x40000000
+ACCESS_ALLOWED_ACE_TYPES = (0, 9)  # ACCESS_ALLOWED_ACE, ACCESS_ALLOWED_CALLBACK_ACE: a mask, then the SID
+ACCESS_DENIED_ACE_TYPES = (1, 6, 10, 12)  # ignored: a deny entry can only take rights away
+INHERIT_ONLY_ACE = 0x08  # the entry applies to children created later, not to this object
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def acl_trusted(owner_sid: str | None, aces) -> bool:
+    """Whether an owner SID and a DACL, as (ace type, ace flags, access mask, SID or None) entries, leave the object
+    changeable only by TRUSTED_SIDS. aces None is a NULL DACL, which gives everyone every right. An allow entry of a
+    type whose SID is not read (an object or compound entry, or a type not known here) fails when it carries a write
+    right. Deny entries are ignored, which can only make the check stricter."""
+    if owner_sid not in TRUSTED_SIDS or aces is None:
+        return False
+    for ace_type, flags, mask, sid in aces:
+        if ace_type in ACCESS_DENIED_ACE_TYPES or flags & INHERIT_ONLY_ACE or not mask & WRITE_RIGHTS:
+            continue
+        if ace_type not in ACCESS_ALLOWED_ACE_TYPES or sid not in TRUSTED_SIDS:
+            return False
+    return True
+
+
+def _windows_security(handle: int | None = None, name: str | None = None) -> tuple:
+    """(owner SID string, DACL entries or None) of an open handle or a named file, through advapi32. Raises OSError."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    pointer = ctypes.POINTER(ctypes.c_void_p)
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    advapi32.IsValidSid.argtypes = [ctypes.c_void_p]
+    advapi32.IsValidSid.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    advapi32.GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, pointer]
+    advapi32.GetAce.restype = wintypes.BOOL
+    owner, dacl, descriptor = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
+    wanted = 0x1 | 0x4  # OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION; SE_FILE_OBJECT is 1
+    if handle is not None:
+        call = advapi32.GetSecurityInfo
+        call.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.DWORD, pointer, pointer, pointer, pointer, pointer]
+        call.restype = wintypes.DWORD
+        status = call(handle, 1, wanted, ctypes.byref(owner), None, ctypes.byref(dacl), None, ctypes.byref(descriptor))
+    else:
+        call = advapi32.GetNamedSecurityInfoW
+        call.argtypes = [wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD, pointer, pointer, pointer, pointer, pointer]
+        call.restype = wintypes.DWORD
+        status = call(name, 1, wanted, ctypes.byref(owner), None, ctypes.byref(dacl), None, ctypes.byref(descriptor))
+    if status != 0:  # a Win32 error code
+        raise OSError(status, "security information unavailable")
+
+    def sid_string(address) -> str | None:
+        if not address or not advapi32.IsValidSid(address):
+            return None
+        text = ctypes.c_void_p()
+        if not advapi32.ConvertSidToStringSidW(address, ctypes.byref(text)):
+            raise OSError(ctypes.get_last_error(), "SID conversion failed")
+        try:
+            return ctypes.wstring_at(text.value)
+        finally:
+            kernel32.LocalFree(text)
+
+    class AclHeader(ctypes.Structure):
+        _fields_ = [("revision", ctypes.c_ubyte), ("sbz1", ctypes.c_ubyte), ("size", ctypes.c_ushort),
+                    ("count", ctypes.c_ushort), ("sbz2", ctypes.c_ushort)]
+
+    class AceHeader(ctypes.Structure):
+        _fields_ = [("type", ctypes.c_ubyte), ("flags", ctypes.c_ubyte), ("size", ctypes.c_ushort)]
+
+    try:
+        owner_sid = sid_string(owner.value)
+        if not dacl.value:
+            return owner_sid, None  # a NULL DACL
+        aces = []
+        for index in range(ctypes.cast(dacl, ctypes.POINTER(AclHeader)).contents.count):
+            ace = ctypes.c_void_p()
+            if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
+                raise OSError(ctypes.get_last_error(), "access list unreadable")
+            header = ctypes.cast(ace, ctypes.POINTER(AceHeader)).contents
+            mask = ctypes.cast(ace.value + 4, ctypes.POINTER(wintypes.DWORD)).contents.value
+            # ACCESS_ALLOWED_ACE and its callback form: the header, the mask, then the SID at offset 8.
+            sid = sid_string(ace.value + 8) if header.type in ACCESS_ALLOWED_ACE_TYPES else None
+            aces.append((header.type, header.flags, mask, sid))
+        return owner_sid, aces
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def _reparse_point(info: os.stat_result) -> bool:
+    return bool(getattr(info, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT) or stat.S_ISLNK(info.st_mode)
+
+
+def read_checked_windows(path: Path) -> bytes:
+    """read_checked on Windows: the directory and then the open file must be owned by a trusted SID, writable by no
+    one else (acl_trusted), and not reparse points. The file is opened first, then its open handle's identity (volume
+    serial and file index, from os.fstat) is compared with the path's own (os.lstat, which does not follow a link), and
+    the access list is read from the open handle, so the file cannot be swapped between the check and the read."""
+    try:
+        parent = os.lstat(path.parent)
+    except FileNotFoundError:
+        raise PolicyError("missing") from None
+    except OSError:
+        raise PolicyError("unreadable") from None
+    if _reparse_point(parent) or not stat.S_ISDIR(parent.st_mode):
+        raise PolicyError("wrong-owner")
+    try:
+        trusted = acl_trusted(*_windows_security(name=str(path.parent)))
+    except OSError:
+        raise PolicyError("unreadable") from None
+    if not trusted:
+        raise PolicyError("wrong-owner")
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except FileNotFoundError:
+        raise PolicyError("missing") from None
+    except OSError:
+        raise PolicyError("unreadable") from None
+    try:
+        import msvcrt
+
+        info, named = os.fstat(fd), os.lstat(path)
+        if _reparse_point(named) or not stat.S_ISREG(info.st_mode) or not stat.S_ISREG(named.st_mode):
+            raise PolicyError("wrong-owner")
+        if not info.st_ino or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino):
+            raise PolicyError("wrong-owner")
+        if not acl_trusted(*_windows_security(handle=msvcrt.get_osfhandle(fd))):
             raise PolicyError("wrong-owner")
         chunks, size = [], 0
         while size <= MAX_POLICY_BYTES:
