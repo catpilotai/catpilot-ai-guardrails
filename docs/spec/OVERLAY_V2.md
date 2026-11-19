@@ -153,6 +153,8 @@ Windows "root-owned" is read from the access list: owned by Administrators,
 SYSTEM or TrustedInstaller, and writable by no one else
 ([`WINDOWS.md`](./WINDOWS.md) §3.1).
 
+**Allow/deny list export (experimental).** `python tools/validate_overlay.py export FILE --out export.json` writes the same rules as a generic JSON allow/deny list for a gateway or policy engine ([`policy-export.schema.json`](./policy-export.schema.json), decided in issue #100; a specific engine comes later, from what a design partner runs). `allow` holds `deploy_hosts`, `package_registries` and `cloud_accounts`; `deny` holds `protected_branches`; each entry has its `value`, `rule_id` and resolved `mode`. An active exception without `where` appears with its `exception_id` and `expires_on` (as an extra allowed value, or as `except` on a protected-branch entry); an expired one is dropped (`--today` fixes the date for tests). Output is sorted and byte-stable, with no timestamp, salt, source hash, owner, approver role or `use_instead` text. MCP server names are not exported: the rules file has no rule kind for them yet. The file lists the enforcement values, so keep it as private as the rules file. The format may change in any release.
+
 A deny reason would read, for example: "Catpilot company rule `deploy-hosts`:
 this deploy targets a host the company has not approved. Use instead: Internal
 App Platform (company sign-in). If this exact command is intentional, run it

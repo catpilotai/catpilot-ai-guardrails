@@ -16,6 +16,7 @@
 | [`OVERLAY_V2.md`](./OVERLAY_V2.md) | Approved (2026-11-17, issue #92), with the decisions in its §7: version 2 of the overlay (stable rule ids, a machine-only `enforcement` section, modes, `migrate`, topic contacts). The file format, validation, `migrate` and topic contacts are implemented; `enforcement` is validated only, since no hook or check reads it yet. JSON Schema at [`overlay.v2.schema.json`](./overlay.v2.schema.json); synthetic example at [`overlay.v2.example.yaml`](./overlay.v2.example.yaml). |
 | [`WINDOWS.md`](./WINDOWS.md) | Decided (2026-11-18); increments 1 and 2 built, not verified on a Windows host: what breaks on native Windows (POSIX hook commands, Claude Code's PowerShell tool, PowerShell commands the readers cannot parse, the policy ownership check), where each tool reads managed configuration there, and four increments with how each is verified. |
 | [`EVIDENCE.md`](./EVIDENCE.md) | Evidence events, schema version 1: the content-free line the hooks and the reference server write, its fields, the closed list of events, and how lines are written. JSON Schema at [`evidence-event.schema.json`](./evidence-event.schema.json). |
+| [`policy-export.schema.json`](./policy-export.schema.json) | Experimental: the generic allow/deny list `validate_overlay.py export` writes from the company rules (OVERLAY_V2.md §2.2). |
 | [`README.md`](./README.md) | This file. |
 
 ## How the format and packaging fit together
