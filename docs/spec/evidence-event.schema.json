@@ -127,6 +127,11 @@
       "uniqueItems": true,
       "items": {"enum": ["audience", "credential_references", "data_classes", "data_provenance", "data_types", "hosting", "services", "write_access"]},
       "description": "Server, check_plan: the names of the fields the caller supplied, sorted. Never their values."
+    },
+    "prev_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Written only with CATPILOT_EVIDENCE_CHAIN set, on lines written to the file: the SHA-256 of the previous line of the same file, as bytes without its newline, or 64 zeros for the first line of an empty file. Other sinks receive the line with the same value. tools/evidence_verify.py checks the chain; see docs/spec/EVIDENCE.md §8 for what it can and cannot show."
     }
   },
   "dependentSchemas": {
