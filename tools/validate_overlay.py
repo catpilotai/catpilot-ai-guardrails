@@ -141,8 +141,10 @@ HOST_KINDS = ("deploy_host", "package_registry", "cloud_account")
 ENFORCED_KINDS = ("protected_branch", "deploy_host", "package_registry", "cloud_account")
 # Kinds with a host verification note for their consumer, so `block` on them draws no lint
 # warning (§6.3 rule 9): protected_branch, denied on Claude Code, Codex and Copilot CLI
-# (evals/reports/2026.11.17-host-check-company-rules.md).
-HOST_VERIFIED_KINDS: tuple[str, ...] = ("protected_branch",)
+# (evals/reports/2026.11.17-host-check-company-rules.md); deploy_host, package_registry and
+# cloud_account, denied on the same three tools
+# (evals/reports/2026.11.19-host-check-zipapp-reader.md).
+HOST_VERIFIED_KINDS: tuple[str, ...] = ("protected_branch", "deploy_host", "package_registry", "cloud_account")
 # The compiled policy's format (catpilot_guard/policy.py reads it). Still 1 with exceptions: the policy gains an optional
 # `exceptions` key, written only when the file has exceptions, so a file without them compiles byte for byte as before.
 # A hook from before exceptions refuses a policy with the key as malformed (policy_error), as it refuses any unknown key.

@@ -734,15 +734,17 @@ class Rule9LintTests(V2Case):
         self.assertIn("(cloud-accounts): mode ask differs by host", warnings[0])
         self.assertIn("(more-branches): mode ask differs by host", warnings[1])
         self.assertIn("acts as block", warnings[1])
-        # Block on the new kinds, which have no host verification note either, warns.
-        for index, kind in ((2, "package_registry"), (3, "cloud_account")):
+        # deploy_host, package_registry and cloud_account have a host verification note (2026-11-19), so block on
+        # them draws no warning either.
+        self.assertEqual(vo.HOST_VERIFIED_KINDS, vo.ENFORCED_KINDS)
+        for index, kind in ((1, "deploy_host"), (2, "package_registry"), (3, "cloud_account")):
             blocked = self.mutated(lambda d: d["enforcement"]["rules"][index].update(mode="block"))
-            self.assertTrue(any(f"mode block for kind {kind}, which has no host verification note yet" in w
-                                for w in vo.lint_overlay(vo.validate_structure(blocked))))
-        # Block on deploy_host, which has no host verification note yet, warns.
-        blocked = self.mutated(lambda d: d["enforcement"]["rules"][1].update(mode="block"))
-        self.assertIn("enforcement.rules[1] (deploy-hosts): mode block for kind deploy_host, which has no host verification note yet; consider monitor first",
-                      vo.lint_overlay(vo.validate_structure(blocked)))
+            self.assertFalse(any(f"mode block for kind {kind}" in w
+                                 for w in vo.lint_overlay(vo.validate_structure(blocked))))
+            # Without the note, block on it warns.
+            with mock.patch.object(vo, "HOST_VERIFIED_KINDS", ("protected_branch",)):
+                self.assertIn(f"enforcement.rules[{index}] ({blocked['enforcement']['rules'][index]['id']}): mode block for kind {kind}, which has no host verification note yet; consider monitor first",
+                              vo.lint_overlay(vo.validate_structure(blocked)))
         # Block on an enforced kind without a host verification note still warns.
         with mock.patch.object(vo, "HOST_VERIFIED_KINDS", ()):
             warnings = vo.lint_overlay(vo.validate_structure(data), today=TODAY)
@@ -758,7 +760,9 @@ class Rule9LintTests(V2Case):
             path.write_text(path.read_text(encoding="utf-8").replace(
                 "    - id: deploy-hosts              # default_mode applies: monitor\n      kind: deploy_host\n",
                 "    - id: deploy-hosts\n      kind: deploy_host\n      mode: block\n"), encoding="utf-8")
-            code = vo.main([str(path)])
+            # Every enforced kind has a host verification note; without one, block on deploy_host warns.
+            with mock.patch.object(vo, "HOST_VERIFIED_KINDS", ("protected_branch",)):
+                code = vo.main([str(path)])
         self.assertEqual(code, 0, err.getvalue())
         self.assertIn("WARNING: enforcement.rules[1] (deploy-hosts): mode block for kind deploy_host", err.getvalue())
         self.assertIn("OK: overlay for Example Org", out.getvalue())

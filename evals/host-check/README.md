@@ -243,7 +243,8 @@ What to expect, from the 2026-11-16 and 2026-11-17 notes and the company-rules h
   with its own `host` (`claude-code`, `codex`, `copilot-cli`), the block branch `unmoved` and the monitor branch
   `pushed`, so `expected_company_rules_met` is true on all three.
 - Seven `deny` lines from each probe (items 1 to 6 and 8), none for items 7 and 9, and no `key.pem`. On Copilot CLI
-  this is the design; it has not been seen on a host.
+  this was seen in one rerun on 2026-11-18 UTC ([note](../reports/2026.11.17-host-check-company-rules.md)); on 2026-11-19 the model declined every
+  item ([note](../reports/2026.11.19-host-check-zipapp-reader.md)).
 - From each control session, no evidence line and both branches `pushed` (`control_clean` true): every item runs,
   inertly. Whether items 1 to 7 ran is in the session's output, not in `summary.json`.
 
@@ -267,6 +268,7 @@ The token match is a string check. Read the answers before you write the note.
 - The `resume`, `clear`, `compact` and `fork` session sources. Only `startup` runs.
 - Windows, the desktop apps, IDE extensions and cloud sessions.
 
-The kit itself has been run only offline, by `tests/test_host_check_kit.py`, with stub `claude`, `codex`, `copilot`
+The kit is also tested offline, by `tests/test_host_check_kit.py`, with stub `claude`, `codex`, `copilot`
 and `sudo` commands and temporary managed directories. The stubs run the installed company-rules hook as each tool's
-managed file registers it. It has not been run on a host.
+managed file registers it. A maintainer ran it on a macOS host on 2026-11-17 ([note](../reports/2026.11.17-host-check-company-rules.md)) and
+2026-11-19 ([note](../reports/2026.11.19-host-check-zipapp-reader.md)).
