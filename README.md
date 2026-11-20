@@ -11,7 +11,7 @@
 
 Write your company's rules down once: the hosting and services it approves, which data may go into a prompt, the sign-in rule, what needs a review, and who to ask, with a named reviewer and an expiry date. Serve that file to Claude Code, Codex, Claude.ai, and ChatGPT through one small read-only server. When someone asks an assistant to build something, the assistant checks the plan against those rules before it writes code, names what the company approves instead of a generic "use something approved", and, when a person has to look, drafts the message to the right person.
 
-Underneath is an open security baseline: three skills the model reads, and Claude Code hooks that stop specific accidents (a hard-coded key, a partial cloud-config reset, a dropped table). MIT, no telemetry.
+Underneath is an open security baseline: three skills the model reads, and hooks on Claude Code, Codex and GitHub Copilot CLI that stop specific accidents (a hard-coded key, a partial cloud-config reset, a dropped table) and enforce the company's own rules (a force push to a protected branch; a deploy, package registry or cloud account the company has not approved). MIT, no telemetry.
 
 ## Company rules in 15 minutes
 
@@ -38,7 +38,7 @@ In one observed run (Claude Code 2.1.312, `claude-haiku-5-5`, the example file, 
 - **Make it yours.** Replace the example's values with your company's, have a named person review them, and set `reviewed_on` and `expires_on`. After `expires_on` the server reports the rules as expired and tells the assistant to treat them as unknown and ask the owner. Keep the file out of public repositories. Format and validator: [`docs/spec/OVERLAY.md`](docs/spec/OVERLAY.md).
 - **Claude.ai and ChatGPT** reach the server only as a remote connector over HTTPS. Self-hosting it behind your own authenticated gateway is possible ([`mcp-server/README.md`](mcp-server/README.md)) but not verified by Catpilot; for a pilot that includes those tools, use Catpilot Plus, which hosts it per company.
 - **Running a pilot:** a two-to-four-week plan with setup, measures, exit criteria, and the server-versus-pasted-rules comparison on your own tasks: [`docs/PILOT.md`](docs/PILOT.md).
-- **The rules inform; they do not block.** The assistant reads them when it calls the server. The only enforcement here is the Claude Code hooks described in [what this does and does not do](#what-this-does-and-does-not-do).
+- **Through the server, the rules inform; they do not block.** The assistant reads them when it calls the server. To enforce a rule, put it in the file's `enforcement` section and have an administrator install it with the hooks: on Claude Code, Codex and Copilot CLI, the company-rules hook stops a force push to a branch the company protects, and a deploy, package registry or cloud account it has not approved, in `monitor` or `block` (`ask` exists but is not yet run on a host), with expiring exceptions. The same install puts the rules in front of Claude Code and Codex at every session start. See [company enforcement rules](docs/DEPLOY_ORG.md#company-enforcement-rules) and [what this does and does not do](#what-this-does-and-does-not-do).
 
 ## The open baseline
 
@@ -88,7 +88,7 @@ Installation makes the instructions available to a compatible host; it does **no
 
 As a Claude Code plugin, skills only: `/plugin marketplace add catpilotai/catpilot-ai-guardrails`, then `/plugin install catpilot-guardrails@catpilot`. The same manifest lets a ChatGPT workspace administrator import the repository as a plugin.
 
-Rolling it out to a team or a whole company, with the files an administrator places and how to confirm they landed: [`docs/DEPLOY_ORG.md`](docs/DEPLOY_ORG.md).
+Rolling it out to a team or a whole company takes one command per machine: `deploy/org/install.sh` on macOS and Linux installs the hooks for Claude Code, Codex and Copilot CLI and, with `--overlay`, the company rules; `deploy/org/verify.sh` confirms they landed. `install.ps1` installs the hooks on Windows, where no host session has run yet. The files it places and the verification status: [`docs/DEPLOY_ORG.md`](docs/DEPLOY_ORG.md).
 
 Building your own agent loop? The harness notes, the gates as plain functions, and the loop rules are in the [technical reference](docs/REFERENCE.md#for-agent-harnesses).
 
@@ -100,7 +100,7 @@ Nobody has to open a terminal.
 - **Claude.ai:** download `catpilot-safe-building.zip` from the [latest release](https://github.com/catpilotai/catpilot-ai-guardrails/releases/latest) (also at [`dist/2026.09.18/`](dist/2026.09.18/)) and upload it under Customize → Skills. An organization owner uploads it once under Organization settings → Skills and every member gets it.
 - **ChatGPT, Microsoft Copilot Studio, Lovable, Bolt, Replit, v0:** paste the block for your tool from [`dist/2026.09.18/`](dist/2026.09.18/). Each file says where it goes, and each is under 8,000 characters.
 - **Repository-based agents:** append the `AGENTS.md` or `copilot-instructions.md` block from the same directory.
-- **Your company rolling it out for you:** an administrator can install it centrally. The Claude Code and Codex CLI paths are verified; the Claude.ai and ChatGPT workspace paths are written from the vendors' administrator documentation and not yet run by Catpilot: [`docs/DEPLOY_ORG.md`](docs/DEPLOY_ORG.md).
+- **Your company rolling it out for you:** an administrator can install it centrally. The Claude Code, Codex CLI and GitHub Copilot CLI paths are verified on macOS; the Claude.ai and ChatGPT workspace paths are written from the vendors' administrator documentation and not yet run by Catpilot: [`docs/DEPLOY_ORG.md`](docs/DEPLOY_ORG.md).
 
 ## What this does and does not do
 
@@ -108,7 +108,7 @@ Three different things get called "protection". This repository uses the narrow 
 
 - **Advice.** A skill is guidance the model reads. It shapes what the model says and suggests. It is loaded only when the host chooses to load it. All three skills here are advice, and so are the company rules the server returns.
 - **Contextual coaching.** A supported event in a tool people already work in, such as Slack or Teams, produces one explanation and one next step, at the moment it matters. That is a Catpilot platform capability, not something a skill file does. The safe-building skill tells an assistant how to coach; it cannot create the event.
-- **Enforcement.** A specific action cannot proceed without a tested check in a trusted host. This repository ships three, all Claude Code `PreToolUse` hooks: one denies a shell command that contains a literal credential, one denies a file write or edit that adds a literal credential or a private-key block, and one denies a high-blast-radius shell command (a partial cloud-config reset, an auto-approved infrastructure destroy, a recursive delete of root, home, or a credential directory, a force push to a protected branch, a database or cache wipe). Each covers its one path, on the host version recorded in the [tested-runtimes table](docs/REFERENCE.md#tested-runtimes), and nothing else. They stop the accidental action an agent proposes, not a deliberately disguised one.
+- **Enforcement.** A specific action cannot proceed without a tested check in a trusted host. This repository ships four hooks, for Claude Code, Codex and GitHub Copilot CLI: one denies a shell command that contains a literal credential, one denies a file write or edit that adds a literal credential or a private-key block, one denies a high-blast-radius shell command (a partial cloud-config reset, an auto-approved infrastructure destroy, a recursive delete of root, home, or a credential directory, a force push to a protected branch, a database or cache wipe), and one applies the company's own enforcement rules (a force push to a branch the company protects; a deploy, package registry or cloud account it has not approved). Each covers its one path, on the host versions recorded in the [tested-runtimes table](docs/REFERENCE.md#tested-runtimes) and the [verification status](docs/DEPLOY_ORG.md#verification-status), and nothing else. They stop the accidental action an agent proposes, not a deliberately disguised one.
 
 It does not monitor anyone's work, send telemetry, block anything except through the documented hooks, scan repositories, certify compliance, or record training completion. An installed skill that is not loaded is not a control. A hook that is not configured is not a control.
 
@@ -168,7 +168,7 @@ Everything company-specific lives in one **company rules** file (the format is c
 | Open source (this repository) | Catpilot Plus |
 | --- | --- |
 | The company-rules format (overlay schema) and validator, local merge into a private bundle, generic defaults, the same eight checkpoints as a course for people | Authoring the company rules from the company's actual policies, named-reviewer approval, versioning, tenant-scoped serving to tools, per-person coaching in Slack and Teams, and the evidence trail that links a coached moment to a policy version |
-| Three enforcement hooks, the same checks as harness gates plus outbound-URL and file-path gates, a content-free evidence log with optional syslog or HTTPS forwarding and an opt-in hash chain, OCSF and ECS export, `tools/evidence_summary.py` for a pilot readout, and an `escalation_draft` (with an optional `intake_url`) whenever `check_plan` asks for a human | Serving `check_plan` per company, so every `escalation_draft` carries the company's own contact and intake link |
+| Enforcement hooks on Claude Code, Codex and Copilot CLI (three built-in checks and the company's own rules), the built-in checks as harness gates plus outbound-URL and file-path gates, a content-free evidence log with optional syslog or HTTPS forwarding and an opt-in hash chain, OCSF and ECS export, `tools/evidence_summary.py` for a pilot readout, and an `escalation_draft` (with an optional `intake_url`) whenever `check_plan` asks for a human | Serving `check_plan` per company, so every `escalation_draft` carries the company's own contact and intake link |
 
 Do not put private incidents, customer data, secrets, employee identifiers, or internal policy excerpts into this public baseline or a public fork. The bundler refuses to build if an overlay-shaped file is inside the tree, and a private build must be written outside it. A fork of a public repository is not private storage. Never turn an unreviewed event or document into an authoritative company rule automatically.
 
