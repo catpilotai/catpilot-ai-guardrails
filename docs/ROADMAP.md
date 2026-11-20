@@ -9,12 +9,12 @@ To ask for a parked item, comment on its issue. That is how parked work gets pic
 | Area | What | Run on a real host? |
 |---|---|---|
 | Baseline content | `catpilot-security-core` (nine components) and `catpilot-safe-building`, with per-host targets | yes |
-| Hooks | Destructive-operation, credential and private-key checks on Claude Code, Codex and GitHub Copilot CLI; they block when they cannot run; commands inside `if`, loops, `{ }`, functions and comments are read (#137) | Claude Code and Codex yes (2026-11-16/17), before the #137 reader and the single-file layout; Copilot CLI not yet |
+| Hooks | Destructive-operation, credential and private-key checks on Claude Code, Codex and GitHub Copilot CLI; they block when they cannot run; commands inside `if`, loops, `{ }`, functions and comments are read (#137) | Claude Code and Codex yes (2026-11-19, including the #137 reader and the single-file layout); Copilot CLI: the company-rules hook yes (2026-11-19), the built-in checks not yet in this build (last seen 2026-11-17/18, before #137 and the single-file layout) |
 | Company rules v2 | Schema, validator, `migrate`, topic contacts, and expiring exceptions | n/a (offline tools) |
-| Company enforcement | Company-rules hook for `protected_branch`, `deploy_host`, `package_registry` and `cloud_account`, in `monitor`, `ask` or `block`, plus a pull-request check | not yet |
+| Company enforcement | Company-rules hook for `protected_branch`, `deploy_host`, `package_registry` and `cloud_account`, in `monitor`, `ask` or `block`, plus a pull-request check | Claude Code and Codex yes, every kind (2026-11-17, 2026-11-19); Copilot CLI yes for `protected_branch` (2026-11-17/18) and for `deploy_host`, `package_registry` and `cloud_account` (2026-11-19); exceptions yes on all three (2026-11-19); `ask` and the pull-request check not yet |
 | Session-start rules | The company rules reach the model at every session start on Claude Code and Codex | yes |
 | Windows | The hooks run on Windows, with a PowerShell reader | not yet |
-| Install | One command per OS (`deploy/org/install.sh`, `install.ps1`), which proves and records the hooks' Python and, on macOS and Linux, places the hooks as one file with a recorded SHA-256 (#158); `verify` and `uninstall` | macOS and Linux in CI; Windows not yet |
+| Install | One command per OS (`deploy/org/install.sh`, `install.ps1`), which proves and records the hooks' Python and, on macOS and Linux, places the hooks as one file with a recorded SHA-256 (#158); `verify` and `uninstall` | macOS yes (2026-11-19, with a user-owned Python accepted through the override); Linux in CI; Windows not yet |
 | Reference MCP server | `get_guidance`, `check_plan`, `get_template`, `list_approved`; Claude.ai and ChatGPT connectors | yes (2026-09-28) |
 | Server sign-in | Opt-in OIDC mode (`--auth oidc`) for Claude.ai and ChatGPT | not yet, needs an identity provider |
 | Gateway export | Company rules as generic JSON (`validate_overlay.py export`) | experimental |
