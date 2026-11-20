@@ -93,6 +93,13 @@ python tools/validate_overlay.py salt /private/path/rules.yaml
 python tools/validate_overlay.py migrate docs/spec/overlay.example.yaml
 ```
 
+## ci_scope.py
+
+Used by `.github/workflows/baseline.yml`. Decides whether a pull request changes only documentation (Markdown
+outside `src/`, `skills/`, `dist/`, `frameworks/`, `.github/` and the evaluation fixtures) and, if so, which test
+modules name a changed file. Those modules and `tests/test_workflows.py` run instead of the whole suite, and the
+Windows jobs skip their tests. Anything else, or anything it cannot decide, runs in full. Standard library only.
+
 ## pr_check.py
 
 The pull-request check: the compiled company policy (`validate_overlay.py

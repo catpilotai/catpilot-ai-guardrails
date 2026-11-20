@@ -3,7 +3,12 @@ name: baseline
 # Runs on every pull request, whatever it changes, so branch protection always has a check to
 # require. The other workflows run only when their paths change; this one keeps edits to any
 # workflow (including Dependabot's action bumps) covered by tests/test_workflows.py, and runs the
-# whole unit suite, so a change to deploy/, skills/, docs/ or the plugin manifest is tested too.
+# whole unit suite, so a change to deploy/, skills/ or the plugin manifest is tested too.
+#
+# A pull request that changes only documentation (tools/ci_scope.py decides, and says what it decided)
+# runs tests/test_workflows.py and the test modules that name a changed file, and skips the rest of the
+# unit suite, the zipapp check and the Windows tests. Every job still reports, so a required check never
+# waits. Pushes to main always run in full, so anything a docs-only run missed shows up after the merge.
 
 on:
   pull_request:
@@ -13,11 +18,23 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that pull request's run still in progress. Runs on main are grouped
+# by commit, so each merge gets its own complete run.
+concurrency:
+  group: baseline-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   baseline:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Scope (a pull request that changes only documentation runs the tests that name its files)
+        id: scope
+        run: python3 tools/ci_scope.py
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -31,13 +48,25 @@ jobs:
         run: python -m unittest discover -s tests -p test_workflows.py -v
 
       - name: Unit tests (hooks, harness gates, tools, MCP server, deploy scripts, manifests)
+        if: steps.scope.outputs.docs_only != 'true'
         # The runner's Python under /opt/hostedtoolcache is writable by everyone, which install.sh refuses for a real
         # install; the tests that drive install.sh accept it here. The test of that refusal unsets this.
         env:
           CATPILOT_ALLOW_UNPROTECTED_PYTHON: "1"
         run: python -m unittest discover -s tests
 
+      - name: Docs only, the test modules that name a changed file
+        if: steps.scope.outputs.docs_only == 'true'
+        env:
+          CATPILOT_ALLOW_UNPROTECTED_PYTHON: "1"
+          TESTS: ${{ steps.scope.outputs.tests }}
+        run: |
+          for t in $TESTS; do
+            python -m unittest discover -s tests -p "$t.py"
+          done
+
       - name: The hooks zipapp builds byte for byte the same, twice and on a second Python (issue #97, option 2)
+        if: steps.scope.outputs.docs_only != 'true'
         run: |
           python tools/build_zipapp.py --out "$RUNNER_TEMP/a/catpilot-guard.pyz"
           /usr/bin/python3 tools/build_zipapp.py --out "$RUNNER_TEMP/b/catpilot-guard.pyz"
@@ -55,8 +84,15 @@ jobs:
         python-version: ["3.8", "3.12"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Scope (a pull request that changes only documentation skips the Windows tests)
+        id: scope
+        run: python tools/ci_scope.py
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.scope.outputs.docs_only != 'true'
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -65,4 +101,5 @@ jobs:
         # -PythonPath on both Pythons, and on 3.12 also with the pinned embeddable interpreter install.ps1 downloads.
         env:
           CATPILOT_TEST_EMBEDDED_PYTHON: ${{ matrix.python-version == '3.12' && '1' || '0' }}
+        if: steps.scope.outputs.docs_only != 'true'
         run: python tests/windows_suite.py

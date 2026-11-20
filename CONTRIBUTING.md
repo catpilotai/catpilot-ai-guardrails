@@ -35,6 +35,7 @@ You found the community scratching post.
 - [ ] Run `python tools/bundle.py --target all` to rebuild `skills/` and `dist/`.
 - [ ] Run `python tools/bundle.py --check` to confirm determinism. CI runs the same check and fails on drift in either tree.
 - [ ] Run `python tools/validate_skill.py` and `python -m unittest discover -s tests -v`. These validate structure and tooling, not model behavior.
+  A pull request that changes only documentation gets a short CI run: the tests that name the changed files, decided by `tools/ci_scope.py`. The full suite runs again on `main` after the merge.
 - [ ] Bump `metadata.catpilot.version` on any source skill you change. Source skills use semver; rename or severity changes are major bumps.
 - [ ] When changing a bundle's contents, bump its version in `src/skills/<tier>/bundle.toml` to the current date in CalVer (`YYYY.MM.DD`). The bundler refuses non-CalVer values. Documentation-only repository releases leave unchanged bundle versions intact.
 - [ ] Never add company names, internal URLs, policy excerpts, incident details, credentials, or a real overlay. The bundler refuses overlay-shaped files in the tree; the validator refuses secrets, internal identifiers, and narratives in overlays.
