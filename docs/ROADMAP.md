@@ -1,6 +1,6 @@
 # Roadmap
 
-Updated 2026-11-19. This page lists what is shipped, what we are building next, and what is parked until someone asks for it. "Shipped" means merged and tested in CI. Where something has not yet been run on a real host, identity provider or SIEM, the entry says so; [`CHANGELOG.md`](../CHANGELOG.md) has the detail, and the [verification status](DEPLOY_ORG.md#verification-status) table has dates and notes for each host check.
+Updated 2026-11-20. This page lists what is shipped, what we are building next, and what is parked until someone asks for it. "Shipped" means merged and tested in CI. Where something has not yet been run on a real host, identity provider or SIEM, the entry says so; [`CHANGELOG.md`](../CHANGELOG.md) has the detail, and the [verification status](DEPLOY_ORG.md#verification-status) table has dates and notes for each host check.
 
 To ask for a parked item, comment on its issue. That is how parked work gets picked up.
 
@@ -19,14 +19,13 @@ To ask for a parked item, comment on its issue. That is how parked work gets pic
 | Server sign-in | Opt-in OIDC mode (`--auth oidc`) for Claude.ai and ChatGPT | not yet, needs an identity provider |
 | Gateway export | Company rules as generic JSON (`validate_overlay.py export`) | experimental |
 | Evidence | Versioned evidence schema, OCSF and ECS export, an opt-in hash chain, and HTTPS forwarding | not yet against a real SIEM |
-| Project policy | [Stability](STABILITY.md), [support](../SUPPORT.md), governance, monthly stable releases | n/a |
+| Project policy | [Stability](STABILITY.md), [support](../SUPPORT.md), governance, monthly stable releases; the first is [2026.11.19](https://github.com/catpilotai/catpilot-ai-guardrails/releases/tag/2026.11.19) (#101) | n/a |
 
 ## Next
 
 | Item | Issue |
 |---|---|
 | Sign-in mode tested against a real identity provider | #94 |
-| First monthly stable release | #101 |
 
 ## Parked until requested
 
