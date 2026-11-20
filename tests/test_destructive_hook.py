@@ -1076,7 +1076,46 @@ class DestructiveHookTests(unittest.TestCase):
                     out = json.loads(run_hook(payload).stdout)
                     self.assertEqual(out.get("hookSpecificOutput", {}).get("permissionDecision"), expected)
 
+    def test_a_heredoc_given_to_cat_in_a_substitution_is_text(self):
+        # Review of the #137 merge: `"$(cat <<'EOF' ... EOF)"` is how commit messages and PR bodies are written; its
+        # body is text. Given to a shell it is commands, and an unquoted body's substitutions run either way. A `cd`
+        # in a substitution runs in a subshell; a checkout there changes HEAD. Run on a feature branch.
+        from catpilot_guard.destructive import find_destructive_op
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").mkdir()
+            (Path(tmp) / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
+            allowed = [
+                "gh pr create --body \"$(cat <<'EOF'\n```\ngit push --force origin main\n```\nEOF\n)\"",
+                "git commit -m \"$(cat <<EOF\nrm -rf ~\nEOF\n)\"",
+                "x=\"$(cat <<'EOF'\nrm -rf ~\nEOF\n)\"",
+                "x=`cat <<'EOF'\nrm -rf ~\nEOF\n`",
+                "git commit --amend -m \"$(cat <<'EOF'\ngit checkout main is no longer needed\nEOF\n)\" && git push --force-with-lease",
+                "git commit --amend -m \"$(cat <<'EOF'\ncd foo\nsource the env\nexport GIT_DIR\nfunction names\nEOF\n)\" && "
+                "git push --force-with-lease",
+                "ROOT=\"$(cd \"$(dirname \"$0\")\" && pwd)\"; git push --force-with-lease",
+                "git push --force-with-lease && echo \"from $(cd .. && pwd)\"",
+            ]
+            denied = [
+                "gh pr create --body \"$(cat <<'EOF' | bash\n```\ngit push --force origin main\n```\nEOF\n)\"",
+                "git commit -m \"$(bash <<EOF\nrm -rf ~\nEOF\n)\"",
+                "x=\"$(cat <<'EOF' | sh\nrm -rf ~\nEOF\n)\"",
+                "x=`cat <<'EOF' | bash\nrm -rf ~\nEOF\n`",
+                "x=\"$(cat <<EOF\n$(rm -rf ~)\nEOF\n)\"",
+                "x=\"$(ssh host <<'EOF'\nrm -rf ~\nEOF\n)\"",
+                "git commit --amend -m \"$(bash <<'EOF'\ngit checkout main\nEOF\n)\" && git push --force-with-lease",
+                "echo $(git switch main) && git push -f",
+                "cat <<'EOF' | bash\nrm -rf ~\nEOF",
+            ]
+            for command in allowed:
+                with self.subTest(command=command):
+                    self.assertIsNone(find_destructive_op(command, tmp))
+            for command in denied:
+                with self.subTest(command=command):
+                    self.assertIsNotNone(find_destructive_op(command, tmp))
+
     def test_brace_expansion_matches_bash(self):
+
         # Review of f92bb75: bash 5's results, a linear pairing (no exponential or quadratic case), and the limit.
         import time
         from catpilot_guard.destructive import expand_braces, git_config_assignment_harmful

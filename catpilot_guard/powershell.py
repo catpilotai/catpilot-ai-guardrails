@@ -418,6 +418,8 @@ def decode_encoded(value: str) -> str | None:
         if len(raw) % 2:
             return None
         return raw.decode("utf-16-le")
+    except ReadTimeout:
+        raise  # the hook's timer (a ValueError): never read as a value that does not decode
     except (binascii.Error, ValueError, UnicodeDecodeError):
         return None
 

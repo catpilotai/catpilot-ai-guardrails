@@ -544,7 +544,9 @@ def _scan(command: str, bash: bool = True, dq_comment: bool | None = None) -> tu
     a pattern list or of a command in a branch, and `case`, `in` and `esac` are read across backslash-newlines. A heredoc's body (the lines after the line
     with `<<WORD` or `<<-WORD`, up to WORD) is literal text to the shell, apart from substitutions when WORD is
     unquoted, so its quote characters are escaped here: its lines are still read as commands, but cannot open a quote
-    that hides the commands after it. A backslash-newline joins two lines, outside single quotes and when the backslash
+    that hides the commands after it. Inside a command substitution a body is read as commands only when what takes it
+    may run it (_heredoc_runs): `git commit -m "$(cat <<'EOF' ... EOF)"` is text, apart from the substitutions of an
+    unquoted body; `"$(cat <<'EOF' | bash ... EOF)"` is commands. A backslash-newline joins two lines, outside single quotes and when the backslash
     is not itself escaped, and `$` followed by a backslash-newline is read with what comes after it
     (`$\\<newline>'...'` is an ANSI-C string). In $'...' a backslash escapes the next character, so `\\'` does not end
     it. A NUL character cannot be read (shells differ: bash drops it, zsh keeps it), so it raises ValueError. The
@@ -608,9 +610,13 @@ def _scan(command: str, bash: bool = True, dq_comment: bool | None = None) -> tu
 
     def start_heredoc() -> None:
         nonlocal heredoc
-        word, strip_tabs, literal = pending.pop(0)
-        heredoc = (word, strip_tabs, len(stack))
-        push("<<'" if literal else "<<")
+        word, strip_tabs, literal, begins, nested = pending.pop(0)
+        # Outside a substitution a body is read as commands, as before; inside one (`"$(cat <<'EOF' ...)"`, the idiom
+        # for commit messages and PR bodies) only when what takes it may run it (_heredoc_runs).
+        runs = not nested or _heredoc_runs(command[begins:i])
+        heredoc = (word, strip_tabs, len(stack), runs, literal)
+        if runs:
+            push("<<'" if literal else "<<")
 
     def open_substitution(context: str, placeholder: str, opener: str, read: bool = True) -> None:
         nonlocal out, word_start, word_begin, command_start
@@ -635,8 +641,33 @@ def _scan(command: str, bash: bool = True, dq_comment: bool | None = None) -> tu
         word_start = command_start = False  # the substitution ends inside its word: `$(date)#x` is one word
 
     while i < n:
+        if heredoc is not None and not heredoc[3] and (i == 0 or command[i - 1] == "\n"):
+            # A body nothing runs: passed over, apart from the substitutions in an unquoted one, which the shell
+            # runs; they are read as a double-quoted string's would be, as an argument of `:`.
+            word, strip_tabs, _, _, literal = heredoc
+            j, body_end, after = i, n, n
+            while j < n:
+                end = command.find("\n", j)
+                end = n if end == -1 else end
+                line = command[j:end]
+                if (line.lstrip("\t") if strip_tabs else line) == word:
+                    body_end, after = j, end + 1
+                    break
+                j = end + 1
+            body = command[i:body_end]
+            if not literal and ("$" in body or "`" in body):
+                text, differs, hashes = _scan(': "' + _double_quoted(body) + '"', bash, dq_comment)
+                posix_differs, dq_hash = posix_differs or differs, dq_hash or hashes
+                sides.append(text)
+            out.append("\n")
+            i = min(after, n)
+            heredoc = None
+            word_start, word_begin, command_start = True, len(out), True
+            if pending:
+                start_heredoc()
+            continue
         if heredoc is not None and (i == 0 or command[i - 1] == "\n"):
-            word, strip_tabs, depth = heredoc
+            word, strip_tabs, depth = heredoc[:3]
             end = command.find("\n", i)
             end = n if end == -1 else end
             line = command[i:end]
@@ -868,12 +899,16 @@ def _scan(command: str, bash: bool = True, dq_comment: bool | None = None) -> tu
                 prefix = ""
             operator = REDIRECTION_OPERATOR.match(command, i).group()
             out.append(REDIRECT + prefix + _literal(operator))
+            operator_at = i
             i += len(operator)
             while i < n and command[i] in " \t":  # `> log` is `>log`: the target joins its operator
                 i += 1
             word_start, word_begin = False, len(out)
             if operator in ("<<", "<<-"):
+                before = len(pending)
                 i = _heredoc_word(command, i, operator == "<<-", out, pending)
+                if len(pending) > before:  # where its command begins, and whether it is in a substitution
+                    pending[-1] = pending[-1] + (_command_begins(command, operator_at), bool(outer))
             continue
         if c == "&" and command.startswith("&>", i) and bash:
             operator = "&>>" if command.startswith("&>>", i) else "&>"
@@ -923,6 +958,57 @@ def _scan(command: str, bash: bool = True, dq_comment: bool | None = None) -> tu
         out, word_begin, _, opener, _ = outer.pop()
         out.append(_literal(opener) + inner_text)
     return "".join(out) + "".join("\n" + side for side in sides), posix_differs, dq_hash
+
+
+# What may run a heredoc body it is given: shells, interpreters, remote shells and database clients. A heredoc in a
+# substitution is read as commands when one of these is anywhere in the rest of its line (`cat <<EOF | bash`).
+HEREDOC_RUNNERS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "ssh", "su", "python", "python2", "python3", "node",
+                   "nodejs", "deno", "bun", "perl", "ruby", "php", "lua", "tclsh", "expect", "osascript", "psql",
+                   "mysql", "mariadb", "sqlite3", "sqlcmd", "redis-cli", "mongo", "mongosh", "pwsh", "powershell",
+                   "cmd", "xargs", "eval", "source", ".", "exec", "docker", "podman", "kubectl", "at", "batch",
+                   "crontab", "sudo", "doas", "env", "time", "nohup", "timeout"}
+# What only reads or writes a body as text. A heredoc in a substitution given to one of these, with no runner in the
+# rest of its line, is text (`git commit -m "$(cat <<'EOF' ... EOF)"`); given to anything else it is read as commands.
+HEREDOC_TEXT_READERS = {"cat", "tee", "head", "tail", "wc", "sort", "uniq", "tr", "cut", "fold", "column", "less",
+                        "more", "grep", "egrep", "fgrep", "base64", "md5sum", "sha1sum", "sha256sum", "shasum",
+                        "printf", "echo", "read", "mapfile", "readarray", "true", ":", "git", "gh", "jq", "yq"}
+
+
+def _command_begins(command: str, at: int) -> int:
+    """Where the simple command holding command[at] begins: after the nearest `;`, `&`, `|`, `(`, `)`, backquote or
+    newline before it (a heuristic for _heredoc_runs; a quote is not tracked)."""
+    k = at
+    while k > 0 and command[k - 1] not in ";&|()`\n":
+        k -= 1
+    return k
+
+
+def _heredoc_runs(line: str) -> bool:
+    """Whether a heredoc whose command and the rest of its line are `line` may be run: a runner (HEREDOC_RUNNERS)
+    anywhere in it, or a command that is not one of HEREDOC_TEXT_READERS (stricter: unknown commands may run it)."""
+    words = [w for w in re.split(r"[\s;&|()<>`\"']+", line) if w]
+    if any(os.path.basename(w).lstrip("$") in HEREDOC_RUNNERS for w in words):
+        return True
+    for w in words:
+        if ASSIGNMENT.match(w):
+            continue
+        return os.path.basename(w) not in HEREDOC_TEXT_READERS
+    return True
+
+
+def _double_quoted(body: str) -> str:
+    """A heredoc body (unquoted word) as the text of a double-quoted string that expands as the body does: a `"`
+    is escaped, and a backslash before a `"` stays a backslash."""
+    out, k, n = [], 0, len(body)
+    while k < n:
+        ch = body[k]
+        if ch == "\\" and k + 1 < n:
+            out.append('\\\\\\"' if body[k + 1] == '"' else body[k:k + 2])
+            k += 2
+            continue
+        out.append('\\"' if ch == '"' else ch)
+        k += 1
+    return "".join(out)
 
 
 def _heredoc_word(command: str, i: int, strip_tabs: bool, out: list, pending: list) -> int:
@@ -1878,6 +1964,7 @@ def _git_push_rewrites(args: list[str], cwd: str | None, expand: bool, budget: B
 # branch is then unknown, and so blocked, for the rest of the line (commands_with_branch_context). A command can only
 # make the branch unknown, never name it: a switch may fail, run elsewhere, or take its name from a variable.
 CONTEXT_COMMANDS = {"cd", "chdir", "pushd", "popd", "source", ".", "eval", "exec", "alias"}
+DIRECTORY_COMMANDS = {"cd", "chdir", "pushd", "popd"}  # change only the directory, which a subshell keeps to itself
 GIT_CONTEXT_SUBCOMMANDS = {"checkout", "switch", "symbolic-ref", "init"}
 # An assignment that points git at another repository or adds configuration.
 GIT_ENVIRONMENT_ASSIGNMENT = re.compile(r"GIT_(?:DIR|WORK_TREE|COMMON_DIR)(?:\+?=|$)")
@@ -2168,7 +2255,8 @@ def commands_with_branch_context(command: str, cwd: str | None, deadline: float 
     The commands are _simple_commands' (compound commands, comments and every reading, under one deadline), and the
     assignments it drops count as well. The commands of a substitution are read after the rest of the line, though
     the shell runs them first, so in a line with a substitution a command that changes the context applies to the
-    whole line. read is read_command(command), when the caller has it. Raises ReadTimeout past the deadline."""
+    whole line, except a change of directory (`cd`, `pushd`, `popd`), which a substitution makes in its own subshell;
+    a checkout there still changes the repository's HEAD. read is read_command(command), when the caller has it. Raises ReadTimeout past the deadline."""
     deadline = _deadline(deadline)
     commands, assignments, readings = read if read is not None else read_command(command, deadline)
     pointed = _points_git_elsewhere(command, deadline, readings)
@@ -2186,6 +2274,8 @@ def commands_with_branch_context(command: str, cwd: str | None, deadline: float 
         for argv in commands:
             if CURRENT_BRANCH_COMMAND.fullmatch(" ".join(argv)):
                 continue  # `"$(git symbolic-ref --short HEAD)"` asks for the branch; it does not change it
+            if os.path.basename(argv[0]) in DIRECTORY_COMMANDS:
+                continue  # a `cd` in a substitution runs in a subshell (`ROOT="$(cd .. && pwd)"`); a checkout does not
             setting = _config_setting(argv)
             if setting == "mirror":
                 branch_cwd = CONFIGURED_BY_ENVIRONMENT

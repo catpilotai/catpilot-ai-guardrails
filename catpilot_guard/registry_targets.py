@@ -114,7 +114,7 @@ from dataclasses import dataclass
 from urllib.parse import unquote
 
 from .deploy_targets import HOST_NAME, RUNNERS, _call_string, _tool
-from .destructive import ASSIGNMENT, YARN_PNPM_VALUE_OPTIONS, _simple_commands, _skip_options
+from .destructive import ASSIGNMENT, YARN_PNPM_VALUE_OPTIONS, _deadline, _simple_commands, _skip_options
 
 REGISTRY = "registry"
 UNKNOWN = "unknown"
@@ -885,7 +885,7 @@ def command_name(word: str) -> str:
     return name[:-4] if name.endswith((".exe", ".cmd", ".bat")) else name
 
 
-def _argv_targets(argv: list, depth: int, flags: bool = True) -> list:
+def _argv_targets(argv: list, depth: int, flags: bool = True, deadline: float | None = None) -> list:
     name, args = command_name(argv[0]), list(argv[1:])
     split = runner_split(name, args) if depth < 4 else None
     if split is not None:
@@ -894,7 +894,7 @@ def _argv_targets(argv: list, depth: int, flags: bool = True) -> list:
         if unsure:
             out.append(Target(UNKNOWN))  # more unknown runner options than are read both ways
         for inner in inners:
-            out.extend(_argv_targets(inner, depth + 1))
+            out.extend(_argv_targets(inner, depth + 1, deadline=deadline))
         return out
     if name in NPM_FAMILY:
         # --registry anywhere in the arguments, a runner's own and its package's alike, read once.
@@ -904,10 +904,10 @@ def _argv_targets(argv: list, depth: int, flags: bool = True) -> list:
                 return out
             call = _call_string(args[1:] if name == "npm" else args)
             if call is not None:  # npx -c 'npm install --registry ...' runs the string as a shell command
-                return out + registry_targets(call, depth=depth + 1)
+                return out + registry_targets(call, depth=depth + 1, deadline=deadline)  # the outer deadline
             inner, inner_args = _tool([name] + args)
             if inner != name:
-                return out + _argv_targets([inner] + list(inner_args), depth + 1, flags=False)
+                return out + _argv_targets([inner] + list(inner_args), depth + 1, flags=False, deadline=deadline)
             return out
         return out + _npm_config(name, args)
     if PIP_NAME.match(name):
@@ -945,13 +945,16 @@ def split_command(command: str, deadline: float | None = None, read: tuple | Non
     return [[word.rstrip("\r") for word in argv] for argv in commands], [a.rstrip("\r") for a in assignments]
 
 
-def registry_targets(command: str, cwd: str | None = None, depth: int = 0, split: tuple | None = None) -> list:
+def registry_targets(command: str, cwd: str | None = None, depth: int = 0, split: tuple | None = None,
+                     deadline: float | None = None) -> list:
     """Every registry the command names, in order: each command's own, then the assignments the split dropped. cwd is
-    accepted for symmetry with deploy_targets and not used. split is split_command(command), when the caller has it."""
+    accepted for symmetry with deploy_targets and not used. split is split_command(command), when the caller has it.
+    deadline is the reading deadline of the whole command, which a runner's `-c` string is read under too."""
     targets: list = []
-    commands, assignments = split if split is not None else split_command(command)
+    deadline = _deadline(deadline)
+    commands, assignments = split if split is not None else split_command(command, deadline)
     for argv in commands:
-        targets.extend(_argv_targets(argv, depth))
+        targets.extend(_argv_targets(argv, depth, deadline=deadline))
     for assignment in assignments:
         targets.extend(_assignment_targets(assignment))
     # Each once: the reader may read a command more than one way (a carriage return, $'...', a wrapper option).

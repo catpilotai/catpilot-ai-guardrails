@@ -194,8 +194,8 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy, today
     else:
         split = split_command(command, deadline, read)
     targets = deploy_targets(command, working_dir, deadline=deadline, commands=split[0]) if "deploy_host" in kinds else []
-    registries = registry_targets(command, working_dir, split=split) if "package_registry" in kinds else []
-    accounts = cloud_targets(command, working_dir, split=split) if "cloud_account" in kinds else []
+    registries = registry_targets(command, working_dir, split=split, deadline=deadline) if "package_registry" in kinds else []
+    accounts = cloud_targets(command, working_dir, split=split, deadline=deadline) if "cloud_account" in kinds else []
     mirror = any(rewrites_every_branch for rewrites_every_branch, _ in pushes)
     names = [branch for _, pushed in pushes for branch in pushed]
     # An unknown branch (None: a variable with nothing literal before it, a bare force push with no branch checked out;
