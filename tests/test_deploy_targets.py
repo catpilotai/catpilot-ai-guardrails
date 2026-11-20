@@ -87,6 +87,38 @@ class DeployTargetTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [])
 
+    def test_compound_commands_and_comments_are_read_as_bash_reads_them(self):
+        # Independent review, 2026-11-17: the command after a leading reserved word was not read.
+        cases = {
+            "if [ -n \"$CI\" ]; then vercel --prod; fi": [(SUFFIX, "vercel.app")],
+            "if x; then\n  netlify deploy --prod\nfi": [(SUFFIX, "netlify.app")],
+            "for i in 1; do fly deploy; done": [(SUFFIX, "fly.dev")],
+            "{ npm run build; vercel --prod; }": [(SUFFIX, "vercel.app")],
+            "! scp dist/app.tar deploy@web1.example.org:/srv": [(HOST, "web1.example.org")],
+            "echo a\\ #; vercel --prod": [(SUFFIX, "vercel.app")],
+            "ls # no deploy here \\\nvercel --prod": [(SUFFIX, "vercel.app")],
+            "echo then vercel --prod": [],
+            "if vercel --help; then echo ok; fi": [],
+        }
+        for command, want in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(targets(command), want)
+        # A carriage return is read each way a shell may read it; each target is listed once, without the carriage
+        # return bash leaves in the line's last word (review of #137).
+        self.assertEqual(targets("vercel --prod\r\n"), [(SUFFIX, "vercel.app")])
+        self.assertEqual(targets("vercel --prod; vercel --prod"), [(SUFFIX, "vercel.app")])
+        self.assertEqual(targets("surge dist my-site.surge.sh\r\n"), [(HOST, "my-site.surge.sh")])
+        self.assertEqual(targets("scp dist/a sftp://apps.example.org\r\n"), [(HOST, "apps.example.org")])
+        self.assertEqual(targets("2>&1 vercel --prod"), [(SUFFIX, "vercel.app")])
+        self.assertEqual(targets("env -S 'netlify deploy --prod'"), [(SUFFIX, "netlify.app")])
+        # Review of 4944546: a heredoc body's apostrophe does not hide the deploy after it; redirections are not hosts.
+        self.assertEqual(targets("cat <<'EOF' > n.md\nDon't\nEOF\nvercel --prod # done"), [(SUFFIX, "vercel.app")])
+        self.assertEqual(targets("scp dist/a web1.example.org:/srv > log 2>&1"), [(HOST, "web1.example.org")])
+        self.assertEqual(targets('URL="$(vercel --prod)" && echo "$URL"'), [(SUFFIX, "vercel.app")])
+        self.assertEqual(targets("echo `netlify deploy --prod`"), [(SUFFIX, "netlify.app")])
+        # Review of 0d2a0ed: a case inside $( ) does not leave a later comment's apostrophe to hide the deploy.
+        self.assertEqual(targets("x=$(case a in a) echo;; esac)\n# don't\nvercel --prod\n# it's"), [(SUFFIX, "vercel.app")])
+
     def test_a_vercel_directory_counts_whether_or_not_it_exists_yet(self):
         # The build before it may create it (review of #130); VERCEL_OTHER lists the words that are not deploys.
         for command in ("vercel dist --prod", "vercel my-site", "npm run build && vercel dist --prod", "vercel --cwd site dist"):
@@ -155,6 +187,13 @@ class HookDecisionTests(unittest.TestCase):
         self.assertEqual(self.effect("vercel --prod", values=("*.vercel.app",)), "none")
         self.assertEqual(self.effect("ls && npm test"), "none")
         self.assertEqual(self.effect("vercel env ls"), "none")
+        self.assertEqual(self.effect("if x; then vercel --prod; fi"), "deny")
+        self.assertEqual(self.effect("for f in a; do rsync -av dist/ deploy@apps.example.org:/srv; done"), "none")
+        # A host the rule lists, sent with a CR-LF line ending, is still that host (review of #137).
+        self.assertEqual(self.effect("surge dist my-site.surge.sh\r\n", values=("my-site.surge.sh",)), "none")
+        self.assertEqual(self.effect("rsync -av dist/ rsync://apps.example.org\r\n"), "none")
+        self.assertEqual(self.effect("scp dist/a sftp://apps.example.org\r\n"), "none")
+        self.assertEqual(self.effect("scp dist/a sftp://web1.example.org\r\n"), "deny")
 
     def test_every_target_must_be_covered(self):
         self.assertEqual(self.effect("scp a apps.example.org:/srv && vercel --prod"), "deny")

@@ -153,13 +153,68 @@ off for that repository.
 
 `claude-code/pretooluse-destructive-ops.py` blocks high-blast-radius shell
 commands on the `Bash` tool path. It splits the command into simple commands
-the way a shell would (pipes, `;`, `&&`, `||`, subshells, and each line of a
-multi-line command, with a backslash at the end of a line joining it to the
-next), looks through
-`sudo`, `env`, `time`, `timeout`, `stdbuf`, `ionice`, `setsid`, `unbuffer`, and
-similar wrappers and through a shell's command string, however its options
-are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
-`bash --login -c`), and then checks:
+the way a shell would (pipes, `;`, `&&`, `||`, subshells, `case` branches, and
+each line of a multi-line command, with a backslash at the end of a line
+joining it to the next), reads the commands inside compound commands
+(`if ...; then CMD; fi`, `for ...; do CMD; done`, `while`/`until` loops,
+`{ CMD; }`, `! CMD`, `coproc`, and function bodies, `f() { CMD; }` and
+`function f { CMD; }`; a reserved word is read as one only as the first word
+of a command, so `echo then` is an ordinary `echo`), and reads each command
+substitution's command where it stands (`$( )`, backquotes, `<( )`, `>( )`,
+also inside double quotes, as in `URL="$(vercel --prod)"`), keeping the rest of
+its word and command (`rm -rf $(echo) ~` removes `~`; a first word that only
+expands, as in `$(echo) rm -rf ~` or `$EMPTY rm -rf ~`, may expand to nothing,
+so the word after it is read as the command, and an argument that starts with
+an expansion is also read without it when what is left is an option, as in
+``rm `echo`-rf ~`` or `bash $(echo)-c '...'`). It drops redirections,
+with their targets, wherever they are (`>/dev/null CMD`, `2>&1 CMD`,
+`git push -f > log`, a bare push), ends a word at an unquoted `<` or `>`
+(`rm -rf ~>/dev/null` removes `~`), and drops a comment only where bash does:
+a `#` after an escaped character (`a\ #`), a carriage return, or the `)` that
+ends `$( )`, `<( )`, `>( )` or `$(( ))` is part of the word, while backquotes are open a comment,
+or a quote, ends at the next unescaped backquote (bash ends them there,
+whatever lies between), a `#` inside quotes, `${ }`, arithmetic or a heredoc body never
+starts one, a `#` inside `"$( )"` is read both as bash 3.2 reads it (text) and
+as bash 4 and later, dash and zsh do (a comment), and a backslash at the end of
+a comment does not continue it onto the next line. A `case` statement is read
+with its patterns, so the `)` that ends a pattern does not end a subshell or
+substitution; `esac` ends it only as the first word of a pattern list or of a
+command in a branch, and `case` is found after `if`, `!`, `f()`, `function f`
+and `time -p` and across a backslash-newline, but not after an assignment. A
+quoted or escaped `;`, `|`, `&` or parenthesis is a word, not an operator
+(`rm -rf ';' ~` removes `~`). A command with a NUL or SOH character is refused,
+since shells read a NUL differently and the hook uses SOH to mark quoted
+words. A heredoc body is
+literal text up to its delimiter (with its substitutions read when the
+delimiter is unquoted), so a quote character in it cannot hide the commands
+after the heredoc; its lines are still read as commands, so a heredoc that
+writes `rm -rf /` into a file is refused and a person runs it. It reads a
+`$'...'` string as bash does (`\'` inside it does not end it), and also as
+dash does when that differs (a `$'...'` string holding `\'`, or `&>`, which
+dash reads as `&` and then `>`); reads a command that contains a carriage
+return each way a shell may (bash keeps it in the word, bash on Windows may
+drop it before a line feed, PowerShell ends the line there, and a shell may
+ignore it) and checks every reading; looks through `sudo`, `doas`, `env` (and
+the string of `env -S`), `xargs`, `nice`, `time`, `timeout`, `stdbuf`,
+`ionice`, `setsid`, `unbuffer`, zsh's `noglob`, `nocorrect`, `repeat N` and
+`=cmd`, and similar wrappers, with their options as each tool reads them (a
+value given separately, attached or after a cluster, as in `sudo -iu root`,
+`env -C dir`, `env -uSSH_AUTH_SOCK` and `nice --adjustment 5`; an option the
+hook does not know is read both as taking a value and as taking none) and the
+assignments `sudo` and `env` take (`sudo 'A-B=x' CMD`, `env =x CMD`), and
+treats what `xargs` reads from its input as unknown, so
+`git branch --merged | xargs -I {} git push origin --delete {}` is refused;
+and reads a shell's here-string (`bash <<< 'CMD'`) and command string, however
+its options and redirections are written (`bash -c "..."`, `bash -lc`,
+`sh -ec`, `bash -o pipefail -c`, `bash --login -c`, `bash 2>&1 -c ...`).
+
+The whole check stops after seven seconds: a timer (SIGALRM) interrupts it
+wherever it is, regular expressions included, and the hook exits 2, so a
+command that is slow to read is refused rather than left to the hook's
+timeout, which Codex and Copilot CLI let a call run past. Where there is no
+such timer (Windows, or a harness calling `decide()` itself), a command longer
+than 200,000 characters is refused instead. Reading a typical command takes
+about a millisecond. It then checks:
 
 - Cloud and infrastructure CLIs: partial-resource updates that reset
   unspecified fields (`az containerapp update --yaml` / `--replace-env-vars`,
@@ -186,7 +241,9 @@ are written (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
   `release/*` (exact branch names, so `feature/main-fix` is fine), a bare
   `git push --force` while one of those is checked out (read from
   `.git/HEAD`, and blocked when the branch cannot be read), a deletion of one
-  of those branches, and `git push --mirror`, `--all` or `--branches` with a
+  of those branches (also inside `if`, `for`, `while`, `{ }` and function
+  bodies: `for b in main; do git push -f origin $b; done` is blocked, as `$b`
+  is below), and `git push --mirror`, `--all` or `--branches` with a
   force or `--prune`, and a forced or pruned refspec pattern
   (`refs/heads/*:refs/heads/*`). A force push or deletion whose destination
   holds a shell variable or a substitution is read as its literal text up to
@@ -401,7 +458,8 @@ relax one company rule until a date, never a built-in check:
   deletes (`--delete`, `-d`, or `:branch`) a branch a value covers, a bare
   force push while such a branch is checked out, and `git push --mirror`.
   Pushes are read exactly as the destructive-operation check reads them,
-  through the same wrappers and `bash -c` bodies, so `--all` or `--branches`
+  through the same splitting, compound commands, wrappers and `bash -c`
+  bodies, so `--all` or `--branches`
   with a force or `--prune`, and a forced refspec pattern
   (`refs/heads/*:refs/heads/*`), match every rule. A force push or deletion
   whose branch the hook cannot read also matches every rule: a destination in
@@ -560,10 +618,13 @@ relax one company rule until a date, never a built-in check:
   (`My%20Project`). In an image, which
   cannot hold `..`, a variable ends the path there instead.
 
-  Known limit: the command splitter shared with the other checks cuts a
-  command at an unquoted `$(`, so `docker run -v $(pwd):/app node:20 ...`
-  has no image and is unknown, which fires a `package_registry` rule. Quote
-  it (`-v "$(pwd)":/app`) until the splitter reads command substitutions.
+  The command reader shared with the other checks reads a command
+  substitution in its word, so `docker run -v $(pwd):/app node:20 ...` runs
+  `node:20` (no registry), and reads the substitution's own command too. It
+  also reads the commands inside `if`, `for`, `while`, `until`, `case`,
+  `{ }`, subshells and function bodies, and drops comments only where bash
+  does, for the `package_registry` and `cloud_account` readers as for the
+  others.
 
   A value `host` covers that host with any path. `host/path` covers that
   host's targets whose path is that path or under it, by whole segments:
@@ -719,7 +780,9 @@ the hook, the event (`deny`), the host (`claude-code`, or `codex` with
 id when it is an opaque id. Set `CATPILOT_EVIDENCE_SYSLOG=1` (or a `host:port`
 / socket path) to emit the same content-free JSON line to syslog. Never the
 command, the file path, or the content. Malformed input is recorded as
-`input_error` beside the fail-closed exit. Off unless set.
+`input_error` beside the fail-closed exit, and so is a command the
+destructive-operation or company-rules check could not finish reading in time.
+Off unless set.
 
 All three hooks write through one writer, `catpilot_guard/evidence.py`, which
 the reference server uses too. The line format is versioned:

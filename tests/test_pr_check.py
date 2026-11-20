@@ -989,6 +989,22 @@ class FailClosedTests(RepoCase):
                 self.assertEqual(proc.returncode, code)
                 self.assertIn(".github/workflows/x.yml:1: %s: Catpilot pull-request check: could not read this file" % level, proc.stdout)
 
+    def test_a_script_too_long_to_read_is_a_finding_not_an_internal_error(self):
+        # matched_rules refuses a script over 200,000 characters (check_command_size, as the hook does): the file gets a
+        # finding that names it, an error when a rule is in block, never `internal error`, never clean.
+        long_script = "echo " + "x " * 110_000
+        self.put("package.json", json.dumps({"scripts": {"build": long_script}}))
+        for mode, code, level in (("block", 1, "error"), ("monitor", 0, "warning")):
+            with self.subTest(mode=mode):
+                self.write_policy([host_rule(mode)])
+                proc = self.run_tool("--files", "package.json")
+                self.assertEqual(proc.returncode, code, proc.stdout + proc.stderr)
+                self.assertIn("package.json:", proc.stdout)
+                self.assertIn("%s: Catpilot pull-request check: a script in this file is too long to read" % level, proc.stdout)
+                self.assertNotIn("internal error", proc.stdout + proc.stderr)
+        self.assertEqual([level for _, _, level in findings("package.json", json.dumps({"scripts": {"a": long_script}}),
+                                                           [host_rule("block")])], ["error"])
+
     def test_an_expired_policy_only_warns(self):
         self.put("package.json", "{not json")
         self.write_policy([host_rule("block")], expires="2001-01-01")

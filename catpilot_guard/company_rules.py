@@ -13,8 +13,8 @@ Scope, stated exactly:
     --force-if-includes, or a +refspec) or deletes (--delete, -d, or `:branch`) a branch one of the rule's values
     covers, including a bare force push while such a branch is checked out, and on `git push --mirror`, which
     rewrites every branch. Pushes are read the way the built-in destructive-operation check reads them
-    (destructive.git_push_rewrites), through the same wrappers and `bash -c` bodies. A value ending in `/*`
-    covers every branch under that prefix; case is ignored, as in the built-in check.
+    (destructive.git_push_rewrites), through the same splitting, compound commands, wrappers and `bash -c` bodies.
+    A value ending in `/*` covers every branch under that prefix; case is ignored, as in the built-in check.
   - Kind deploy_host, an allow-list: fires on a deploy or publish whose target no value of the rule covers.
     catpilot_guard/deploy_targets.py says which commands deploy and to what: a named host (`scp dist/
     deploy@web1.example.org:/srv`), a hosting service's own domain when the command shows no name (`vercel --prod`
@@ -88,8 +88,9 @@ from . import policy as policy_module
 from .cloud_targets import account_covered, cloud_targets
 from .deploy_targets import deploy_targets, host_covered
 from . import powershell
-from .destructive import (POWERSHELL, SHELL_TOOLS, BraceBudget, BranchPattern, commands_with_branch_context, git_push_rewrites,
-                          pattern_may_match)
+from .destructive import (POWERSHELL, SHELL_TOOLS, BraceBudget, BranchPattern, ReadTimeout, _deadline,
+                          check_command_size, commands_with_branch_context, git_push_rewrites, pattern_may_match,
+                          read_command, within_time_limit)
 from .registry_targets import registry_covered, registry_targets, split_command
 
 MAX_INPUT_BYTES = 1_048_576
@@ -168,21 +169,33 @@ def matched_rules(command: str, cwd: object, policy: policy_module.Policy, today
     (catpilot_guard/powershell.py): the same argv lists, from PowerShell's quoting and operators."""
     working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
     kinds = {rule.kind for rule in policy.rules}
+    check_command_size(command)
+    deadline = _deadline()  # one reading budget for both kinds; past it, ReadTimeout and the hook blocks
     pushes = []
+    # One reading of a bash command for every kind: with a protected_branch rule, the branch context's reading is also
+    # the deploy, registry and account readers' split; without one, split_command reads it once for them.
+    read = read_command(command, deadline) if shell != POWERSHELL and "protected_branch" in kinds else None
     if "protected_branch" in kinds:
         budget = BraceBudget()  # one for the whole command (destructive.BRACE_SCAN_LIMIT)
-        reader = powershell.commands_with_branch_context if shell == POWERSHELL else commands_with_branch_context
-        for argv, branch_cwd in reader(command, working_dir if branch_known else None):
+        if shell == POWERSHELL:
+            reader = powershell.commands_with_branch_context(command, working_dir if branch_known else None, deadline)
+        else:
+            reader = commands_with_branch_context(command, working_dir if branch_known else None, deadline, read)
+        for argv, branch_cwd in reader:
             if argv[0] == "git":
                 push = git_push_rewrites(argv[1:], branch_cwd, budget)
                 if push is not None:
                     pushes.append(push)
     # One split of the command for the deploy, registry and account readers: a long command is split once, not per kind.
-    splitter = powershell.split_command if shell == POWERSHELL else split_command
-    split = splitter(command) if kinds & {"deploy_host", "package_registry", "cloud_account"} else ([], [])
-    targets = deploy_targets(command, working_dir, commands=split[0]) if "deploy_host" in kinds else []
-    registries = registry_targets(command, working_dir, split=split) if "package_registry" in kinds else []
-    accounts = cloud_targets(command, working_dir, split=split) if "cloud_account" in kinds else []
+    if not kinds & {"deploy_host", "package_registry", "cloud_account"}:
+        split = ([], [])
+    elif shell == POWERSHELL:
+        split = powershell.split_command(command, deadline)
+    else:
+        split = split_command(command, deadline, read)
+    targets = deploy_targets(command, working_dir, deadline=deadline, commands=split[0]) if "deploy_host" in kinds else []
+    registries = registry_targets(command, working_dir, split=split, deadline=deadline) if "package_registry" in kinds else []
+    accounts = cloud_targets(command, working_dir, split=split, deadline=deadline) if "cloud_account" in kinds else []
     mirror = any(rewrites_every_branch for rewrites_every_branch, _ in pushes)
     names = [branch for _, pushed in pushes for branch in pushed]
     # An unknown branch (None: a variable with nothing literal before it, a bare force push with no branch checked out;
@@ -340,7 +353,13 @@ def main() -> int:
         if not isinstance(event, dict):
             raise ValueError("hook event must be an object")
         policy = load_policy(event, host, path, ok) if event.get("tool_name") in SHELL_TOOLS else None
-        result = decide(event, host, policy, ask_enabled=ask_enabled)
+        result = within_time_limit(decide, event, host, policy, ask_enabled=ask_enabled)
+    except ReadTimeout:
+        record_evidence("input_error", host=host)  # the closest event in docs/spec/EVIDENCE.md: it was not read
+        write_reason(
+            "Catpilot company-rules check could not finish reading this command in time (it is very long, or nested "
+            "deeply), so it was not allowed. Split it into shorter commands, or run it yourself in your own terminal.")
+        return 2
     except Exception:
         # Any failure to read the event blocks: an ordinary non-zero exit would let the host run the command.
         record_evidence("input_error", host=host)

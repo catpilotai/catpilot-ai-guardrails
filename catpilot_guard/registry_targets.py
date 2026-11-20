@@ -26,9 +26,9 @@ dist/*` use the tool's configured or default registry, which the hook does not r
                (`file://host/w`, `file:////host/w`); a value option last in the command, with nothing after it (xargs
                or stdin supplies the value: `xargs npm install --registry`); a docker or podman push, pull, run or
                create with no image; a runner, docker run or create with more than three options this module does not
-               know before its command or image, which may then sit after any of them. Known limit: the shared
-               splitter cuts a command at an unquoted `$(` (`docker run -v $(pwd):/app node:20 ...`), so such a run
-               has no image and is unknown, which fires the rule; quote it (`-v "$(pwd)":/app`)
+               know before its command or image, which may then sit after any of them. A command substitution is
+               read as the shared reader reads it, in its word (`docker run -v $(pwd):/app node:20 ...` runs
+               node:20), and its own command is read too
 
 What is recognized, exactly:
 
@@ -114,7 +114,7 @@ from dataclasses import dataclass
 from urllib.parse import unquote
 
 from .deploy_targets import HOST_NAME, RUNNERS, _call_string, _tool
-from .destructive import ASSIGNMENT, YARN_PNPM_VALUE_OPTIONS, _simple_commands, _skip_options
+from .destructive import ASSIGNMENT, YARN_PNPM_VALUE_OPTIONS, _deadline, _simple_commands, _skip_options
 
 REGISTRY = "registry"
 UNKNOWN = "unknown"
@@ -885,7 +885,7 @@ def command_name(word: str) -> str:
     return name[:-4] if name.endswith((".exe", ".cmd", ".bat")) else name
 
 
-def _argv_targets(argv: list, depth: int, flags: bool = True) -> list:
+def _argv_targets(argv: list, depth: int, flags: bool = True, deadline: float | None = None) -> list:
     name, args = command_name(argv[0]), list(argv[1:])
     split = runner_split(name, args) if depth < 4 else None
     if split is not None:
@@ -894,7 +894,7 @@ def _argv_targets(argv: list, depth: int, flags: bool = True) -> list:
         if unsure:
             out.append(Target(UNKNOWN))  # more unknown runner options than are read both ways
         for inner in inners:
-            out.extend(_argv_targets(inner, depth + 1))
+            out.extend(_argv_targets(inner, depth + 1, deadline=deadline))
         return out
     if name in NPM_FAMILY:
         # --registry anywhere in the arguments, a runner's own and its package's alike, read once.
@@ -904,10 +904,10 @@ def _argv_targets(argv: list, depth: int, flags: bool = True) -> list:
                 return out
             call = _call_string(args[1:] if name == "npm" else args)
             if call is not None:  # npx -c 'npm install --registry ...' runs the string as a shell command
-                return out + registry_targets(call, depth=depth + 1)
+                return out + registry_targets(call, depth=depth + 1, deadline=deadline)  # the outer deadline
             inner, inner_args = _tool([name] + args)
             if inner != name:
-                return out + _argv_targets([inner] + list(inner_args), depth + 1, flags=False)
+                return out + _argv_targets([inner] + list(inner_args), depth + 1, flags=False, deadline=deadline)
             return out
         return out + _npm_config(name, args)
     if PIP_NAME.match(name):
@@ -929,23 +929,36 @@ def _argv_targets(argv: list, depth: int, flags: bool = True) -> list:
     return []
 
 
-def split_command(command: str) -> tuple:
+def split_command(command: str, deadline: float | None = None, read: tuple | None = None) -> tuple:
     """(the simple commands, the assignments the split dropped): what registry_targets, cloud_targets and deploy_targets
-    read, so a caller with several of them splits the command once."""
-    assignments: list = []
-    return list(_simple_commands(command, assignments=assignments)), assignments
+    read, so a caller with several of them splits the command once. The split is destructive._simple_commands': the
+    commands inside compound commands, functions and substitutions, comments dropped only where bash drops them, and
+    each way a carriage return or $'...' may be read, all under one deadline (ReadTimeout, a ValueError, past it).
+    bash keeps the carriage return of a CR-LF line ending in the line's last word, where it is no part of a registry
+    or an account, so it is dropped there, as the other readings drop it. read is destructive.read_command(command),
+    when the caller has it."""
+    if read is None:
+        assignments: list = []
+        commands = list(_simple_commands(command, 0, deadline, None, assignments))
+    else:
+        commands, assignments = read[0], read[1]
+    return [[word.rstrip("\r") for word in argv] for argv in commands], [a.rstrip("\r") for a in assignments]
 
 
-def registry_targets(command: str, cwd: str | None = None, depth: int = 0, split: tuple | None = None) -> list:
+def registry_targets(command: str, cwd: str | None = None, depth: int = 0, split: tuple | None = None,
+                     deadline: float | None = None) -> list:
     """Every registry the command names, in order: each command's own, then the assignments the split dropped. cwd is
-    accepted for symmetry with deploy_targets and not used. split is split_command(command), when the caller has it."""
+    accepted for symmetry with deploy_targets and not used. split is split_command(command), when the caller has it.
+    deadline is the reading deadline of the whole command, which a runner's `-c` string is read under too."""
     targets: list = []
-    commands, assignments = split if split is not None else split_command(command)
+    deadline = _deadline(deadline)
+    commands, assignments = split if split is not None else split_command(command, deadline)
     for argv in commands:
-        targets.extend(_argv_targets(argv, depth))
+        targets.extend(_argv_targets(argv, depth, deadline=deadline))
     for assignment in assignments:
         targets.extend(_assignment_targets(assignment))
-    return [t for t in targets if t is not None]
+    # Each once: the reader may read a command more than one way (a carriage return, $'...', a wrapper option).
+    return list(dict.fromkeys(t for t in targets if t is not None))
 
 
 def _segments(path: str) -> list:

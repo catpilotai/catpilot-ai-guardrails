@@ -520,5 +520,40 @@ class VerifyProbeTests(unittest.TestCase):
                 self.assertEqual(cr.decide(bash(command), "claude-code", policy())["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
+class CompoundCommandCloudTests(unittest.TestCase):
+    """#137's compound-command and comment forms reach the cloud-account reader through split_command."""
+
+    def test_accounts_inside_compound_commands_and_after_comment_forms(self):
+        cases = {
+            "{ aws s3 ls --profile x --account-id 999999999999; }": "aws:999999999999",
+            "if true; then aws organizations describe-account --account-id 999999999999; fi": "aws:999999999999",
+            "until false; do aws sts assume-role --role-arn arn:aws:iam::999988887777:role/x --role-session-name s; done":
+                "aws:999988887777",
+            "for p in a; do gcloud run deploy svc --project other-proj-1; done": "gcp:other-proj-1",
+            "while true; do gcloud config set project personal-proj-1; break; done": "gcp:personal-proj-1",
+            "f() { gcloud config set project personal-proj-1; }; f": "gcp:personal-proj-1",
+            "case a in a) gcloud run deploy svc --project other-proj-1;; esac": "gcp:other-proj-1",
+            "! gcloud run deploy svc --project other-proj-1": "gcp:other-proj-1",
+            "if true; then AWS_ROLE_ARN=arn:aws:iam::999988887777:role/ci aws s3 ls; fi": "aws:999988887777",
+            "echo a\\ #; gcloud config set project personal-proj-1": "gcp:personal-proj-1",
+            "ls # note \\\ngcloud config set project personal-proj-1": "gcp:personal-proj-1",
+            "echo $'\\'' ; gcloud config set project personal-proj-1 ; echo \\'": "gcp:personal-proj-1",
+        }
+        for command, want in cases.items():
+            with self.subTest(command=command):
+                self.assertIn((ACCOUNT, want), targets(command))
+
+    def test_the_hook_decides_on_them(self):
+        def effect(command):
+            result = cr.decide(bash(command), "claude-code", policy())
+            return result.get("hookSpecificOutput", {}).get("permissionDecision", "none")
+
+        with mock.patch.object(cr, "record_evidence", lambda *a, **k: None):
+            self.assertEqual(effect("{ aws s3 ls --profile x --account-id 999999999999; }"), "deny")
+            self.assertEqual(effect("if true; then gcloud config set project personal-proj-1; fi"), "deny")
+            self.assertEqual(effect("if true; then gcloud config set project acme-prod-1; fi"), "none")
+            self.assertEqual(effect("gcloud config set project acme-prod-1\r\n"), "none")
+
+
 if __name__ == "__main__":
     unittest.main()

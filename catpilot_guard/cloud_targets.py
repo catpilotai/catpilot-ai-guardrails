@@ -72,7 +72,7 @@ from dataclasses import dataclass
 from urllib.parse import unquote
 
 from .deploy_targets import RUNNERS, _call_string, _tool
-from .destructive import ASSIGNMENT
+from .destructive import ASSIGNMENT, _deadline
 from .registry_targets import command_name, runner_split, split_command
 
 ACCOUNT = "account"
@@ -164,7 +164,11 @@ def _arns(text: str) -> list:
         match = ARN.match(text, start.start())
         if match is not None:
             service, region, field = match.groups()
-            if AWS_ID.fullmatch(field):
+            if AWS_ID.fullmatch(field) and ("$(" in service + region or "`" in service + region):
+                # A command substitution's output may hold colons that move the fields; the shared reader writes one
+                # as `$()` in its word, which the pattern above reads as one field.
+                out.append(Target(UNKNOWN))
+            elif AWS_ID.fullmatch(field):
                 out.append(Target(ACCOUNT, "aws:" + field))
             elif _has_variable(field) or _has_variable(service + region):
                 out.append(Target(UNKNOWN))
@@ -415,17 +419,17 @@ def _assignment_targets(assignment: str) -> list:
     return []
 
 
-def _argv_targets(argv: list, depth: int) -> list:
+def _argv_targets(argv: list, depth: int, deadline: float | None = None) -> list:
     name = command_name(argv[0])
     argv = [name] + list(argv[1:])
     if depth < 3 and (name in RUNNERS or (name == "npm" and argv[1:2] in (["exec"], ["x"]))):
         call = _call_string(argv[2:] if name == "npm" else argv[1:])
         if call is not None:  # npx -c 'aws ...' runs the string as a shell command
-            return cloud_targets(call, depth=depth + 1)
+            return cloud_targets(call, depth=depth + 1, deadline=deadline)  # under the outer deadline
     split = runner_split(name, list(argv[1:])) if depth < 4 else None
     if split is not None:  # python -m awscli, poetry|uv|pipenv run, uv tool run, uvx, bundle exec
         out = [Target(UNKNOWN)] if split[2] else []  # more unknown runner options than are read both ways
-        return out + [t for inner in split[1] for t in _argv_targets(inner, depth + 1)]
+        return out + [t for inner in split[1] for t in _argv_targets(inner, depth + 1, deadline)]
     name, args = _tool(argv)
     name = PACKAGES.get(name, name)
     out = []
@@ -449,17 +453,20 @@ def _argv_targets(argv: list, depth: int) -> list:
     return out
 
 
-def cloud_targets(command: str, cwd: str | None = None, depth: int = 0, split: tuple | None = None) -> list:
+def cloud_targets(command: str, cwd: str | None = None, depth: int = 0, split: tuple | None = None,
+                  deadline: float | None = None) -> list:
     """Every account the command names, in order: each command's own, then the assignments the split dropped. cwd is
     accepted for symmetry with deploy_targets and not used. split is registry_targets.split_command(command), when the
-    caller has it."""
+    caller has it. deadline is the reading deadline of the whole command, which a runner's `-c` string is read under."""
     targets: list = []
-    commands, assignments = split if split is not None else split_command(command)
+    deadline = _deadline(deadline)
+    commands, assignments = split if split is not None else split_command(command, deadline)
     for argv in commands:
-        targets.extend(_argv_targets(argv, depth))
+        targets.extend(_argv_targets(argv, depth, deadline))
     for assignment in assignments:
         targets.extend(_assignment_targets(assignment))
-    return [t for t in targets if t is not None]
+    # Each once: the reader may read a command more than one way (a carriage return, $'...', a wrapper option).
+    return list(dict.fromkeys(t for t in targets if t is not None))
 
 
 def account_covered(value: str, target: Target) -> bool:

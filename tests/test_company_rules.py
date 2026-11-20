@@ -216,13 +216,62 @@ class DecisionTests(unittest.TestCase):
                         "git push --force origin 'refs/heads/*:refs/heads/*'",
                         "git push origin --delete release/x", "git push origin :main", "git push --mirror origin",
                         "git push --force-with-lease origin %s/a" % BRANCH_MARKER, 'bash -lc "git push -f origin main"',
-                        "cd repo && sudo git push --force origin MAIN"):
+                        "cd repo && sudo git push --force origin MAIN",
+                        # Compound commands, and comments read as bash reads them (independent review, 2026-11-17).
+                        "if true; then git push --force origin main; fi", "{ git push -f origin release/x; }",
+                        "! git push --force origin main", "while true; do git push -f origin main; break; done",
+                        "echo a\\ #; git push --force origin main", "echo hi\r# ; git push --force origin main",
+                        "ls # note \\\ngit push --force origin main", "git push --force origin main\r\n",
+                        # Review of #137: empty words, redirections, env -S and here-strings.
+                        "git push $'' --force origin main", "2>&1 git push --force origin main",
+                        "echo $(date)#; git push --force origin main", "env -S 'git push -f origin main'",
+                        "bash <<< 'git push --force origin main'",
+                        # Review of #133: wrapper options that take a value.
+                        "env --chdir ../other git push -f origin main", "sudo -D /tmp git push --force origin main",
+                        "xargs -I {} git push --force origin main",
+                        # Review of 4944546: env -u's value, a heredoc body, and backquotes.
+                        "env -uSECRET git push --force origin main",
+                        "cat <<'EOF' > n.md\nDon't\nEOF\ngit commit -m 'fix #1' && git push --force origin main",
+                        "echo `git push --force origin main`", 'x="$(git push --force origin main)"',
+                        # A quoted operator is a word: `--repo ';'` takes it, and +main is forced.
+                        "git push --repo ';' origin +main"):
             with self.subTest(command=command):
                 self.assertEqual(effect(self.decide(command)), "deny")
 
+    def test_a_command_too_slow_to_read_raises_so_the_hook_blocks(self):
+        # Review of #137: past the reading budget, decide raises a ValueError and main() exits 2.
+        from catpilot_guard import destructive
+
+        with mock.patch.object(destructive, "READ_BUDGET_SECONDS", 0.0):
+            with self.assertRaises(ValueError):
+                self.decide("git push --force origin main")
+
+    def test_the_hook_stops_at_the_time_limit_and_refuses_a_command_too_long_to_bound(self):
+        # Review of 0d2a0ed: the company-rules hook's timer wiring and its size check.
+        import io
+        import time
+
+        from catpilot_guard import destructive
+
+        def slow_decide(*args, **kwargs):
+            time.sleep(2)
+
+        stdin = io.TextIOWrapper(io.BytesIO(json.dumps(bash("ls")).encode()))
+        stderr = io.StringIO()
+        with mock.patch.object(destructive, "HOOK_TIME_LIMIT_SECONDS", 0.2), mock.patch.object(cr, "decide", slow_decide), \
+                mock.patch("sys.stdin", stdin), mock.patch("sys.stderr", stderr), \
+                mock.patch.object(sys, "argv", ["hook", "--policy", "/nonexistent/policy.json"]):
+            self.assertEqual(cr.main(), 2)
+        self.assertIn("could not finish reading this command in time", stderr.getvalue())
+        long_command = "ls " + "x " * (destructive.MAX_COMMAND_CHARS_WITHOUT_TIMER // 2)
+        with self.assertRaises(destructive.ReadTimeout):
+            cr.matched_rules(long_command, "/tmp", parsed())
+        self.assertEqual(destructive.within_time_limit(cr.matched_rules, long_command, "/tmp", parsed()), [])
+
     def test_what_the_rule_does_not_cover_passes(self):
         for command in ("git push origin main", "git push --force origin feature/x", "git push -f origin releases/x",
-                        "ls", "", "echo git push --force origin main"):
+                        "ls", "", "echo git push --force origin main", "echo then git push --force origin main",
+                        "if true; then git push origin main; fi", "# git push --force origin main\r\nls"):
             with self.subTest(command=command):
                 self.assertEqual(self.decide(command), {})
         self.assertEqual(self.lines, [])
@@ -1011,6 +1060,59 @@ class SummaryTests(unittest.TestCase):
         markdown = evidence_summary.render_markdown(summary)
         self.assertIn("| `protected-branches` | 1 | 0 | 1 |", markdown)
         self.assertIn("| `wrong-owner` | 1 |", markdown)
+
+class HeredocInSubstitutionTests(unittest.TestCase):
+    """Review of the #137 merge: a heredoc body given to `cat` inside a substitution (the idiom for commit messages and
+    PR bodies) is text, not commands, for every kind; and a `cd` in a substitution runs in a subshell, so it does not
+    make the branch unknown. The same body given to a shell is still read. Run on a feature branch."""
+
+    ALLOWED = [
+        "gh pr create --body \"$(cat <<'EOF'\n```\ngit push --force origin main\n```\nEOF\n)\"",
+        "git commit -m \"$(cat <<EOF\nrm -rf ~\nEOF\n)\"",
+        "x=\"$(cat <<'EOF'\nrm -rf ~\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nvercel --prod\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nnpm install --registry https://evil.example x\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\naws s3 ls --account-id 999999999999\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nscp f deploy@web1.other.org:/srv\nEOF\n)\"",
+        "git commit --amend -m \"$(cat <<'EOF'\ngit checkout main is no longer needed\nEOF\n)\" && git push --force-with-lease",
+        "git commit --amend -m \"$(cat <<'EOF'\ncd foo\nEOF\n)\" && git push --force-with-lease",
+        "git commit --amend -m \"$(cat <<'EOF'\nsource the env\nEOF\n)\" && git push --force-with-lease",
+        "git commit --amend -m \"$(cat <<'EOF'\nexport GIT_DIR\nEOF\n)\" && git push --force-with-lease",
+        "git commit --amend -m \"$(cat <<'EOF'\nfunction names\nEOF\n)\" && git push --force-with-lease",
+        "ROOT=\"$(cd \"$(dirname \"$0\")\" && pwd)\"; git push --force-with-lease",
+        "git push --force-with-lease && echo \"from $(cd .. && pwd)\"",
+    ]
+    # The same bodies given to a shell, and a checkout in a substitution, which changes HEAD even from a subshell.
+    DENIED = [
+        ("x=\"$(cat <<'EOF' | bash\ngit push --force origin main\nEOF\n)\"", "protected-branches"),
+        ("x=\"$(bash <<'EOF'\ngit push --force origin main\nEOF\n)\"", "protected-branches"),
+        ("git commit -m \"$(cat <<'EOF' | sh\nvercel --prod\nEOF\n)\"", "hosts"),
+        ("git commit -m \"$(cat <<'EOF' | bash\nnpm install --registry https://evil.example x\nEOF\n)\"", "registries"),
+        ("git commit -m \"$(sh <<'EOF'\naws s3 ls --account-id 999999999999\nEOF\n)\"", "accounts"),
+        ("git commit -m \"$(cat <<'EOF' | bash\nscp f deploy@web1.other.org:/srv\nEOF\n)\"", "hosts"),
+        ("git commit --amend -m \"$(bash <<'EOF'\ngit checkout main\nEOF\n)\" && git push --force-with-lease",
+         "protected-branches"),
+        ("x=\"$(cat <<EOF\n$(vercel --prod)\nEOF\n)\"", "hosts"),  # an unquoted body's substitution runs
+        ("echo $(git switch main) && git push -f", "protected-branches"),
+        ("cd ../m && git push --force-with-lease", "protected-branches"),
+    ]
+
+    def test_bodies_given_to_cat_are_text_and_to_a_shell_are_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").mkdir()
+            (Path(tmp) / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
+            policy = parsed([branch_rule(values=("main",)),
+                             {"id": "hosts", "kind": "deploy_host", "mode": "block", "values": ["*.example.org"]},
+                             {"id": "registries", "kind": "package_registry", "mode": "block", "values": ["npm.example.org"]},
+                             {"id": "accounts", "kind": "cloud_account", "mode": "block", "values": ["aws:111122223333"]}])
+            fired = lambda command: [r.id for r, excepted_by in cr.matched_rules(command, tmp, policy) if not excepted_by]
+            for command in self.ALLOWED:
+                with self.subTest(command=command):
+                    self.assertEqual(fired(command), [])
+            for command, rule in self.DENIED:
+                with self.subTest(command=command):
+                    self.assertIn(rule, fired(command))
+
 
 if __name__ == "__main__":
     unittest.main()

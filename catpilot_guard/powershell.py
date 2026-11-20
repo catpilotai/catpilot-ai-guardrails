@@ -46,6 +46,7 @@ import binascii
 import ntpath
 import os
 import re
+import time
 
 from .destructive import (
     CONFIGURED_BY_ENVIRONMENT,
@@ -53,6 +54,8 @@ from .destructive import (
     GIT_ENVIRONMENT_ASSIGNMENT,
     RM_DANGEROUS_TARGET,
     SHELLS,
+    ReadTimeout,
+    _deadline,
     _changes_branch,
     _config_setting,
     _running_users_home_target,
@@ -415,6 +418,8 @@ def decode_encoded(value: str) -> str | None:
         if len(raw) % 2:
             return None
         return raw.decode("utf-16-le")
+    except ReadTimeout:
+        raise  # the hook's timer (a ValueError): never read as a value that does not decode
     except (binascii.Error, ValueError, UnicodeDecodeError):
         return None
 
@@ -464,7 +469,7 @@ def cmd_script(args: list) -> str | None:
 CMD_INTERNAL = {"rd", "rmdir", "del", "erase", "dir", "copy", "move", "type", "cd", "chdir", "md", "mkdir"}
 
 
-def _cmd_commands(text: str, depth: int, assignments: list | None):
+def _cmd_commands(text: str, depth: int, assignments: list | None, deadline: float | None = None):
     """Each simple command of a cmd command line: split on &, &&, ||, | and newlines outside double quotes, with ^
     escapes; `set NAME=value` is passed on as an assignment."""
     commands, words, word, started, i, n, quoted = [], [], [], False, 0, len(text), False
@@ -534,7 +539,7 @@ def _cmd_commands(text: str, depth: int, assignments: list | None):
             if assignments is not None:
                 assignments.append(" ".join(argv[1:]).strip('"'))
             continue
-        yield from _expand(argv, depth, assignments, cmd=True)
+        yield from _expand(argv, depth, assignments, cmd=True, deadline=deadline)
 
 
 ASSIGNMENT_STATEMENT = re.compile(r"^(\$(?:\{[^}]*\}|[\w]+(?::[\w()]+)?))(=|\+=|-=|\*=|/=|%=|\?\?=)(.*)$", re.DOTALL)
@@ -547,10 +552,12 @@ def _environment_name(variable: str) -> str | None:
     return (match.group(1) or match.group(2)) if match else None
 
 
-def _expand(argv: list, depth: int, assignments: list | None, cmd: bool = False):
-    """The simple commands one argv runs: itself, or what it unwraps to."""
+def _expand(argv: list, depth: int, assignments: list | None, cmd: bool = False, deadline: float | None = None):
+    """The simple commands one argv runs: itself, or what it unwraps to. Raises ReadTimeout past the deadline."""
     if not argv:
         return
+    if deadline is not None and time.monotonic() >= deadline:
+        raise ReadTimeout("the command took too long to read")
     first = argv[0]
     statement = ASSIGNMENT_STATEMENT.match(first) if first.startswith("$") else None
     if statement or (first.startswith("$") and len(argv) > 1 and argv[1] in ASSIGNMENT_OPERATORS):
@@ -563,11 +570,15 @@ def _expand(argv: list, depth: int, assignments: list | None, cmd: bool = False)
             value = rest[0] if len(rest) == 1 and getattr(rest[0], "literal", True) else "$(...)"
             assignments.append("%s=%s" % (name, value))
         if rest and getattr(rest[0], "bare", True):  # a bare word runs a command; a quoted one is a value
-            yield from _expand(rest, depth, assignments)
+            yield from _expand(rest, depth, assignments, deadline=deadline)
         return
-    argv = _strip_wrappers(list(argv), assignments)
-    if not argv:
-        return
+    # sudo, env, timeout and the other wrappers, with their options as destructive._strip_wrappers reads them: an
+    # option it does not know gives two readings, and each is read.
+    for stripped in _strip_wrappers(list(argv), deadline, assignments):
+        yield from _expand_command(stripped, depth, assignments, cmd, deadline)
+
+
+def _expand_command(argv: list, depth: int, assignments: list | None, cmd: bool, deadline: float | None):
     word = argv[0]
     name = _command_name(word) if getattr(word, "literal", True) else word
     args = argv[1:]
@@ -579,22 +590,22 @@ def _expand(argv: list, depth: int, assignments: list | None, cmd: bool = False)
             if values and all(getattr(v, "literal", True) for v in values):
                 script = " ".join(values)
             if script is not None:
-                yield from simple_commands(script, depth + 1, assignments)
+                yield from simple_commands(script, depth + 1, assignments, deadline)
                 return
         elif name in POWERSHELLS:
             script = powershell_script(name, args)
             if script is not None:
-                yield from simple_commands(script, depth + 1, assignments)
+                yield from simple_commands(script, depth + 1, assignments, deadline)
                 return
         elif name == "cmd":
             script = cmd_script(args)
             if script is not None:
-                yield from _cmd_commands(script, depth + 1, assignments)
+                yield from _cmd_commands(script, depth + 1, assignments, deadline)
                 return
         elif name in SHELLS:
             script = _shell_command_string(args)
-            if script is not None:
-                yield from _simple_commands(script, depth + 1, assignments)
+            if script is not None:  # a bash script inside: bash's reader, under the same deadline
+                yield from _simple_commands(script, depth + 1, deadline, None, assignments)
                 return
         elif name in START_PROCESS and not cmd:
             given = Parameters(args, ("loaduserprofile", "nonewwindow", "passthru", "wait", "usenewenvironment"),
@@ -606,7 +617,7 @@ def _expand(argv: list, depth: int, assignments: list | None, cmd: bool = False)
             if files and getattr(files[0], "literal", True):
                 inner = [files[0]] + [_word(a, all(getattr(x, "literal", True) for x in arguments), True)
                                       for a in windows_split(" ".join(arguments))]
-                yield from _expand(inner, depth + 1, assignments)
+                yield from _expand(inner, depth + 1, assignments, deadline=deadline)
                 return
     yield [_word(name, getattr(word, "literal", True), True)] + list(args)
 
@@ -697,27 +708,30 @@ def _feed_removals(pipeline: list) -> list:
     return out
 
 
-def _flatten(text: str, depth: int, assignments: list | None, nesting: int = 0):
+def _flatten(text: str, depth: int, assignments: list | None, nesting: int = 0, deadline: float | None = None):
     nested: list = []
+    if deadline is not None and time.monotonic() >= deadline:
+        raise ReadTimeout("the command took too long to read")
     for pipeline in _raw_pipelines(text, nested):
         for argv in _feed_removals(pipeline):
-            yield from _expand(argv, depth, assignments)
+            yield from _expand(argv, depth, assignments, deadline=deadline)
     if nesting < MAX_NESTING:
         for inner in nested:
-            yield from _flatten(inner, depth, assignments, nesting + 1)
+            yield from _flatten(inner, depth, assignments, nesting + 1, deadline)
 
 
-def simple_commands(command: str, depth: int = 0, assignments: list | None = None):
+def simple_commands(command: str, depth: int = 0, assignments: list | None = None, deadline: float | None = None):
     """Yield the argv list of each simple command a PowerShell command line runs, unwrapped as the module docstring
     says; the command name is its last path component, lowercase, without .exe. When `assignments` is a list, each
-    assignment to $env:NAME (and cmd's `set NAME=value`) is appended to it as NAME=value."""
-    yield from _flatten(command, depth, assignments)
+    assignment to $env:NAME (and cmd's `set NAME=value`) is appended to it as NAME=value. Raises ReadTimeout (a
+    ValueError) past the deadline, READ_BUDGET_SECONDS from the first call by default."""
+    yield from _flatten(command, depth, assignments, 0, _deadline(deadline))
 
 
-def split_command(command: str) -> tuple:
+def split_command(command: str, deadline: float | None = None) -> tuple:
     """(the simple commands, the assignments): what registry_targets, cloud_targets and deploy_targets read."""
     assignments: list = []
-    return list(simple_commands(command, assignments=assignments)), assignments
+    return list(simple_commands(command, assignments=assignments, deadline=deadline)), assignments
 
 
 DEFINES_COMMANDS = re.compile(r"(?i)(?:^|[\s;{(|&])(?:function|filter)\s|\b(?:set-alias|new-alias|sal|nal)\b")
@@ -725,14 +739,14 @@ LOCATION_COMMANDS = {"set-location", "sl", "cd", "chdir", "push-location", "push
                      "invoke-expression", "iex", "invoke-item", "ii"}
 
 
-def commands_with_branch_context(command: str, cwd: str | None):
+def commands_with_branch_context(command: str, cwd: str | None, deadline: float | None = None):
     """destructive.commands_with_branch_context for a PowerShell command line: each simple command, with the directory
     to read the checked-out branch from, None once it may have changed (Set-Location and its aliases, git checkout,
     git switch and the others destructive._changes_branch names, an iex it could not read), and None for the whole
     line when it defines a function or an alias, or assigns $env:GIT_DIR, GIT_WORK_TREE or GIT_COMMON_DIR. A harmful
     $env:GIT_CONFIG_* yields CONFIGURED_BY_ENVIRONMENT, as in bash."""
     assignments: list = []
-    commands = list(simple_commands(command, assignments=assignments))
+    commands = list(simple_commands(command, assignments=assignments, deadline=deadline))
     branch_cwd = cwd
     for assignment in assignments:
         name, _, value = assignment.partition("=")

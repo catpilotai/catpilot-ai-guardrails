@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -233,6 +234,193 @@ DENIED = {
     "terraform chdir apply double dash": "terraform -chdir=envs/prod apply --auto-approve",
     "tofu destroy": "tofu destroy -auto-approve",
     "tofu chdir apply": "tofu -chdir=infra apply -auto-approve",
+    # Compound commands: the command after a leading reserved word is read (independent review, 2026-11-17).
+    "force push after then": "if true; then git push --force origin main; fi",
+    "force push in a for loop over a variable": "for b in main; do git push -f origin $b; done",
+    "force push in a brace group": "{ git push --force origin main; }",
+    "force push after !": "! git push --force origin main",
+    "rm in an until loop": "until false; do rm -rf ~; done",
+    "rm in a while loop": "while true; do rm -rf ~; break; done",
+    "force push as an if condition": "if git push --force origin main; then echo ok; fi",
+    "rm after elif": "if false; then :; elif true; then rm -rf ~; fi",
+    "rm after else": "if false; then :; else rm -rf ~; fi",
+    "force push in a case branch": "case x in x) git push --force origin main;; esac",
+    "rm in a multi-line case branch": "case $1 in\n  go)\n    rm -rf ~\n    ;;\nesac",
+    "rm in a function body": "f() { rm -rf ~; }; f",
+    "rm in a function keyword body": "function f { rm -rf ~; }; f",
+    "force push behind coproc": "coproc git push --force origin main",
+    "rm in a named coproc group": "coproc N { rm -rf ~; }",
+    "rm in a timed group": "time -p { rm -rf ~; }",
+    "force push in a subshell": "( git push --force origin main )",
+    "force push to a quoted variable branch": 'git push --force origin "$BRANCH"',
+    "delete a variable branch": "git push origin --delete $OLD",
+    # A comment starts where bash starts one, and ends at the end of its line (independent review, 2026-11-17).
+    "force push after an escaped space and hash": "echo a\\ #; git push --force origin main",
+    "force push after an escaped paren and hash": "echo a\\(#; git push --force origin main",
+    "force push after an escaped semicolon and hash": "echo a\\;#; git push --force origin main",
+    "force push after a carriage return and hash": "echo hi\r# ; git push --force origin main",
+    "rm after a comment ending in a backslash": "ls # note \\\nrm -rf ~",
+    "rm after an ANSI-C string with an escaped quote": "echo $'\\'' ; rm -rf ~ ; echo \\'",
+    "rm of / in an ANSI-C string": "rm -rf $'/'",
+    "rm after an ANSI-C string as dash reads it": "echo $'\\'\nrm -rf ~\necho '",
+    # A carriage return, read the ways a shell may read one.
+    "force push with a CRLF line ending": "git push --force origin main\r\n",
+    "rm with CRLF line endings": "cd /tmp\r\nrm -rf ~\r\n",
+    "rm after a carriage return alone": "echo ok\rrm -rf ~",
+    # Review of #137: an empty word is an argument, not a command separator.
+    "rm with an empty ANSI-C word before home": "rm -rf $'' ~",
+    "force push with an empty ANSI-C word before the options": "git push $'' --force origin main",
+    "rm with an empty ANSI-C word before its options": "rm $'' -rf ~",
+    "delete with an empty ANSI-C word": "git push origin $'' --delete main",
+    "rm with an empty quoted word": "rm -rf '' ~",
+    "rm after an empty command name": "'' rm -rf ~",
+    # Review of #137: no comment after the ) that ends a substitution, or inside backquotes, ${ } or arithmetic.
+    "force push after a command substitution and hash": "echo $(date)#; git push --force origin main",
+    "rm after an arithmetic expansion and hash": "echo $((1+1))#; rm -rf ~",
+    "rm after a process substitution and hash": "cat <(ls)#; rm -rf ~",
+    "force push after a hash inside backquotes": "echo `echo a #b`; git push --force origin main",
+    "force push after a hash inside a parameter expansion": "echo ${x:-a #b}; git push --force origin main",
+    "force push after a hash inside a quoted command substitution": 'echo "$(echo "a #b")"; git push --force origin main',
+    "rm after a hash in an arithmetic command": "(( 1 #x )); rm -rf ~",
+    "rm after $, a line continuation and an ANSI-C string": "echo $\\\n'\\'' ; rm -rf ~ ; echo \\'",
+    # Review of #137: redirections are not the command, and < and > end a word.
+    "rm after a leading redirection": ">/dev/null rm -rf ~",
+    "force push after a leading 2>&1": "2>&1 git push --force origin main",
+    "rm after then and a redirection": "then >log rm -rf ~",
+    "rm after a spaced leading redirection": "> log rm -rf ~",
+    "rm of home with a redirection attached": "rm -rf ~>/dev/null",
+    "force push to main with a redirection attached": "git push --force origin main>/dev/null",
+    "rm of home before &>": "rm -rf ~&>/dev/null",
+    # Review of #137: zsh precommands, env -S and here-strings to a shell.
+    "rm behind noglob": "noglob rm -rf ~",
+    "force push behind nocorrect": "nocorrect git push -f origin main",
+    "rm behind repeat": "repeat 3 rm -rf ~",
+    "force push in an env -S string": "env -S 'git push -f origin main'",
+    "rm in an env --split-string": "env --split-string='rm -rf ~'",
+    "rm in an attached env -S string": "env -S'rm -rf ~'",
+    "rm in a here-string to bash": "bash <<< 'rm -rf ~'",
+    "force push in a here-string to sh -s": "sh -s <<<'git push --force origin main'",
+    # Review of #133: a wrapper option that takes a value is not the command (real git pushed main for these).
+    "force push behind env --chdir": "env --chdir ../other git push -f origin main",
+    "force push behind an env cluster ending in C": "env -iC ../other git push -f origin main",
+    "force push behind an attached env -C": "env -CDIR git push -f origin main",
+    "force push behind an attached env -u": "env -uFOO git push -f origin main",
+    "force push in an env -iS string": "env -iS 'git push -f origin main'",
+    "rm in an env -vS string": "env -vS 'rm -rf ~'",
+    "force push behind sudo -D": "sudo -D /tmp git push --force origin main",
+    "force push behind sudo -h host": "sudo -h host git push --force origin main",
+    "force push behind sudo -p": "sudo -p prompt git push --force origin main",
+    "rm behind sudo -g": "sudo -g wheel rm -rf ~",
+    "rm behind sudo -U and -u": "sudo -U bob -u root rm -rf ~",
+    "rm behind sudo -C, -T, -r and -t": "sudo -C 3 -T 10 -r role -t type rm -rf ~",
+    "force push behind sudo --chdir": "sudo --chdir /tmp git push -f origin main",
+    "rm behind a sudo cluster ending in u": "sudo -iu root rm -rf ~",
+    "force push behind xargs -I": "xargs -I {} git push --force origin main",
+    "force push behind xargs -L": "xargs -L 1 git push --force origin main",
+    "rm behind xargs -n, -P, -s, -d, -E and -a": "xargs -n 1 -P 4 -s 100 -d , -E END -a list.txt rm -rf ~",
+    "branch deletions xargs reads from its input": "git branch --merged | xargs -I {} git push origin --delete {}",
+    "branch deletions xargs appends": "git branch --merged | xargs git push origin --delete",
+    "force push behind nice --adjustment": "nice --adjustment 5 git push -f origin main",
+    "rm behind nice --adjustment=": "nice --adjustment=5 rm -rf ~",
+    "rm behind old-style nice": "nice -5 rm -rf ~",
+    "rm behind doas -u": "doas -u root rm -rf ~",
+    "rm behind time -o": "time -o out.txt rm -rf ~",
+    "rm behind caffeinate -t": "caffeinate -t 60 rm -rf ~",
+    # Review of #133: each wrapper's own flags, not one list for all (sudo -n and caffeinate -u take no value).
+    "force push behind sudo -n": "sudo -n git push --force origin main",
+    "rm behind caffeinate -u": "caffeinate -u rm -rf ~",
+    "force push behind a cluster of sudo flags": "sudo -nEHPSb git push -f origin main",
+    # An option a wrapper's table does not know is read both as taking the next word and as taking none.
+    "force push behind an unknown sudo option with a value": "sudo --frobnicate x git push -f origin main",
+    "force push behind an unknown sudo option without one": "sudo --frobnicate git push -f origin main",
+    "rm behind an unknown short sudo option": "sudo -Z x rm -rf ~",
+    # Review of #135: the assignments sudo and env take, and env's options with values.
+    "rm behind a sudo assignment with a dash in its name": "sudo 'A-B=x/y' rm -rf /",
+    "rm behind sudo assignments after its options": "sudo -u root A=1 B=2 rm -rf ~",
+    "rm behind an env assignment with an empty name": "env =x rm -rf /",
+    "rm behind env --chdir /": "env --chdir / rm -rf ~",
+    "rm behind env --unset": "env --unset X rm -rf ~",
+    "rm behind BSD env -P": "env -P /bin rm -rf ~",
+    "rm behind env -- and an assignment": "env -- A-B=1 rm -rf ~",
+    "rm in an env -S string": "env -S 'rm -rf ~'",
+    # Review of 4944546: env's -u, -C and -P take the rest of their cluster, which may hold an S.
+    "rm behind env -u with an S in the name": "env -uSSH_AUTH_SOCK rm -rf ~",
+    "force push behind env -u with an S in the name": "env -uSECRET git push --force origin main",
+    "rm behind sudo env -u": "sudo env -uSUDO_USER rm -rf ~",
+    "rm behind env -C with an S in the path": "env -C/Users/me/Src rm -rf ~",
+    "rm behind env -iP with an S in the path": "env -iP/usr/Sbin rm -rf ~",
+    # Review of 4944546: a heredoc body is literal; its apostrophe cannot hide the commands after it.
+    "force push after a heredoc body with an apostrophe": (
+        "cat <<'EOF' > notes.md\nDon't do this\nEOF\ngit commit -m 'fix #123' && git push --force origin main"),
+    "force push after a heredoc body with an apostrophe, and a quote in a comment": (
+        "cat <<EOF\nit's\nEOF\ngit push --force origin main\n# '"),
+    "rm after a case inside a command substitution and hash": "echo $(case x in x) echo y;; esac)#; rm -rf ~",
+    "rm after a redirection inside a command substitution": "echo $(2>/dev/null rm -rf ~)",
+    "rm in a here-string after a clustered -o value": "bash -euo pipefail <<< 'rm -rf ~'",
+    "rm in bash -c after a redirection": "bash 2>&1 -c 'rm -rf ~'",
+    "rm in bash -c after an attached redirection": "bash >/dev/null -c 'rm -rf ~'",
+    "rm in sh -c after a here-string": "sh <<< 'x' -c 'rm -rf ~'",
+    "rm after &> as dash reads it": 'sh -c "echo A &>/dev/null rm -rf ~"',
+    "rm after a hash inside a quoted command substitution": '"$(echo #x)"; rm -rf ~',
+    "rm in backquotes": "echo `rm -rf ~`",
+    "rm by zsh's =rm": "=rm -rf ~",
+    "rm of home after an empty command substitution": "rm -rf $(echo) ~",
+    "rm of home after a backquoted command": "rm -rf `echo` ~",
+    "rm of home after a process substitution": "rm -rf >(cat) ~",
+    "rm after a command substitution as the command name": "$(echo) rm -rf ~",
+    "rm after a variable as the command name": "$EMPTY rm -rf ~",
+    "rm after a backquoted command as the command name": "x=1 | `echo` rm -rf < x ~",
+    "rm after a command substitution at the start of the command name": "1>&- $(echo)rm -rf ~",
+    "force push in a quoted command substitution": 'x="$(git push --force origin main)"',
+    # Review of 0d2a0ed: a case inside $( ) does not leave later comments as text, whose quotes hid what followed.
+    "force push after a case in a substitution and comments with apostrophes": (
+        "x=$(case \"$1\" in\n  a) echo a;;\n  *) echo b;;\nesac)\n# don't touch\ngit push --force origin main\n# it's done"),
+    "rm after a case in a substitution and comments with apostrophes": (
+        "x=$(case a in (a) echo;; esac)\n# don't\nrm -rf ~\n# it's"),
+    "rm after a substitution that mentions case": "echo $(echo case x in y)#; rm -rf ~",
+    "force push after a comment with an apostrophe in backquotes": "x=`echo hi # don't`; git push --force origin main",
+    "force push in an arithmetic-looking substitution": "x=$((echo a); git push --force origin main)",
+    "recursive aws s3 rm after one with --dryrun": "aws s3 rm a --recursive --dryrun; aws s3 rm b --recursive",
+    "force push in backquotes in double quotes": 'x="`git push -f origin main`"',
+    "rm in a here-string to bash -s with an argument": "bash -s x <<< 'rm -rf ~'",
+    "delete of main after a {fd} word, as dash reads it": "git push {fd}>xorigin --delete main",
+    "rm of home after an arithmetic expansion": "rm -rf $((0)) ~",
+    "rm with its options after a backquoted command": "rm `echo`-rf ~",
+    "rm after a nested parameter expansion as the command name": "${X:-${Y}} rm -rf ~",
+    "rm after a special parameter as the command name": "true; $! rm -rf ~",
+    # Review of f571ec5: backquotes end at the first unescaped backquote, whatever lies between.
+    "rm after an escaped backquote in a comment in backquotes": "echo `echo # \\` #` ; rm -rf ~",
+    "rm after a comment in a substitution in backquotes": "echo `echo $(echo # x`; rm -rf ~",
+    "rm after backquotes holding an unbalanced single quote": "x=`echo '`\n# \"quoted\nrm -rf ~ # #\"\necho \"x\"",
+    "force push between backquotes holding unbalanced quotes": "echo `echo '`; git push --force origin main; echo `echo '`",
+    "rm after backquotes holding an unbalanced double quote": "x=`echo \"` # don't\nrm -rf ~ # # a ` b\necho 'x'",
+    # Review of f571ec5: `esac` ends a case only as the first word of a pattern list or of a command in a branch.
+    "force push after esac as a pattern": 'echo "$(case a in (a|esac) git push --force origin main;; esac)"',
+    "rm after esac right after in": "echo $(case a in esac)#; rm -rf ~",
+    "force push after esac as a second pattern": 'echo "$(case a in a|esac) git push --force origin main;; esac)"',
+    "rm after a case with a pattern paren in a substitution": "echo $(case a in (a) echo;; esac)#; rm -rf ~",
+    "rm after a case with two branches in a substitution": "echo $(case a in a) echo;; b) echo;; esac)#; rm -rf ~",
+    "rm after if case in a substitution": "echo $(if case a in a) true;; esac; then echo; fi)#; rm -rf ~",
+    "rm after ! case in a substitution": "echo $(! case a in a) true;; esac)#; rm -rf ~",
+    "rm after an assignment before esac in a branch": "x=$(case a in a) x=1 esac;; b) echo;; esac)#; rm -rf ~",
+    "rm after a function whose body is a case": "x=$(f() case a in a) echo;; esac; f)#; rm -rf ~",
+    "rm after a function keyword whose body is a case": "x=$(function f() case a in a) echo;; esac; f)#; rm -rf ~",
+    "rm after time -p case": "x=$(time -p case a in a) echo;; esac)#; rm -rf ~",
+    "rm after case split by a line continuation": "echo $(ca\\\nse a in a) echo;; esac)#; rm -rf ~",
+    # Review of f571ec5: a comment in "$( )", read both as bash 3.2 (text) and as bash 4 and later (a comment).
+    "force push after a comment with an apostrophe in a quoted substitution": (
+        "x=\"$(: # it's\n)\"; git push --force origin main; echo \"')\""),
+    # Review of f571ec5: a shell option after an expansion (`$(echo)-c` is -c).
+    "rm in bash -c after a command substitution": "bash $(echo)-c 'rm -rf ~'",
+    "rm in sh -c after a parameter expansion": "sh ${X}-c 'rm -rf ~'",
+    "rm in bash -c after a backquoted command": "bash `echo`-c 'rm -rf ~'",
+    # Review of #133 (on main too): a quoted or escaped operator is a word, not a command separator.
+    "rm of home after a quoted semicolon": "rm -rf ';' ~",
+    "rm of home after an escaped semicolon": "rm -rf \\; ~",
+    "rm of root after a quoted pipe": 'rm -rf "|" /',
+    "rm of home after a quoted &&": "rm -rf '&&' ~",
+    "rm of root after an escaped pipe": "rm -rf \\| /",
+    "force update of main after a quoted semicolon as the repo": "git push --repo ';' origin +main",
 }
 
 ALLOWED = {
@@ -321,6 +509,63 @@ ALLOWED = {
     "terraform chdir plan": "terraform -chdir=infra plan -out=tfplan",
     "tofu apply plan file": "tofu -chdir=infra apply tfplan",
     "terraform chdir auto-approve false": "terraform -chdir=infra apply -auto-approve=false",
+    # Ordinary compound commands, and reserved words that are arguments (2026-11-17).
+    "if test then echo": "if [ -f x ]; then echo ok; fi",
+    "for loop over files": 'for f in *.txt; do wc -l "$f"; done',
+    "while read loop": 'while read -r line; do echo "$line"; done < input.txt',
+    "case with npm scripts": 'case "$1" in start) npm start;; stop) npm stop;; esac',
+    "brace group redirected": "{ echo a; echo b; } > out.txt",
+    "negated grep": "! grep -q foo file && echo missing",
+    "function definition and call": "f() { echo hi; }; f",
+    "function keyword build": "function build { npm run build; }; build",
+    "reserved words as arguments": "echo then do rm -rf ~",
+    "for loop words are not a command": "for d in ~ /; do echo $d; done",
+    "commit message with reserved words": 'git commit -m "if then else: do it"',
+    "force push a feature branch in a loop": "for b in feature-x; do git push -f origin feature-x; done",
+    "push a variable branch without force": 'git push origin "$BRANCH"',
+    "an escaped hash in a word, then a comment": "echo a\\ #b && ls # rm -rf ~",
+    "a single-quoted backslash-newline": "echo 'a\\\nrm -rf ~'",
+    "a comment line with CRLF line endings": "# rm -rf ~\r\nls\r\n",
+    "a feature force push with a CRLF line ending": "git push --force origin feature-x\r\n",
+    # Review of #137: comments after a space, redirections, and here-strings a script reads.
+    "a comment after a command substitution": "echo $(date) # rm -rf ~",
+    "a comment after an arithmetic command": "(( i++ )) # rm -rf ~",
+    "output and errors redirected": "make >/dev/null 2>&1",
+    "errors piped to tail": "npm test 2>&1 | tail -5",
+    "a feature force push with errors redirected": "git push --force origin feature-x 2>&1",
+    "a quoted redirection character": "echo '>' ok",
+    "process substitutions": "diff <(ls a) <(ls b)",
+    "a here-string given to a script": "bash script.sh <<< 'rm -rf ~'",
+    "env with an assignment": "env FOO=1 npm test",
+    "noglob ls": "noglob ls *.txt",
+    "a heredoc into a file": "cat <<EOF > notes.txt\nhello\nEOF",
+    # Review of #133: wrappers with options around routine work.
+    "xargs -I echo": "xargs -I {} echo {}",
+    "sudo -u ls": "sudo -u bob ls",
+    "nice -n make": "nice -n 5 make",
+    "old-style nice make": "nice -10 make -j4",
+    "xargs rm -rf of found directories": "find . -name node_modules -prune | xargs rm -rf",
+    "xargs -I rm -f of found files": "find . -name '*.tmp' | xargs -I {} rm -f {}",
+    "xargs pushes without force": "git branch | xargs -I {} git push origin {}",
+    "local branch deletions through xargs": "git branch --merged | grep -v main | xargs git branch -d",
+    "env -i with an assignment": "env -i PATH=/bin ls",
+    "sudo -E npm": "sudo -E npm install -g pnpm",
+    # Review of 4944546: a Markdown bullet in a heredoc body is not a wrapped command.
+    "a Markdown list written by a heredoc": "cat > NOTES.md <<'EOF'\n- dropdb is no longer called\nEOF",
+    "a feature force push with output redirected after a blank": "git push --force origin feature-x > /dev/null 2>&1",
+    # Review of 0d2a0ed: comments with apostrophes after a case are still comments.
+    "a case with a comment": "case \"$1\" in start) npm start;; esac # don't",
+    "a case in a substitution, then a comment": "x=$(case a in a) echo;; esac) # it's fine\nls",
+    "the word case as an argument": "echo case in; ls # don't",
+    # Review of f571ec5: a path that starts with an expansion is not read without it.
+    "rm of a directory under a braced variable": 'rm -rf "${BUILD_DIR}/lib"',
+    "rm of two directories under a variable": "rm -rf ${VENV}/bin ${VENV}/lib",
+    "rm of a directory under the working directory": 'rm -rf "$(pwd)/bin"',
+    "rm of a new temporary directory": 'rm -rf "$(mktemp -d)/"',
+    "rm of a directory under a defaulted prefix": 'rm -rf "${PREFIX:-/opt/x}/lib"',
+    "a quoted semicolon echoed": "echo ';'",
+    "a quoted pipe printed": "printf '%s\\n' '|'",
+    "find -exec ending in an escaped semicolon": "find . -name '*.pyc' -exec rm {} \\;",
 }
 
 
@@ -380,6 +625,277 @@ class DestructiveHookTests(unittest.TestCase):
                         continue  # not a complete command once wrapped
                     with self.subTest(form=form, label=label):
                         self.assertIsNone(hook.find_destructive_op(wrap(command), not_a_repo))
+
+    def test_compound_commands_comments_and_carriage_returns_split_as_bash_does(self):
+        from catpilot_guard.destructive import _simple_commands
+
+        cases = {
+            # A leading reserved word is dropped, and a closing one leaves nothing; the same word as an argument stays.
+            "if true; then echo then; fi": [["true"], ["echo", "then"]],
+            "for x in do done; do ls; done": [["for", "x", "in", "do", "done"], ["ls"]],
+            "! { ls; }": [["ls"]],
+            "coproc N { ls; }": [["ls"]],
+            "coproc cat file": [["cat", "file"]],
+            "function f { ls; }": [["ls"]],
+            "f() { ls; }": [["f"], ["ls"]],
+            "case $x in a) ls;; esac": [["case", "$x", "in", "a"], ["ls"]],
+            # A `#` after an escaped character or a carriage return is part of its word, as in bash, and a comment
+            # ends at the end of its line even when it ends in a backslash.
+            "echo a\\ #b": [["echo", "a #b"]],
+            "ls # x \\\nwc": [["ls"], ["wc"]],
+            "IFS=$'\\n' read -r a # x": [["read", "-r", "a"]],
+            "echo $$'x'": [["echo", "$$x"]],
+            # $'...' holding \' is read as bash does, then as dash does (a plain single-quoted string after `$`).
+            "echo $'\\'' ; ls ; echo \\'": [["echo", "'"], ["ls"], ["echo", "'"], ["echo", "$\\ ; ls ; echo \\"]],
+            # A carriage return: bash's reading first, then a CR-LF line ending read as a line feed, a CR read as a
+            # line break, and a CR read as a blank; a simple command a later reading repeats comes once.
+            # An empty word is an argument; redirections are not part of the command.
+            "rm -rf $'' ~": [["rm", "-rf", "", "~"]],
+            "rm -rf ';' \\| ~": [["rm", "-rf", ";", "|", "~"]],  # quoted and escaped operators are words
+            ">/dev/null 2>&1 ls -l >out 2> err": [["ls", "-l"]],  # a target after a blank joins its operator
+            "ls -l>out": [["ls", "-l"]],
+            "env -i -S 'git push -f' origin main": [["git", "push", "-f", "origin", "main"]],
+            "noglob repeat 2 ls": [["ls"]],
+            "- rm -rf ~": [["-", "rm", "-rf", "~"]],  # zsh's - is no wrapper: Markdown bullets in heredoc bodies
+            # Wrapper options with values, xargs's input, and an unknown option read both ways.
+            "sudo -iu root -D /tmp ls": [["ls"]],
+            "env -iC dir -uX --chdir=d ls": [["ls"]],
+            "xargs -I {} cp {} out/": [["cp", "`xargs input`", "out/"]],
+            "xargs -0 ls": [["ls", "`xargs input`"]],
+            "sudo --frob x ls": [["x", "ls"], ["ls"]],  # as a flag, then as taking x
+            "sudo 'A-B=x/y' ls": [["ls"]],  # sudo's is_envar: `=`, and no leading /
+            "sudo -- A-B=x ls": [["A-B=x", "ls"]],  # ...but not after --
+            "env =x -=y ls": [["ls"]],  # GNU env: any word with `=`
+            "xargs sudo -u root rm -rf": [["rm", "-rf", "`xargs input`"]],
+            "bash <<< 'ls -l'": [["ls", "-l"]],
+            "bash run.sh <<< 'ls'": [["bash", "run.sh"]],
+            # Review of 4944546: the `&>` that bash joins and dash splits, heredoc bodies, and redirections before a
+            # shell's options.
+            "ls &> out rm": [["ls", "rm"], ["ls"], ["rm"]],
+            "cat <<'EOF' > n.md\nDon't\nEOF\nls 'a #b'": [["cat"], ["Don't"], ["ls", "a #b"]],
+            "cat <<EOF\nit's $(id)\nEOF\nls": [["cat"], ["it's", "$()"], ["ls"], ["id"]],
+            "cat <<-EOF\n\tbody\n\tEOF\nls": [["cat"], ["body"], ["ls"]],
+            "bash 2>&1 -c 'ls -l'": [["ls", "-l"]],
+            "echo $(2>/dev/null ls)": [["echo", "$()"], ["ls"]],
+            # Review of 4944546: a substitution keeps its word in place (rm -rf $(echo) ~ removes ~), and its command
+            # is read, also in double quotes.
+            "rm -rf $(echo) ~": [["rm", "-rf", "$()", "~"], ["echo"]],
+            "rm -rf `echo` >(cat) ~": [["rm", "-rf", "$()", ">()", "~"], ["echo"], ["cat"]],
+            'URL="$(vercel --prod)"': [["vercel", "--prod"]],
+            "git push -f origin<(echo)": [["git", "push", "-f", "origin<()"], ["echo"]],
+            "$(echo) ${X} rm -rf ~": [["rm", "-rf", "~"], ["echo"]],  # may expand to nothing
+            "=ls -l": [["ls", "-l"]],
+            "ls -l\r\n": [["ls", "-l\r"], ["ls", "-l"]],
+            "echo hi\r#": [["echo", "hi\r#"], ["echo", "hi"]],
+            "echo ok\rls": [["echo", "ok\rls"], ["echo", "ok"], ["ls"], ["echo", "ok", "ls"]],
+        }
+        for command, want in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(list(_simple_commands(command)), want)
+
+    def test_comments_end_where_bash_ends_them(self):
+        from catpilot_guard.destructive import _strip_comments
+
+        cases = {
+            "ls # x": "ls ",
+            # A substitution's command goes on a line of its own, and its placeholder stays in the word.
+            "echo $(date) #x": "echo \\$\\(\\) \ndate",
+            "echo $(date)#x": "echo \\$\\(\\)#x\ndate",
+            "echo $((1+1))#x": "echo \\$\\(\\(\\)\\)#x",  # an arithmetic expansion is a placeholder
+            "cat <(ls)#x": "cat \\<\\(\\)#x\nls",
+            "echo `a #b`": "echo \\$\\(\\)\na ",  # read like $( ); its comment ends at the closing backquote
+            "x=`a # it's`; b": "x=\\$\\(\\); b\na ",
+            # Review of 0d2a0ed: a case statement is read with its patterns, so comments after it are dropped.
+            "x=$(case a in a) b;; esac)\n# don't\nc": "x=\\$\\(\\)\n\nc\ncase a in a) b;; esac",
+            "echo ${x:-a #b}": "echo ${x:-a #b}",
+            "echo ${x} #y": "echo ${x} ",  # the comment after ${ } closes is dropped
+            'echo "$(a "b #c")"': 'echo "$()"\na "b #c"',
+            "(( 1 #x ))": "(( 1 #x ))",
+            "(( (1 #x) ))": "(( (1 #x) ))",  # nor in parentheses inside arithmetic
+            "(ls # x\n)": "(ls \n)",  # a subshell is read like the command around it
+            "x=$((a); b)": "x=\\$\\(\\)\n(a); b",  # `$((a); b)` is a command substitution starting with a subshell
+            "echo $(a #b\n)": "echo \\$\\(\\)\na \n",
+            "( ls ) #x": "( ls ) ",
+            "echo a\\ #b": "echo a\\ #b",
+            "echo hi\r#x": "echo hi\r#x",
+            "ls # x \\\nwc": "ls \nwc",
+        }
+        for command, want in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(_strip_comments(command), want)
+
+    def test_long_runs_of_assignments_and_wrappers_are_read_in_linear_time(self):
+        # Review of #135: each dropped word copied the rest of the list, so 200 KB of `env a=c ...` took about 8 s.
+        import time
+
+        from catpilot_guard.destructive import find_destructive_op
+
+        from catpilot_guard.destructive import MAX_COMMAND_CHARS_WITHOUT_TIMER, ReadTimeout, within_time_limit
+
+        for command in ("env " + "a=c " * 50000 + "rm -rf ~", "sudo " * 40000 + "rm -rf ~", "a=c " * 50000 + "rm -rf ~",
+                        "xargs " * 33000 + "git push origin --delete", ">x " * 40000 + "rm -rf ~",
+                        "! " * 60000 + "rm -rf ~"):
+            with self.subTest(command=command[:20]):
+                started = time.monotonic()
+                if hasattr(signal, "setitimer") or len(command) <= MAX_COMMAND_CHARS_WITHOUT_TIMER:
+                    self.assertIsNotNone(within_time_limit(find_destructive_op, command, "/nonexistent"))
+                else:  # Windows: no timer, so a command this long is refused (check_command_size), which also blocks
+                    with self.assertRaises(ReadTimeout):
+                        within_time_limit(find_destructive_op, command, "/nonexistent")
+                self.assertLess(time.monotonic() - started, 4.0)
+        # The exfiltration signature reads one pipeline segment at a time (the regex it replaced was cubic here).
+        started = time.monotonic()
+        self.assertIsNone(within_time_limit(find_destructive_op, "cat .ssh/x " * 6000, "/nonexistent"))
+        self.assertLess(time.monotonic() - started, 4.0)
+
+    def test_reading_stops_at_the_deadline_and_fails_closed(self):
+        import time
+        from unittest import mock
+
+        from catpilot_guard import destructive
+
+        with mock.patch.object(destructive, "READ_BUDGET_SECONDS", 0.0):
+            with self.assertRaises(destructive.ReadTimeout):
+                destructive.find_destructive_op("ls", "/nonexistent")
+        self.assertTrue(issubclass(destructive.ReadTimeout, ValueError))  # main() exits 2 on it
+        # An extra reading that would not finish in time is not started: the CR-LF reading here.
+        real_lex = destructive._lex
+
+        def slow_lex(text):
+            time.sleep(0.2)
+            return real_lex(text)
+
+        calls = []
+
+        def counted_slow_lex(text):
+            calls.append(text)
+            return slow_lex(text)
+
+        with mock.patch.object(destructive, "READ_BUDGET_SECONDS", 0.3), \
+                mock.patch.object(destructive, "_lex", counted_slow_lex):
+            self.assertIsNone(destructive.find_destructive_op("ls", "/nonexistent"))
+            calls.clear()
+            with self.assertRaises(destructive.ReadTimeout):
+                destructive.find_destructive_op("ls\r\n", "/nonexistent")
+            self.assertEqual(len(calls), 1)  # the second reading was not started
+        # A deadline already past stops before any reading; one that passes while the commands are read stops at the
+        # next word.
+        calls.clear()
+        with mock.patch.object(destructive, "_lex", counted_slow_lex):
+            with self.assertRaises(destructive.ReadTimeout):
+                list(destructive._simple_commands("ls", 0, time.monotonic() - 1))
+            self.assertEqual(calls, [])
+        commands = destructive._simple_commands("ls; pwd", 0, time.monotonic() + 0.2)
+        self.assertEqual(next(commands), ["ls"])
+        time.sleep(0.3)
+        with self.assertRaises(destructive.ReadTimeout):
+            next(commands)
+        # A `bash -c` string that two readings leave the same is read once: two outer readings, one inner.
+        calls.clear()
+
+        def counted_lex(text):
+            calls.append(text)
+            return real_lex(text)
+
+        with mock.patch.object(destructive, "_lex", counted_lex):
+            list(destructive._simple_commands("bash -c 'ls'; echo $'\\''"))
+        self.assertEqual(len(calls), 3)
+
+    def test_the_hooks_stop_at_a_hard_time_limit(self):
+        import io
+        import time
+        from unittest import mock
+
+        from catpilot_guard import destructive
+
+        # SIGALRM stops any code, a regex included, and the hook exits 2 with a message that does not say retry.
+        # Windows has no SIGALRM: there the size check below is what bounds the hook.
+        timer = hasattr(signal, "setitimer")
+        with mock.patch.object(destructive, "HOOK_TIME_LIMIT_SECONDS", 0.2):
+            if timer:
+                with self.assertRaises(destructive.ReadTimeout):
+                    destructive.within_time_limit(time.sleep, 2)
+
+                def slow_decide(event, host=None):
+                    time.sleep(2)
+
+                stdin = io.TextIOWrapper(io.BytesIO(event("ls").encode()))
+                stderr = io.StringIO()
+                with mock.patch.object(destructive, "decide", slow_decide), mock.patch("sys.stdin", stdin), \
+                        mock.patch("sys.stderr", stderr), mock.patch.object(sys, "argv", ["hook"]), \
+                        mock.patch.object(destructive, "record_evidence", lambda *a, **k: None):
+                    self.assertEqual(destructive.main(), 2)
+                self.assertIn("could not finish reading this command in time", stderr.getvalue())
+                self.assertNotIn("retry", stderr.getvalue())
+        # Without the timer, a command too long to bound is refused; with it, it is read (short words: no timing).
+        long_command = "ls " + "x " * (destructive.MAX_COMMAND_CHARS_WITHOUT_TIMER // 2)
+        with self.assertRaises(destructive.ReadTimeout):
+            destructive.find_destructive_op(long_command, "/nonexistent")
+        if timer:
+            self.assertIsNone(destructive.within_time_limit(destructive.find_destructive_op, long_command, "/nonexistent"))
+        # Review of 0d2a0ed: the timer's ReadTimeout is a ValueError, and must not be read as an unbalanced quote.
+        with mock.patch.object(destructive.shlex, "shlex", side_effect=destructive.ReadTimeout("alarm")):
+            with self.assertRaises(destructive.ReadTimeout):
+                destructive._lex("ls")
+        with mock.patch.object(destructive.shlex, "split", side_effect=destructive.ReadTimeout("alarm")):
+            with self.assertRaises(destructive.ReadTimeout):
+                destructive._split_string("ls")
+        # The wrapper reader checks the deadline too.
+        with self.assertRaises(destructive.ReadTimeout):
+            destructive._wrapper_commands("env", ["ls", "-i"], None, time.monotonic() - 1)
+
+    def test_the_timer_fires_with_sigalrm_blocked(self):
+        # Review of 0d2a0ed: a mask inherited from the host must not hold the alarm back.
+        import signal
+        import time
+        from unittest import mock
+
+        from catpilot_guard import destructive
+
+        if not hasattr(signal, "pthread_sigmask"):
+            self.skipTest("no pthread_sigmask")
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+        try:
+            with mock.patch.object(destructive, "HOOK_TIME_LIMIT_SECONDS", 0.2):
+                with self.assertRaises(destructive.ReadTimeout):
+                    destructive.within_time_limit(time.sleep, 2)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+    def test_a_command_with_a_nul_is_refused(self):
+        # Review of 0d2a0ed: bash drops a NUL and zsh keeps it in its word, which changes where a comment starts.
+        proc = run_hook(event("echo a \u0000# ; rm -rf ~"))
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("not allowed", proc.stderr)
+
+    def test_a_long_run_of_env_split_strings_is_read_in_linear_time(self):
+        # Review of 0d2a0ed: each -S string was spliced into a new copy of the word list (10.9 s for this one).
+        import time
+
+        from catpilot_guard.destructive import find_destructive_op
+
+        command = "env -S '" + "-S " * 66600 + "' git push --force origin main"
+        started = time.monotonic()
+        self.assertIsNotNone(find_destructive_op(command, "/nonexistent"))
+        self.assertLess(time.monotonic() - started, 4.0)
+
+    def test_redirections_are_not_refspecs(self):
+        # Review of 4944546: a redirection target after a blank was read as an argument, so a bare force push of the
+        # checked-out branch read as a push of a refspec named after the file.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").mkdir()
+            head = Path(tmp) / ".git" / "HEAD"
+            commands = ("git push -f &> /dev/null", "git push --force-with-lease origin &> /dev/null", "git push -f >& log",
+                        "git push -f >| log", "git push -f 2>&1 > /dev/null", "x=1 git push -f <&0 > x 2>&1",
+                        "git push --force > /dev/null 2>&1", "git push --force origin > out.txt",
+                        "git push --force origin 2> 'error log'")
+            for branch, denied in (("main", True), ("feature/x", False)):
+                head.write_text("ref: refs/heads/%s\n" % branch)
+                for command in commands:
+                    with self.subTest(branch=branch, command=command):
+                        from catpilot_guard.destructive import find_destructive_op
+
+                        self.assertEqual(find_destructive_op(command, tmp) is not None, denied)
 
     def test_running_users_home_by_absolute_path(self):
         for home in ("/srv/agent-home", "/var/lib/jenkins/"):
@@ -560,7 +1076,46 @@ class DestructiveHookTests(unittest.TestCase):
                     out = json.loads(run_hook(payload).stdout)
                     self.assertEqual(out.get("hookSpecificOutput", {}).get("permissionDecision"), expected)
 
+    def test_a_heredoc_given_to_cat_in_a_substitution_is_text(self):
+        # Review of the #137 merge: `"$(cat <<'EOF' ... EOF)"` is how commit messages and PR bodies are written; its
+        # body is text. Given to a shell it is commands, and an unquoted body's substitutions run either way. A `cd`
+        # in a substitution runs in a subshell; a checkout there changes HEAD. Run on a feature branch.
+        from catpilot_guard.destructive import find_destructive_op
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").mkdir()
+            (Path(tmp) / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
+            allowed = [
+                "gh pr create --body \"$(cat <<'EOF'\n```\ngit push --force origin main\n```\nEOF\n)\"",
+                "git commit -m \"$(cat <<EOF\nrm -rf ~\nEOF\n)\"",
+                "x=\"$(cat <<'EOF'\nrm -rf ~\nEOF\n)\"",
+                "x=`cat <<'EOF'\nrm -rf ~\nEOF\n`",
+                "git commit --amend -m \"$(cat <<'EOF'\ngit checkout main is no longer needed\nEOF\n)\" && git push --force-with-lease",
+                "git commit --amend -m \"$(cat <<'EOF'\ncd foo\nsource the env\nexport GIT_DIR\nfunction names\nEOF\n)\" && "
+                "git push --force-with-lease",
+                "ROOT=\"$(cd \"$(dirname \"$0\")\" && pwd)\"; git push --force-with-lease",
+                "git push --force-with-lease && echo \"from $(cd .. && pwd)\"",
+            ]
+            denied = [
+                "gh pr create --body \"$(cat <<'EOF' | bash\n```\ngit push --force origin main\n```\nEOF\n)\"",
+                "git commit -m \"$(bash <<EOF\nrm -rf ~\nEOF\n)\"",
+                "x=\"$(cat <<'EOF' | sh\nrm -rf ~\nEOF\n)\"",
+                "x=`cat <<'EOF' | bash\nrm -rf ~\nEOF\n`",
+                "x=\"$(cat <<EOF\n$(rm -rf ~)\nEOF\n)\"",
+                "x=\"$(ssh host <<'EOF'\nrm -rf ~\nEOF\n)\"",
+                "git commit --amend -m \"$(bash <<'EOF'\ngit checkout main\nEOF\n)\" && git push --force-with-lease",
+                "echo $(git switch main) && git push -f",
+                "cat <<'EOF' | bash\nrm -rf ~\nEOF",
+            ]
+            for command in allowed:
+                with self.subTest(command=command):
+                    self.assertIsNone(find_destructive_op(command, tmp))
+            for command in denied:
+                with self.subTest(command=command):
+                    self.assertIsNotNone(find_destructive_op(command, tmp))
+
     def test_brace_expansion_matches_bash(self):
+
         # Review of f92bb75: bash 5's results, a linear pairing (no exponential or quadratic case), and the limit.
         import time
         from catpilot_guard.destructive import expand_braces, git_config_assignment_harmful

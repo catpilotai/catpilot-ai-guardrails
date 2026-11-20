@@ -11,9 +11,34 @@ Scope, stated exactly:
     Remove-Partition, format <drive>:, diskpart, cipher /w and vssadmin delete shadows. On Windows, a Bash event
     from Codex or Copilot CLI, which may carry a PowerShell command, is read both ways.
   - Splits the proposed command into simple commands the way a shell would
-    (pipes, ;, &&, ||, subshells, and each line of a multi-line command), looks through sudo/env/time-style wrappers
-    (also timeout, gtimeout, stdbuf, ionice, setsid, unbuffer) and a shell's
-    command string (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
+    (pipes, ;, &&, ||, subshells, and each line of a multi-line command; a
+    quoted or escaped operator such as ';' or \\; is a word), reads
+    the commands inside compound commands (after if, then, elif, else, while,
+    until, do, !, {, coproc and function NAME, so in `if ...; then CMD; fi`,
+    `for ...; do CMD; done`, `{ CMD; }`, `! CMD` and function bodies), reads
+    each command substitution's command ($( ), backquotes, <( ), >( ), also in
+    double quotes) as a command of its own while keeping its word in place,
+    drops redirections with their targets (`>/dev/null CMD`, `2>&1 CMD`,
+    `git push -f > log`), ends a word at an unquoted < or > (`rm -rf ~>/dev/null`),
+    reads a heredoc body as literal text whose lines are commands, drops
+    comments only where bash does (not after an escaped character, a carriage
+    return or the ) that ends $( ), <( ) or $(( )), and never inside quotes,
+    ${ }, arithmetic or a heredoc body; a comment in backquotes ends at the next
+    unescaped backquote; `case` statements are read with their patterns; a
+    comment's trailing backslash does not continue it), reads a $'...'
+    string as bash does (\\' inside it does not end it) and, when that can
+    differ, also as dash does (a $'...' holding \\', or &>), reads a command with a
+    carriage return each way a shell may (bash keeps it in the word, bash on
+    Windows may drop it before a line feed, PowerShell ends the line there, a
+    shell may ignore it), looks through sudo/env/time-style wrappers
+    (also timeout, gtimeout, stdbuf, ionice, setsid, unbuffer, xargs, zsh's
+    noglob, nocorrect, repeat N and =cmd, and the string of `env -S`) with their
+    options, short or long, separate, attached or at the end of a cluster
+    (WRAPPER_OPTIONS; an option not listed is read both as taking a value and
+    as taking none; what xargs reads from its input is unknown, so a force push
+    or deletion of it blocks), a shell's here-string
+    (`bash <<< 'CMD'`) and a shell's command string, whatever redirections and
+    options come first (`bash -c "..."`, `bash -lc`, `sh -ec`, `bash -o pipefail -c`,
     `bash --login -c`), and checks each one against deterministic signatures
     from the cloud-cli-safety, database-safety, and local-cli-safety components
     of catpilot-security-core:
@@ -35,7 +60,9 @@ Scope, stated exactly:
         those when unset ("$TARGET", $TARGET/, ${TARGET}/*); chmod -R 777;
         dd to a raw block device; a force push (--force, -f, --force-with-lease,
         or a +refspec) or a deletion aimed at main, master, trunk, production,
-        prod, staging, develop, or release/*, including a bare `git push -f`
+        prod, staging, develop, or release/*, or at a branch the shell expands
+        that may be one of those (`$b`, `"$BRANCH"`, `release/$V`: BranchPattern),
+        including a bare `git push -f`
         while the checked-out branch is one of those (unknown, so blocked, after
         a command in the line that may change it: commands_with_branch_context);
         git push --mirror, --all or --branches with a force or --prune, a forced
@@ -59,8 +86,11 @@ Scope, stated exactly:
     reason and the safer alternative. Never echoes the command text.
   - On anything else, returns an empty decision so the host's own permission
     rules apply unchanged. It never returns "allow".
-  - Fails closed: malformed or oversized input, or any unexpected error, exits 2
-    (the host treats that as a blocking error).
+  - Fails closed: malformed or oversized input, a check that runs past
+    HOOK_TIME_LIMIT_SECONDS (7 s; within_time_limit, SIGALRM) or a reading past
+    READ_BUDGET_SECONDS (6 s), a command over MAX_COMMAND_CHARS_WITHOUT_TIMER
+    where there is no such timer, or any unexpected error, exits 2 (the host
+    treats that as a blocking error).
 
 What it is not: an adversarial control. It catches the accidental destructive
 command an agent proposes; a command deliberately obfuscated (eval, base64,
@@ -72,29 +102,109 @@ Standard library only. Python 3.8+.
 """
 from __future__ import annotations
 
+import bisect
 import fnmatch
 import json
 import os
 import re
 import shlex
+import signal
 import sys
+import threading
+import time
 from pathlib import Path
 
 from . import decision_for_host, event_for_host, hook_host, take_evidence_default, write_decision, write_reason
 
 MAX_INPUT_BYTES = 1_048_576
 
+class _Then:
+    """A match of `first` and, after it, of `then`: what the regex `first.*?then` (DOTALL) matches, found with one
+    search for each instead of one `.*?` scan from every `first`, so the time is linear in the command's length.
+    unless: a pattern that must not come after the last `then` (aws s3 rm ... --recursive with no --dryrun after)."""
+
+    def __init__(self, first: str, then: str, flags: int = 0, unless: str | None = None):
+        self.first = re.compile(first, flags)
+        self.then = re.compile(then, flags)
+        self.unless = re.compile(unless, flags) if unless else None
+
+    def search(self, command: str) -> bool:
+        first = self.first.search(command)
+        if first is None:
+            return False
+        if self.unless is None:
+            return self.then.search(command, first.end()) is not None
+        last = None
+        for last in self.then.finditer(command, first.end()):
+            pass
+        return last is not None and self.unless.search(command, last.end()) is None
+
+
+class _AnyOf:
+    """Any of several matchers."""
+
+    def __init__(self, *matchers):
+        self.matchers = matchers
+
+    def search(self, command: str) -> bool:
+        return any(matcher.search(command) for matcher in self.matchers)
+
+
+class _PipeIntoSudoShell:
+    """`curl` or `wget` piped into `sudo bash|sh|zsh`: for each `| sudo SHELL`, only the pipeline segment before it
+    (from the previous `|` or newline) is read, so the time is linear (the regex this replaces scanned to the end of
+    the line from every curl)."""
+
+    PIPE = re.compile(r"\|\s*sudo\s+(?:bash|sh|zsh)\b", re.IGNORECASE)
+    SEPARATOR = re.compile(r"[|\n]")
+    FETCH = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
+
+    def search(self, command: str) -> bool:
+        separators = [m.start() for m in self.SEPARATOR.finditer(command)]
+        for pipe in self.PIPE.finditer(command):
+            begin = bisect.bisect_left(separators, pipe.start())
+            if self.FETCH.search(command, separators[begin - 1] + 1 if begin else 0, pipe.start()):
+                return True
+        return False
+
+
+class _ExfiltrationPipe:
+    """`cat` of a credential file (~/.ssh/, ~/.aws/, .netrc, ...), or `env` / `printenv`, piped into a network client
+    (curl, wget, http, xh, nc, socat), blanks and newlines allowed around the `|`. For each `|` before a client, only
+    the pipeline segment before it is read (from the previous `|`, `;` or newline), so the time is linear in the
+    command's length: the single regex this replaces backtracked, in cubic time."""
+
+    PIPE = re.compile(r"\|\s*(?:curl|wget|http|xh|nc|socat)\b", re.IGNORECASE)
+    SEPARATOR = re.compile(r"[|;\n]")
+    CAT = re.compile(r"\bcat\s", re.IGNORECASE)
+    CREDENTIAL = re.compile(r"\.ssh/|\.aws/|\.openclaw/|\.config/gcloud/|\.kube/|\.gnupg/|\.netrc", re.IGNORECASE)
+    DUMP = re.compile(r"\b(?:env|printenv)\Z", re.IGNORECASE)
+
+    def search(self, command: str) -> bool:
+        separators = [m.start() for m in self.SEPARATOR.finditer(command)]
+        for pipe in self.PIPE.finditer(command):
+            end = pipe.start()
+            while end > 0 and command[end - 1].isspace():
+                end -= 1
+            begin = bisect.bisect_left(separators, end)  # the separators before the segment's end
+            segment = command[separators[begin - 1] + 1 if begin else 0:end]
+            cat = self.CAT.search(segment)
+            if (cat and self.CREDENTIAL.search(segment, cat.end())) or self.DUMP.search(segment):
+                return True
+        return False
+
+
 # --- whole-command signatures (cloud and infrastructure CLIs) -------------------------------
 # (label, compiled_pattern, safe_alternative_note)
 DESTRUCTIVE_PATTERNS = [
     (
         "az containerapp partial-YAML or replace-env-vars reset",
-        re.compile(r"\baz\s+containerapp\s+update\b.*?\s(?:--yaml|--replace-env-vars)\b", re.IGNORECASE | re.DOTALL),
+        _Then(r"\baz\s+containerapp\s+update\b", r"\s(?:--yaml|--replace-env-vars)\b", re.IGNORECASE),
         "Query current state with `az containerapp show` first and use `--set-env-vars` (which merges) or include the full resource specification.",
     ),
     (
         "aws lambda environment full-map replacement",
-        re.compile(r"\baws\s+lambda\s+update-function-configuration\b.*?\s--environment\s+[\"']?Variables=\{", re.IGNORECASE | re.DOTALL),
+        _Then(r"\baws\s+lambda\s+update-function-configuration\b", r"\s--environment\s+[\"']?Variables=\{", re.IGNORECASE),
         "Query existing variables with `aws lambda get-function-configuration`, merge them in a JSON file, and pass the complete merged map from that file.",
     ),
     (
@@ -104,25 +214,25 @@ DESTRUCTIVE_PATTERNS = [
     ),
     (
         "gcloud run services update --set-env-vars replacement",
-        re.compile(r"\bgcloud\s+run\s+services\s+update\b.*?\s--set-env-vars\b", re.IGNORECASE | re.DOTALL),
+        _Then(r"\bgcloud\s+run\s+services\s+update\b", r"\s--set-env-vars\b", re.IGNORECASE),
         "Use `gcloud run services update --update-env-vars` so existing environment variables are preserved.",
     ),
     (
         "gcloud quiet service or version deletion",
-        re.compile(r"\bgcloud\s+(?:app\s+versions\s+delete\s+--all|run\s+services\s+delete\b).*?\s--quiet\b", re.IGNORECASE | re.DOTALL),
+        _Then(r"\bgcloud\s+(?:app\s+versions\s+delete\s+--all|run\s+services\s+delete\b)", r"\s--quiet\b", re.IGNORECASE),
         "Inspect existing revisions/versions first and require interactive confirmation before deleting.",
     ),
     (
         "terraform auto-approve apply or destroy",
         # terraform or OpenTofu (`tofu`, same CLI), with global options such as -chdir=DIR before the subcommand.
-        re.compile(r"\b(?:terraform|tofu)(?:\s+-\S+)*\s+(?:apply|destroy)\b.*?\s--?auto-approve\b(?!=false)", re.IGNORECASE | re.DOTALL),
+        _Then(r"\b(?:terraform|tofu)(?:\s+-\S+)*\s+(?:apply|destroy)\b", r"\s--?auto-approve\b(?!=false)", re.IGNORECASE),
         "Run `terraform plan -out=tfplan`, show the plan to the user, and apply the reviewed plan without `-auto-approve`.",
     ),
     (
         "aws s3 recursive delete or force bucket removal",
-        re.compile(
-            r"\baws\s+s3\s+(?:rb\b.*?\s--force\b|rm\b.*?\s--recursive\b(?!.*--dryrun))",
-            re.IGNORECASE | re.DOTALL,
+        _AnyOf(
+            _Then(r"\baws\s+s3\s+rb\b", r"\s--force\b", re.IGNORECASE),
+            _Then(r"\baws\s+s3\s+rm\b", r"\s--recursive\b", re.IGNORECASE, unless=r"--dryrun"),
         ),
         "List bucket contents with `aws s3 ls` and run with `--dryrun` before any recursive delete.",
     ),
@@ -140,20 +250,17 @@ DESTRUCTIVE_PATTERNS = [
     ),
     (
         "raw block-device overwrite via dd",
-        re.compile(r"\bdd\b.*?\bof=/dev/(?:sd[a-z]|nvme\d+n\d+|disk\d+|rdisk\d+)\b", re.IGNORECASE | re.DOTALL),
+        _Then(r"\bdd\b", r"\bof=/dev/(?:sd[a-z]|nvme\d+n\d+|disk\d+|rdisk\d+)\b", re.IGNORECASE),
         "Never write directly to raw block devices from an agent session.",
     ),
     (
         "credential or environment exfiltration pipe to network client",
-        re.compile(
-            r"(?:\bcat\s+[^\n|;]*(?:\.ssh/|\.aws/|\.openclaw/|\.config/gcloud/|\.kube/|\.gnupg/|\.netrc)[^\n|;]*|\b(?:env|printenv)\b)\s*\|\s*(?:curl|wget|http|xh|nc|socat)\b",
-            re.IGNORECASE,
-        ),
+        _ExfiltrationPipe(),
         "Never pipe local credentials, SSH keys, or environment dumps into an outbound network request.",
     ),
     (
         "pipe-to-shell with sudo",
-        re.compile(r"\b(?:curl|wget)\b[^\n|]*\|\s*sudo\s+(?:bash|sh|zsh)\b", re.IGNORECASE),
+        _PipeIntoSudoShell(),
         "Download the script to a temporary file, inspect its contents and SHA-256 digest, and run only after review.",
     ),
 ]
@@ -190,9 +297,65 @@ RM_DANGEROUS_TARGET = re.compile(
     r"|\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/*\*?"  # a bare variable: unset expands to / or ""
     r")$"
 )
+def _options(value: str = "", flags: str = "", long_value: tuple = (), long_flags: tuple = (), optional: str = "",
+             split: str = "", long_split: tuple = (), replace: str = "", optional_replace: str = "",
+             long_replace: tuple = (), positionals: int = 0) -> dict:
+    """One wrapper's options. value: short options that take a value, attached (-uroot) or as the next word (-u
+    root), also at the end of a cluster (-iC DIR); flags: short options that take none; optional: short options whose
+    value is optional and only attached (xargs -e, -l); long_value and long_flags likewise (--user root, --user=root,
+    an unambiguous prefix as getopt_long accepts; a long option whose value is optional takes it only after `=`, so
+    it is listed as a flag). split: env -S STRING, whose words env runs. replace: xargs -I R, whose R in the command is
+    replaced by input; optional_replace (-i[R]) and long_replace (--replace[=R]) default R to {}. positionals: words
+    after the options and before the command (timeout's DURATION)."""
+    return {"value": value, "flags": flags, "optional": optional, "long_value": set(long_value),
+            "long_flags": set(long_flags), "split": split, "long_split": set(long_split), "replace": replace,
+            "optional_replace": optional_replace, "long_replace": set(long_replace), "positionals": positionals}
+
+
+TIMEOUT_OPTIONS = _options("ks", "v", ("--kill-after", "--signal"),
+                           ("--foreground", "--preserve-status", "--verbose", "--help", "--version"), positionals=1)
+# Commands that run the command after their options, each with its options (sudo(8), doas(1), env(1) GNU and BSD,
+# xargs(1) GNU and BSD, nice(1), time(1), timeout(1), ...). An option not listed is read both ways, as taking the
+# next word and as taking none, so an option this table does not know cannot hide the command.
+WRAPPER_OPTIONS = {
+    "sudo": _options("aCcDghpRrTtUu", "AbBEeHiKklNnPSsVv",
+                     ("--chdir", "--chroot", "--close-from", "--command-timeout", "--group", "--host", "--other-user",
+                      "--prompt", "--role", "--type", "--user"),
+                     ("--askpass", "--background", "--bell", "--edit", "--help", "--list", "--login", "--no-update",
+                      "--non-interactive", "--preserve-env", "--preserve-groups", "--remove-timestamp",
+                      "--reset-timestamp", "--set-home", "--shell", "--stdin", "--validate", "--version")),
+    "doas": _options("aCu", "Lns"),
+    "env": _options("aCLPuU", "0iv", ("--argv0", "--chdir", "--unset"),
+                    ("--block-signal", "--debug", "--default-signal", "--help", "--ignore-environment",
+                     "--ignore-signal", "--list-signal-handling", "--null", "--version"),
+                    split="S", long_split=("--split-string",)),
+    "command": _options("", "pVv"),
+    "builtin": _options(),
+    "exec": _options("a", "cl"),
+    "nohup": _options(long_flags=("--help", "--version")),
+    "time": _options("fo", "ahlpqv", ("--format", "--output"),
+                     ("--append", "--help", "--portability", "--quiet", "--verbose", "--version")),
+    "nice": _options("n", "0123456789", ("--adjustment",), ("--help", "--version")),  # nice -5: an old-style value
+    "xargs": _options("adELnPRSs", "0oprtx",
+                      ("--arg-file", "--delimiter", "--max-args", "--max-chars", "--max-procs", "--process-slot-var"),
+                      ("--eof", "--exit", "--help", "--interactive", "--max-lines", "--no-run-if-empty", "--null",
+                       "--open-tty", "--show-limits", "--verbose", "--version"),
+                      optional="el", replace="IJ", optional_replace="i", long_replace=("--replace",)),
+    "caffeinate": _options("tw", "dimsu"),
+    "noglob": _options(),  # zsh precommand modifiers (not `-`: a Markdown bullet in a heredoc body is not a command)
+    "nocorrect": _options(),
+    "timeout": TIMEOUT_OPTIONS,
+    "gtimeout": TIMEOUT_OPTIONS,
+    "stdbuf": _options("eio", "", ("--error", "--input", "--output"), ("--help", "--version")),
+    "ionice": _options("cnPpu", "t", ("--class", "--classdata", "--pgid", "--pid", "--uid"),
+                       ("--help", "--ignore", "--version")),
+    "setsid": _options("", "cfw", (), ("--ctty", "--fork", "--wait", "--help", "--version")),
+    "unbuffer": _options("", "p"),
+    "repeat": _options(positionals=1),  # zsh: repeat N COMMAND
+}
+# The wrappers as _points_git_elsewhere reads them, word by word, for assignments a wrapper passes on: each one's
+# options that take a separate value, and the positional arguments before its command (timeout's DURATION).
 WRAPPERS = {"sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time", "nice", "xargs", "caffeinate"}
-# Wrappers that run another command, each with the options that take a separate value and the number of
-# positional arguments that come before the command (timeout's DURATION).
 TIMEOUT_VALUE_OPTIONS = {"-s", "--signal", "-k", "--kill-after"}
 WRAPPER_SPECS = {
     "timeout": (TIMEOUT_VALUE_OPTIONS, 1),
@@ -202,110 +365,957 @@ WRAPPER_SPECS = {
     "setsid": (set(), 0),
     "unbuffer": (set(), 0),
 }
+# What xargs puts in its command from its input: unknown here, so it is written as a substitution would be, which a
+# force push or deletion cannot be read past (`... | xargs -I {} git push origin --delete {}`).
+XARGS_INPUT = "`xargs input`"
+# The most readings of one simple command's wrappers; past it the command cannot be read and the hook blocks.
+MAX_WRAPPER_READINGS = 64
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 # Shell options that take a separate value (`bash -o pipefail -c ...`, `bash --rcfile FILE -c ...`).
 SHELL_VALUE_OPTIONS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")
-ENV_PAIR = re.compile(r"^[^=]+=")
 KUBECTL_VALUE_FLAGS = {"-n", "--namespace", "-l", "--selector", "-f", "--filename", "-o", "--output", "--context",
                        "--cluster", "--kubeconfig", "--field-selector", "--grace-period", "--timeout", "-k", "--kustomize",
                        "-s", "--server", "--user", "--token", "--as"}
 SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", ")", "\n"}
 
 
-# A backslash-newline continues a line only when the backslash is not itself escaped: an odd number of backslashes.
-LINE_CONTINUATION = re.compile(r"(?<!\\)((?:\\\\)*)\\\n")
-SHELL_WORD_BREAKS = set(" \t\r\n;&|()")
+# Unquoted characters that end a word in a command, so that a `#` after one starts a comment. To bash a carriage
+# return is an ordinary character, part of its word, and so is an escaped character (`\ `, `\;`).
+SHELL_WORD_BREAKS = set(" \t\n;&|()")
+SEPARATOR_CHARS = set(";&|()\n")
+# Reserved words that can come first in a simple command as _simple_commands splits it. After each of them but the
+# closing words comes a command that runs (`then git push ...`, `while git push ...`, `do rm ...`, `! git push ...`,
+# `{ git push ...; }`); the closing words end a compound command, and only redirections can follow them (`} > out`).
+# `time` (and `time -p`) is in WRAPPER_OPTIONS.
+RESERVED_PREFIXES = {"if", "then", "elif", "else", "do", "while", "until", "!", "{", "}", "fi", "done", "esac"}
+# Reserved words that begin a compound command: `coproc NAME` is followed by one (`coproc NAME { cmd; }`); before a
+# simple command there is no NAME (`coproc cmd args`).
+COMPOUND_STARTS = {"{", "if", "while", "until", "for", "case", "select", "[["}
+# Carriage returns that end a line where a CR-LF line ending is read as a line feed: before one, or at the very end.
+CR_LINE_ENDING = re.compile(r"\r+(?=\n)|\r+\Z")
+# _scan puts this before each redirection it reads (unquoted, so a real one), with its fd number, operator and
+# target: `2>&1`, `>/dev/null`, `> log`. A NUL, which bash drops from its input, cannot be in a command otherwise.
+REDIRECT = "\x00"
+# _scan puts this in a word where a quote opens or a character is escaped, so that a quoted or escaped `;`, `|` or
+# `&` (`rm -rf ';' ~`) is a word, not an operator; it is taken out of every word after the split. A command with it
+# (SOH, a control character no command needs) cannot be read.
+QUOTED = "\x01"
+REDIRECTION_OPERATOR = re.compile(r"<<<|<<-|<<|<>|<&|<|>>|>\||>&|>")
+FD_PREFIX = re.compile(r"\d+|\{[A-Za-z_][A-Za-z0-9_]*\}")
+HERE_STRING = re.compile(r"0?<<<")
+# The command of a substitution that asks git for the checked-out branch (CURRENT_BRANCH_SUBSTITUTION): in double quotes
+# _scan keeps it in its word instead of the `$()` placeholder.
+CURRENT_BRANCH_COMMAND = re.compile(
+    r"[ \t]*git[ \t]+(?:branch[ \t]+--show-current|rev-parse[ \t]+--abbrev-ref[ \t]+HEAD"
+    r"|symbolic-ref[ \t]+(?:-q[ \t]+)?--short[ \t]+HEAD)[ \t]*")
+# A first word that may expand to nothing, so the word after it is the command: a substitution's placeholder ($( ),
+# backquotes) or a variable (`$(echo) rm -rf ~`, `$EMPTY rm -rf ~`).
+EXPANSION_WORD = re.compile(r"(?:\$\(\(?\)?\)|\$[A-Za-z_][A-Za-z0-9_]*|\$\{(?:[^{}]|\{[^{}]*\})*\}|\$[@*#?$!0-9_-])+")
+# Expansions at the start of a first word, which may expand to nothing: `$(echo)rm` and `${X}rm` run rm.
+EXPANSION_PREFIX = re.compile(r"(?:\$\(\(?\)?\)|\$\{(?:[^{}]|\{[^{}]*\})*\})+")
+# The innermost contexts (subshells aside) in which a `#` that begins a word starts a comment: the command itself, a
+# command or process substitution, and backquotes. Never quotes, `${ }`, arithmetic or a heredoc body.
+COMMENT_CONTEXTS = (None, "$(", "$(-", "`")
+# The contexts _scan reads as a substitution, in a buffer of its own: $( ), <( ), >( ), backquotes, and $(( )).
+BUFFERED = ("$(", "`", "$((")
+# Words after which the next word is still in command position (`if case ...`, `! case ...`).
+COMMAND_PREFIX_WORDS = {"if", "then", "elif", "else", "do", "while", "until", "!", "{", "time"}
+# Reading stops past this many seconds and the hook blocks (main exits 2), so that a command that is slow to read is
+# refused before the tool's hook timeout (10 s in deploy/org) runs out: Codex and Copilot CLI run a timed-out call.
+READ_BUDGET_SECONDS = 6.0
 
 
-def _strip_comments(command: str) -> str:
-    """The command without its comments: an unquoted `#` at the start of a word, up to the end of its line. A
-    shell ignores them, and a quote character inside one (`# what's left`) must not open a quote that hides the
-    lines after it. The newline that ends a comment is kept."""
-    out, i, quote, n = [], 0, None, len(command)
+# The hooks' whole check (the signatures' regexes, reading the command, one long lexer call) stops after this many
+# seconds: within_time_limit's SIGALRM raises ReadTimeout wherever the check is, and main() exits 2.
+HOOK_TIME_LIMIT_SECONDS = 7.0
+# Where that timer is not running (Windows has no SIGALRM; a harness calls decide() itself), a longer command is
+# refused instead, since nothing would stop a slow reading of it.
+MAX_COMMAND_CHARS_WITHOUT_TIMER = 200_000
+_timer = {"armed": False}
+
+
+class ReadTimeout(ValueError):
+    """Reading the command took too long, or would. A ValueError, so every caller fails closed."""
+
+
+def _deadline(deadline: float | None = None) -> float:
+    return time.monotonic() + READ_BUDGET_SECONDS if deadline is None else deadline
+
+
+def within_time_limit(function, *args, **kwargs):
+    """function(*args, **kwargs), stopped by ReadTimeout after HOOK_TIME_LIMIT_SECONDS: SIGALRM interrupts Python
+    code and the regex engine alike. Without SIGALRM (Windows) or off the main thread it runs without the timer, and
+    check_command_size refuses a long command."""
+    if not hasattr(signal, "setitimer") or threading.current_thread() is not threading.main_thread():
+        return function(*args, **kwargs)
+
+    def expire(signum, frame):
+        raise ReadTimeout("the check took too long")
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    if hasattr(signal, "pthread_sigmask"):
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})  # an inherited mask must not hold the alarm back
+    signal.setitimer(signal.ITIMER_REAL, HOOK_TIME_LIMIT_SECONDS)
+    _timer["armed"] = True
+    try:
+        return function(*args, **kwargs)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+        _timer["armed"] = False
+
+
+def check_command_size(command: str) -> None:
+    """Raise ReadTimeout for a command longer than MAX_COMMAND_CHARS_WITHOUT_TIMER when no timer is running."""
+    if not _timer["armed"] and len(command) > MAX_COMMAND_CHARS_WITHOUT_TIMER:
+        raise ReadTimeout("the command is too long to read without a time limit")
+
+
+def _strip_comments(command: str, bash: bool = True) -> str:
+    """The command as a shell reads it before splitting it into words (_scan)."""
+    return _scan(command, bash)[0].replace(QUOTED, "")
+
+
+def _literal(text: str) -> str:
+    """text with every character the lexer could read as quoting or an operator escaped."""
+    return re.sub(r"([^A-Za-z0-9_\n])", r"\\\1", text)
+
+
+ANSI_C_SIMPLE = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+                 "\\": "\\", "'": "'", '"': '"', "?": "?"}
+ANSI_C_NUMERIC = {"x": (16, 2), "u": (16, 4), "U": (16, 8)}
+
+
+def _ansi_c_escape(command: str, i: int) -> tuple:
+    """(text, next index) for the escape at command[i] (a backslash) inside $'...', as bash 5 reads it: \\n, \\t and
+    the other letters, \\NNN (octal), \\xHH, \\uHHHH, \\UHHHHHHHH and \\cX, written for a single-quoted copy (a `'` closes
+    the quote, is quoted, and reopens it). A NUL, or a character the reader uses as a marker, is dropped (bash ends the
+    string's value at a NUL); an escape bash does not know stays as it is written."""
+    escaped = command[i + 1]
+    value, j = None, i + 2
+    if escaped in ANSI_C_SIMPLE:
+        value = ANSI_C_SIMPLE[escaped]
+    elif escaped in "01234567":
+        k = i + 1
+        while k < len(command) and k < i + 4 and command[k] in "01234567":
+            k += 1
+        value, j = chr(int(command[i + 1:k], 8) & 0xFF), k
+    elif escaped in ANSI_C_NUMERIC:
+        base, most = ANSI_C_NUMERIC[escaped]
+        k = i + 2
+        while k < len(command) and k < i + 2 + most and command[k] in "0123456789abcdefABCDEF":
+            k += 1
+        if k > i + 2:
+            code = int(command[i + 2:k], base)
+            value, j = (chr(code) if code < 0x110000 else ""), k
+    elif escaped == "c" and i + 2 < len(command) and command[i + 2] not in "'\\":
+        value, j = chr(ord(command[i + 2]) & 0x1F), i + 3
+    if value is None:
+        return command[i:i + 2], i + 2
+    if not value or value in (REDIRECT, QUOTED) or 0xD800 <= ord(value) <= 0xDFFF:
+        return "", j
+    return ("'\"'\"'" if value == "'" else value), j
+
+
+def _scan(command: str, bash: bool = True, dq_comment: bool | None = None) -> tuple:
+    """(text, posix_differs, dq_hash). text is the command as a shell reads it before splitting it into words: comments
+    dropped, each backslash-newline removed, each redirection operator marked with REDIRECT and joined to its target
+    (`> log` is one word, and `>&`, `<&`, `&>` and `>|` stay whole), a space put where an unquoted `<` or `>` ends a
+    word, heredoc bodies made safe to split, each command substitution (`$( )`, backquotes, `<( )`, `>( )`, also in
+    double quotes) replaced in its word by `$()`, `<()` or `>()` and its command put on a line of its own at the end,
+    each arithmetic expansion replaced by `$(())`, and each ANSI-C string ($'...') written as a plain single-quoted
+    string, so that the lexer splits words and lines where bash does: `rm -rf $(echo) ~` keeps ~ as rm's argument, and
+    `URL="$(vercel --prod)"` reads the deploy. bash=False reads the command as dash does (and as bash 3.2 does
+    `{fd}>file`): `$'` is `$` and a plain single quote, `&>` is `&` then `>`, and `{fd}>file` is the word `{fd}` then
+    `>file`; posix_differs is True when that reading can differ. dq_comment says whether a `#` that begins a word
+    inside `$( )` inside double quotes starts a comment, as in bash 4 and later, dash and zsh, or is text, as in bash
+    3.2 (default: as dash, so True when bash is False); dq_hash is True when the command has such a `#`.
+
+    A comment is an unquoted `#` at the start of a word, up to the end of its line, or to the backquote that ends the
+    backquoted command it is in: a quote character in one (`# what's left`) does not open a quote, and a backslash at
+    its end does not continue it onto the next line. A word starts at the start of the command and after an unquoted,
+    unescaped space, tab, newline or one of `;&|()`; after an escaped character (`a\\ #`), a carriage return, the `)`
+    that ends `$( )`, `$(( ))`, `<( )` or `>( )`, or anything else, `#` is part of the word. A `#` starts a comment in
+    the command itself, a subshell, a command substitution and backquotes, and never inside quotes, `${ }`,
+    arithmetic or a heredoc body; while backquotes are open, a comment ends at the next unescaped backquote, which
+    ends them in bash whatever lies between. A `case` statement is read with its patterns, so the `)` that ends a
+    pattern (`$(case x in a) ...;; esac)`) does not end a subshell or substitution; `esac` ends it as the first word of
+    a pattern list or of a command in a branch, and `case`, `in` and `esac` are read across backslash-newlines. A heredoc's body (the lines after the line
+    with `<<WORD` or `<<-WORD`, up to WORD) is literal text to the shell, apart from substitutions when WORD is
+    unquoted, so its quote characters are escaped here: its lines are still read as commands, but cannot open a quote
+    that hides the commands after it. Inside a command substitution a body is read as commands only when what takes it
+    may run it (_heredoc_runs): `git commit -m "$(cat <<'EOF' ... EOF)"` is text, apart from the substitutions of an
+    unquoted body; `"$(cat <<'EOF' | bash ... EOF)"` is commands. A backslash-newline joins two lines, outside single quotes and when the backslash
+    is not itself escaped, and `$` followed by a backslash-newline is read with what comes after it
+    (`$\\<newline>'...'` is an ANSI-C string). In $'...' a backslash escapes the next character, so `\\'` does not end
+    it. A NUL character cannot be read (shells differ: bash drops it, zsh keeps it), so it raises ValueError. The
+    newline that ends a comment is kept."""
+    if REDIRECT in command or QUOTED in command:
+        raise ValueError("the command contains a NUL or SOH character")
+    dq_comment = (not bash) if dq_comment is None else dq_comment
+    out: list = []
+    posix_differs = dq_hash = False
+    stack: list = []  # the open contexts, innermost last: ' " $' ` ${ $(( (( $( $(- ( << <<'
+    inners: list = []  # for each level of stack, the innermost context there that is not a subshell `(`
+    quoted = [0]  # how many double-quoted strings are open
+    ticks = [0]  # how many backquoted commands are open
+    outer: list = []  # for each open substitution: [the text around it, word_begin, placeholder, opener, read it]
+    sides: list = []  # the commands of closed substitutions, each read as a line of its own
+    cases: list = []  # open `case` statements, innermost last: [depth in stack, "head" | "pattern" | "body", a
+    # pattern has begun (after which `esac` is a pattern, not the end)]
+    i, n = 0, len(command)
+    word_start = True  # in a command context, the next character starts a word
+    word_begin = 0  # where in out the current word began, to tell an fd number before `>` (2>) from a word (~>)
+    command_start = True  # the next word is in command position (where `case` and `esac` are reserved words)
+    last_word = ""  # the last word that ended in command position (`time` before `-p`)
+    function_name = False  # the next word is a function's name, after which a command may follow
+    pending: list = []  # heredocs whose bodies begin after the current line: (word, strip tabs, literal)
+    heredoc = None  # the heredoc whose body is being read: (word, strip tabs, its depth in stack)
+
+    def push(context: str) -> None:
+        stack.append(context)
+        inners.append(context if context != "(" else (inners[-1] if inners else None))
+        quoted[0] += context == '"'
+        ticks[0] += context == "`"
+
+    def pop() -> str:
+        inners.pop()
+        context = stack.pop()
+        quoted[0] -= context == '"'
+        ticks[0] -= context == "`"
+        while cases and cases[-1][0] > len(stack):
+            cases.pop()
+        return context
+
+    def retop(context: str) -> None:
+        stack[-1] = context
+        inners[-1] = context
+
+    def past_continuations(j: int) -> int:
+        while command.startswith("\\\n", j):
+            j += 2
+        return j
+
+    def reserved_at(word: str) -> bool:
+        """The word `word` begins at i, read across backslash-newlines (`ca\\<newline>se` is case)."""
+        j = i
+        for letter in word:
+            j = past_continuations(j)
+            if j >= n or command[j] != letter:
+                return False
+            j += 1
+        j = past_continuations(j)
+        return j >= n or command[j] in " \t\n;&|)"
+
+    def start_heredoc() -> None:
+        nonlocal heredoc
+        word, strip_tabs, literal, begins, nested = pending.pop(0)
+        # Outside a substitution a body is read as commands, as before; inside one (`"$(cat <<'EOF' ...)"`, the idiom
+        # for commit messages and PR bodies) only when what takes it may run it (_heredoc_runs).
+        runs = not nested or _heredoc_runs(command[begins:i])
+        heredoc = (word, strip_tabs, len(stack), runs, literal)
+        if runs:
+            push("<<'" if literal else "<<")
+
+    def open_substitution(context: str, placeholder: str, opener: str, read: bool = True) -> None:
+        nonlocal out, word_start, word_begin, command_start
+        outer.append([out, word_begin, placeholder, opener, read])
+        push(context)
+        out, word_start, word_begin, command_start = [], True, 0, True
+
+    def close_substitution() -> None:
+        nonlocal out, word_start, word_begin, command_start
+        inner = "".join(out)
+        out, word_begin, placeholder, _, read = outer.pop()
+        if read:
+            sides.append(inner)
+        if stack and stack[-1] == '"':
+            # In double quotes, a substitution that asks git for the checked-out branch keeps its text, which
+            # git_push_rewrites reads as that branch (CURRENT_BRANCH_SUBSTITUTION); unquoted, it is split into words.
+            if placeholder == "$()" and CURRENT_BRANCH_COMMAND.fullmatch(inner):
+                placeholder = "$(" + " ".join(inner.split()) + ")"
+            out.append(placeholder)
+        else:
+            out.append(_literal(placeholder))
+        word_start = command_start = False  # the substitution ends inside its word: `$(date)#x` is one word
+
     while i < n:
+        if heredoc is not None and not heredoc[3] and (i == 0 or command[i - 1] == "\n"):
+            # A body nothing runs: passed over, apart from the substitutions in an unquoted one, which the shell
+            # runs; they are read as a double-quoted string's would be, as an argument of `:`.
+            word, strip_tabs, _, _, literal = heredoc
+            j, body_end, after = i, n, n
+            while j < n:
+                end = command.find("\n", j)
+                end = n if end == -1 else end
+                line = command[j:end]
+                if (line.lstrip("\t") if strip_tabs else line) == word:
+                    body_end, after = j, end + 1
+                    break
+                j = end + 1
+            body = command[i:body_end]
+            if not literal and ("$" in body or "`" in body):
+                text, differs, hashes = _scan(': "' + _double_quoted(body) + '"', bash, dq_comment)
+                posix_differs, dq_hash = posix_differs or differs, dq_hash or hashes
+                sides.append(text)
+            out.append("\n")
+            i = min(after, n)
+            heredoc = None
+            word_start, word_begin, command_start = True, len(out), True
+            if pending:
+                start_heredoc()
+            continue
+        if heredoc is not None and (i == 0 or command[i - 1] == "\n"):
+            word, strip_tabs, depth = heredoc[:3]
+            end = command.find("\n", i)
+            end = n if end == -1 else end
+            line = command[i:end]
+            if (line.lstrip("\t") if strip_tabs else line) == word:  # the body ends: back to the command
+                while len(stack) > depth:
+                    if pop() in BUFFERED:
+                        close_substitution()
+                out.append("\n")
+                i = end + 1
+                heredoc = None
+                word_start, word_begin, command_start = True, len(out), True
+                if pending:
+                    start_heredoc()
+                continue
         c = command[i]
-        if quote == "'":
+        top = stack[-1] if stack else None
+        if ticks[0] and top != "`":
+            if c == "\\" and command.startswith("`", i + 1) and top in ("'", "$'", "<<'"):
+                out.append("\\`")  # an escaped backquote: it does not end the backquoted command
+                i += 2
+                continue
+            if c == "`":
+                # bash ends backquotes at the first unescaped backquote, whatever is open inside them (`echo '`)
+                while stack and stack[-1] != "`":
+                    if pop() in BUFFERED:
+                        close_substitution()
+                top = "`"
+        if top == "'":
             out.append(c)
             if c == "'":
-                quote = None
-        elif c == "\\" and i + 1 < n:
-            out.append(command[i:i + 2])
+                pop()
+            i += 1
+            continue
+        if top == "$'":
+            if c == "\\" and i + 1 < n:
+                escaped = command[i + 1]
+                posix_differs = posix_differs or escaped == "'"
+                # Inside the single-quoted copy, each escape is written as the character bash makes of it
+                # (_ansi_c_escape): \' becomes ' (close, a quoted ', reopen), \\ becomes \, \x61 becomes a, so
+                # `m$'\x61'in` is main; an escape bash keeps stays as it is written. None changes where the string ends.
+                text, i = _ansi_c_escape(command, i)
+                out.append(text)
+                continue
+            out.append(c)
+            if c == "'":
+                pop()
+            i += 1
+            continue
+        if top == "<<'":  # a heredoc body with a quoted word: literal text
+            out.append("\\" + c if c in "'\"\\$`" else c)
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            if command[i + 1] != "\n":  # a backslash-newline is removed: the line goes on
+                out.append(QUOTED + command[i:i + 2])  # `\;` is a word, not an operator
+                word_start = command_start = False
             i += 2
             continue
-        elif quote == '"':
-            out.append(c)
-            if c == '"':
-                quote = None
-        elif c in "'\"":
-            quote = c
-            out.append(c)
-        elif c == "#" and (i == 0 or command[i - 1] in SHELL_WORD_BREAKS):
-            end = command.find("\n", i)
-            i = n if end == -1 else end
+        if c == "$":
+            j = past_continuations(i + 1)
+            follow = command[j] if j < n else ""
+            word_start = command_start = False  # a substitution opened here starts its own command
+            if follow == "$":
+                out.append("$$")  # the shell's process id, so a quote after it is an ordinary one
+                i = j + 1
+            elif follow == "'" and bash and top not in ('"', "<<"):
+                push("$'")
+                out.append(QUOTED + "'")
+                i = j + 1
+            elif follow == "{":
+                push("${")
+                out.append("${")
+                i = j + 1
+            elif follow == "(":
+                k = past_continuations(j + 1)
+                if k < n and command[k] == "(":
+                    open_substitution("$((", "$(())", "$((", read=False)  # arithmetic: `rm -rf $((0)) ~` keeps ~
+                    i = k + 1
+                else:
+                    open_substitution("$(", "$()", "$(")  # a command begins inside $( )
+                    i = j + 1
+            else:
+                out.append(c)
+                i += 1
             continue
-        else:
+        if top in ('"', "<<"):  # a double-quoted string, or a heredoc body with an unquoted word
+            if c == "`":
+                open_substitution("`", "$()", "`")
+            elif top == '"':
+                out.append(c)
+                if c == '"':
+                    pop()
+            else:
+                out.append("\\" + c if c in "'\"" else c)
+            i += 1
+            continue
+        if top == "`" and c == "`":
+            pop()
+            close_substitution()
+            i += 1
+            continue
+        if c == "`":
+            open_substitution("`", "$()", "`")  # `cmd` is read like $(cmd)
+            i += 1
+            continue
+        if c in "'\"":
+            push(c)
+            out.append(QUOTED + c)  # `';'` is a word, not an operator
+            word_start = command_start = False
+            i += 1
+            continue
+        if top == "${":
             out.append(c)
+            if c == "}":
+                pop()
+            elif c == "{":
+                push("${")  # zsh nests braces here; bash ends at the first `}`: nesting drops no text
+            i += 1
+            continue
+        if top in ("$((", "((") and c == ")":
+            if command.startswith(")", i + 1):
+                pop()
+                if top == "$((":
+                    close_substitution()
+                else:
+                    out.append("))")
+                    word_start = command_start = False
+                i += 2
+                continue
+            if top == "$((":  # `$((cmd); ...)`: a command substitution whose first command is a subshell
+                retop("$(")
+                outer[-1][2], outer[-1][4] = "$()", True  # its placeholder and its command, as for $( )
+                out.insert(0, "(")
+            else:
+                retop("$(-")
+            out.append(c)
+            word_start, word_begin, command_start = True, len(out), True
+            i += 1
+            continue
+        if top in ("$((", "((") and c != "(":
+            out.append(c)
+            i += 1
+            continue
+        # A command context: the command itself, ( ), $( ), <( ), >( ) or backquotes; or a `(` inside arithmetic.
+        inner = inners[-1] if inners else None
+        if c == "#" and word_start and inner in COMMENT_CONTEXTS:
+            if inner in ("$(", "$(-") and quoted[0]:
+                dq_hash = True  # bash 3.2 reads no comment inside "$( )"; bash 4 and later, dash and zsh do
+            if inner not in ("$(", "$(-") or not quoted[0] or dq_comment:
+                end = command.find("\n", i)
+                end = n if end == -1 else end
+                if ticks[0]:  # bash ends backquotes at the first unescaped backquote, whatever lies between
+                    j = i
+                    while j < end and command[j] != "`":
+                        j += 2 if command[j] == "\\" else 1
+                    end = min(j, end)
+                i = end
+                continue
+        if word_start and inner in COMMENT_CONTEXTS:
+            if cases and cases[-1][0] == len(stack):
+                state = cases[-1][1]
+                if state == "head" and reserved_at("in"):
+                    cases[-1][1] = "pattern"
+                elif reserved_at("esac") and ((state == "pattern" and not cases[-1][2]) or
+                                              (state == "body" and command_start)):
+                    cases.pop()
+                elif state == "pattern" and c not in SHELL_WORD_BREAKS:
+                    cases[-1][2] = True  # a pattern has begun: `esac` after `(` or `|` is a pattern
+            if command_start and reserved_at("case"):
+                cases.append([len(stack), "head", False])
+        in_pattern = bool(cases) and cases[-1][0] == len(stack) and cases[-1][1] == "pattern"
+        if c == "(":
+            if in_pattern and word_start:  # a pattern's optional `(`: `case x in (a) ...`
+                cases[-1][2] = True
+                out.append(c)
+                i += 1
+                continue
+            if word_start and top not in ("$((", "((") and command.startswith("(", i + 1):
+                push("((")  # `(( ))`: an arithmetic command
+                out.append("((")
+                i += 2
+                word_start = command_start = False
+                continue
+            push("(")
+            out.append(c)
+            i += 1
+            word_start, word_begin, command_start = True, len(out), True
+            continue
+        if c == ")":
+            if in_pattern:  # the end of a case pattern, not of a subshell or substitution
+                cases[-1][1] = "body"
+                out.append(c)
+                i += 1
+                word_start, word_begin, command_start = True, len(out), True
+                continue
+            if top in ("$(", "$(-"):
+                pop()
+                if top == "$(":
+                    close_substitution()
+                else:
+                    out.append(c)
+                    word_start = command_start = False
+                i += 1
+                continue
+            function = False
+            if top == "(":
+                pop()
+                k = len(out)
+                while k and out[k - 1] in (" ", "\t"):
+                    k -= 1
+                function = bool(k) and out[k - 1] == "("  # `f()`: a function's body, a command, follows
+            out.append(c)
+            i += 1
+            word_start, word_begin, command_start = True, len(out), function
+            continue
+        if c in "<>":
+            if command.startswith("(", i + 1):  # <( ) or >( ): a process substitution, part of its word (a<(x))
+                open_substitution("$(", c + "()", c + "(")
+                i += 2
+                continue
+            prefix = "".join(out[word_begin:]) if not word_start else ""
+            if prefix and FD_PREFIX.fullmatch(prefix) and prefix.startswith("{"):
+                posix_differs = True  # dash and bash 3.2 read `{fd}` as a word of its own
+            if prefix and FD_PREFIX.fullmatch(prefix) and (bash or not prefix.startswith("{")):
+                del out[word_begin:]  # 2> or {fd}>: the fd number belongs to the redirection
+            else:
+                if not word_start:
+                    out.append(" ")  # `<` and `>` end a word: `rm -rf ~>/dev/null` removes ~
+                prefix = ""
+            operator = REDIRECTION_OPERATOR.match(command, i).group()
+            out.append(REDIRECT + prefix + _literal(operator))
+            operator_at = i
+            i += len(operator)
+            while i < n and command[i] in " \t":  # `> log` is `>log`: the target joins its operator
+                i += 1
+            word_start, word_begin = False, len(out)
+            if operator in ("<<", "<<-"):
+                before = len(pending)
+                i = _heredoc_word(command, i, operator == "<<-", out, pending)
+                if len(pending) > before:  # where its command begins, and whether it is in a substitution
+                    pending[-1] = pending[-1] + (_command_begins(command, operator_at), bool(outer))
+            continue
+        if c == "&" and command.startswith("&>", i) and bash:
+            operator = "&>>" if command.startswith("&>>", i) else "&>"
+            posix_differs = True  # dash reads `&` (in the background) and then `>`
+            out.append(("" if word_start else " ") + REDIRECT + _literal(operator))  # &>file does not end the command
+            i += len(operator)
+            while i < n and command[i] in " \t":
+                i += 1
+            word_start, word_begin = False, len(out)
+            continue
+        if c == "&" and command.startswith("&&", i):
+            out.append("&&")
+            i += 2
+            word_start, word_begin, command_start = True, len(out), True
+            continue
+        if c == ";" and cases and cases[-1][0] == len(stack) and cases[-1][1] == "body" and command.startswith(
+                (";;", ";&"), i):
+            cases[-1][1:] = ["pattern", False]  # ;; ;& ;;& end a case branch: a pattern follows
+        if c in " \t" and not word_start:  # a word ends: a reserved word keeps command position, an assignment not
+            word = "".join(out[word_begin:])
+            if function_name:
+                command_start, function_name = True, False  # `function f case ...`
+            elif command_start and word == "function":
+                function_name = True
+            else:
+                command_start = command_start and (word in COMMAND_PREFIX_WORDS or (word == "-p" and last_word == "time"))
+            last_word = word
+        out.append(c)
         i += 1
+        if c in SHELL_WORD_BREAKS:
+            word_start, word_begin = True, len(out)
+            if c in ";&|\n":
+                command_start = True
+            if c == "\n" and pending and heredoc is None:
+                start_heredoc()
+        else:
+            word_start = False
+    copied = 0
+    while outer:  # a substitution left open (bash refuses the command): read its text as a command, and in its word
+        while stack and pop() not in BUFFERED:
+            pass
+        inner_text = "".join(out)
+        copied += len(inner_text)
+        if copied > 8 * n + 100_000:  # deeply nested open substitutions copy their text once per level
+            raise ReadTimeout("the command's open substitutions are too deeply nested to read")
+        sides.append(inner_text)
+        out, word_begin, _, opener, _ = outer.pop()
+        out.append(_literal(opener) + inner_text)
+    return "".join(out) + "".join("\n" + side for side in sides), posix_differs, dq_hash
+
+
+# What may run a heredoc body it is given: shells, interpreters, remote shells and database clients. A heredoc in a
+# substitution is read as commands when one of these is anywhere in the rest of its line (`cat <<EOF | bash`).
+HEREDOC_RUNNERS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "ssh", "su", "python", "python2", "python3", "node",
+                   "nodejs", "deno", "bun", "perl", "ruby", "php", "lua", "tclsh", "expect", "osascript", "psql",
+                   "mysql", "mariadb", "sqlite3", "sqlcmd", "redis-cli", "mongo", "mongosh", "pwsh", "powershell",
+                   "cmd", "xargs", "eval", "source", ".", "exec", "docker", "podman", "kubectl", "at", "batch",
+                   "crontab", "sudo", "doas", "env", "time", "nohup", "timeout"}
+# What only reads or writes a body as text. A heredoc in a substitution given to one of these, with no runner in the
+# rest of its line, is text (`git commit -m "$(cat <<'EOF' ... EOF)"`); given to anything else it is read as commands.
+HEREDOC_TEXT_READERS = {"cat", "tee", "head", "tail", "wc", "sort", "uniq", "tr", "cut", "fold", "column", "less",
+                        "more", "grep", "egrep", "fgrep", "base64", "md5sum", "sha1sum", "sha256sum", "shasum",
+                        "printf", "echo", "read", "mapfile", "readarray", "true", ":", "git", "gh", "jq", "yq"}
+
+
+def _command_begins(command: str, at: int) -> int:
+    """Where the simple command holding command[at] begins: after the nearest `;`, `&`, `|`, `(`, `)`, backquote or
+    newline before it (a heuristic for _heredoc_runs; a quote is not tracked)."""
+    k = at
+    while k > 0 and command[k - 1] not in ";&|()`\n":
+        k -= 1
+    return k
+
+
+def _heredoc_runs(line: str) -> bool:
+    """Whether a heredoc whose command and the rest of its line are `line` may be run: a runner (HEREDOC_RUNNERS)
+    anywhere in it, or a command that is not one of HEREDOC_TEXT_READERS (stricter: unknown commands may run it)."""
+    words = [w for w in re.split(r"[\s;&|()<>`\"']+", line) if w]
+    if any(os.path.basename(w).lstrip("$") in HEREDOC_RUNNERS for w in words):
+        return True
+    for w in words:
+        if ASSIGNMENT.match(w):
+            continue
+        return os.path.basename(w) not in HEREDOC_TEXT_READERS
+    return True
+
+
+def _double_quoted(body: str) -> str:
+    """A heredoc body (unquoted word) as the text of a double-quoted string that expands as the body does: a `"`
+    is escaped, and a backslash before a `"` stays a backslash."""
+    out, k, n = [], 0, len(body)
+    while k < n:
+        ch = body[k]
+        if ch == "\\" and k + 1 < n:
+            out.append('\\\\\\"' if body[k + 1] == '"' else body[k:k + 2])
+            k += 2
+            continue
+        out.append('\\"' if ch == '"' else ch)
+        k += 1
     return "".join(out)
 
 
-def _tokens(command: str) -> list[str]:
+def _heredoc_word(command: str, i: int, strip_tabs: bool, out: list, pending: list) -> int:
+    """Read the word after `<<` at command[i:]: append it, made literal, to out, add (word, strip_tabs, quoted) to
+    pending, and return where it ends. The word ends at an unquoted blank, newline or operator; quoting any part of
+    it makes the body literal (no substitutions), and the quotes are not part of the word."""
+    word: list = []
+    quoted = False
+    j, n = i, len(command)
+    while j < n and command[j] not in " \t\n;&|()<>":
+        ch = command[j]
+        if ch == "'":
+            end = command.find("'", j + 1)
+            end = n if end == -1 else end
+            word.append(command[j + 1:end])
+            quoted, j = True, end + 1
+        elif ch == '"':
+            k = j + 1
+            while k < n and command[k] != '"':
+                if command[k] == "\\" and k + 1 < n and command[k + 1] in '"\\$`':
+                    k += 1
+                word.append(command[k])
+                k += 1
+            quoted, j = True, k + 1
+        elif ch == "\\" and j + 1 < n:
+            word.append(command[j + 1])
+            quoted, j = True, j + 2
+        else:
+            word.append(ch)
+            j += 1
+    text = "".join(word)
+    out.append(_literal(text))
+    if text:
+        pending.append((text, strip_tabs, quoted))
+    return min(j, n)
+
+
+def _tokens(command: str, bash: bool = True) -> list[str]:
     """The command's words and operators. An unquoted newline separates commands, as in a shell, a backslash-newline
     joins two lines into one, and comments are dropped, so every line of a multi-line command is read."""
-    command = _strip_comments(LINE_CONTINUATION.sub(r"\1", command))
+    return _lex(_strip_comments(command, bash))
+
+
+def _lex(command: str) -> list[str]:
+    """The words and operators of a command _scan has prepared."""
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
-        lexer.whitespace = " \t\r"
+        lexer.whitespace = " \t"
         lexer.whitespace_split = True
         lexer.commenters = ""
         return list(lexer)
+    except ReadTimeout:
+        raise  # the hook's timer: never read as an unbalanced quote
     except ValueError:
         # Unbalanced quotes: fall back to whitespace splitting with quotes stripped.
+        command = command.replace(QUOTED, "")
         return [t.strip("\"'") for t in command.replace("\n", " ; ").replace(";", " ; ").replace("&&", " && ").replace("|", " | ").split()]
 
 
-def _simple_commands(command: str, depth: int = 0, assignments: list[str] | None = None):
-    """Yield argv lists for each simple command, with wrappers removed and `sh -c` bodies expanded.
+def _readings(command: str, depth: int = 0) -> list:
+    """The command's text as each shell that may run it reads a carriage return. Every reading is checked.
 
-    When `assignments` is a list, every variable assignment dropped on the way (`NAME=value` before a command, on
-    its own, or after `env`), in `bash -c` bodies too, is appended to it as written, as the commands are yielded."""
-    current: list[str] = []
-    for token in _tokens(command) + [";"]:
-        if token in SEPARATORS or set(token) <= set(";&|()\n"):
-            if current:
-                yield from _unwrap(current, depth, assignments)
-            current = []
+    bash and zsh read a carriage return as an ordinary character, part of its word, so `main\\r` is not main; bash on
+    Windows may read a CR-LF line ending as a line feed, PowerShell reads a carriage return as a line break, and a
+    shell that ignores carriage returns (Cygwin's igncr) reads `rm -rf \\r~` as `rm -rf ~`, which reading one as a
+    blank also finds. The tool's own shell may be any of these, so the command it is given (depth 0) is read each of
+    those four ways; the text of a `bash -c` string inside it is as each reading left it. A command whose only
+    carriage returns end its lines is read two ways, since the last two readings are then the second."""
+    if depth or "\r" not in command:
+        return [command]
+    crlf = CR_LINE_ENDING.sub("", command)
+    return list(dict.fromkeys([command, crlf, crlf.replace("\r", "\n"), crlf.replace("\r", " ")]))
+
+
+def _simple_commands(command: str, depth: int = 0, deadline: float | None = None, memo: dict | None = None,
+                     assignments: list | None = None, words: list | None = None):
+    """Yield argv lists for each simple command, with leading assignments, reserved words, redirections and wrappers
+    removed, redirections with their target attached (`2>&1`, `>/dev/null`) dropped, and `sh -c` bodies and shell
+    here-strings expanded. A simple command a later reading repeats is yielded once.
+
+    Each carriage-return reading (_readings) is read as bash, zsh and ksh read it; one in which that can differ from
+    dash (_scan: a $'...' string holds `\\'`, or `&>` was read as one operator) is read again as dash reads it ($'
+    is `$` and a plain single-quoted string, which `\\'` ends; `&>` is `&` and then `>`), since `sh -c` may start
+    dash. memo holds what each `bash -c` string inside yields, so a string that several readings leave the same is
+    read once.
+
+    When `assignments` is a list, every variable assignment dropped on the way (`NAME=value` before a command, on its
+    own, or after `env` or `sudo`), in `bash -c` bodies too, is appended to it as written, as the commands are yielded;
+    a command read more than one way may add one more than once. When `words` is a list, the words of each reading,
+    and of each `bash -c` string inside, are appended to it as one list (_reading_words), for _points_git_elsewhere.
+
+    Raises ReadTimeout once the deadline (READ_BUDGET_SECONDS from the first call, by default) has passed, checked
+    before each reading and at each word _strip_wrappers reads, or before an extra reading that would not finish by
+    then, judged by the slowest reading so far."""
+    deadline = _deadline(deadline)
+    memo = {} if memo is None else memo
+    seen: set = set()
+    slowest = 0.0
+    number = 0
+    for text in _readings(command, depth):
+        variants = [(True, False)]  # bash 3.2's reading first; others where they can differ (_scan)
+        for bash, dq_comment in variants:
+            started = time.monotonic()
+            if started + slowest >= deadline:
+                raise ReadTimeout("the command took too long to read")
+            prepared, posix_differs, dq_hash = _scan(text, bash, dq_comment)
+            if len(variants) == 1:
+                if posix_differs or dq_hash:
+                    variants.append((False, True))  # dash
+                if dq_hash:
+                    variants.append((True, True))  # bash 4 and later, and zsh: a comment in "$( )", and $'...'
+            tokens = _lex(prepared)
+            if words is not None:
+                words.append(_reading_words(tokens))
+            slowest = max(slowest, time.monotonic() - started)
+            current: list[str] = []
+            for token in tokens + [";"]:
+                # An empty word ('' or $'') is an argument, not a separator: `rm -rf $'' ~` removes ~.
+                if token in SEPARATORS or (token and set(token) <= SEPARATOR_CHARS):
+                    for argv in _unwrap(current, depth, deadline, memo, assignments, words) if current else ():  # checks the deadline
+                        if number == 0 or tuple(argv) not in seen:
+                            seen.add(tuple(argv))
+                            yield argv
+                    current = []
+                else:
+                    current.append(token.replace(QUOTED, "") if QUOTED in token else token)
+            number += 1
+
+
+def _split_string(text: str) -> list[str]:
+    """The words of `env -S STRING`: split on blanks, with quotes as in a shell."""
+    try:
+        return shlex.split(text, posix=True)
+    except ReadTimeout:
+        raise  # the hook's timer: never read as an unbalanced quote
+    except ValueError:
+        return text.split()
+
+
+def _long_option(option: str, known: set) -> str | None:
+    """The known long option `option` names, itself or as an unambiguous prefix (getopt_long), or None."""
+    if option in known:
+        return option
+    matches = [name for name in known if name.startswith(option)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _wrapper_commands(name: str, rest: list, xargs: tuple | None = None, deadline: float | None = None,
+                      assignments: list | None = None) -> list:
+    """Each way `name` (a WRAPPER_OPTIONS wrapper) reads the words after it: (rest, xargs) for each reading, rest
+    holding the command it runs. rest is a stack, last word first (rest[-1] is the next word), which this consumes:
+    passing over a word is one pop, and env -S's string is pushed in place, so a long run of options costs time in
+    proportion to its length. Its options and positionals are passed over; env passes over every word with `=` in it
+    before the command (GNU env takes `=x` too), and sudo every one that does not start with `/`, unless its options
+    ended at `--` (sudo's is_envar); xargs adds a link to the xargs chain (its -I replacement string, or None when its
+    input follows the command), applied by _xargs_command. An option the table does not know is read both ways, so
+    there may be several readings, each with a copy of the stack. The NAME=VALUE words env and sudo pass over are
+    appended to `assignments` when it is a list. Raises ValueError past MAX_WRAPPER_READINGS, and ReadTimeout past the
+    deadline."""
+    spec = WRAPPER_OPTIONS[name]
+    known_long = spec["long_value"] | spec["long_flags"] | spec["long_split"] | spec["long_replace"]
+    readings: list = []
+    todo = [(rest, None)]  # (the word stack, xargs's replacement string)
+    while todo:
+        if len(readings) + len(todo) > MAX_WRAPPER_READINGS:
+            raise ValueError("too many ways to read the command's wrappers")
+        rest, replace = todo.pop(0)
+        ended = False  # the options ended at `--`
+        while rest:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ReadTimeout("the command took too long to read")
+            arg = rest[-1]
+            if arg == "--":
+                rest.pop()
+                ended = True
+                break
+            if arg == "-" and name == "env":  # env - is env -i
+                rest.pop()
+                continue
+            if arg.startswith("--"):
+                rest.pop()
+                option, equals, value = arg.partition("=")
+                known = _long_option(option, known_long)
+                if known in spec["long_split"]:
+                    text = value if equals else (rest.pop() if rest else "")
+                    rest.extend(reversed(_split_string(text)))
+                elif known in spec["long_replace"]:
+                    replace = value if equals else "{}"
+                elif equals or known in spec["long_flags"]:
+                    pass
+                elif known in spec["long_value"]:
+                    if rest:
+                        rest.pop()
+                else:  # unknown: it may take the next word, or none
+                    todo.append((rest[:-1], replace))
+                continue
+            if not arg.startswith("-") or len(arg) == 1:
+                break
+            # A cluster of short options: each letter is a flag, until one that takes a value, which is the rest of
+            # the cluster or else the next word.
+            rest.pop()
+            letters, k, split = arg[1:], 0, None
+            while k < len(letters):
+                letter, attached = letters[k], letters[k + 1:]
+                if letter in spec["split"]:
+                    split = attached if attached else (rest.pop() if rest else "")
+                    break
+                if letter in spec["replace"]:
+                    replace = attached if attached else (rest.pop() if rest else "")
+                    break
+                if letter in spec["optional_replace"]:
+                    replace = attached or "{}"
+                    break
+                if letter in spec["value"]:
+                    if not attached and rest:
+                        rest.pop()
+                    break
+                if letter in spec["optional"]:
+                    break
+                if letter not in spec["flags"]:  # unknown: it may take a value (the rest of the cluster, or the next
+                    todo.append((rest[:] if attached else rest[:-1], replace))  # word), or be a flag
+                k += 1
+            if split is not None:
+                rest.extend(reversed(_split_string(split)))
+        for _ in range(spec["positionals"]):
+            if rest:
+                rest.pop()
+        if name == "env":
+            while rest and "=" in rest[-1]:
+                word = rest.pop()
+                if assignments is not None:
+                    assignments.append(word)
+        elif name == "sudo" and not ended:
+            while rest and "=" in rest[-1] and not rest[-1].startswith("/"):
+                word = rest.pop()
+                if assignments is not None:
+                    assignments.append(word)
+        readings.append((rest, (replace, xargs) if name == "xargs" and rest else xargs))
+    return readings
+
+
+def _xargs_command(command: list, xargs: tuple | None) -> list:
+    """The command with what xargs reads from its input written as XARGS_INPUT: in place of each -I replacement
+    string in its arguments, or after them, once for each xargs whose input follows the command."""
+    replaces, appended = [], 0
+    while xargs is not None:
+        replace, xargs = xargs
+        if replace:
+            replaces.append(replace)
         else:
-            current.append(token)
+            appended += 1
+    args = command[1:]
+    for replace in dict.fromkeys(replaces):
+        args = [arg.replace(replace, XARGS_INPUT) for arg in args]
+    return command[:1] + args + [XARGS_INPUT] * appended
 
 
-def _strip_wrappers(argv: list[str], assignments: list[str] | None = None) -> list[str]:
-    """Drop leading assignments and wrapper commands (sudo, env, timeout 60, ...) with their options. The assignments
-    dropped are appended to `assignments` when it is a list."""
-    while True:
-        while argv and ASSIGNMENT.match(argv[0]):
-            if assignments is not None:
-                assignments.append(argv[0])
-            argv = argv[1:]
-        if not argv:
-            return argv
-        name = os.path.basename(argv[0].lstrip("`"))
-        if name in WRAPPERS:
-            argv = argv[1:]
-            # env takes every word with `=` before the command as NAME=VALUE, a name the shell would refuse included
-            # (`env 'A-B=x/y' rm -rf /` runs rm).
-            pair = ENV_PAIR if name == "env" else ASSIGNMENT
-            while argv and (argv[0].startswith("-") or pair.match(argv[0])):
-                if assignments is not None and pair.match(argv[0]):
-                    assignments.append(argv[0])
-                takes_value = argv[0] in ("-u", "-g", "-n", "-C")
-                argv = argv[2:] if takes_value else argv[1:]
-        elif name in WRAPPER_SPECS:
-            value_options, positionals = WRAPPER_SPECS[name]
-            argv = _skip_options(argv[1:], value_options)[positionals:]
-        else:
-            return argv
+def _strip_wrappers(argv: list[str], deadline: float | None = None, assignments: list | None = None) -> list:
+    """Each command a simple command may run: leading assignments, redirections (`>/dev/null`, `2>&1`, `> log`),
+    words that may expand to nothing ($(cmd), $VAR), reserved words (`then`, `do`, `!`, `{`, ...; `coproc` and a NAME
+    before a compound command; `function NAME`) and wrapper commands (sudo, env, timeout 60, xargs, noglob, ...) with
+    their options passed over (_wrapper_commands); an option a wrapper's table does not know gives two readings. Only
+    the first word of a simple command can be a reserved word, so `echo then` keeps its argument. The words are kept
+    as a stack, last word first, so a long run of assignments or wrappers costs time in proportion to its length.
+    The assignments passed over are appended to `assignments` when it is a list. Raises ValueError past
+    MAX_WRAPPER_READINGS, and ReadTimeout past the deadline."""
+    commands: list = []
+    todo = [(argv[::-1], None)]  # (the word stack, last word first; the xargs chain)
+    while todo:
+        if len(commands) + len(todo) > MAX_WRAPPER_READINGS:
+            raise ValueError("too many ways to read the command's wrappers")
+        rest, xargs = todo.pop(0)
+        while rest:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ReadTimeout("the command took too long to read")
+            first = rest[-1]
+            # An empty command name ('' or "") runs nothing, and one that only expands ($(cmd), $VAR) may expand to
+            # nothing: what follows is read as the command, which is the stricter reading.
+            if not first or ASSIGNMENT.match(first) or EXPANSION_WORD.fullmatch(first):
+                rest.pop()
+                if assignments is not None and first and ASSIGNMENT.match(first):
+                    assignments.append(first)
+                continue
+            word = first.lstrip("`")
+            if word.startswith(REDIRECT) or word in RESERVED_PREFIXES:  # `>/dev/null rm -rf ~`, `then rm -rf ~`
+                rest.pop()
+                continue
+            if word == "coproc":
+                rest.pop()
+                if len(rest) >= 2 and rest[-2] in COMPOUND_STARTS:
+                    rest.pop()  # coproc NAME { ...; }
+                continue
+            if word == "function":
+                rest.pop()
+                if rest:
+                    rest.pop()  # function NAME { ...; }: the body follows the name
+                continue
+            name = _command_name(word)
+            if name not in WRAPPER_OPTIONS:
+                break
+            rest.pop()
+            readings = _wrapper_commands(name, rest, xargs, deadline, assignments)
+            todo.extend(readings[1:])
+            rest, xargs = readings[0]
+        if rest:
+            commands.append(_xargs_command(rest[::-1], xargs))
+    return commands
 
 
 def _shell_command_string(args: list[str]) -> str | None:
@@ -333,31 +1343,93 @@ def _shell_command_string(args: list[str]) -> str | None:
     return args[index] if has_c and index < len(args) else None
 
 
-def _unwrap(argv: list[str], depth: int, assignments: list[str] | None = None):
-    argv = _strip_wrappers(argv, assignments)
-    if not argv:
-        return
-    name = os.path.basename(argv[0].lstrip("`"))
-    if name in SHELLS and depth < 3:
-        script = _shell_command_string(argv[1:])
-        if script is not None:
-            yield from _simple_commands(script, depth + 1, assignments)
-            return
-    if depth < 3:
-        # `pwsh -Command "..."`, `powershell -c ...`, `powershell.exe -EncodedCommand ...` and `cmd /c ...`: the script
-        # is read with PowerShell's or cmd's rules (catpilot_guard/powershell.py, docs/spec/WINDOWS.md §3.2).
-        from . import powershell
+def _here_string_script(args: list[str], redirections: list[str]) -> str | None:
+    """The script a shell reads from a here-string (`bash <<< 'rm -rf ~'`, `sh -s <<<"..."`), or None. args are the
+    shell's arguments without its redirections; a shell given a script file reads the here-string as that script's
+    input, so then None, unless -s says its operands are arguments."""
+    script = None
+    for word in redirections:
+        here = HERE_STRING.match(word, len(REDIRECT))
+        if here:
+            script = word[here.end():]
+    if script is None:
+        return None
+    reads_stdin, index = False, 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            index += 1
+            break
+        if arg in SHELL_VALUE_OPTIONS:
+            index += 2
+        elif arg.startswith("--"):
+            index += 1
+        elif len(arg) > 1 and arg[0] in "-+":
+            reads_stdin = reads_stdin or (arg[0] == "-" and "s" in arg[1:])
+            index += 2 if arg[-1] in "oO" else 1  # -euo pipefail: o takes the next word
+        else:
+            break
+    return script if index >= len(args) or reads_stdin else None
 
-        shell = powershell._command_name(name)
-        if shell in powershell.POWERSHELLS or shell == "cmd":
-            script = powershell.powershell_script(shell, argv[1:]) if shell != "cmd" else powershell.cmd_script(argv[1:])
+
+def _command_name(word: str) -> str:
+    """The command a first word runs: its last path component, after any expansion it starts with (`$(echo)rm`,
+    which may expand to nothing); zsh's `=rm` runs rm."""
+    name = os.path.basename(EXPANSION_PREFIX.sub("", word.lstrip("`"), count=1) or word)
+    return name[1:] if name.startswith("=") and len(name) > 1 else name
+
+
+def _unwrap(argv: list[str], depth: int, deadline: float | None = None, memo: dict | None = None,
+            assignments: list | None = None, readings: list | None = None):
+    for command in _strip_wrappers(argv, deadline, assignments):
+        name = _command_name(command[0])
+        # Redirections are not arguments (`git push -f > log` is a bare push), and a shell's options may follow them.
+        args = [arg for arg in command[1:] if not arg.startswith(REDIRECT)]
+        # An argument that starts with an expansion may lose it, and an option may be left (`rm `echo`-rf ~`,
+        # `bash $(echo)-c '...'`): read that too. Only an option: `rm -rf "$(pwd)/bin"` is no `/bin`.
+        bare = [_bare(arg) for arg in args]
+        if name in SHELLS and depth < 3:
+            redirections = [arg for arg in command[1:] if arg.startswith(REDIRECT)]
+            script = None
+            for words in (args, bare) if bare != args else (args,):
+                script = _shell_command_string(words)
+                if script is None:
+                    script = _here_string_script(words, redirections)
+                if script is not None:
+                    break
             if script is not None:
-                if shell == "cmd":
-                    yield from powershell._cmd_commands(script, depth + 1, assignments)
+                if memo is None:
+                    yield from _simple_commands(script, depth + 1, deadline, None, assignments, readings)
                 else:
-                    yield from powershell.simple_commands(script, depth + 1, assignments)
-                return
-    yield [name] + argv[1:]
+                    key = (script, depth + 1)
+                    if key not in memo:
+                        memo[key] = list(_simple_commands(script, depth + 1, deadline, memo, assignments, readings))
+                    yield from memo[key]
+                continue
+        if depth < 3:
+            # `pwsh -Command "..."`, `powershell -c ...`, `powershell.exe -EncodedCommand ...` and `cmd /c ...`: the
+            # script is read with PowerShell's or cmd's rules (catpilot_guard/powershell.py, docs/spec/WINDOWS.md
+            # §3.2), never with this reader's, under the same deadline.
+            from . import powershell
+
+            shell = powershell._command_name(name)
+            if shell in powershell.POWERSHELLS or shell == "cmd":
+                script = powershell.powershell_script(shell, args) if shell != "cmd" else powershell.cmd_script(args)
+                if script is not None:
+                    if shell == "cmd":
+                        yield from powershell._cmd_commands(script, depth + 1, assignments, deadline)
+                    else:
+                        yield from powershell.simple_commands(script, depth + 1, assignments, deadline)
+                    continue
+        yield [name] + args
+        if bare != args:
+            yield [name] + bare
+
+
+def _bare(word: str) -> str:
+    """word without the expansion it starts with, when what is left is an option (`$(echo)-rf` -> `-rf`)."""
+    left = EXPANSION_PREFIX.sub("", word, count=1)
+    return left if left.startswith("-") else word
 
 
 def _running_users_home_target(target: str) -> bool:
@@ -892,6 +1964,7 @@ def _git_push_rewrites(args: list[str], cwd: str | None, expand: bool, budget: B
 # branch is then unknown, and so blocked, for the rest of the line (commands_with_branch_context). A command can only
 # make the branch unknown, never name it: a switch may fail, run elsewhere, or take its name from a variable.
 CONTEXT_COMMANDS = {"cd", "chdir", "pushd", "popd", "source", ".", "eval", "exec", "alias"}
+DIRECTORY_COMMANDS = {"cd", "chdir", "pushd", "popd"}  # change only the directory, which a subshell keeps to itself
 GIT_CONTEXT_SUBCOMMANDS = {"checkout", "switch", "symbolic-ref", "init"}
 # An assignment that points git at another repository or adds configuration.
 GIT_ENVIRONMENT_ASSIGNMENT = re.compile(r"GIT_(?:DIR|WORK_TREE|COMMON_DIR)(?:\+?=|$)")
@@ -1036,41 +2109,67 @@ def _config_setting(argv: list[str]) -> str | None:
     return None
 
 
-def _shell_bodies(command: str, depth: int = 0) -> list[str]:
-    """The command and every `bash -c`/`sh -c` body inside it, at any depth _unwrap reads."""
-    bodies = [command]
-    if depth >= 3:
-        return bodies
-    current: list[str] = []
-    for token in _tokens(command) + [";"]:
-        if token in SEPARATORS or set(token) <= set(";&|()\n"):
-            argv = _strip_wrappers(current)
-            if argv and os.path.basename(argv[0].lstrip("`")) in SHELLS:
-                script = _shell_command_string(argv[1:])
-                if script is not None:
-                    bodies.extend(_shell_bodies(script, depth + 1))
-            current = []
-        else:
-            current.append(token)
-    return bodies
+def _is_separator(token: str) -> bool:
+    """Whether a token of _lex is an operator: a quoted or escaped `;` still holds QUOTED, and an empty word is a word."""
+    return token in SEPARATORS or (bool(token) and set(token) <= SEPARATOR_CHARS)
 
 
-def _points_git_elsewhere(command: str) -> str | None:
+def _reading_words(tokens: list) -> list:
+    """One reading's tokens (_lex) as _points_git_elsewhere reads them: operators as they are, redirections left out,
+    QUOTED removed from each word, and a quoted or escaped operator or an empty word written `''`, so that it is never
+    read as an operator."""
+    out = []
+    for token in tokens:
+        if _is_separator(token):
+            out.append(token)
+        elif not token.startswith(REDIRECT):  # `>/dev/null GIT_DIR=x git push -f`: a redirection is not a word
+            word = token.replace(QUOTED, "") if QUOTED in token else token
+            out.append(word if word and not _is_separator(word) else "''")
+    return out
+
+
+FUNCTION_BODY_STARTS = {"{", "(", "((", "if", "for", "while", "until", "case", "select", "[["}
+
+
+def _defines_function(tokens: list, i: int) -> bool:
+    """Whether the `()` at tokens[i] (one token, or `(` then `)`) is followed by a function body: a compound command,
+    perhaps on a later line. A heredoc body's text (`fix parse() bug`), which the reader also reads as commands, is not
+    a definition; nothing after the `()` is read as one (stricter)."""
+    rest = tokens[i][2:] if tokens[i].startswith("()") else tokens[i + 1][1:]
+    j = i + (1 if tokens[i].startswith("()") else 2)
+    if rest.lstrip("\n"):  # `()(`, `();`: punctuation after it in the same token
+        return rest.lstrip("\n").startswith("(")
+    while j < len(tokens) and tokens[j] == "\n":
+        j += 1
+    return j >= len(tokens) or tokens[j] in FUNCTION_BODY_STARTS or tokens[j].startswith("(")
+
+
+def _points_git_elsewhere(command: str, deadline: float | None = None, readings: list | None = None) -> str | None:
     """"config" when a line (or a shell body in it) sets GIT_CONFIG_* (a mirror may follow), "elsewhere" when it
     defines a function (which may stand in for git), sets GIT_DIR, GIT_WORK_TREE or GIT_COMMON_DIR, or gives env a
     directory, else None. Read from shell words: an assignment counts at a command's start or as an argument of a
     command that passes it on (export, declare, read, env and the other wrappers), so a quoted mention in a message
-    (`-m "fix parse() edge case"`, `-m "GIT_DIR=x"`) is not one."""
+    (`-m "fix parse() edge case"`, `-m "GIT_DIR=x"`) is not one. The words are _simple_commands' (its `words`; given
+    as readings when the caller has them), so a line is read here as it is checked: inside compound commands, with
+    comments dropped where bash drops them, each way a carriage return or $'...' may be read, and every `bash -c`
+    string inside. Raises ReadTimeout past the deadline."""
     found = None
-    for body in _shell_bodies(command):
-        tokens = _tokens(body)
+    deadline = _deadline(deadline)
+    if readings is None:
+        readings = []
+        for _ in _simple_commands(command, 0, deadline, None, None, readings):
+            pass
+    for tokens in readings:
         at_start, assigning, previous, env_options = True, False, "", False
         wrapper, skip, positionals = None, 0, 0
         for i, token in enumerate(tokens):
+            if not i % 4096 and time.monotonic() >= deadline:
+                raise ReadTimeout("the command took too long to read")
             if token in SEPARATORS or set(token) <= set(";&|()\n"):
                 if previous and not previous.endswith(("$", "=")) and previous not in SEPARATORS and not set(previous) <= set(";&|()\n"):
                     if token.startswith("()") or (token == "(" and i + 1 < len(tokens) and tokens[i + 1].startswith(")")):
-                        found = found or "elsewhere"  # `name()`; not `arr=()` or `$()`
+                        if _defines_function(tokens, i):
+                            found = found or "elsewhere"  # `name()`; not `arr=()` or `$()`
                 at_start, assigning, previous, env_options = True, False, token, False
                 wrapper, skip, positionals = None, 0, 0
                 continue
@@ -1132,7 +2231,17 @@ def _points_git_elsewhere(command: str) -> str | None:
     return found
 
 
-def commands_with_branch_context(command: str, cwd: str | None):
+def read_command(command: str, deadline: float | None = None) -> tuple:
+    """(commands, assignments, readings): every simple command of _simple_commands, the assignments it dropped, and
+    the words of each reading, from one pass, so that the branch context, the registry, account and deploy readers
+    and _points_git_elsewhere share one reading of a long command. Raises ReadTimeout past the deadline."""
+    assignments: list = []
+    readings: list = []
+    commands = list(_simple_commands(command, 0, _deadline(deadline), None, assignments, readings))
+    return commands, assignments, readings
+
+
+def commands_with_branch_context(command: str, cwd: str | None, deadline: float | None = None, read: tuple | None = None):
     """Each simple command, with the directory to read the checked-out branch from, or None when it is unknown: after
     a command earlier in the line that may change it or the directory (`cd`, `pushd`, `git checkout`, `git switch`,
     `git init`, `git rebase <upstream> <branch>`, `git stash branch`, `git branch -m`, `gh pr checkout`, `source`,
@@ -1141,10 +2250,39 @@ def commands_with_branch_context(command: str, cwd: str | None):
     a harmful GIT_CONFIG_* (git_config_assignment_harmful), or follows a command that sets a mirror setting, yields
     CONFIGURED_BY_ENVIRONMENT, which makes a bare push a mirror. A command can only make the
     branch unknown, never name it. A script or program run earlier in the line that switches branches is not seen, nor
-    a git alias or a setting in git's config files."""
-    pointed = _points_git_elsewhere(command)
+    a git alias or a setting in git's config files.
+
+    The commands are _simple_commands' (compound commands, comments and every reading, under one deadline), and the
+    assignments it drops count as well. The commands of a substitution are read after the rest of the line, though
+    the shell runs them first, so in a line with a substitution a command that changes the context applies to the
+    whole line, except a change of directory (`cd`, `pushd`, `popd`), which a substitution makes in its own subshell;
+    a checkout there still changes the repository's HEAD. read is read_command(command), when the caller has it. Raises ReadTimeout past the deadline."""
+    deadline = _deadline(deadline)
+    commands, assignments, readings = read if read is not None else read_command(command, deadline)
+    pointed = _points_git_elsewhere(command, deadline, readings)
     branch_cwd = CONFIGURED_BY_ENVIRONMENT if pointed == "config" else (None if pointed else cwd)
-    for argv in _simple_commands(command):
+    for assignment in assignments:
+        if branch_cwd is CONFIGURED_BY_ENVIRONMENT:
+            break
+        name, equals, value = assignment.partition("=")
+        name = name.rstrip("+")
+        if GIT_CONFIG_ASSIGNMENT.match(name) and git_config_assignment_harmful(name, value if equals else None):
+            branch_cwd = CONFIGURED_BY_ENVIRONMENT
+        elif GIT_ENVIRONMENT_ASSIGNMENT.match(name):
+            branch_cwd = None
+    if any(mark in command for mark in ("$(", "`", "<(", ">(")):
+        for argv in commands:
+            if CURRENT_BRANCH_COMMAND.fullmatch(" ".join(argv)):
+                continue  # `"$(git symbolic-ref --short HEAD)"` asks for the branch; it does not change it
+            if os.path.basename(argv[0]) in DIRECTORY_COMMANDS:
+                continue  # a `cd` in a substitution runs in a subshell (`ROOT="$(cd .. && pwd)"`); a checkout does not
+            setting = _config_setting(argv)
+            if setting == "mirror":
+                branch_cwd = CONFIGURED_BY_ENVIRONMENT
+                break
+            if setting == "unknown" or _changes_branch(argv):
+                branch_cwd = None
+    for argv in commands:
         yield argv, branch_cwd
         setting = _config_setting(argv)
         if setting == "mirror":
@@ -1280,14 +2418,15 @@ def _destructive_sql(text: str) -> bool:
     return False
 
 
-def _db_finding(name: str, args: list[str], command: str, depth: int = 0) -> tuple[str, str] | None:
+def _db_finding(name: str, args: list[str], command: str, depth: int = 0,
+                deadline: float | None = None) -> tuple[str, str] | None:
     name, args = _unwrap_exec(name, args)
     script = _shell_command_string(args) if name in SHELLS else None
     if script is not None:
         # A shell started inside a container (docker compose exec db sh -c "psql ..."): check its commands too.
         if depth < 3:
-            for inner in _simple_commands(script, depth + 1):
-                hit = _db_finding(inner[0], inner[1:], command, depth + 1)
+            for inner in _simple_commands(script, depth + 1, deadline):
+                hit = _db_finding(inner[0], inner[1:], command, depth + 1, deadline)
                 if hit is not None:
                     return hit
         return None
@@ -1344,12 +2483,17 @@ POWERSHELL = "powershell"  # find_destructive_op's shell for Claude Code's Power
 SHELL_TOOLS = ("Bash", "PowerShell")  # the tools whose tool_input.command the checks read
 
 
-def find_destructive_op(command: str, cwd: str | None = None, shell: str = "bash") -> tuple[str, str] | None:
+def find_destructive_op(command: str, cwd: str | None = None, shell: str = "bash",
+                        deadline: float | None = None) -> tuple[str, str] | None:
     """Return (label, remediation) for the first destructive command found, or None. shell "powershell" reads the
     command with PowerShell's rules (catpilot_guard/powershell.py); a PowerShell or cmd script inside a bash command
-    is read with them either way."""
+    is read with them either way. Raises ReadTimeout (a ValueError) when reading the command takes longer than
+    READ_BUDGET_SECONDS from deadline's start (one deadline for every reading of the command: pass decide()'s), so
+    the hook blocks."""
     if not command:
         return None
+    check_command_size(command)
+    deadline = _deadline(deadline)
     for label, pattern, remediation in DESTRUCTIVE_PATTERNS:
         if pattern.search(command):
             return label, remediation
@@ -1357,8 +2501,11 @@ def find_destructive_op(command: str, cwd: str | None = None, shell: str = "bash
 
     working_dir = cwd if isinstance(cwd, str) and cwd else os.getcwd()
     budget = BraceBudget()  # one for the whole command, so many crafted words cannot outlast the hook's timeout
-    reader = powershell.commands_with_branch_context if shell == POWERSHELL else commands_with_branch_context
-    for argv, branch_cwd in reader(command, working_dir):
+    if shell == POWERSHELL:
+        reader = powershell.commands_with_branch_context(command, working_dir, deadline)
+    else:
+        reader = commands_with_branch_context(command, working_dir, deadline)
+    for argv, branch_cwd in reader:
         name, args = argv[0], argv[1:]
         if name == "rm" and _rm_finding(args):
             return RM_LABEL, RM_NOTE
@@ -1366,7 +2513,7 @@ def find_destructive_op(command: str, cwd: str | None = None, shell: str = "bash
             return GIT_LABEL, GIT_NOTE
         if name == "kubectl" and _kubectl_finding(args):
             return KUBECTL_LABEL, KUBECTL_NOTE
-        db_hit = _db_finding(name, args, command)
+        db_hit = _db_finding(name, args, command, 0, deadline)
         if db_hit is not None:
             return db_hit
         windows = powershell.windows_finding(argv)
@@ -1417,9 +2564,10 @@ def decide(event: dict, host: str | None = None, windows: bool | None = None) ->
     command = tool_input.get("command", "")
     if not isinstance(command, str):
         raise ValueError("command must be a string")
-    found = find_destructive_op(command, event.get("cwd"), POWERSHELL if tool == "PowerShell" else "bash")
+    deadline = _deadline()  # one reading budget for the command, however many ways it is read
+    found = find_destructive_op(command, event.get("cwd"), POWERSHELL if tool == "PowerShell" else "bash", deadline)
     if found is None and tool == "Bash" and host in BOTH_WAYS_HOSTS and (os.name == "nt" if windows is None else windows):
-        found = find_destructive_op(command, event.get("cwd"), POWERSHELL)
+        found = find_destructive_op(command, event.get("cwd"), POWERSHELL, deadline)
     if found is None:
         return {}
     label, remediation = found
@@ -1443,7 +2591,14 @@ def main() -> int:
         payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(payload) > MAX_INPUT_BYTES:
             raise ValueError("hook input too large")
-        result = decide(event_for_host(json.loads(payload), host), host)
+        result = within_time_limit(decide, event_for_host(json.loads(payload), host), host)
+    except ReadTimeout:
+        record_evidence("input_error", host=host)  # the closest event in docs/spec/EVIDENCE.md: it was not read
+        write_reason(
+            "Catpilot destructive-operation check could not finish reading this command in time (it is very long, "
+            "or nested deeply), so it was not allowed. Split it into shorter commands, or run it yourself in your own "
+            "terminal.")
+        return 2
     except Exception:
         # Any failure blocks: an ordinary non-zero exit would let the host run the command.
         record_evidence("input_error", host=host)

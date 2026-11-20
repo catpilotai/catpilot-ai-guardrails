@@ -113,7 +113,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from catpilot_guard import policy as policy_module  # noqa: E402
 from catpilot_guard.company_rules import matched_rules  # noqa: E402
-from catpilot_guard.destructive import git_config_assignment_harmful  # noqa: E402
+from catpilot_guard.destructive import ReadTimeout, git_config_assignment_harmful  # noqa: E402
 from catpilot_guard.deploy_targets import HOST, HOST_NAME, SUFFIX, UNKNOWN, Target, deploy_targets, host_covered  # noqa: E402
 
 MAX_FILE_BYTES = 1_048_576
@@ -132,6 +132,8 @@ WHAT = {
 UNREADABLE = "Catpilot pull-request check: could not read this file, so it was not checked against the company rules."
 UNREADABLE_STEP = ("Catpilot pull-request check: could not read this run step, whose shell is not bash or sh with plain options, "
                    "so it was not checked against the company rules.")
+TOO_LONG = ("Catpilot pull-request check: a script in this file is too long to read (over 200,000 characters, or past the "
+            "reading time limit), so it was not checked against the company rules.")
 
 # Deploy actions a workflow step may name in `uses:`, by owner/repository, lowercase.
 #   suffix           the hosting service's own domain the action deploys under
@@ -1124,7 +1126,15 @@ def check_file(path: str, raw: bytes | None, policy: policy_module.Policy, cwd: 
                 seen.add((item.line, None))
                 findings.append(unreadable_finding(path, kind_of_file, policy, today, item.line, UNREADABLE_STEP))
             continue
-        for line, rule in hits_for(item, policy, cwd, today):
+        try:
+            hits = hits_for(item, policy, cwd, today)
+        except ReadTimeout:  # matched_rules refuses a script too long to read in time, as the hook does: never clean
+            line = getattr(item, "key_line", getattr(item, "line", 1))
+            if (line, None) not in seen:
+                seen.add((line, None))
+                findings.append(unreadable_finding(path, kind_of_file, policy, today, line, TOO_LONG))
+            continue
+        for line, rule in hits:
             if (line, rule.id) in seen:
                 continue
             seen.add((line, rule.id))

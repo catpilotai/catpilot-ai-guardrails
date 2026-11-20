@@ -1,10 +1,11 @@
 """What a shell command deploys or publishes to: the targets the company-rules hook checks against deploy_host rules.
 
 deploy_targets(command) splits the command the way the destructive-operation check does (pipes, `;`, `&&`, each line,
-wrappers such as sudo, env and timeout, and `bash -c` bodies), looks through package runners (npx, bunx, pnpx,
+the commands inside compound commands such as `if ...; then vercel --prod; fi`, wrappers such as sudo, env and timeout,
+and `bash -c` bodies), looks through package runners (npx, bunx, pnpx,
 `npm exec`/`npm x`, `pnpm dlx`/`exec`, `yarn dlx`/`exec`), reading a package name with a version (`vercel@latest`) or
 a package whose command has another name (`netlify-cli`, `firebase-tools`, `@railway/cli`, `@aws-amplify/cli`), and
-returns one Target for each deploy or publish it recognizes. A Target is one of:
+returns a Target for each deploy or publish it recognizes, each distinct Target once. A Target is one of:
 
   a host       a name the command names itself, such as the destination of `scp dist/ deploy@web1.example.org:/srv`
                or the domain given to `surge`
@@ -44,7 +45,7 @@ import os
 import re
 from dataclasses import dataclass
 
-from .destructive import _simple_commands, _skip_options
+from .destructive import _deadline, _simple_commands, _skip_options
 
 HOST = "host"
 SUFFIX = "suffix"
@@ -291,17 +292,30 @@ def _git_push_heroku(args: list) -> Target | None:
     return None
 
 
-def deploy_targets(command: str, cwd: str | None = None, depth: int = 0, commands: list | None = None) -> list:
-    """Every deploy or publish target the command names, in order. cwd, where the command runs, tells a directory
-    `vercel dist` deploys from a subcommand it does not know. commands is the command's simple commands, when the caller
-    has split it already (company_rules splits once for every kind)."""
-    targets = []
-    for argv in (commands if commands is not None else _simple_commands(command)):
+def deploy_targets(command: str, cwd: str | None = None, depth: int = 0, deadline: float | None = None,
+                   commands: list | None = None) -> list:
+    """Every deploy or publish target the command names, each once, in the order first named. cwd, where the command
+    runs, tells a directory `vercel dist` deploys from a subcommand it does not know. commands is the command's simple
+    commands, when the caller has split it already (company_rules splits once for every kind, with
+    registry_targets.split_command, which reads it as destructive._simple_commands does). Raises ReadTimeout (a
+    ValueError) past the reading deadline, as destructive._simple_commands does."""
+    deadline = _deadline(deadline)
+    targets: list = []
+
+    def add(target):
+        if target is not None and target not in targets:
+            targets.append(target)
+
+    for argv in (commands if commands is not None else _simple_commands(command, 0, deadline)):
+        # bash keeps the carriage return of a CR-LF line ending in the line's last word, where it is no part of a
+        # host: `scp f host.example.org:/srv` sent with CR-LF reaches host.example.org, as the other readings say.
+        argv = [word.rstrip("\r") for word in argv]
         base = os.path.basename(argv[0]).lower()
         if depth < 3 and (base in RUNNERS or (base == "npm" and argv[1:2] in (["exec"], ["x"]))):
             call = _call_string(argv[2:] if base == "npm" else argv[1:])
             if call is not None:  # npx -c 'vercel --prod' runs the string as a shell command
-                targets.extend(deploy_targets(call, cwd, depth + 1))
+                for target in deploy_targets(call, cwd, depth + 1, deadline):
+                    add(target)
                 continue
         name, args = _tool(argv)
         if name in ("scp", "rsync"):
@@ -310,8 +324,7 @@ def deploy_targets(command: str, cwd: str | None = None, depth: int = 0, command
             target = _git_push_heroku(args)
         else:
             target = _deployer(name, args, cwd)
-        if target is not None:
-            targets.append(target)
+        add(target)
     return targets
 
 
