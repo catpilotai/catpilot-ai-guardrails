@@ -1,4 +1,4 @@
 PyYAML==6.0.3
 mcp==2.3.0
 # The server's OIDC mode verifies JWTs with it (docs/spec/SERVER_AUTH.md); mcp already depends on it.
-PyJWT[crypto]==2.14.0
+PyJWT[crypto]==2.15.1
