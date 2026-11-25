@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Releases from `2026.05.06` forward use [CalVer](https://calver.org) (`YYYY.MM.DD`). Source-skill components inside each release continue to use [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Changed
+
+- **The company-rules hook's block and ask messages are shorter. Not yet run on a host.** After `Catpilot company rule \`id\`: ` the reason now reads `not an approved host`, `not an approved package registry`, `not an approved cloud account` or `force push or delete on a protected branch`, in place of a full sentence such as "this command deploys or publishes to a host the company has not approved". The rest is unchanged: the rule id, `Use instead:` with the company's alternative, the ask wording, and "If this exact command is intentional, run it yourself in your own terminal." The message still names no host, registry, account or branch and repeats nothing from the command. The pull-request check (`tools/pr_check.py`) keeps its own wording.
+
 ## [2026.11.19] — 2026-11-19
 
 ### Added
