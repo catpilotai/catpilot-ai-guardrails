@@ -742,7 +742,7 @@ class HookDecisionTests(unittest.TestCase):
         result = cr.decide(bash(command), "claude-code",
                            policy(values=("%s/other" % MARKER_HOST, "npm.example.org"), use_instead="The internal package mirror"))
         reason = result["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertIn("Catpilot company rule `package-registries`: not an approved package registry.", reason)
+        self.assertIn("Policy rule `package-registries`: not an approved package registry.", reason)
         self.assertIn("Use instead: The internal package mirror.", reason)
         for text in (MARKER_HOST, MARKER_PATH, "zq-marker", "npm.example.org", "npm publish", "pip", "registry.npmjs.org"):
             self.assertNotIn(text, reason)
