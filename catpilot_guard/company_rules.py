@@ -101,7 +101,7 @@ CLAUDE_CODE = "claude-code"
 ASK_PERMISSION_MODES = ("default", "acceptEdits", "plan")
 OPTIONS = ("--host", "--policy")
 ASK_FLAG = "--ask"  # a flag, not an option: it takes no value
-# What the deciding rule found, after "Catpilot company rule `id`: ". Short, because a person reads it at the moment of
+# What the deciding rule found, after "Policy rule `id`: ". Short, because a person reads it at the moment of
 # the block; it names no host, registry, account or branch, and repeats nothing from the command.
 WHAT = {
     "protected_branch": "force push or delete on a protected branch",
@@ -268,7 +268,7 @@ def can_ask(host: str | None, event: dict, ask_enabled: bool = False) -> bool:
 
 def reason_for(effect: str, deciding: list) -> str:
     ids = ", ".join("`%s`" % rule.id for rule in deciding)
-    names = "Catpilot company rule%s %s" % ("" if len(deciding) == 1 else "s", ids)
+    names = "Policy rule%s %s" % ("" if len(deciding) == 1 else "s", ids)
     what = "; ".join(dict.fromkeys(WHAT.get(rule.kind, "this command matches a company rule") for rule in deciding))
     alternative = next((rule.use_instead_text for rule in deciding if rule.use_instead_text), None)
     use = " Use instead: %s." % alternative if alternative else ""

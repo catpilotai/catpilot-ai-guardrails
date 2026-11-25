@@ -207,7 +207,7 @@ class HookDecisionTests(unittest.TestCase):
         result = cr.decide(bash("scp -r dist deploy@%s:/srv" % MARKER), "claude-code",
                            policy(values=("apps.example.org",), use_instead="Internal App Platform (company sign-in)"))
         reason = result["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertIn("Catpilot company rule `deploy-hosts`: not an approved host.", reason)
+        self.assertIn("Policy rule `deploy-hosts`: not an approved host.", reason)
         self.assertIn("Use instead: Internal App Platform (company sign-in).", reason)
         for text in (MARKER, "apps.example.org", "scp"):
             self.assertNotIn(text, reason)
