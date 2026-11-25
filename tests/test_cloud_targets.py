@@ -426,7 +426,7 @@ class HookDecisionTests(unittest.TestCase):
                            policy(values=("aws:" + MARKER_AWS[::-1], "gcp:%s-2" % MARKER_GCP, "azure:" + MARKER_AZURE[::-1]),
                                   use_instead="The approved cloud subscription managed by IT"))
         reason = result["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertIn("Catpilot company rule `cloud-accounts`: this command names a cloud account the company has not approved.", reason)
+        self.assertIn("Catpilot company rule `cloud-accounts`: not an approved cloud account.", reason)
         self.assertIn("Use instead: The approved cloud subscription managed by IT.", reason)
         for text in (MARKER_AWS, MARKER_AWS[::-1], MARKER_GCP, MARKER_AZURE, MARKER_AZURE[::-1], "assume-role", "gcloud", "az "):
             self.assertNotIn(text, reason)

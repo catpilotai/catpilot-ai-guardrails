@@ -363,7 +363,7 @@ class DecisionTests(unittest.TestCase):
         rules = [branch_rule(use_instead_text="Internal App Platform (company sign-in)")]
         command = "git push --force origin %s/secret-name" % BRANCH_MARKER
         reason = self.decide(command, rules)["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertIn("Catpilot company rule `protected-branches`", reason)
+        self.assertIn("Catpilot company rule `protected-branches`: force push or delete on a protected branch.", reason)
         self.assertIn("Use instead: Internal App Platform (company sign-in).", reason)
         self.assertIn("run it yourself in your own terminal", reason)
         for text in (BRANCH_MARKER, "secret-name", "release", "git push"):

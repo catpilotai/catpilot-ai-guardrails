@@ -101,11 +101,13 @@ CLAUDE_CODE = "claude-code"
 ASK_PERMISSION_MODES = ("default", "acceptEdits", "plan")
 OPTIONS = ("--host", "--policy")
 ASK_FLAG = "--ask"  # a flag, not an option: it takes no value
+# What the deciding rule found, after "Catpilot company rule `id`: ". Short, because a person reads it at the moment of
+# the block; it names no host, registry, account or branch, and repeats nothing from the command.
 WHAT = {
-    "protected_branch": "this push force-pushes to or deletes a branch the company protects",
-    "deploy_host": "this command deploys or publishes to a host the company has not approved",
-    "package_registry": "this command names a package registry the company has not approved",
-    "cloud_account": "this command names a cloud account the company has not approved",
+    "protected_branch": "force push or delete on a protected branch",
+    "deploy_host": "not an approved host",
+    "package_registry": "not an approved package registry",
+    "cloud_account": "not an approved cloud account",
 }
 
 
